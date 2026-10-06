@@ -389,6 +389,32 @@ pub fn outline(src: &mut Frame, r: &PhysRect, color: [u8; 4], width: u32) {
     }
 }
 
+/// §5.9.7 — display greyscale, alpha untouched. BT.601 luma in fixed point
+/// (`0.299 / 0.587 / 0.114`), the same weighting `image` uses.
+pub fn grayscale(src: &Frame) -> Frame {
+    let mut out = src.clone();
+    for px in out.pixels.as_chunks_mut::<4>().0 {
+        let l = (19595 * px[0] as u32 + 38470 * px[1] as u32 + 7471 * px[2] as u32 + 32768) >> 16;
+        let l = l.min(255) as u8;
+        px[0] = l;
+        px[1] = l;
+        px[2] = l;
+    }
+    out
+}
+
+/// §5.9.8 — invert the colour, keep the alpha: a transparent edge that turned
+/// opaque would look like a white frame around the picture.
+pub fn invert(src: &Frame) -> Frame {
+    let mut out = src.clone();
+    for px in out.pixels.as_chunks_mut::<4>().0 {
+        px[0] = 255 - px[0];
+        px[1] = 255 - px[1];
+        px[2] = 255 - px[2];
+    }
+    out
+}
+
 /// Refuse a JPEG export whose transparency would silently turn black/white
 /// (§5.5.6 rule, §8.2), unless the caller already flattened it onto a fill.
 pub fn warns_about_transparency(

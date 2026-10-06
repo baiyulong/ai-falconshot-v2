@@ -19,6 +19,6 @@ pub mod tasks;
 
 pub use capture::{CaptureError, CaptureService, FrameSource, MonitorInfo, WindowInfo};
 pub use frame::Frame;
-pub use geometry::{PhysRect, Scale};
+pub use geometry::{PhysPoint, PhysRect, PhysSize, Scale};
 
 pub const APP_ID: &str = "dev.falconshot.app";

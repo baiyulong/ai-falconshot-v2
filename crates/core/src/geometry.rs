@@ -27,6 +27,48 @@ impl std::fmt::Display for PhysPoint {
     }
 }
 
+/// A size with no position attached. Pins need it because their on-screen size
+/// is derived (source crop × zoom), so the two axes travel together and never
+/// as a rectangle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhysSize {
+    pub w: u32,
+    pub h: u32,
+}
+
+impl PhysSize {
+    pub const fn new(w: u32, h: u32) -> Self {
+        Self { w, h }
+    }
+
+    pub fn area(self) -> u64 {
+        self.w as u64 * self.h as u64
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.w == 0 || self.h == 0
+    }
+
+    /// A quarter turn swaps the axes.
+    pub fn quarter_turned(self) -> Self {
+        Self {
+            w: self.h,
+            h: self.w,
+        }
+    }
+
+    /// `at` as its top-left corner.
+    pub fn at(self, p: PhysPoint) -> PhysRect {
+        PhysRect::new(p.x, p.y, self.w, self.h)
+    }
+}
+
+impl std::fmt::Display for PhysSize {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}x{}", self.w, self.h)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhysRect {
     pub x: i32,
@@ -59,6 +101,18 @@ impl PhysRect {
 
     pub fn ltrb(&self) -> (i32, i32, i32, i32) {
         (self.x, self.y, self.right(), self.bottom())
+    }
+
+    /// The same rectangle without its position.
+    pub const fn size(&self) -> PhysSize {
+        PhysSize {
+            w: self.w,
+            h: self.h,
+        }
+    }
+
+    pub fn top_left(&self) -> PhysPoint {
+        PhysPoint::new(self.x, self.y)
     }
 
     pub fn right(&self) -> i32 {
