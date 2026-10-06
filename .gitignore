@@ -9,6 +9,8 @@ spike/p7-package/dist*/
 
 # 本机工具状态与临时脚本
 .qoder/
+# qmlls 自己写的，里面是本机的 target 绝对路径
+crates/qt_bridge/.qmlls.ini
 
 # 编辑器/系统
 .vscode/

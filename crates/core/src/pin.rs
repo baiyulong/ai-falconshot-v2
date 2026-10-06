@@ -662,9 +662,10 @@ impl PinItem {
         Ok(())
     }
 
-    /// §5.9.9 — the user drags on the window, so the rectangle arrives in screen
-    /// pixels and has to be mapped through zoom, thumbnail and rotation.
-    pub fn crop_window(&mut self, rect: &PhysRect) -> Result<(), PinError> {
+    /// §5.9.9/§5.9.11 — a rectangle the user dragged on the window, in screen
+    /// pixels, mapped back through zoom, thumbnail and rotation into the
+    /// picture's own coordinates.
+    fn window_rect_to_source(&self, rect: &PhysRect) -> Result<PhysRect, PinError> {
         let a = self.window_to_source(rect.top_left());
         let b = self.window_to_source(PhysPoint::new(rect.right() - 1, rect.bottom() - 1));
         let (Some(a), Some(b)) = (a, b) else {
@@ -673,12 +674,17 @@ impl PinItem {
         // `from_points` spans the two samples, and both samples are inside the
         // region being kept, so the region is one pixel wider than the span.
         let r = PhysRect::from_points(a, b);
-        self.crop(&PhysRect::new(
+        Ok(PhysRect::new(
             r.x,
             r.y,
             r.w.saturating_add(1),
             r.h.saturating_add(1),
         ))
+    }
+
+    pub fn crop_window(&mut self, rect: &PhysRect) -> Result<(), PinError> {
+        let r = self.window_rect_to_source(rect)?;
+        self.crop(&r)
     }
 
     pub fn undo_crop(&mut self) -> Result<(), PinError> {
@@ -730,6 +736,10 @@ impl PinItem {
         let s = self.shown_size();
         let f = (box_.w as f64 / s.w.max(1) as f64).min(box_.h as f64 / s.h.max(1) as f64);
         self.set_zoom((f * 100.0).round() as u32);
+        // A thumbnail changes the shown region, and `set_zoom` is a no-op when the
+        // percentage happens to be the one already in use - so the size is
+        // re-derived here rather than left to the zoom path.
+        self.sync_size();
     }
 
     /// §5.9.11 — `region` is in picture coordinates. Pressing it again with a
@@ -750,7 +760,15 @@ impl PinItem {
             prior_zoom,
         });
         self.set_zoom(100);
+        self.sync_size();
         Ok(())
+    }
+
+    /// §5.9.11 step 1 — the right-drag rectangle, arriving in screen pixels like
+    /// a crop's.
+    pub fn free_thumbnail_window(&mut self, rect: &PhysRect) -> Result<(), PinError> {
+        let r = self.window_rect_to_source(rect)?;
+        self.set_free_thumbnail(&r)
     }
 
     pub fn exit_thumbnail(&mut self) -> Result<(), PinError> {
@@ -875,6 +893,43 @@ impl PinItem {
             out = imageops::invert(&out);
         }
         Ok(out)
+    }
+
+    /// What the window shows, which is not always what the picture is: a free
+    /// thumbnail (§5.9.11) narrows the shown region without touching the crop,
+    /// and `render` deliberately ignores it. Export keeps using [`render`], the
+    /// screen has to use this.
+    pub fn render_shown(&self, src: &Frame) -> Result<Frame, PinError> {
+        let region = self.visible_rect();
+        if region == self.src_rect {
+            return self.render(src);
+        }
+        let mut looked = self.clone();
+        looked.src_rect = region;
+        looked.crop_undo.clear();
+        looked.render(src)
+    }
+
+    /// §5.9.15 — the board behind a transparent pin. A display step, not a
+    /// content step: an export keeps its alpha, only the window needs pixels to
+    /// look at where the picture is see-through.
+    pub fn paint_alpha_bg(&self, mut out: Frame) -> Frame {
+        let Some((light, dark)) = checker_colors(self.alpha_bg_mode) else {
+            return out;
+        };
+        for y in 0..out.height {
+            for x in 0..out.width {
+                if out.get(x, y)[3] == 0 {
+                    let c = if checker_is_light(x, y, CHECKER_CELL_PX) {
+                        light
+                    } else {
+                        dark
+                    };
+                    out.set(x, y, c);
+                }
+            }
+        }
+        out
     }
 }
 
@@ -2280,6 +2335,96 @@ mod tests {
             p.set_free_thumbnail(&PhysRect::new(0, 0, 10, 10)),
             Err(PinError::Outside(_, _))
         ));
+    }
+
+    #[test]
+    fn the_window_renders_the_thumbnail_region_while_export_keeps_the_crop() {
+        let mut src = solid(4, 2, [0, 0, 0, 255]);
+        src.set(1, 0, [11, 0, 0, 255]);
+        src.set(3, 1, [0, 0, 22, 255]);
+        let mut p = PinItem::from_frame(1, &src, PhysPoint::new(0, 0), &cfg()).expect("pin");
+
+        p.crop(&PhysRect::new(1, 0, 3, 2)).expect("crop");
+        // With nothing looking at the pin, the two are the same picture.
+        assert_eq!(
+            p.render_shown(&src).expect("shown").get(0, 0),
+            p.render(&src).expect("export").get(0, 0)
+        );
+
+        p.set_free_thumbnail(&PhysRect::new(3, 1, 1, 1))
+            .expect("thumb");
+        let shown = p.render_shown(&src).expect("shown");
+        assert_eq!((shown.width, shown.height), (1, 1));
+        assert_eq!(shown.get(0, 0), [0, 0, 22, 255]);
+
+        // §5.9.16: the thumbnail is a way of looking, so the copy keeps the crop.
+        let export = p.render(&src).expect("export");
+        assert_eq!((export.width, export.height), (3, 2));
+        assert_eq!(export.get(2, 1), [0, 0, 22, 255]);
+
+        // And rotation still applies to what the window shows.
+        p.rotate_cw();
+        let turned = p.render_shown(&src).expect("shown");
+        assert_eq!((turned.width, turned.height), (1, 1));
+    }
+
+    #[test]
+    fn the_alpha_board_is_painted_only_where_the_picture_is_see_through() {
+        let mut src = solid(16, 1, [7, 7, 7, 255]);
+        src.set(0, 0, [0, 0, 0, 0]);
+        src.set(8, 0, [0, 0, 0, 0]);
+        let mut p = PinItem::from_frame(1, &src, PhysPoint::new(0, 0), &cfg()).expect("pin");
+        p.alpha_bg_mode = AlphaBg::CheckerLight;
+        let board = p.paint_alpha_bg(p.render(&src).expect("render"));
+        // CHECKER_CELL_PX is 8, so a 16-wide strip covers both squares.
+        assert_eq!(board.get(0, 0), [0xd4, 0xd4, 0xd4, 0xff]);
+        assert_eq!(board.get(8, 0), [0xef, 0xef, 0xef, 0xff]);
+        assert_eq!(board.get(1, 0), [7, 7, 7, 255]);
+
+        // The modes that draw no board leave the alpha alone - and export never
+        // asks for the board in the first place.
+        p.alpha_bg_mode = AlphaBg::Transparent;
+        let plain = p.paint_alpha_bg(p.render(&src).expect("render"));
+        assert_eq!(plain.get(0, 0), [0, 0, 0, 0]);
+    }
+
+    // --------------------------------------------------------------- §5.9.11
+
+    #[test]
+    fn a_right_drag_on_the_window_lays_out_a_free_thumbnail() {
+        let mut p = pin(400, 200);
+        p.set_zoom(200);
+        // Zoom anchors the centre, so the window is 800x400 hanging around the
+        // old one. The drag arrives in screen pixels, which is why the mapping
+        // has to go through `window_to_source` rather than reading the numbers.
+        let win = p.window_rect();
+        assert_eq!(win, PhysRect::new(-200, -100, 800, 400));
+        p.free_thumbnail_window(&PhysRect::new(win.x, win.y, win.w / 2, win.h / 2))
+            .expect("thumb");
+        assert_eq!(p.visible_rect(), PhysRect::new(0, 0, 200, 100));
+        assert_eq!(p.zoom, 100);
+        // A thumbnail narrows what is shown, never the crop.
+        assert_eq!(p.src_rect, PhysRect::new(0, 0, 400, 200));
+
+        // Adjusting it reads the region the new drag covers, not the whole pin.
+        let win = p.window_rect();
+        p.free_thumbnail_window(&PhysRect::new(win.x, win.y, win.w / 2, win.h / 2))
+            .expect("adjust");
+        assert_eq!(p.visible_rect(), PhysRect::new(0, 0, 100, 50));
+
+        // And a drag that leaves the window is refused rather than clamped.
+        assert!(matches!(
+            p.free_thumbnail_window(&PhysRect::new(win.x, win.y, win.w + 10, win.h)),
+            Err(PinError::Outside(_, _))
+        ));
+
+        // From 100% the percentage does not move but the region does, and the
+        // window is sized by the region.
+        let mut q = pin(400, 200);
+        q.free_thumbnail_window(&PhysRect::new(0, 0, 200, 100))
+            .expect("thumb");
+        assert_eq!(q.zoom, 100);
+        assert_eq!(q.size_phys, PhysSize::new(200, 100));
     }
 
     // --------------------------------------------------------------- §5.9.12
