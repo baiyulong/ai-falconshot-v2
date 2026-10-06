@@ -44,10 +44,23 @@ pub const ACTIONS: &[&str] = &[
     "capture_active_window",
     "paste_pin",
     "toggle_pins",
+    "show_all_pins",
+    "hide_all_pins",
     "switch_group",
     "solo",
     "pin_edit",
     "custom_task",
+];
+
+/// The five actions PRD §5.15 lets a hot corner run. It is a subset of
+/// [`ACTIONS`]: a corner that starts a capture is fine, a corner that opens a
+/// custom command is a surprise the user did not ask for.
+pub const HOT_CORNER_ACTIONS: &[&str] = &[
+    "show_all_pins",
+    "hide_all_pins",
+    "toggle_pins",
+    "capture",
+    "solo",
 ];
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,10 +379,13 @@ pub struct HotCorner {
     pub corners: BTreeMap<String, String>,
     /// Distance from the vertex that still counts as "the corner", in DIP.
     pub trigger_dip: u32,
+    /// §5.15 step 3 停留时间: how long the pointer must sit in the corner.
+    pub dwell_ms: u32,
     /// Require a modifier so maximising a window never fires one by accident.
     pub require_ctrl: bool,
     pub require_shift: bool,
-    /// Ignore repeat triggers inside this window (§5.15.3).
+    /// §5.15 规则: ignore a repeat trigger inside this window, so one sweep
+    /// across the top of the screen is one action.
     pub repeat_guard_ms: u32,
 }
 
@@ -384,6 +400,7 @@ impl Default for HotCorner {
             enabled: false,
             corners,
             trigger_dip: 8,
+            dwell_ms: 300,
             require_ctrl: false,
             require_shift: false,
             repeat_guard_ms: 800,
@@ -610,12 +627,14 @@ impl Config {
         Ok(self.to_document()?.to_string())
     }
 
-    /// §5.20.3 step 4: a file is parsed and corrected before anything is touched.
-    pub fn parse_import(text: &str) -> Result<Config, ConfigError> {
+    /// §5.20.3 step 4: a file is parsed and corrected before anything is
+    /// touched, and what had to be corrected travels with it so the dialog can
+    /// say "these three values were out of range" instead of quieting them.
+    pub fn parse_import(text: &str) -> Result<(Config, Vec<String>), ConfigError> {
         let mut cfg: Config =
             toml_edit::de::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;
-        cfg.validate();
-        Ok(cfg)
+        let warnings = cfg.validate();
+        Ok((cfg, warnings))
     }
 
     /// Every reachable setting as `section.key` → printed value, sorted. The
@@ -648,6 +667,32 @@ impl Config {
         let old = find_value(&doc, &parts)
             .cloned()
             .ok_or_else(|| ConfigError::UnknownKey(key.to_string()))?;
+        // Two maps hold text with a grammar of its own, and a widget that
+        // accepts `nope` here would fail at registration time instead.
+        let mut raw = raw;
+        let canonical;
+        if parts[0] == "hotkey"
+            && parts[1] == "actions"
+            && parts.len() == 3
+            && !raw.trim().is_empty()
+        {
+            canonical = crate::hotkeys::parse_bindable(raw)
+                .map_err(|e| ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    reason: e.to_string(),
+                })?
+                .canonical();
+            raw = canonical.as_str();
+        }
+        if parts[0] == "hot_corner" && parts[1] == "corners" && parts.len() == 3 {
+            let text = raw.trim();
+            if !text.is_empty() && !HOT_CORNER_ACTIONS.contains(&text) {
+                return Err(ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    reason: format!("{text} is not a bindable action"),
+                });
+            }
+        }
         let next = coerce(&old, parts[parts.len() - 1], raw)?;
         let slot = find_value_mut(&mut doc, &parts)
             .ok_or_else(|| ConfigError::UnknownKey(key.to_string()))?;
@@ -775,6 +820,13 @@ impl Config {
             &mut self.hot_corner.trigger_dip,
             1,
             100,
+        );
+        clamp(
+            &mut w,
+            "hot_corner.dwell_ms",
+            &mut self.hot_corner.dwell_ms,
+            0,
+            5_000,
         );
         clamp(
             &mut w,
@@ -988,20 +1040,50 @@ impl Config {
             }
         }
 
-        let bad_specs: Vec<String> = self
+        // A spec the grammar rejects is unbound rather than kept, because a
+        // string that never registers is worse than no binding: the user thinks
+        // the key works. Valid text is canonicalised so `CTRL+SHIFT+A` and
+        // `shift+ctrl+a` stop being two different bindings.
+        let specs: Vec<(String, String)> = self
             .hotkey
             .actions
             .iter()
-            .filter(|(_, spec)| {
-                !spec.is_empty() && !spec.chars().all(|c| c.is_ascii_graphic() || c == ' ')
-            })
-            .map(|(id, _)| id.clone())
+            .map(|(id, spec)| (id.clone(), spec.clone()))
             .collect();
-        for id in bad_specs {
-            w.push(format!(
-                "hotkey.actions.{id}: not a printable key spec, cleared"
-            ));
-            self.hotkey.actions.insert(id, String::new());
+        for (id, spec) in specs {
+            if spec.trim().is_empty() {
+                continue;
+            }
+            match crate::hotkeys::parse_bindable(&spec) {
+                Ok(parsed) => {
+                    let canonical = parsed.canonical();
+                    if canonical != spec {
+                        w.push(format!(
+                            "hotkey.actions.{id}: written {spec:?}, stored {canonical:?}"
+                        ));
+                        self.hotkey.actions.insert(id, canonical.clone());
+                    }
+                }
+                Err(e) => {
+                    w.push(format!("hotkey.actions.{id}: {e}, cleared"));
+                    self.hotkey.actions.insert(id, String::new());
+                }
+            }
+        }
+        // §8.4: report a clash, never pick a winner by rewriting the file.
+        for conflict in crate::hotkeys::conflicts(&self.hotkey.actions) {
+            match conflict.reserved {
+                Some(why) => w.push(format!(
+                    "hotkey.actions.{}: {} is reserved by Windows ({why})",
+                    conflict.actions.join(", "),
+                    conflict.display
+                )),
+                None => w.push(format!(
+                    "hotkey.actions.{}: {} is bound twice",
+                    conflict.actions.join(", "),
+                    conflict.display
+                )),
+            }
         }
         self.hotkey.exclusions.retain(|e| {
             let ok = !e.app.trim().is_empty();
@@ -1015,7 +1097,9 @@ impl Config {
             .hot_corner
             .corners
             .iter()
-            .filter(|(_, action)| !action.is_empty() && !ACTIONS.contains(&action.as_str()))
+            .filter(|(_, action)| {
+                !action.is_empty() && !HOT_CORNER_ACTIONS.contains(&action.as_str())
+            })
             .map(|(corner, action)| (corner.clone(), action.clone()))
             .collect();
         for (corner, action) in bad_corners {
@@ -1340,8 +1424,9 @@ mod tests {
     fn defaults_round_trip_through_toml() {
         let c = Config::default();
         let text = c.export_text().unwrap();
-        let back = Config::parse_import(&text).unwrap();
+        let (back, warnings) = Config::parse_import(&text).unwrap();
         assert_eq!(back, c);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -1454,6 +1539,15 @@ magnifier_zoom = 12
         assert_eq!(c.hotkey.actions["capture"], "f13");
         c.set_str("annotation.palette", "#FF0000, #00FF00").unwrap();
         assert_eq!(c.annotation.palette, ["#FF0000", "#00FF00"]);
+        // A key spec has a grammar; a widget must not be able to store "nope".
+        c.set_str("hotkey.actions.solo", "CTRL+SHIFT+S").unwrap();
+        assert_eq!(c.hotkey.actions["solo"], "ctrl+shift+s");
+        c.set_str("hotkey.actions.toggle_pins", "").unwrap();
+        assert_eq!(c.hotkey.actions["toggle_pins"], "");
+        assert!(c.set_str("hotkey.actions.solo", "nope").is_err());
+        assert!(c.set_str("hotkey.actions.solo", "a").is_err());
+        assert!(c.set_str("hot_corner.corners.top_left", "capture").is_ok());
+        assert!(c.set_str("hot_corner.corners.top_left", "fly").is_err());
         assert!(c.set_str("capture.magnifier_zoom", "big").is_err());
         assert!(c.set_str("general.show_tray", "maybe").is_err());
         assert!(c.set_str("nope", "1").is_err());
@@ -1462,6 +1556,41 @@ magnifier_zoom = 12
         assert!(c.set_str("capture.magnifier.", "1").is_err());
         // A rejected write leaves the config untouched.
         assert_eq!(c.capture.magnifier_zoom, 16);
+    }
+
+    /// A hand-edited file with two actions on one combination is reported, not
+    /// silently re-resolved (§8.4: nothing is overwritten for the user).
+    /// A hand-edited or foreign file with two actions on one combination is
+    /// described, not silently re-resolved (§8.4: nothing is overwritten for the
+    /// user).
+    #[test]
+    fn a_conflicting_hotkey_file_is_described_not_repaired() {
+        let (mut c, warnings) = Config::parse_import(
+            r#"
+[hotkey]
+actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
+"#,
+        )
+        .unwrap();
+        assert_eq!(c.hotkey.actions["capture"], "ctrl+shift+a");
+        assert_eq!(c.hotkey.actions["solo"], "ctrl+shift+a");
+        // Bare `f1` cannot be registered globally, so it is dropped rather than kept.
+        assert_eq!(c.hotkey.actions["pin_edit"], "");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("capture, solo") && w.contains("Ctrl+Shift+A")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("written")),
+            "{warnings:?}"
+        );
+        // Re-running the check finds the same conflict: validate repairs values,
+        // it does not arbitrate between two live bindings.
+        let again = c.validate();
+        assert_eq!(again.len(), 1, "{again:?} vs {warnings:?}");
+        assert!(again.iter().any(|w| w.contains("bound twice")), "{again:?}");
     }
 
     #[test]

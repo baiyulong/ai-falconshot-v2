@@ -12,6 +12,7 @@ pub mod geometry;
 pub mod history;
 pub mod hotcorner;
 pub mod hotkeys;
+pub mod imageops;
 pub mod naming;
 pub mod pin;
 pub mod tasks;
