@@ -87,7 +87,7 @@
 - ③ **D4 定案：最终发布到 Microsoft Store，形态 MSIX**。它关闭了"M0 待办：安装器选型"这条，**但立刻换掉两条已经写进本文的结论**（新立 **R17**）：P7 那句"可替换库条件**天然成立**"是对**目录形态**说的，而 MSIX 装在 `WindowsApps` 下、受 ACL 与包完整性签名保护；P9 那句"安装器必须负责 `vc_redist`"在 MSIX 模型里没有落点（安装由部署技术接管，包不许静默跑系统级安装器）。同时 P10 只核实到**工具链在盘**：SDK 10.0.26100.0 里 `makeappx.exe` 584,024 B、`makepri.exe` 919,896 B、`signtool.exe` 543,064 B、`ComparePackage.exe` 48,496 B、`MakeCert.exe` 88,408 B，PowerShell `New-SelfSignedCertificate`（PKI 模块）可用 ⇒ **本机可以自产自签一个 `.msix`**，这是 P11 能做完的依据；而 Store 上架要的证书与"特殊能力"审批（`runFullAccess` 一类）**不是本机可验项**。
 - ④ **项目自身许可 MIT 定案**（远端 `LICENSE`，`Copyright (c) 2026 baiyulong`，比本机 `id_ed25519` 与 `~/.ssh/config` 那些事更早落到仓库里）。**MIT 覆盖的只是我们自己的代码**：它与 Qt 的 LGPLv3 动态链接不冲突，Rust 侧 34 个运行时 crate（MIT / Apache-2.0 / Unlicense / Zlib）也都能随 MIT 项目再分发；**但 MIT 不减免 LGPL 义务，也不授权我们再分发任何第三方材料** ⇒ R9 那 29 个 id 的全文、与 R16 那份系统二进制的处置，一条都没有因为"仓库是 MIT"而变轻。
 
-联动修订共 **7 组**：**§0** 标题由"三项决策"改为**四项**、新增 **D4** 行、定版行末段由"只剩两件"改为"剩三件"；**§1** 摘要同批；**§4-M0** 记 **⑬**、退出标准那句补"形态已定但未做出来"、"仍待做"里 git 化那条据实划掉并新增 MSIX 落地实测一条；**§7.2** 新增 **⑦** 与「与安装器的边界」末段改写；**§8** R15 的前置换成凭据路线、R16 补两处更新、**新增 R17「MSIX 会推翻两条已经写进本文件的结论，且全部未实测」**；**§10** 第 6 项与第 10 项据实改写、**新增第 12 项**；**附录** B.4 与 B.5 里"不是 git 仓库"那几处同批改，**新增 B.6** `spike/p10-msix/` 载体清点与 **B.3 取证注意 45–46 条**（行尾要写进 `.gitattributes` 而不是靠机器默认；判断工具在不在要跑到 usage 为止、别猜子命令）。
+联动修订共 **7 组**：**§0** 标题由"三项决策"改为**四项**、新增 **D4** 行、定版行末段由"只剩两件"改为"剩三件"；**§1** 摘要同批；**§4-M0** 记 **⑬**、退出标准那句补"形态已定但未做出来"、"仍待做"里 git 化那条据实划掉并新增 MSIX 落地实测一条；**§7.2** 新增 **⑦** 与「与安装器的边界」末段改写；**§8** R15 的前置换成凭据路线、R16 补两处更新、**新增 R17「MSIX 会推翻两条已经写进本文件的结论，且全部未实测」**；**§10** 第 6 项与第 10 项据实改写、**新增第 12 项**；**附录** B.4 与 B.5 里"不是 git 仓库"那几处同批改，**新增 B.6** `spike/p10-msix/` 载体清点与 **B.3 取证注意 45–47 条**（45 行尾要写进 `.gitattributes` 而不是靠机器默认；46 判断工具在不在要跑到 usage 为止、别猜子命令；47 **本轮自查**：同一批字节有三种口径 —— 首稿写的 689 MiB 复现不出来，正文改用 `du -sb` 的 697,835,446 B = 665.5 MiB，提交大小改取 git blob 合计 8,969,193 B 而不是工作区 8,995,297 B）。
 
 **本轮一处判断修正**：P9 结束时我写的"M0 只剩两件待办"里，第二件是"安装器选型（Inno / WiX / MSIX）"。这条在 D4 落地后**不是被完成、而是被替换** —— 选型一旦定成 MSIX，它就从一次拍板变成一组实测（R17），而 P7/P9 有两条结论恰好建立在"目录形态"这个没被写进判据的前提上。⇒ 本文因此把这两条原样保留但**收窄适用面**，不重写历史数据。
 
@@ -1075,10 +1075,10 @@ powershell -NoProfile -Command "Get-Command New-SelfSignedCertificate | Select N
 | 项 | 实测值 | 怎么重跑 |
 |---|---|---|
 | 远端 | `git@github.com:baiyulong/ai-falconshot-v2.git`，**public**；`origin` 保持用户给定的 SSH URL（未改动） | `git remote -v` |
-| 远端真有什么 | `refs/heads/main = ad3ce51851b7dbaca063fcd9edfd432916b04b22` ⇒ 首推**确实落地** | `git ls-remote https://github.com/baiyulong/ai-falconshot-v2.git` |
-| 本地 `git status` 的假象 | 显示 `[ahead 1]`，但远端**已有**该提交 —— 是 `refs/remotes/origin/main` 从未更新（推送走显式 HTTPS URL，没走 `origin`） | `git rev-list --left-right --count origin/main...HEAD` 给出 `0 1`（tab 分隔）；`git fetch https://… main` 后即修正 |
+| 远端真有什么 | 首推落地时 `refs/heads/main = ad3ce51851b7dbaca063fcd9edfd432916b04b22` ⇒ **确实落地**；本文 V1.12 这一版推上去后是 `c968a642905e7a8c2b61a9c05c2267712e7921f8` ⇒ 这个值随每次推送变，引用它必须写"当时是哪个" | `git ls-remote https://github.com/baiyulong/ai-falconshot-v2.git` |
+| 本地 `git status` 曾给的假象 | 曾显示 `[ahead 1]` 而远端**早已收到**该提交 —— 根因是 `refs/remotes/origin/main` 从未更新过（推送走的是显式 HTTPS URL，不是 `origin` 这个 remote） | 复核 `git rev-list --left-right --count origin/main...HEAD`：当时 `0 1`（tab 分隔），一条 `git fetch https://… +refs/heads/main:refs/remotes/origin/main` 后归零，本机现为 `0 0` |
 | SSH 侧实测 | `git ls-remote git@github.com:baiyulong/ai-falconshot-v2.git` → `Permission denied (publickey)`；`~/.ssh/config` 的 `Host github.com` 指向不存在的 `id_rsa_github` | 二选一：注册 `id_ed25519.pub`，或 `git remote set-url origin https://…` |
-| 提交内容 | `90b9d88`（GitHub UI 生成，只含 `LICENSE`）→ `ad3ce51`，**229 个跟踪文件 / blob 合计 8,969,193 B**（工作区 8,995,297 B） | `git ls-files -z` 逐个 `git cat-file -s HEAD:<path>` 求和（§B.3 第 47 条） |
+| 提交内容 | `90b9d88`（GitHub UI 生成，只含 `LICENSE`）→ `ad3ce51`，**229 个跟踪文件 / blob 合计 8,969,193 B**（工作区 8,995,297 B）—— 均为 `ad3ce51` 口径，V1.12 那次提交在此基础上加 1 个文件 | `git ls-files -z` 逐个 `git cat-file -s HEAD:<path>` 求和（§B.3 第 47 条） |
 | 排除 | `**/target/`（1.5 + 1.4 GiB）、`spike/p7-package/dist*/`（697,835,446 B = 665.5 MiB，十个目录）、`.qoder/`、编辑器/OS 垃圾 | `.gitignore` 17 行 / 396 B，两条理由写在文件注释里 |
 | 行尾 | `.gitattributes` 27 行 / 630 B：`* text=auto`、`*.cmd`/`*.bat`/`*.ps1` 钉 `eol=crlf`、源码钉 `eol=lf`、`*.log`/`*.txt`/`*.tsv` 标 `-text`、二进制标 `binary` | §B.3 第 45 条 |
 | 许可证 | `LICENSE` 21 行 / 1,087 B，MIT，`Copyright (c) 2026 baiyulong`（rebase 时取远端那份，本地新写的那份署名不同） | `git show ad3ce51 --stat -- LICENSE` |
