@@ -65,9 +65,14 @@ pub mod qobject {
 
     extern "RustQt" {
         /// How many pins are on screen - the QML Repeater's model.
+        /// How many pins are on screen - the model the QML Instantiator repeats.
         #[qobject]
         #[qml_element]
         #[qproperty(i32, count)]
+        /// One line of feedback for the user, and the reason the output calls
+        /// below answer with a string: §5.9.13 asks for a brief on-screen hint,
+        /// and a hint has to say what actually happened rather than nothing.
+        #[qproperty(QString, status)]
         type Session = super::SessionRust;
 
         /// Re-read the state machine. QML calls this once at start-up and every
@@ -95,11 +100,28 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "closePin"]
         fn close_pin(self: Pin<&mut Self>, id: i64) -> i32;
+
+        /// §5.9.16 - this pin's pixels onto the clipboard, as the user sees them.
+        #[qinvokable]
+        #[cxx_name = "copyPin"]
+        fn copy_pin(self: Pin<&mut Self>, id: i64) -> QString;
+
+        /// §5.9.17 - this pin out to a file; the extension picks the format.
+        #[qinvokable]
+        #[cxx_name = "savePin"]
+        fn save_pin(self: Pin<&mut Self>, id: i64, path: &QString) -> QString;
+
+        /// §5.8.2 - whatever is on the clipboard becomes a pin. -1 and a status
+        /// line when there was nothing to pin (§8.1: no window, but a message).
+        #[qinvokable]
+        #[cxx_name = "pinClipboard"]
+        fn pin_clipboard(self: Pin<&mut Self>) -> i64;
     }
 }
 
 use core::pin::Pin;
 
+use cxx_qt_lib::QString;
 use falcon_core::geometry::PhysPoint;
 
 use crate::state;
@@ -107,6 +129,7 @@ use crate::state;
 #[derive(Default)]
 pub struct SessionRust {
     count: i32,
+    status: QString,
 }
 
 impl qobject::Session {
@@ -145,6 +168,44 @@ impl qobject::Session {
         let n = state::with(|s| s.close(&[id as u64])) as i32;
         self.as_mut().refresh();
         n
+    }
+
+    /// The three output paths and the one input path all answer the same way: a
+    /// line of Chinese the user can read, kept on `status` so a hint widget can
+    /// bind to it later without this call being re-run.
+    fn say(mut self: Pin<&mut Self>, message: &str) -> QString {
+        self.as_mut().set_status(QString::from(message));
+        QString::from(message)
+    }
+
+    pub fn copy_pin(mut self: Pin<&mut Self>, id: i64) -> QString {
+        let message = match state::with(|s| s.copy_image(id as u64)) {
+            Ok(pixels) => format!("已复制贴图（{pixels} 像素）"),
+            Err(e) => format!("复制失败：{e}"),
+        };
+        self.as_mut().say(&message)
+    }
+
+    pub fn save_pin(mut self: Pin<&mut Self>, id: i64, path: &QString) -> QString {
+        let target = path.to_string();
+        let message = match state::with(|s| s.save_image(id as u64, &target)) {
+            Ok(done) => done,
+            Err(e) => format!("保存失败：{e}"),
+        };
+        self.as_mut().say(&message)
+    }
+
+    pub fn pin_clipboard(mut self: Pin<&mut Self>) -> i64 {
+        match state::paste_from_clipboard() {
+            Ok(id) => {
+                self.as_mut().refresh();
+                id as i64
+            }
+            Err(e) => {
+                self.as_mut().say(&format!("无法贴图：{e}"));
+                -1
+            }
+        }
     }
 }
 

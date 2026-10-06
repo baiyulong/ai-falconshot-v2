@@ -51,6 +51,11 @@ pub struct PinState {
     /// The source picture, in memory. §6.3's snapshot writes these out and reads
     /// them back; until the capture path exists this is the only copy.
     frames: HashMap<PinId, Frame>,
+    /// The picture as the pin currently *shows* it - cropped, turned, effected.
+    /// This is what §5.9.16's copy and §5.9.17's save hand over, and it is the
+    /// "one source bitmap per pin" the plan asks for as the fallback against a
+    /// screen-capture path that cannot see our own window (R13).
+    rendered: HashMap<PinId, Frame>,
     desk: Desktop,
     pushed: HashMap<PinId, u64>,
     revisions: HashMap<PinId, u32>,
@@ -148,6 +153,7 @@ impl PinState {
         };
 
         shim::store_frame(id, &png);
+        self.rendered.insert(id, shown);
         self.pushed.insert(id, key);
         *self.revisions.entry(id).or_insert(0) += 1;
         true
@@ -204,11 +210,80 @@ impl PinState {
         let n = self.set.close(ids);
         for id in ids {
             self.frames.remove(id);
+            self.rendered.remove(id);
             self.pushed.remove(id);
             self.revisions.remove(id);
             shim::drop_frame(*id);
         }
         n
+    }
+
+    /// Hands the pin's current picture to one of the output paths. Taking the
+    /// frame by reference rather than cloning it is the point: a 4K pin is 33 MB
+    /// and a copy gesture should not pay for it twice.
+    fn with_rendered<R>(&self, id: PinId, f: impl FnOnce(&Frame) -> R) -> Option<R> {
+        self.rendered.get(&id).map(f)
+    }
+
+    /// §5.9.16 - the pin's own pixels onto the clipboard.
+    pub fn copy_image(&self, id: PinId) -> Result<usize, String> {
+        let Some(done) = self.with_rendered(id, |frame| {
+            platform_windows::clip::write_image(frame)
+                .map(|_| (frame.width as usize) * (frame.height as usize))
+                .map_err(|e| e.to_string())
+        }) else {
+            return Err(format!("pin {id} has never been drawn"));
+        };
+        done
+    }
+
+    /// §5.9.17 - the pin out to a file. The extension picks the format, so
+    /// `core::encode`'s ICO-downscale and JPG-flatten rules apply on the way.
+    pub fn save_image(&self, id: PinId, path: &str) -> Result<String, String> {
+        let target = std::path::Path::new(path);
+        let format =
+            encode::Format::from_ext(target.extension().and_then(|e| e.to_str()).unwrap_or("png"))
+                .ok_or_else(|| format!("not a format this app writes: {path}"))?;
+        let Some(done) = self.with_rendered(id, |frame| {
+            let opt = EncodeOptions {
+                format,
+                ..Default::default()
+            };
+            encode::save(frame, target, &opt)
+                .map(|_| format!("saved {path} {}x{}", frame.width, frame.height))
+                .map_err(|e| e.to_string())
+        }) else {
+            return Err(format!("pin {id} has never been drawn"));
+        };
+        done
+    }
+
+    /// §5.8.2 - whatever the user copied becomes a pin. Deciding *what it was* is
+    /// `core::clip::classify`'s job, already tested; this only moves bytes.
+    pub fn add_from_clipboard(&mut self, at: PhysPoint) -> Result<PinId, String> {
+        let contents = platform_windows::clip::read().map_err(|e| e.to_string())?;
+        if contents.is_empty() {
+            return Err("剪贴板是空的".into());
+        }
+        let payload = {
+            let facts = contents.facts();
+            falcon_core::clip::classify(&facts).map_err(|e| e.to_string())?
+        };
+        let frame = match payload {
+            (falcon_core::clip::ClipKind::Image, falcon_core::clip::ClipPayload::Image(f)) => f,
+            (falcon_core::clip::ClipKind::Files, falcon_core::clip::ClipPayload::Files(paths)) => {
+                let first = paths.first().ok_or("剪贴板里的文件列表是空的")?;
+                encode::decode_file(first).map_err(|e| e.to_string())?
+            }
+            (falcon_core::clip::ClipKind::Colour, falcon_core::clip::ClipPayload::Colour(rgba)) => {
+                // §5.12: a colour swatch is a pin of one pixel, which the text
+                // card's renderer will draw properly in Phase 2.
+                Frame::filled(64, 64, rgba).map_err(|e| e.to_string())?
+            }
+            (_, falcon_core::clip::ClipPayload::Empty) => Err("剪贴板没有可贴图的内容")?,
+            (kind, _) => Err(format!("{kind:?} 贴图还未实现（Phase 2）"))?,
+        };
+        self.add(frame, at)
     }
 
     fn note(&mut self, message: String) {
@@ -248,8 +323,9 @@ pub fn desktop_summary() -> String {
     let (dx, dy, dw, dh) = shim::desktop_bounds();
     let (px, py, pw, ph) = shim::primary_bounds();
     format!(
-        "desktop={dx},{dy} {dw}x{dh} primary={px},{py} {pw}x{ph} dpr={:.2}",
-        shim::device_pixel_ratio()
+        "desktop={dx},{dy} {dw}x{dh} primary={px},{py} {pw}x{ph} dpr={:.2} {}",
+        shim::device_pixel_ratio(),
+        platform_windows::desktop::station_summary()
     )
 }
 
@@ -282,6 +358,24 @@ pub fn qml_loaded() -> bool {
 
 pub fn quit_after(ms: i32) {
     shim::quit_after(ms);
+}
+
+/// The middle of the primary screen, stepped by how many pins are already there,
+/// so a pile of pastes is a pile of visible edges rather than one pin.
+///
+/// The cursor position would be the better answer for §5.8.2 and is a
+/// `platform-windows` call that has not been wired yet (§6.1).
+fn next_drop_point() -> PhysPoint {
+    let (x, y, w, h) = shim::primary_bounds();
+    let step = with(|s| s.ids().len()).min(24) as i32;
+    PhysPoint::new(x + w / 2 + step * 16, y + h / 2 + step * 16)
+}
+
+/// §5.8.2 - the clipboard becomes a pin. Shared by the QML menu path and by
+/// `--paste`, which exists so this can be verified on a real machine today rather
+/// than only once the global hotkey lands in M5.
+pub fn paste_from_clipboard() -> Result<PinId, String> {
+    with(|s| s.add_from_clipboard(next_drop_point()))
 }
 
 /// §5.9.1: a new pin arrives roughly where the user is looking, and the desktop
@@ -339,9 +433,14 @@ pub fn selftest() -> (bool, String) {
             ));
         };
 
+        // Two questions in one row, because answering only the first still shows
+        // nobody a pin: is the desktop measurable, and is it the desktop the user
+        // is looking at. A process launched from a service or a scheduled task
+        // measures a perfect geometry on a station nobody can see.
+        let (_, _, dw, dh) = shim::desktop_bounds();
         check(
             "desktop geometry is real",
-            !desktop_summary().is_empty(),
+            dw > 0 && dh > 0 && desktop_summary().contains("station=WinSta0"),
             desktop_summary(),
         );
 
@@ -472,4 +571,222 @@ pub fn selftest() -> (bool, String) {
     }
 
     (ok, out.join("\n"))
+}
+
+/// The output chain, for real: a pin onto the clipboard, the clipboard back in,
+/// and a pin out to a file and read again.
+///
+/// Three answers, not two: another app may be holding the clipboard, and that is
+/// reported as `BLOCKED` with the holder named rather than as a row of failures.
+///
+/// This is kept apart from [`selftest`] because it *takes the user's clipboard
+/// over*. What was on it is read first and put back at the end, which is the best
+/// that can be promised: a clipboard can carry formats this app does not model,
+/// and those would be lost. `--selftest --clipboard`.
+/// A row of the clipboard check has three answers, and they are not two.
+///
+/// Ordering matters as much as the names: `Fail` dominates `Blocked`, so a run
+/// that is both cannot report only the excuse.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Check {
+    Pass,
+    Blocked,
+    Fail,
+}
+
+impl Check {
+    fn tag(self) -> &'static str {
+        match self {
+            Check::Pass => "PASS",
+            Check::Blocked => "SKIP",
+            Check::Fail => "FAIL",
+        }
+    }
+}
+
+impl From<bool> for Check {
+    fn from(passed: bool) -> Self {
+        if passed {
+            Check::Pass
+        } else {
+            Check::Fail
+        }
+    }
+}
+
+pub fn clipboard_selftest() -> (Check, String) {
+    // Ask first, because the clipboard can belong to somebody else. When it does,
+    // the honest answer is who holds it - not a row of failures that reads as if
+    // this program's clipboard code were broken.
+    let blocked = platform_windows::clip::usable()
+        .err()
+        .map(|e| e.to_string());
+    let before = platform_windows::clip::read().ok();
+    let mut out = Vec::new();
+    let mut worst = if blocked.is_some() {
+        Check::Blocked
+    } else {
+        Check::Pass
+    };
+    let mut check = |label: &str, verdict: Check, detail: String| {
+        if verdict > worst {
+            worst = verdict;
+        }
+        out.push(format!("{label:<34} {:<4} {detail}", verdict.tag()));
+    };
+
+    // Semi-transparent on purpose: whether alpha survives the trip is the whole
+    // question this check exists to answer, and an opaque test picture would
+    // pass by accident.
+    let src = match Frame::from_rgba(
+        4,
+        2,
+        vec![
+            255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 64, 255, 255, 0, 255, //
+            0, 255, 255, 0, 255, 0, 255, 32, 12, 34, 56, 78, 200, 100, 50, 255,
+        ],
+    ) {
+        Ok(f) => f,
+        Err(e) => return (Check::Fail, format!("test frame is not a frame: {e}")),
+    };
+    let id = match with(|s| s.add(src.clone(), PhysPoint::new(30, 30))) {
+        Ok(id) => id,
+        Err(e) => return (Check::Fail, format!("could not add a pin: {e}")),
+    };
+
+    let copied = with(|s| s.copy_image(id));
+    match &blocked {
+        Some(who) => check(
+            "a pin copied itself",
+            Check::Blocked,
+            format!("clipboard held by {who}"),
+        ),
+        None => check(
+            "a pin copied itself",
+            Check::from(copied.is_ok()),
+            copied
+                .clone()
+                .map(|n| format!("{n} pixels"))
+                .unwrap_or_else(|e| e),
+        ),
+    }
+
+    let formats = platform_windows::clip::formats();
+    match (&blocked, &formats) {
+        (Some(who), _) => check(
+            "the clipboard carries a DIB",
+            Check::Blocked,
+            who.to_string(),
+        ),
+        (None, Err(e)) => check("the clipboard carries a DIB", Check::Fail, e.to_string()),
+        (None, Ok(list)) => check(
+            "the clipboard carries a DIB",
+            Check::from(list.iter().any(|f| f == "#8")),
+            list.join(","),
+        ),
+    }
+
+    // Read it back through the same door §5.8.2 uses.
+    let back = match platform_windows::clip::read() {
+        Ok(contents) => {
+            let facts = contents.facts();
+            falcon_core::clip::classify(&facts)
+                .map(|(_kind, payload)| match payload {
+                    falcon_core::clip::ClipPayload::Image(f) => Some(f),
+                    other => {
+                        eprintln!("[clipboard] classified as {other:?}");
+                        None
+                    }
+                })
+                .map_err(|e| e.to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    };
+    match &blocked {
+        Some(who) => check(
+            "paste-back is the same pixels",
+            Check::Blocked,
+            who.to_string(),
+        ),
+        None => {
+            let round = matches!(&back, Ok(Some(frame)) if *frame == src);
+            check(
+                "paste-back is the same pixels",
+                Check::from(round),
+                match back {
+                    Ok(Some(frame)) => {
+                        format!("{}x{} {:?}", frame.width, frame.height, frame.pixels)
+                    }
+                    Ok(None) => "not an image payload".to_string(),
+                    Err(e) => e,
+                },
+            );
+        }
+    }
+
+    let file = std::env::temp_dir().join("falconshot-clipcheck.png");
+    let saved = with(|s| s.save_image(id, &file.to_string_lossy()));
+    let again = saved
+        .as_ref()
+        .ok()
+        .and_then(|_| encode::decode_file(&file).ok());
+    check(
+        "a pin saved and re-read",
+        Check::from(again.as_ref() == Some(&src)),
+        format!(
+            "{} -> {:?}",
+            saved.unwrap_or_default(),
+            again.map(|f| f.pixels).unwrap_or_default()
+        ),
+    );
+
+    let closed = with(|s| s.close(&[id]));
+    check(
+        "the check cleaned up after itself",
+        Check::from(closed == 1 && file.exists()),
+        format!("closed={closed} file kept for inspection"),
+    );
+    let _ = std::fs::remove_file(&file);
+
+    // Whatever the user had on the clipboard goes back, as far as this app can
+    // represent it - and the check says which far that was.
+    match &blocked {
+        Some(who) => check("the clipboard came back", Check::Blocked, who.to_string()),
+        None => {
+            let restored: Result<String, String> = match &before {
+                None => Ok("it was empty".to_string()),
+                Some(c) => {
+                    if let Some(bytes) = &c.image_bytes {
+                        match encode::decode(bytes) {
+                            Ok(frame) => platform_windows::clip::write_image(&frame)
+                                .map(|_| format!("image {}x{}", frame.width, frame.height))
+                                .map_err(|e| e.to_string()),
+                            Err(e) => Err(e.to_string()),
+                        }
+                    } else if let Some(t) = &c.text {
+                        platform_windows::clip::write_text(t)
+                            .map(|_| format!("text ({} chars)", t.chars().count()))
+                            .map_err(|e| e.to_string())
+                    } else {
+                        Ok("html or a file list, which this check cannot put back".to_string())
+                    }
+                }
+            };
+            check(
+                "the clipboard came back",
+                Check::from(restored.is_ok()),
+                restored.unwrap_or_else(|e| e),
+            );
+        }
+    }
+
+    out.push(format!(
+        "clipboard selftest: {}",
+        match worst {
+            Check::Pass => "PASS",
+            Check::Blocked => "BLOCKED",
+            Check::Fail => "FAIL",
+        }
+    ));
+    (worst, out.join("\n"))
 }

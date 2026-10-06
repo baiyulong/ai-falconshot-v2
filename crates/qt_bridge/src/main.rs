@@ -40,7 +40,30 @@ fn main() {
     if flag("--selftest") {
         let (ok, report) = state::selftest();
         println!("{report}");
-        std::process::exit(if ok { 0 } else { 1 });
+        // The clipboard checks take the user's own clipboard over, so they run
+        // when asked for and are reported as skipped otherwise.
+        let mut code = if ok { 0 } else { 1 };
+        if flag("--clipboard") {
+            let (verdict, creport) = state::clipboard_selftest();
+            println!("{creport}");
+            // 1 is this code failing, 3 is the machine refusing to let it be
+            // tested at all. Collapsing the two is what sent the last run looking
+            // for a bug that was never there.
+            code = match verdict {
+                state::Check::Fail => 1,
+                state::Check::Blocked => {
+                    if code == 0 {
+                        3
+                    } else {
+                        code
+                    }
+                }
+                state::Check::Pass => code,
+            };
+        } else {
+            println!("clipboard selftest: SKIPPED (pass --clipboard to run it; it overwrites the clipboard)");
+        }
+        std::process::exit(code);
     }
 
     if flag("--desktop") {
@@ -50,7 +73,18 @@ fn main() {
 
     // A pin to look at, whether or not one was asked for: with no capture service
     // yet (§6.1) there is otherwise nothing the window path can be shown doing.
-    let demo = flag("--demo") || flag("--probe");
+    if flag("--paste") {
+        // §5.8.2 verified on a real machine, ahead of the global hotkey that will
+        // normally trigger it (M5).
+        match state::paste_from_clipboard() {
+            Ok(id) => println!(
+                "[falconshot] clipboard pinned as {id} {}",
+                state::desktop_summary()
+            ),
+            Err(e) => println!("[falconshot] clipboard paste: {e}"),
+        }
+    }
+    let demo = flag("--demo") || flag("--probe") || flag("--paste");
     if demo {
         let (w, h) = (
             after("--demo-w").unwrap_or(320).max(4) as u32,

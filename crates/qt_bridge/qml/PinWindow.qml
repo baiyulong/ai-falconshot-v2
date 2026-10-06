@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Window
 import QtQuick.Controls
+import QtQuick.Dialogs
 import dev.falconshot 1.0
 
 // §5.9 as a window. It owns no picture and decides nothing: every gesture is
@@ -200,6 +201,11 @@ Window {
     Menu {
         id: pinMenu
 
+        MenuItem { text: "复制图片"; onTriggered: win.session.copyPin(win.pinId) }
+        MenuItem { text: "另存为…"; onTriggered: saveAs.open() }
+
+        MenuSeparator {}
+
         MenuItem { text: "放大"; onTriggered: win.view.zoomStep(true) }
         MenuItem { text: "缩小"; onTriggered: win.view.zoomStep(false) }
         MenuItem { text: "重置缩放"; onTriggered: win.view.resetZoom() }
@@ -243,5 +249,16 @@ Window {
 
         MenuItem { text: "重置视图"; onTriggered: win.view.resetView() }
         MenuItem { text: "关闭"; onTriggered: win.session.closePin(win.pinId) }
+    }
+
+    // §5.9.17. The dialog decides the name and the extension; `savePin` reads the
+    // extension to pick the encoder, so the filter order below is also the list of
+    // formats this app writes from a pin.
+    FileDialog {
+        id: saveAs
+        title: "另存为"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["PNG 图片 (*.png)", "JPG 图片 (*.jpg)", "BMP 图片 (*.bmp)"]
+        onAccepted: win.session.savePin(win.pinId, saveAs.selectedFile.toLocalFile())
     }
 }

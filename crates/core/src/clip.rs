@@ -8,6 +8,7 @@ use crate::colors;
 use crate::encode::{self, Format};
 use crate::frame::Frame;
 use std::path::PathBuf;
+use thiserror::Error;
 
 /// Everything the paste path is allowed to look at.
 #[derive(Clone, Debug, Default)]
@@ -46,11 +47,15 @@ pub enum ClipPayload {
     Empty,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The paste path's failures are shown to the user (§8.1, §8.2), so they are
+/// worded, not just debug-printed.
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum ClipError {
     /// A bitmap was present but undecodable: say so instead of pinning a
     /// placeholder (PRD §5.8.4 rule, §8.2).
+    #[error("剪贴板里的图片无法解码：{0}")]
     ImageDecode(String),
+    #[error("{0} 不是图片文件")]
     NotAnImageFile(PathBuf),
 }
 
