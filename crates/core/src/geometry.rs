@@ -137,6 +137,19 @@ impl PhysRect {
         }
     }
 
+    /// Shrink on all sides towards the centre. A margin that swallows the rect
+    /// leaves an empty rect at its middle rather than a negative size, which is
+    /// what the selection band test in `annotation` relies on.
+    pub fn deflate(&self, margin: u32) -> Self {
+        let m = margin.min(self.w / 2).min(self.h / 2) as i32;
+        Self {
+            x: self.x + m,
+            y: self.y + m,
+            w: self.w.saturating_sub(m as u32 * 2),
+            h: self.h.saturating_sub(m as u32 * 2),
+        }
+    }
+
     /// Move `self` by the least possible amount so it fits inside `bounds`.
     /// Oversized rects are pinned to the bounds' top-left and clipped.
     pub fn fitted_into(&self, bounds: &PhysRect) -> Self {
