@@ -24,7 +24,10 @@ pub enum EncodeError {
     Io(#[from] std::io::Error),
 }
 
+/// The serde names match [`Format::ext`] so `config.toml` and a file name
+/// always spell a format the same way.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Format {
     #[default]
     Png,
@@ -34,6 +37,7 @@ pub enum Format {
     Ico,
     Tiff,
     Gif,
+    #[serde(rename = "webp")]
     WebP,
 }
 

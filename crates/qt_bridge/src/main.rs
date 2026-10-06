@@ -1,1 +1,3 @@
-fn main() { println!("qt_bridge stub"); }
+fn main() {
+    println!("qt_bridge stub");
+}
