@@ -2,13 +2,15 @@
 //! change it, and the [`UndoStack`] that reverses them.
 //!
 //! 计划 §6.4 fixes the shapes, 技术方案 §8.2 fixes the flow: the core writes the
-//! document and then files the command. Nothing here knows about pixels —
-//! turning an `Element` into a `Frame` is the rasteriser's job, and drawing on a
-//! screen is Qt's. Keeping the model free of both is what makes 5.7 editable on
-//! a machine with no Qt installed.
+//! document and then files the command. The model, the commands and the stack
+//! know nothing about pixels; [`raster`] is the one place that turns an
+//! `Element` into a `Frame`, and drawing on a screen is still Qt's job. Keeping
+//! the first three free of both is what makes 5.7 editable on a machine with no
+//! Qt installed.
 
 pub mod command;
 pub mod model;
+pub mod raster;
 pub mod undo;
 
 pub use command::{
@@ -16,6 +18,8 @@ pub use command::{
     resize_to_rect, style_command, Command, Dirty,
 };
 pub use model::{
-    Align, ArrowHead, Brush, Dash, Document, Element, Geom, Kind, Style, Transform, KINDS,
+    head_reach, Align, ArrowHead, Brush, Dash, Document, Element, Geom, Kind, Style, Transform,
+    KINDS,
 };
+pub use raster::{paint, render, Glyphs, Ink, NoGlyphs};
 pub use undo::UndoStack;

@@ -308,10 +308,22 @@ impl Style {
         if kind.is_stroke() {
             pen.max(self.brush.size.div_ceil(2))
                 .saturating_add(self.brush.feather / 2)
+        } else if matches!(kind, Kind::Arrow | Kind::DoubleArrow) {
+            pen.max(head_reach(self.width))
         } else {
             pen
         }
     }
+}
+
+/// How far an arrow head sticks out past the line it caps.
+///
+/// The head is drawn by the rasteriser and paid for here, in one number, so the
+/// repaint box of an arrow always contains the head it is about to draw. An
+/// arrow whose head was clipped by its own bounds would leave the cropped stub
+/// behind when it was undone.
+pub fn head_reach(width: u32) -> u32 {
+    width.saturating_mul(2).max(6)
 }
 
 /// §5.7.15. Carried from the first commit even though MVP does not expose the
@@ -327,6 +339,83 @@ pub struct Transform {
 impl Transform {
     pub fn is_identity(&self) -> bool {
         self.rotation == 0.0 && !self.flip_h && !self.flip_v
+    }
+
+    /// Object space to picture space about `pivot`: flip, then rotate.
+    pub fn to_picture(&self, pivot: (f64, f64), x: f64, y: f64) -> (f64, f64) {
+        let (dx, dy) = (
+            if self.flip_h {
+                pivot.0 - x
+            } else {
+                x - pivot.0
+            },
+            if self.flip_v {
+                pivot.1 - y
+            } else {
+                y - pivot.1
+            },
+        );
+        let rad = self.rotation.to_radians();
+        let (cos, sin) = (rad.cos(), rad.sin());
+        (dx * cos - dy * sin + pivot.0, dx * sin + dy * cos + pivot.1)
+    }
+
+    /// Picture space back to the untransformed object: undo the rotation, then
+    /// the flip.
+    pub fn to_object(&self, pivot: (f64, f64), x: f64, y: f64) -> (f64, f64) {
+        let rad = -self.rotation.to_radians();
+        let (cos, sin) = (rad.cos(), rad.sin());
+        let (dx, dy) = (x - pivot.0, y - pivot.1);
+        let (mut ux, mut uy) = (dx * cos - dy * sin, dx * sin + dy * cos);
+        if self.flip_h {
+            ux = -ux;
+        }
+        if self.flip_v {
+            uy = -uy;
+        }
+        (ux + pivot.0, uy + pivot.1)
+    }
+
+    /// A picture point back into the untransformed object of `r`.
+    /// [`Element::hit`] uses this so a turned object is picked where it is *seen*,
+    /// not where it was drawn, and the rasteriser uses the same pivot.
+    pub fn invert_point(&self, r: &PhysRect, p: PhysPoint) -> PhysPoint {
+        if self.is_identity() {
+            return p;
+        }
+        let (x, y) = self.to_object(r.pivot(), p.x as f64, p.y as f64);
+        PhysPoint::new(x.round() as i32, y.round() as i32)
+    }
+
+    /// The box the picture can see of a rect after this transform. Rotating about
+    /// the centre keeps the centre, so the footprint is concentric with the rect
+    /// it came from and an undo can find what the turned object covered.
+    pub fn footprint(&self, r: &PhysRect) -> PhysRect {
+        if self.is_identity() {
+            return *r;
+        }
+        let pivot = r.pivot();
+        let corners = [
+            (r.x as f64, r.y as f64),
+            (r.right() as f64, r.y as f64),
+            (r.x as f64, r.bottom() as f64),
+            (r.right() as f64, r.bottom() as f64),
+        ];
+        let (mut l, mut t, mut rr, mut bb) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for (x, y) in corners {
+            let (rx, ry) = self.to_picture(pivot, x, y);
+            l = l.min(rx);
+            t = t.min(ry);
+            rr = rr.max(rx);
+            bb = bb.max(ry);
+        }
+        let (x0, y0) = (l.floor() as i32, t.floor() as i32);
+        PhysRect::new(
+            x0,
+            y0,
+            (rr.ceil() as i32 - x0).max(1) as u32,
+            (bb.ceil() as i32 - y0).max(1) as u32,
+        )
     }
 }
 
@@ -369,9 +458,19 @@ impl Element {
         self.style.reach_for(self.kind)
     }
 
-    /// The region a repaint has to cover: geometry plus pen reach.
-    pub fn bounds(&self) -> PhysRect {
+    /// The object's own box before it is turned: geometry plus pen reach. This is
+    /// the box whose centre the transform turns about, so the rasteriser and
+    /// [`Element::bounds`] have to agree on it to the pixel.
+    pub fn pen_box(&self) -> PhysRect {
         self.geom.bounds().inflate(self.reach())
+    }
+
+    /// The region a repaint has to cover: geometry, pen reach and, for something
+    /// that has been turned, the box it lands in afterwards. §5.7.15 rotates 文本、
+    /// 矩形、椭圆、编号 and 放大区域, and a repaint box that only knew the
+    /// unrotated rect would leave the turned corners drawn and stale.
+    pub fn bounds(&self) -> PhysRect {
+        self.transform.footprint(&self.pen_box())
     }
 
     /// §5.7.16 step 2: one click picks the object under it.
@@ -379,6 +478,7 @@ impl Element {
         if !self.visible {
             return false;
         }
+        let p = self.transform.invert_point(&self.geom.bounds(), p);
         let solid = self.kind.interior_is_target() || self.style.fill.is_some();
         (solid && self.geom.interior(self.kind, p)) || self.geom.near(p, self.reach())
     }

@@ -73,6 +73,16 @@ impl PhysRect {
         PhysPoint::new(self.x + (self.w as i32) / 2, self.y + (self.h as i32) / 2)
     }
 
+    /// The exact centre, for a rotation pivot. [`PhysRect::center`] is a pixel;
+    /// half a pixel of drift between the pivot an object is drawn about and the
+    /// box its repaint was told to cover is stale pixels left behind.
+    pub fn pivot(&self) -> (f64, f64) {
+        (
+            self.x as f64 + self.w as f64 / 2.0,
+            self.y as f64 + self.h as f64 / 2.0,
+        )
+    }
+
     pub fn area(&self) -> u64 {
         self.w as u64 * self.h as u64
     }

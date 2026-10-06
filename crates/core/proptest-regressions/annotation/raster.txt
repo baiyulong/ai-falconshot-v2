@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc f9a1a2acfd86f0df592ada135049738c62d0e28c5f38d84acf0829c54fa4c946 # shrinks to (kind, geom, transform, v) = (Zoom, Zoom { from: PhysRect { x: 0, y: 0, w: 1, h: 1 }, to: PhysRect { x: 0, y: 0, w: 1, h: 2 } }, Transform { rotation: 0.0, flip_h: false, flip_v: false }, 0)

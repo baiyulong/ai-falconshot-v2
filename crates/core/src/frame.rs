@@ -274,14 +274,19 @@ impl Frame {
         out
     }
 
+    /// Scale to exactly `width` x `height`. Both flavours answer the size they
+    /// were asked for: `image`'s `resize` keeps the source aspect ratio and can
+    /// hand back a frame smaller than requested, which a caller laying a frame
+    /// over a picture region would then read past the end of.
     pub fn resized(&self, width: u32, height: u32, smooth: bool) -> Result<Self, FrameError> {
         if width == 0 || height == 0 {
             return Err(FrameError::TooLarge(width, height));
         }
+        pixel_count(width, height)?;
         if !smooth {
             return Ok(self.nearest_resized(width, height));
         }
-        let img = image::DynamicImage::ImageRgba8(self.to_image()).resize(
+        let img = image::DynamicImage::ImageRgba8(self.to_image()).resize_exact(
             width,
             height,
             image::imageops::FilterType::Lanczos3,
