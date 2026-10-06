@@ -1,0 +1,4 @@
+[toolchain]
+# Qt 6.10.1 ships MSVC objects, so the whole workspace must be built with an MSVC
+# host toolchain; the machine default here is windows-gnu.
+channel = "stable-x86_64-pc-windows-msvc"

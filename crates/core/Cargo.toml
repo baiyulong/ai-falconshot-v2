@@ -1,0 +1,33 @@
+[package]
+name = "falcon-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "AI Falconshot product logic: geometry, capture, image ops, annotation, history, config. No Qt."
+
+[features]
+# P5 measured WGC as slower everywhere that matters, so the GDI path is the
+# default; the feature exists because the capture comparison is a build flag.
+default = []
+wgc = ["xcap/wgc"]
+
+[lib]
+name = "falcon_core"
+path = "src/lib.rs"
+
+[dependencies]
+xcap.workspace = true
+image.workspace = true
+zune-jpeg.workspace = true
+rayon.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+toml_edit.workspace = true
+rusqlite.workspace = true
+directories.workspace = true
+atomic-write-file.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true

@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/platform-windows",
+    "crates/qt_bridge",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/baiyulong/ai-falconshot-v2"
+
+[workspace.dependencies]
+falcon-core = { path = "crates/core" }
+platform-windows = { path = "crates/platform-windows" }
+
+xcap = { version = "0.9.8", features = ["image"] }
+image = { version = "0.25.10", default-features = false, features = [
+    "png", "jpeg", "bmp", "tga", "ico", "tiff", "gif", "webp",
+] }
+zune-jpeg = "0.5"
+rayon = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml_edit = { version = "0.25", features = ["serde"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+directories = "6.0"
+atomic-write-file = "0.3"
+tracing = "0.1"
+proptest = "1"
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+strip = true
+codegen-units = 16
