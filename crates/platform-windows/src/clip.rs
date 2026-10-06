@@ -16,8 +16,8 @@ use falcon_core::encode::{self, EncodeOptions, Format};
 use falcon_core::frame::Frame;
 use thiserror::Error;
 
-use windows::core::{PCWSTR, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, GlobalFree, HANDLE, HGLOBAL};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
     GetClipboardFormatNameW, GetClipboardOwner, GetOpenClipboardWindow, IsClipboardFormatAvailable,
@@ -27,12 +27,8 @@ use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
 use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_HDROP, CF_TIFF, CF_UNICODETEXT};
-use windows::Win32::System::Threading::{
-    GetCurrentProcessId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-    PROCESS_QUERY_LIMITED_INFORMATION,
-};
+use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
-use windows::Win32::UI::WindowsAndMessaging::{GetWindowTextW, GetWindowThreadProcessId};
 
 /// One clipboard read, in the pieces `core::clip` decides between. Deciding is
 /// not this layer's job - it is the part that gets tested.
@@ -168,9 +164,9 @@ fn holder() -> String {
         return "未找到占用剪贴板的窗口".to_string();
     };
 
-    let mut pid = 0u32;
-    // SAFETY: `hwnd` is live and the out-parameter is a plain u32 we own.
-    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    let Some(pid) = crate::proc::pid_of_window(hwnd.0 as u64) else {
+        return "未找到占用剪贴板的窗口".to_string();
+    };
     // SAFETY: a query about our own process, no handles involved.
     if pid == unsafe { GetCurrentProcessId() } {
         // This is the one answer that must never be shown as if it were someone
@@ -180,51 +176,16 @@ fn holder() -> String {
     }
 
     let mut parts = Vec::new();
-    if let Some(exe) = process_name(pid) {
+    if let Some(exe) = crate::proc::process_name(pid) {
         parts.push(exe);
     }
-    let mut buf = [0u16; 128];
-    // SAFETY: a fixed buffer whose length is handed to the API.
-    let n = unsafe { GetWindowTextW(hwnd, &mut buf) };
-    if n > 0 {
-        let title = utf16_to_string(&buf[..n as usize]);
-        let title = title.trim();
-        if !title.is_empty() {
-            parts.push(format!("窗口「{title}」"));
-        }
+    if let Some(title) = crate::proc::window_title(hwnd.0 as u64) {
+        parts.push(format!("窗口「{title}」"));
     }
     if parts.is_empty() {
         parts.push(format!("pid {pid}"));
     }
     parts.join(" ")
-}
-
-/// The executable behind a pid, basename only - the full path says nothing the
-/// user can act on and names a directory they may not want named.
-fn process_name(pid: u32) -> Option<String> {
-    // SAFETY: query-limited access asks for the least permission available; the
-    // buffer and its capacity are passed together and the handle is closed.
-    unsafe {
-        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
-            return None;
-        };
-        let mut buf = [0u16; 260];
-        let mut len = buf.len() as u32;
-        let named = QueryFullProcessImageNameW(
-            handle,
-            PROCESS_NAME_FORMAT(0),
-            PWSTR(buf.as_mut_ptr()),
-            &mut len,
-        );
-        let _ = CloseHandle(handle);
-        if named.is_err() {
-            return None;
-        }
-        let full = utf16_to_string(&buf[..len.min(buf.len() as u32) as usize]);
-        std::path::Path::new(&full)
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-    }
 }
 
 /// `OpenClipboard` fails outright while another process is mid-copy, which is
@@ -281,8 +242,7 @@ unsafe fn bytes_of(format: u32) -> Option<Vec<u8>> {
 }
 
 fn utf16_to_string(units: &[u16]) -> String {
-    let end = units.iter().position(|u| *u == 0).unwrap_or(units.len());
-    String::from_utf16_lossy(&units[..end])
+    crate::proc::wide_to_string(units)
 }
 
 fn registered(name: &str) -> Option<u32> {

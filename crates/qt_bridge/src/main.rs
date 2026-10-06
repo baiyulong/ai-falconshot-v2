@@ -1,18 +1,43 @@
 //! AI Falconshot - the process that owns the pin windows.
 //!
-//! Three modes, because "does it work" has three different answers:
+//! Four modes, because "does it work" has four different answers:
 //! * `--selftest` drives the state machine and the pixel pipeline and prints
-//!   PASS/FAIL per step, without ever creating a window.
+//!   PASS/FAIL per step, without ever creating a window. `--clipboard` and
+//!   `--capture` add the two checks that take over something real - the user's
+//!   clipboard, and the screen as it is right now - and answer three ways:
+//!   `PASS`=0, `BLOCKED`=3 (the machine refused to be measured), `FAIL`=1.
+//! * `--snap` / `--rect x,y,w,h` / `--snap-window` put *actual screen pixels* into a
+//!   pin window and print what Win32 measured, so a wrong crop is a number.
 //! * `--probe <ms>` shows the windows for real, prints what the Win32 side of
 //!   them actually looks like after ms, then quits. Frameless, per-pixel alpha and
 //!   StaysOnTop are checked as numbers rather than by someone squinting.
 //! * no flags: the app.
 
+mod capture;
 mod pin_view;
 mod session;
 mod state;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+
+/// Turn a check's verdict into a process exit code.
+///
+/// 1 is this code failing, 3 is the machine refusing to let it be tested at all.
+/// Collapsing the two is what sent the last run looking for a bug that was never
+/// there: an environment block is not a defect, and a defect is not an excuse.
+fn verdict_code(code: i32, verdict: state::Check) -> i32 {
+    match verdict {
+        state::Check::Fail => 1,
+        state::Check::Blocked => {
+            if code == 0 {
+                3
+            } else {
+                code
+            }
+        }
+        state::Check::Pass => code,
+    }
+}
 
 fn main() {
     // Before anything Qt has to say: a QML document that will not compile says so
@@ -46,22 +71,20 @@ fn main() {
         if flag("--clipboard") {
             let (verdict, creport) = state::clipboard_selftest();
             println!("{creport}");
-            // 1 is this code failing, 3 is the machine refusing to let it be
-            // tested at all. Collapsing the two is what sent the last run looking
-            // for a bug that was never there.
-            code = match verdict {
-                state::Check::Fail => 1,
-                state::Check::Blocked => {
-                    if code == 0 {
-                        3
-                    } else {
-                        code
-                    }
-                }
-                state::Check::Pass => code,
-            };
+            code = verdict_code(code, verdict);
         } else {
             println!("clipboard selftest: SKIPPED (pass --clipboard to run it; it overwrites the clipboard)");
+        }
+        // The capture rows read the screen as it is right now, so they are asked
+        // for rather than always run: a headless CI box has no desktop to describe.
+        if flag("--capture") {
+            let (verdict, creport) = state::capture_selftest();
+            println!("{creport}");
+            code = verdict_code(code, verdict);
+        } else {
+            println!(
+                "capture selftest: SKIPPED (pass --capture to run it; it reads the real screen)"
+            );
         }
         std::process::exit(code);
     }
@@ -71,8 +94,51 @@ fn main() {
         return;
     }
 
-    // A pin to look at, whether or not one was asked for: with no capture service
-    // yet (§6.1) there is otherwise nothing the window path can be shown doing.
+    // The capture path on pixels that really exist, ahead of the mask UI that will
+    // normally choose the rectangle: `--snap` takes the middle of the primary
+    // monitor, `--rect x,y,w,h` takes exactly that, `--snap-window` takes the
+    // window under the pointer. Each prints what the Win32 side measured, so a
+    // wrong crop is a number to read rather than a picture to squint at.
+    let snapping = flag("--snap") || flag("--snap-window");
+    if snapping {
+        let outcome = if flag("--snap-window") {
+            match capture::window_under_cursor() {
+                Some(w) => capture::pin_window(w.hwnd).map(|id| {
+                    (
+                        id,
+                        format!(
+                            "窗口「{}」[{}] {:?}",
+                            w.title,
+                            w.app_name,
+                            w.visible_bounds()
+                        ),
+                    )
+                }),
+                None => Err("指针下面没有可截取的窗口".to_string()),
+            }
+        } else {
+            let rect = args
+                .iter()
+                .position(|a| a == "--rect")
+                .and_then(|i| args.get(i + 1))
+                .and_then(|raw| capture::rect_arg(raw));
+            match rect {
+                Some(r) => capture::pin_rect(&r).map(|id| (id, format!("{r:?} 自已冻结的整屏"))),
+                None => capture::snap_centre(400, 250),
+            }
+        };
+        match outcome {
+            Ok((id, what)) => println!(
+                "[falconshot] snapped pin {id}: {what} {}",
+                state::desktop_summary()
+            ),
+            Err(e) => println!("[falconshot] snap failed: {e}"),
+        }
+    }
+
+    // A pin to look at, whether or not one was asked for: with no capture path
+    // running there is otherwise nothing the window path can be shown doing - but
+    // a real snap above already produced one.
     if flag("--paste") {
         // §5.8.2 verified on a real machine, ahead of the global hotkey that will
         // normally trigger it (M5).
@@ -84,7 +150,7 @@ fn main() {
             Err(e) => println!("[falconshot] clipboard paste: {e}"),
         }
     }
-    let demo = flag("--demo") || flag("--probe") || flag("--paste");
+    let demo = (flag("--demo") || flag("--probe") || flag("--paste")) && !snapping;
     if demo {
         let (w, h) = (
             after("--demo-w").unwrap_or(320).max(4) as u32,

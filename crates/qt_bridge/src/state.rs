@@ -22,6 +22,7 @@ use falcon_core::frame::Frame;
 use falcon_core::geometry::{PhysPoint, PhysRect, PhysSize};
 use falcon_core::pin::{Desktop, PinId, PinItem, PinSet};
 
+use crate::capture;
 use crate::session::shim;
 
 /// Everything a pin window binds to. Plain fields, because it crosses into a
@@ -360,12 +361,17 @@ pub fn quit_after(ms: i32) {
     shim::quit_after(ms);
 }
 
-/// The middle of the primary screen, stepped by how many pins are already there,
-/// so a pile of pastes is a pile of visible edges rather than one pin.
+/// Where a new pin goes: beside the pointer, because that is where the user was
+/// looking when they pressed the key, stepped aside 8 px so the picture does not
+/// hide under the arrow. The state machine then clamps it to the desktop, which is
+/// what keeps a paste near a screen edge partly visible rather than off-screen.
 ///
-/// The cursor position would be the better answer for §5.8.2 and is a
-/// `platform-windows` call that has not been wired yet (§6.1).
+/// The centre of the primary screen is the fallback, and only for a build that has
+/// no pointer to ask (a non-Windows compile of this workspace).
 fn next_drop_point() -> PhysPoint {
+    if let Some(p) = platform_windows::proc::cursor_pos() {
+        return PhysPoint::new(p.x + 8, p.y + 8);
+    }
     let (x, y, w, h) = shim::primary_bounds();
     let step = with(|s| s.ids().len()).min(24) as i32;
     PhysPoint::new(x + w / 2 + step * 16, y + h / 2 + step * 16)
@@ -782,6 +788,352 @@ pub fn clipboard_selftest() -> (Check, String) {
 
     out.push(format!(
         "clipboard selftest: {}",
+        match worst {
+            Check::Pass => "PASS",
+            Check::Blocked => "BLOCKED",
+            Check::Fail => "FAIL",
+        }
+    ));
+    (worst, out.join("\n"))
+}
+
+/// The capture layer checked against the real desktop: enumerate, freeze, crop,
+/// pick a colour, look at a window, pin a region. `--selftest --capture`.
+///
+/// Every row asserts a *relationship* rather than a fixed value, because what
+/// happens to be on this screen is not knowable in advance - and a relationship
+/// that holds for any content (a frame exactly the size of the monitor it came
+/// from) is precisely what a stretched or mis-cropped capture breaks.
+///
+/// `BLOCKED` is for the machine refusing to be looked at - a capture backend that
+/// will not start is an environment fact, not a failing test.
+pub fn capture_selftest() -> (Check, String) {
+    let mut out = Vec::new();
+    let mut worst = Check::Pass;
+    let mut check = |label: &str, verdict: Check, detail: String| {
+        if verdict > worst {
+            worst = verdict;
+        }
+        out.push(format!("{label:<34} {:<4} {detail}", verdict.tag()));
+    };
+
+    let listed = capture::service().monitors();
+    match &listed {
+        Err(e) => check("monitor enumeration", Check::Blocked, e.to_string()),
+        Ok(list) => {
+            let primaries = list.iter().filter(|m| m.primary).count();
+            let line = list
+                .iter()
+                .map(|m| {
+                    format!(
+                        "{} {}x{}@{},{} x{:.2}{}",
+                        m.id,
+                        m.bounds.w,
+                        m.bounds.h,
+                        m.bounds.x,
+                        m.bounds.y,
+                        m.scale.ratio(),
+                        if m.primary { "*" } else { "" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" | ");
+            // Two primaries is the enumeration lying about the desktop, and it
+            // decides which scale a DIP readout uses (PRD §5.3.7).
+            check(
+                "monitor enumeration",
+                Check::from(!list.is_empty() && primaries == 1),
+                format!("{} monitor(s), {primaries} primary: {line}", list.len()),
+            );
+        }
+    }
+
+    let frozen = capture::freeze();
+    match &frozen {
+        Err(e) => check(
+            "freeze the whole screen",
+            Check::Blocked,
+            format!("{e} - every row below needs a frame"),
+        ),
+        Ok(f) => {
+            // The one shape a later crop depends on: `Frame::crop` works in the
+            // frame's own pixels, so a frame smaller than its monitor turns "the
+            // right-hand half" into a stretched copy instead of a crop (PRD §4.3).
+            let bad: Vec<String> = f
+                .snap
+                .monitors
+                .iter()
+                .filter(|m| m.frame.width != m.info.bounds.w || m.frame.height != m.info.bounds.h)
+                .map(|m| {
+                    format!(
+                        "{} frame {}x{} vs bounds {}x{}",
+                        m.info.id, m.frame.width, m.frame.height, m.info.bounds.w, m.info.bounds.h
+                    )
+                })
+                .collect();
+            check(
+                "freeze the whole screen",
+                Check::from(bad.is_empty()),
+                if bad.is_empty() {
+                    format!("{} ms, {}", f.ms, capture::snapshot_line(&f.snap))
+                } else {
+                    bad.join(" | ")
+                },
+            );
+            // P1/P5 measured 142-155 ms for one 3072x1920 BitBlt; the 150 ms line is
+            // for hot key to *mask visible*, so a freeze alone gets the benefit of
+            // the doubt up to a ceiling that still means something is wrong.
+            check(
+                "freeze is not pathological",
+                Check::from(f.ms <= 400),
+                format!("{} ms", f.ms),
+            );
+        }
+    }
+    let Some(snap) = frozen.as_ref().ok().map(|f| f.snap.clone()) else {
+        out.push(format!(
+            "capture selftest: {}",
+            match worst {
+                Check::Pass => "PASS",
+                Check::Blocked => "BLOCKED",
+                Check::Fail => "FAIL",
+            }
+        ));
+        return (worst, out.join("\n"));
+    };
+
+    // Indexing is safe here and nowhere else: `freeze` answers `Empty` rather than
+    // an snapshot with no monitors, and `snap` came from a successful freeze.
+    let primary = snap
+        .monitors
+        .iter()
+        .find(|m| m.info.primary)
+        .unwrap_or(&snap.monitors[0]);
+    let pb = primary.info.bounds;
+    let centre = PhysPoint::new(pb.x + pb.w as i32 / 2, pb.y + pb.h as i32 / 2);
+
+    // Win32 answers in pixels, Qt answers in device-independent pixels. Both are
+    // right, and a pin's position is handed to Qt as physical - so the two have to
+    // be the same desktop divided by the scale factor, or one of them is describing
+    // a screen that is not there.
+    {
+        let (qx, qy, qw, qh) = shim::primary_bounds();
+        let s = primary.info.scale;
+        let close = (pb.w as f64 / s.ratio() - qw as f64).abs() <= 2.0
+            && (pb.h as f64 / s.ratio() - qh as f64).abs() <= 2.0
+            && s.phys_to_dip_i(pb.x) == qx
+            && s.phys_to_dip_i(pb.y) == qy;
+        check(
+            "Win32 and Qt agree on geometry",
+            Check::from(close),
+            format!(
+                "win32={}x{}@{},{} scale={:.2} -> dip {}x{}@{},{} qt={qw}x{qh}@{qx},{qy}",
+                pb.w,
+                pb.h,
+                pb.x,
+                pb.y,
+                s.ratio(),
+                s.phys_to_dip_i(pb.w as i32),
+                s.phys_to_dip_i(pb.h as i32),
+                s.phys_to_dip_i(pb.x),
+                s.phys_to_dip_i(pb.y),
+            ),
+        );
+    }
+
+    // The colour picker and the magnifier both read the frozen frame, which is the
+    // only reason they are correct under a dimmed mask (PRD §5.4.2).
+    {
+        let picked = snap.color_at(centre);
+        let direct = primary
+            .frame
+            .get((centre.x - pb.x) as u32, (centre.y - pb.y) as u32);
+        check(
+            "colour pick reads the frame",
+            Check::from(picked == Some(direct)),
+            format!("{picked:?} vs {direct:?}"),
+        );
+    }
+
+    {
+        let mag = snap.magnifier(centre, 8, 4);
+        check(
+            "magnifier is a hard-edged zoom",
+            Check::from(
+                mag.as_ref()
+                    .is_ok_and(|f| f.width == (8 * 2 + 1) * 4 && f.height == (8 * 2 + 1) * 4),
+            ),
+            match &mag {
+                Ok(f) => format!("{}x{} for radius 8 zoom 4", f.width, f.height),
+                Err(e) => e.to_string(),
+            },
+        );
+    }
+
+    // Asking for more desktop than exists must come back with what exists, and say
+    // so (PRD §5.2.5/§8.5) - never an error and never a padded edge.
+    {
+        let want = PhysRect::new(pb.x + pb.w as i32 - 60, pb.y, 200, 80);
+        let got = snap.capture(&want);
+        let right = snap.virtual_bounds.x + snap.virtual_bounds.w as i32;
+        check(
+            "a rect off the edge is clipped",
+            Check::from(
+                got.as_ref()
+                    .is_ok_and(|c| c.clipped && c.rect.x + c.rect.w as i32 <= right),
+            ),
+            match &got {
+                Ok(c) => format!(
+                    "asked 200 wide, got {}x{} at {},{} clipped={}",
+                    c.rect.w, c.rect.h, c.rect.x, c.rect.y, c.clipped
+                ),
+                Err(e) => e.to_string(),
+            },
+        );
+    }
+
+    // Two monitors side by side: one image, no stretch, both named (PRD §5.3.10).
+    {
+        let pair = snap.monitors.iter().find_map(|a| {
+            snap.monitors
+                .iter()
+                .find(|b| {
+                    b.info.id != a.info.id
+                        && b.info.bounds.x == a.info.bounds.x + a.info.bounds.w as i32
+                })
+                .map(|b| (a, b))
+        });
+        match pair {
+            None => check(
+                "a straddle stitches two frames",
+                Check::Blocked,
+                "no two monitors are adjacent".to_string(),
+            ),
+            Some((a, b)) => {
+                let seam = a.info.bounds.x + a.info.bounds.w as i32;
+                let got = snap.capture(&PhysRect::new(seam - 20, a.info.bounds.y + 10, 40, 20));
+                check(
+                    "a straddle stitches two frames",
+                    Check::from(
+                        got.as_ref()
+                            .is_ok_and(|c| c.monitors.len() == 2 && c.frame.width == 40),
+                    ),
+                    match &got {
+                        Ok(c) => format!(
+                            "{}x{} from [{}]",
+                            c.frame.width,
+                            c.frame.height,
+                            c.monitors.join(",")
+                        ),
+                        Err(e) => e.to_string(),
+                    },
+                );
+                let _ = b;
+            }
+        }
+    }
+
+    {
+        let wins = capture::service().windows(false);
+        match wins {
+            Err(e) => check("window enumeration", Check::Blocked, e.to_string()),
+            Ok(list) => {
+                let dwmed = list.iter().filter(|w| w.dwm_bounds.is_some()).count();
+                // A window shot is cropped by the DWM rect, not by `GetWindowRect`,
+                // which carries the invisible resize border along with it. Zero here
+                // means the platform layer is answering nothing.
+                check(
+                    "window enumeration",
+                    Check::from(!list.is_empty() && dwmed > 0),
+                    format!(
+                        "{} window(s), {dwmed} with DWM bounds; top {:?}",
+                        list.len(),
+                        list.first().map(|w| (w.title.clone(), w.visible_bounds())),
+                    ),
+                );
+            }
+        }
+    }
+
+    // End to end, on pixels that exist: a region of the frozen screen becomes a pin
+    // of exactly that size, and the pin leaves no residue behind.
+    {
+        let want = PhysRect::new(pb.x + 40, pb.y + 40, 48, 32);
+        let got = capture::pin_rect(&want);
+        let seen = got
+            .as_ref()
+            .ok()
+            .and_then(|id| with(|s| s.with_rendered(*id, |f| (f.width, f.height))))
+            .unwrap_or((0, 0));
+        let closed = match &got {
+            Ok(id) => with(|s| s.close(&[*id])),
+            Err(_) => 0,
+        };
+        check(
+            "a frozen region becomes a pin",
+            Check::from(got.is_ok() && seen == (48, 32) && closed == 1),
+            format!(
+                "{} -> {}x{} closed={}",
+                match &got {
+                    Ok(id) => format!("pin {id}"),
+                    Err(e) => e.clone(),
+                },
+                seen.0,
+                seen.1,
+                closed
+            ),
+        );
+    }
+
+    // The other input path: whatever the pointer is over becomes a picture. Blocked
+    // rather than failed when the pointer rests on something that cannot be grabbed
+    // (the desktop itself, or a window another process owns).
+    {
+        match capture::window_under_cursor() {
+            None => check(
+                "the window under the cursor",
+                Check::Blocked,
+                format!(
+                    "no enumerable window at {:?}",
+                    platform_windows::proc::cursor_pos()
+                ),
+            ),
+            Some(w) => {
+                let got = capture::pin_window(w.hwnd);
+                let seen = got
+                    .as_ref()
+                    .ok()
+                    .and_then(|id| with(|s| s.with_rendered(*id, |f| (f.width, f.height))))
+                    .unwrap_or((0, 0));
+                let closed = match &got {
+                    Ok(id) => with(|s| s.close(&[*id])),
+                    Err(_) => 0,
+                };
+                check(
+                    "the window under the cursor",
+                    Check::from(got.is_ok() && seen.0 > 0 && seen.1 > 0 && closed == 1),
+                    format!(
+                        "{} ({}x{}) -> {}x{} closed={}",
+                        if w.title.is_empty() {
+                            w.app_name.clone()
+                        } else {
+                            w.title.clone()
+                        },
+                        w.visible_bounds().w,
+                        w.visible_bounds().h,
+                        seen.0,
+                        seen.1,
+                        closed
+                    ),
+                );
+            }
+        }
+    }
+
+    capture::clear();
+    out.push(format!("capture summary: {}", capture::monitors_line()));
+    out.push(format!(
+        "capture selftest: {}",
         match worst {
             Check::Pass => "PASS",
             Check::Blocked => "BLOCKED",

@@ -4,6 +4,8 @@
 pub mod clip;
 
 pub mod desktop;
+pub mod proc;
+pub mod win;
 
 /// The clipboard here is the Win32 one, and the MVP is Windows-only. This
 /// alternative exists so a machine without Windows still compiles the workspace
