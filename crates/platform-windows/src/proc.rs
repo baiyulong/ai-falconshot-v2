@@ -126,6 +126,37 @@ pub fn cursor_pos() -> Option<PhysPoint> {
     None
 }
 
+/// The top-level window the desktop would actually *show* at `p`, as Win32
+/// answers it - not as an enumeration answers it.
+///
+/// `xcap`'s window list is built from top-levels with a caption or an app-window
+/// style, so it does not contain this project's own frameless pins: asking it
+/// "what is on top here" cannot distinguish "our pin is hidden behind a browser"
+/// from "our pin is on top but the screen capture is blind to it", and those two
+/// need different fixes.
+pub fn window_at_point(p: PhysPoint) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, WindowFromPoint, GA_ROOTOWNER};
+
+        let pt = POINT { x: p.x, y: p.y };
+        // SAFETY: the point is passed by value and the returned handle is read,
+        // never owned or freed.
+        let hwnd = unsafe { WindowFromPoint(pt) };
+        if hwnd.0.is_null() {
+            return None;
+        }
+        let root = unsafe { GetAncestor(hwnd, GA_ROOTOWNER) };
+        (!root.0.is_null()).then_some(root.0 as u64)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = p;
+        None
+    }
+}
+
 /// A handle value back into the pointer-sized shape Win32 expects.
 #[cfg(windows)]
 pub(crate) fn to_hwnd(hwnd: u64) -> windows::Win32::Foundation::HWND {

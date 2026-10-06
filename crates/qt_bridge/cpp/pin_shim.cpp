@@ -9,12 +9,14 @@
 #include <QtCore/QStringList>
 #include <QtCore/QTimer>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QPixmap>
 #include <QtGui/QScreen>
 #include <QtGui/QSurfaceFormat>
 #include <QtGui/QWindow>
 #include <QtQml/QQmlEngine>
 
 #include <cstdio>
+#include <cstring>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -240,6 +242,79 @@ QString pinWindowReport()
 void pinQuitAfter(std::int32_t ms)
 {
     QTimer::singleShot(ms, [] { QCoreApplication::exit(0); });
+}
+
+// ---------------------------------------------------------------- grab
+
+namespace {
+QImage g_grab;
+}
+
+QByteArray pinScreenGrab()
+{
+    QScreen *screen = QGuiApplication::primaryScreen();
+    g_grab = QImage();
+    if (!screen) {
+        return {};
+    }
+    // Whole screen, no window id, no offset: the question this leg answers is
+    // "does Qt's own backend see what the Win32 legs see", and an offset here
+    // would only make a coordinate-space disagreement look like a blank capture.
+    const QPixmap raw = screen->grabWindow(0);
+    if (raw.isNull()) {
+        return {};
+    }
+    g_grab = raw.toImage().convertToFormat(QImage::Format_RGBA8888);
+    if (g_grab.isNull()) {
+        return {};
+    }
+    QByteArray out;
+    out.resize(static_cast<int>(g_grab.sizeInBytes()));
+    std::memcpy(out.data(), g_grab.constBits(), static_cast<size_t>(out.size()));
+    return out;
+}
+
+QString pinScreenGrabInfo()
+{
+    if (g_grab.isNull()) {
+        return QStringLiteral("null");
+    }
+    return QString::fromLatin1("%1x%2 dpr=%3")
+        .arg(g_grab.width())
+        .arg(g_grab.height())
+        .arg(g_grab.devicePixelRatio(), 0.0, 'f', 2);
+}
+
+QString pinTopLevels()
+{
+    QString out;
+    const auto windows = QGuiApplication::topLevelWindows();
+    for (QWindow *window : windows) {
+        if (!window) {
+            continue;
+        }
+        out += QString::fromLatin1("class=%1 visible=%2")
+                   .arg(QString::fromLatin1(window->metaObject()->className()))
+                   .arg(window->isVisible() ? 1 : 0);
+#ifdef Q_OS_WIN
+        const HWND hwnd = reinterpret_cast<HWND>(window->winId());
+        RECT r{};
+        GetWindowRect(hwnd, &r);
+        out += QString::fromLatin1(" hwnd=0x%1")
+                   .arg(reinterpret_cast<qulonglong>(hwnd), 0, 16);
+        out += QString::fromLatin1(" phys=%1,%2,%3,%4")
+                   .arg(r.left)
+                   .arg(r.top)
+                   .arg(r.right - r.left)
+                   .arg(r.bottom - r.top);
+#endif
+        const QString title = window->title();
+        if (!title.isEmpty()) {
+            out += QString::fromLatin1(" title=%1").arg(title);
+        }
+        out += QLatin1Char('\n');
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------- provider

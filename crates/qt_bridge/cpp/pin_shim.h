@@ -61,6 +61,24 @@ std::int32_t pinPrimaryH();
 /// in QML can be verified from the console instead of by eye.
 double pinDevicePixelRatio();
 
+/// The primary screen as Qt can produce it: `QScreen::grabWindow` with no window
+/// id and no offset, returned as raw RGBA8. This is the fourth leg of the R13
+/// matrix - the one that asks Qt's own backend rather than Win32 - and it is
+/// decode-only in both directions: the bytes leave here as pixels, never as an
+/// encoded product bitmap (plan §3.3).
+QByteArray pinScreenGrab();
+/// What that grab actually produced, as `WxH dpr=R`. The size is reported rather
+/// than assumed because the same call answers in logical pixels on some backends
+/// and device pixels on others, and a matrix row has to say which it was.
+QString pinScreenGrabInfo();
+
+/// One line per top-level window: `hwnd=0x.. class=.. title=.. phys=x,y,w,h
+/// visible=0/1`, the rect in *device* pixels from `GetWindowRect`. R13 has to
+/// point `PrintWindow` at a window this process created, and it can only do that
+/// from a handle - which the human-readable report below carries in a field
+/// order that is a debugging aid, not a contract.
+QString pinTopLevels();
+
 /// className / visible / opacity / alphaBufferSize / hwnd / GWL_STYLE / GWL_EXSTYLE
 /// for every top-level window. This is the evidence that frameless + alpha +
 /// StaysOnTop actually landed on the native window.

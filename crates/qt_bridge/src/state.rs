@@ -601,7 +601,7 @@ pub enum Check {
 }
 
 impl Check {
-    fn tag(self) -> &'static str {
+    pub(crate) fn tag(self) -> &'static str {
         match self {
             Check::Pass => "PASS",
             Check::Blocked => "SKIP",

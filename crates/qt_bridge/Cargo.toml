@@ -9,6 +9,13 @@ description = "CXX-Qt controllers, models and the mandatory thin C++ shim."
 name = "falconshot"
 path = "src/main.rs"
 
+[features]
+# R13's matrix is built, not configured: the same `--r13` run under this flag is
+# the WGC column and without it the GDI column. Nothing else changes, which is
+# what makes the two columns comparable.
+default = []
+wgc = ["falcon-core/wgc"]
+
 [dependencies]
 falcon-core.workspace = true
 platform-windows.workspace = true

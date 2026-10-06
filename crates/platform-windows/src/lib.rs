@@ -4,6 +4,7 @@
 pub mod clip;
 
 pub mod desktop;
+pub mod print;
 pub mod proc;
 pub mod win;
 

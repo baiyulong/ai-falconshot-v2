@@ -1,6 +1,6 @@
 //! AI Falconshot - the process that owns the pin windows.
 //!
-//! Four modes, because "does it work" has four different answers:
+//! Five modes, because "does it work" has five different answers:
 //! * `--selftest` drives the state machine and the pixel pipeline and prints
 //!   PASS/FAIL per step, without ever creating a window. `--clipboard` and
 //!   `--capture` add the two checks that take over something real - the user's
@@ -11,10 +11,13 @@
 //! * `--probe <ms>` shows the windows for real, prints what the Win32 side of
 //!   them actually looks like after ms, then quits. Frameless, per-pixel alpha and
 //!   StaysOnTop are checked as numbers rather than by someone squinting.
+//! * `--r13 <ms>` plants a control patch, lets Qt paint it, and then reads those
+//!   same pixels back through every capture path - the visibility matrix of R13.
 //! * no flags: the app.
 
 mod capture;
 mod pin_view;
+mod r13;
 mod session;
 mod state;
 
@@ -162,6 +165,19 @@ fn main() {
         }
     }
 
+    // R13's matrix can only be measured on a window that is really on screen, so
+    // this mode is a probe run whose subject is a control patch this process drew
+    // at a size and place it chose. The patch has to exist before QML builds the
+    // windows, and the reading happens after the event loop has painted them.
+    let r13_ms = after("--r13").map(|ms| ms.max(300));
+    let mut control = None;
+    if r13_ms.is_some() {
+        match r13::plant() {
+            Ok(id) => control = Some(id),
+            Err(e) => println!("[r13] 种不下对照色块：{e}"),
+        }
+    }
+
     let probe = after("--probe");
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
@@ -172,6 +188,9 @@ fn main() {
     }
 
     if let Some(ms) = probe {
+        state::quit_after(ms);
+    }
+    if let Some(ms) = r13_ms {
         state::quit_after(ms);
     }
 
@@ -215,6 +234,23 @@ fn main() {
             println!("[probe problems] {}", problems.join(" | "));
             code = 1;
         }
+    }
+
+    if let Some(ms) = r13_ms {
+        let (verdict, report) = match control {
+            Some(id) => r13::measure(id),
+            None => (
+                state::Check::Fail,
+                "r13 matrix: FAIL - 没有对照色块，四路采集无从比对".to_string(),
+            ),
+        };
+        println!("{report}");
+        println!(
+            "[r13 after {ms} ms] qml_loaded={} {}",
+            state::qml_loaded(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
     }
     std::process::exit(code);
 }

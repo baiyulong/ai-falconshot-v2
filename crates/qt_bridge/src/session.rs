@@ -55,6 +55,12 @@ pub mod qobject {
 
         #[rust_name = "pin_window_report"]
         fn pinWindowReport() -> QString;
+        #[rust_name = "pin_top_levels"]
+        fn pinTopLevels() -> QString;
+        #[rust_name = "pin_screen_grab"]
+        fn pinScreenGrab() -> QByteArray;
+        #[rust_name = "pin_screen_grab_info"]
+        fn pinScreenGrabInfo() -> QString;
         #[rust_name = "pin_install_message_capture"]
         fn pinInstallMessageCapture();
         #[rust_name = "pin_messages"]
@@ -262,6 +268,21 @@ pub mod shim {
 
     pub fn window_report() -> String {
         qobject::pin_window_report().to_string()
+    }
+
+    /// One line per top-level window, with its Win32 handle and device-pixel rect.
+    pub fn top_levels() -> String {
+        qobject::pin_top_levels().to_string()
+    }
+
+    /// The whole primary screen as Qt's backend produced it, RGBA8. Empty means Qt
+    /// produced nothing, which is a measurement and not an error.
+    pub fn screen_grab() -> Vec<u8> {
+        qobject::pin_screen_grab().as_slice().to_vec()
+    }
+
+    pub fn screen_grab_info() -> String {
+        qobject::pin_screen_grab_info().to_string()
     }
 
     pub fn install_message_capture() {
