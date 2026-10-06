@@ -1,0 +1,34 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.34
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+[rust] main entered
+[rust] app is_null: false  engine is_null: false
+[rust] got QString from QML: "hello from QML"
+[rust] bump_counter -> counter=1, emitting counterBumped
+[rust] confirmSignal(1) -> Rust -> QML signal crossing closed
+[rust] got QString from QML: "QML -> Rust noop x200000 = 29 ms (0.145 us/call)"
+[rust] 20000 qproperty writes: bound-to-QML = 20 us/write, unobserved = 0 us/write
+[rust] confirmSignal(20000) -> Rust -> QML signal crossing closed
+[rust] engine.load() returned
+[rust] entering exec()
+[shim]topLevelWindows=2
+  class=ApplicationWindow_QMLTYPE_9_QML_10 title=AI Falconshot M0 spike - CXX-Qt 0.10 <-> Qt 6.10 visible=1 opacity=1.00 alphaBufferSize=8 qtFlags=0x1 hwnd=0x6f0908 style=0x96cf0000 exStyle=0x100 LAYERED=0 TRANSPARENT=0 TOPMOST=0 TOOLWINDOW=0
+  class=QQuickWindowQmlImpl title=pin simulation visible=1 opacity=0.55 alphaBufferSize=8 qtFlags=0xc0801 hwnd=0x5709e8 style=0x96000000 exStyle=0x80028 LAYERED=1 TRANSPARENT=1 TOPMOST=1 TOOLWINDOW=0
+[rust thread] [cfg 1] queue-only 64B@60Hz              landed=30/30 dropped=0 hz=59  avgQueue=113us  worstQueue=349us  avgCopy=0us  worstCopy=0us  wall=501ms
+[rust] got QString from QML: "cfg1 queue-only 64B@60Hz | delivered=30 hz=59 | queue avg=113us worst=349us | copy avg=0us worst=0us | wall=501ms | qmlTicks=31/31 deficit=0"
+[rust thread] [cfg 2] 1080p RGBA@60Hz                  landed=30/30 dropped=0 hz=59  avgQueue=175us  worstQueue=339us  avgCopy=311us  worstCopy=606us  wall=503ms
+[rust] got QString from QML: "cfg2 1080p RGBA@60Hz | delivered=30 hz=59 | queue avg=175us worst=339us | copy avg=311us worst=606us | wall=503ms | qmlTicks=32/31 deficit=0"
+[rust thread] [cfg 3] 1080p RGBA@120Hz (overproduce)   landed=48/48 dropped=0 hz=119  avgQueue=142us  worstQueue=628us  avgCopy=341us  worstCopy=491us  wall=403ms
+[rust] got QString from QML: "cfg3 1080p RGBA@120Hz (overproduce) | delivered=48 hz=119 | queue avg=142us worst=628us | copy avg=341us worst=491us | wall=403ms | qmlTicks=25/25 deficit=0"
+[rust thread] [cfg 4] 4K RGBA@30Hz                     landed=12/12 dropped=0 hz=29  avgQueue=167us  worstQueue=323us  avgCopy=1999us  worstCopy=3180us  wall=411ms
+[rust] got QString from QML: "cfg4 4K RGBA@30Hz | delivered=12 hz=29 | queue avg=167us worst=323us | copy avg=1999us worst=3180us | wall=411ms | qmlTicks=25/26 deficit=1"
+[rust thread] [cfg 5] 1080p RGBA@240Hz coalesce<=2     landed=48/48 dropped=0 hz=236  avgQueue=141us  worstQueue=446us  avgCopy=350us  worstCopy=617us  wall=203ms
+[rust] got QString from QML: "cfg5 1080p RGBA@240Hz coalesce<=2 | delivered=48 hz=236 | queue avg=141us worst=446us | copy avg=350us worst=617us | wall=203ms | qmlTicks=13/13 deficit=0"
+[rust thread] [cfg 6] 1080p@120Hz work=12ms UNCAPPED   landed=48/48 dropped=0 hz=74  avgQueue=113294us  worstQueue=226735us  avgCopy=500us  worstCopy=1230us  wall=641ms
+[rust] got QString from QML: "cfg6 1080p@120Hz work=12ms UNCAPPED | delivered=48 hz=74 | queue avg=113294us worst=226735us | copy avg=500us worst=1230us | wall=641ms | qmlTicks=7/40 deficit=33"
+[rust thread] [cfg 7] 1080p@120Hz work=12ms coalesce<=2 landed=31/31 dropped=17 hz=74  avgQueue=7183us  worstQueue=11325us  avgCopy=515us  worstCopy=1113us  wall=415ms
+[rust] got QString from QML: "cfg7 1080p@120Hz work=12ms coalesce<=2 | delivered=31 hz=74 | queue avg=7183us worst=11325us | copy avg=515us worst=1113us | wall=415ms | qmlTicks=22/26 deficit=4"
+[rust] got QString from QML: "[suite done] tickTotal=311"
+EXITCODE=1

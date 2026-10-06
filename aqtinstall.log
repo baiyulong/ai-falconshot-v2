@@ -1,0 +1,9 @@
+2026-10-04 16:36:44,742 - aqt.main - INFO - installer 8220 aqtinstall(aqt) v3.3.0 on Python 3.12.10 [CPython MSC v.1943 64 bit (AMD64)]
+2026-10-04 16:37:26,244 - aqt.helper - DEBUG - helper 56880 Attempt to download checksum at https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_6101/qt6_6101/Updates.xml.sha256
+2026-10-04 16:37:32,413 - aqt.helper - DEBUG - helper 56880 Attempt to download checksum at https://download.qt.io/online/qtsdkrepository/windows_x86/extensions/qtpdf/6101/msvc2022_64/Updates.xml.sha256
+2026-10-04 16:37:37,184 - aqt.helper - DEBUG - helper 56880 Attempt to download checksum at https://download.qt.io/online/qtsdkrepository/windows_x86/extensions/qtwebengine/6101/msvc2022_64/Updates.xml.sha256
+2026-10-04 16:37:54,665 - aqt.helper - DEBUG - helper 68460 Attempt to download checksum at https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_6101/qt6_6101/Updates.xml.sha256
+2026-10-05 11:40:27,135 - aqt.helper - DEBUG - helper 31628 Attempt to download checksum at https://download.qt.io/online/qtsdkrepository/windows_x86/desktop/qt6_6101/qt6_6101/Updates.xml.sha256
+2026-10-05 11:40:33,284 - aqt.helper - DEBUG - helper 31628 Attempt to download checksum at https://download.qt.io/online/qtsdkrepository/windows_x86/extensions/qtpdf/6101/msvc2022_64/Updates.xml.sha256
+2026-10-05 11:40:38,044 - aqt.helper - DEBUG - helper 31628 Attempt to download checksum at https://download.qt.io/online/qtsdkrepository/windows_x86/extensions/qtwebengine/6101/msvc2022_64/Updates.xml.sha256
+2026-10-05 12:35:45,939 - aqt.main - INFO - installer 48240 aqtinstall(aqt) v3.3.0 on Python 3.12.10 [CPython MSC v.1943 64 bit (AMD64)]

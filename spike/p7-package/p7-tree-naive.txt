@@ -1,0 +1,18 @@
+root: C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist
+files: 72   total: 71.07 MiB
+
+== by top-level entry ==
+  (root)                    60.04 MiB
+  translations               6.74 MiB
+  imageformats               1.77 MiB
+  qmltooling                 0.98 MiB
+  platforms                  0.95 MiB
+  tls                        0.35 MiB
+  generic                    0.10 MiB
+  iconengines                0.07 MiB
+  networkinformation         0.07 MiB
+
+== by extension ==
+  .dll          63.33 MiB
+  .qm            6.74 MiB
+  .exe           1.00 MiB

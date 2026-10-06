@@ -1,0 +1,27 @@
+# 行尾在这里钉死，不依赖每台机器的 core.autocrlf。
+# 依据：实施计划 §B.3 —— 带 goto/标签的 .cmd 在 CRLF 下才可靠工作。
+* text=auto
+
+*.cmd  text eol=crlf
+*.bat  text eol=crlf
+*.ps1  text eol=crlf
+
+*.sh   text eol=lf
+*.rs   text eol=lf
+*.cpp  text eol=lf
+*.h    text eol=lf
+*.qml  text eol=lf
+*.frag text eol=lf
+*.qrc  text eol=lf
+*.py   text eol=lf
+*.toml text eol=lf
+*.md   text eol=lf
+
+# 证据文件按字节存：文档里引用的每个数字都要能在克隆副本上复现
+*.log  -text
+*.txt  -text
+*.tsv  -text
+
+*.png  binary
+*.dll  binary
+*.exe  binary

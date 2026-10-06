@@ -1,0 +1,1028 @@
+# AI Falconshot 实施计划（Windows MVP）
+
+> 文档类型：实施计划
+> 文档版本：V1.11
+> 编制日期：2026-10-04（V1.3/V1.4/V1.5/V1.6/V1.7/V1.8 修订：2026-10-05；**V1.9/V1.10/V1.11 修订：2026-10-06**）
+> 输入依据：`AI Falconshot 全部功能需求文档.md`（PRD V1.0）、`Rust_Qt_Snipaste类工具技术方案.md`（技术方案 V1.0）、`技术栈选型核验记录.md`（2026-10-04 联网核验）、`spike/hello-cxxqt/`（2026-10-04 最小链路 + P3，2026-10-05 线程增量 + **P1 遮罩延迟增量** + **P4 标注 overlay 增量** + **P5 Qt 组件完整性增量** + **P6 着色器与视觉验收增量** + **P7 复用其 `--audit` 与 release exe**）、`spike/p5-audit/`（2026-10-05 **P5 依赖能力审计** + P6 复审计与两份像素验收脚本）、**`spike/p7-package/`（2026-10-06 P7 打包可行性 + P8 CI 串联）**：`deploy.cmd` + `run_clean.cmd` + `ci_local.cmd`（193 行）+ `ci.yml`（94 行，hosted 提案）+ 十个 dist 目录（含 `dist-bare` 负对照与 `dist-ci` 产物）、19 份 P7 日志与 11 份清单/体积快照、`logs-p8/` 十份 P8 证据）、**`spike/p9-licenses/`（2026-10-06 P9 许可证与包内二进制来源**：`collect.py`（201 行）+ `qtdist_scan.py`（212 行）+ `gen_notices.py`（139 行）+ `provenance.py`（198 行）、`evidence/` 五份清点、`licenses/` 92 份文本（432,717 B）、`out/THIRD-PARTY-NOTICES.md` 958 行草稿）
+> 范围基线：Windows 单平台 MVP
+> 资源假设：1 人 + AI 辅助，串行推进，每个里程碑交付"可运行、可验证"的增量
+
+**V1.1 变更**：D1 决策落定为**全线 QML**（含截图遮罩、标注画布、贴图窗口）。本版据此重写桥接层（D2）、渲染策略（§3.5）、C++ shim 清单（§3.6）、M0 的 go/no-go 性能探针，并上调工期约 30%。原技术方案 §3.1/§5 的 UI 分层恢复有效。
+
+**V1.2 变更**：按 M0 spike 实测结果回填证据，选型正式定版。七处修订：§2.1/§2.2 Qt 定版 6.10.1 并新增 `cxx`/`cxx-gen` 锁步陷阱与 aqt 退出码坑；§3.2 规则 4/5 补入边界成本量化（跨界 0.1 µs、绑定写 20–34 µs）并改写规则依据；§3.5③ 与 §3.6 更正 alpha API（6.10 删 `setAlphaBuffer`）并新增 shim 三条硬约束；§3.7 换成编译通过的桥写法并新增 setter 按值消耗 `Pin` 这条必踩坑；§4 M0 记进度与 P3 通过；§8 R1/R7/R8 据实收窄；§10 划掉已完成项并补第 6 项构建编排收口。
+
+**V1.3 变更**：§7 的构建编排假设按 spike 证据改写——原"CMakeLists.txt 驱动 Qt"降为可选项，新增 **§7.1** 记录 Cargo 主导已实测可用的五项能力与三项手工义务；编排的最终裁决不急于现在定，推迟到 I-3 前一次对照实测（量日常增量与全量重跑两个数字），M0 起先按 Cargo 主导推进。配套三处：§2.2 版本锁的事实来源改为 `Cargo.lock`；bridge crate 定名 `qt-bridge` → **`qt_bridge`**（§3.6 约束 3 的 `include!` 前缀陷阱）；§4-M0、§8-R1、§10 项 6 同步。
+
+**V1.4 变更**：spike 增量 3 通过，§3.4 线程模型由"设计假设"改为"实测结论"（Windows 下 `CxxQtThread::queue` 编译/链接/运行全通，debug 与 release 双档，KDAB 的 Windows `FIXME` 不影响共享 Qt + Cargo 路径）。新增**边界规则 9：跨线程投递必须有 in-flight 上限，丢帧优于排队**（§3.2 由 8 条变 9 条），依据是同一负载下 113 ms vs 7.2 ms 平均延迟、tick 缺口 33/40 vs 4/26、而有效帧率相同的 A/B 对照（与构建档位无关）。release 复测同时**修正两处 overstated 论据**：debug 档 4K@30 Hz 的 3.35 ms / worst 34 ms 是 debug 假象（release 为 167 µs / 323 µs），故 §3.3 偏离技术方案 §7.5 的理由从"每帧全拷贝不可接受"换成"分配抖动 + 生命周期可证性 + 规则 2 代价已足够低"，R2 的降级判断由"只允许 1080p"改为"拷贝不构成否决，否决权交 P4"。§4-M0 与 §10 划掉增量 3，附录 B 补 7 档配置、四条取证注意与两份新日志。
+
+**V1.5 变更**：spike 增量 4 = **P1 遮罩延迟探针跑完，判"有条件通过"**（§3.5① 新增四后端 × 组件拆分表与五条结论）。**买到的答案是"QML 这层过关，钱要花在别处"**：单纹理路径成立且不是瓶颈（5 个 session provider 恰好被调 5 次、avg/worst **1 µs**，4K 合成帧与本机原生帧的 QML 侧成本只差 15–25%），拖拽的 16.6 ms 是 **60 Hz vsync 地板而非渲染环饱和**（8 ms 输入心跳 227 次 vs 120 次 present，16 ms pacer 足额兑现）。**两处越线都与 QML 无关**，降级动作因此重定向：冷启动首帧 +62~117 ms ⇒ **M1 新增"遮罩窗开机预热"**；BitBlt 46–55 ms（4K 外推 60–85 ms）占掉预算一半 ⇒ **M1 新增"采集侧 WGC/DXGI 同法对照"**。**不触发"遮罩改 C++ `QWidget`"**。配套修订：§9.4 的**判据更正**（`≤8ms` 改用"输入:present ≥2 + pacer 缺口 ≤1 tick + worst ≤2 vsync"三条件；`≤150ms` 分冷/热两本账，只报混合 p95 会掩盖问题方向）；software 后端**只作驱动故障兜底、不作支持配置**（输入侧掉 16%、worst 38.9 ms）；§3.6 补入硬约束 4（`.cpp_files` 的 `.h` 自动 moc，不要再手写 `moc_*.cpp` include）与 5（Cargo 路径下 C++→QML 注册只有 `QML_ELEMENT` 一条道）；§4-M0 记 ⑥、探针表 P1 行改为有条件通过；§8 R11 的遮罩半边量化掉；**偏差声明**：变暗+挖洞实为 4 个 `Rectangle` 拼图，本机缺 `qtshadertools`/`glslc` 导致 `ShaderEffect` 变体未测（列为 P5 缺口，工具链补齐后复跑同一套件）。附录 B 补 `frozen_source.{h,cpp}` 与 `mask_probe.rs` 及后端矩阵日志。
+
+**V1.6 变更**：spike 增量 5 = **P4 标注 overlay 探针跑完，判"通过"**（§3.5② 新增 10 档 × 三后端 + debug 的提交→上屏表）。**这条把 D1 的最后一道延迟风险付清**：4K 图层（31.6 MiB）上图元尺寸提交 `work~` 仅 **0.0–6.2 ms**，且**同一后端内**与"什么都不画"的参照档相比 p50 只贵 0～3.4 ms、p90 只贵 −1.2～+3.5 ms（参照档自身 `work~0.0–1.0`）—— 即 60 Hz 面板上"≤16 ms"这条线对图元提交**已不可分辨**；原列为降级项的 `QQuickPaintedItem` 实测**不比脏矩形慢**（`work~2.59` vs 3.41），**降级项作废，混合方案不启动、不需要二次拍板**。**换来三条比通过线更值钱的发现**：① **整层位图重挂在第二次提交起永久停住**，四组变量全部排除（三后端含无 GPU 的 software 档 / 两分辨率 / 浅拷贝与深拷贝两种缓冲归属 / 13 ms 与 250 ms 两节拍），唯一有效解法是"空 source → 等 `frameSwapped` → 挂新 URL"的**释放-重载握手**（P1 一直隐式在做，所以从没撞上）；② **提交耗时与上传字节数不单调相关**（6.1 MB 脏矩形比 22.5 MB 整窗 painted 更慢），瓶颈是 provider 路径的 `QImage::copy` 深拷贝（avg 504–516 µs、worst 9.9 ms、套件吐出 875.7 MB）；③ **量具本身要再补三条** —— `work~ = mean − vsync/2`（pacer 取 13 ms 这个非约数让相位散开）、必须给"什么都不画"参照档、必须显式报 `stalled`/弃疗次数否则 25 ms 与 3200 ms 会被均值混成一个数。十二处联动修订：**§3.5②** 主表 + 四条结论，并把"备选更慢"那条降级项与"overlay 必挂 `QSGSimpleTextureNode`"改为按提交面积分流；**§3.3** 加 P4 改判块（`ExternalTextureItem` 的降级**收回一半**：小图元用 provider，大区域/整层必须免拷贝）；**§3.6** 补"Rust 像素非拥有发布"一行、shim 体量按实测改为 **715 行 → 正式估 900–1200 行**（原估 250–350 严重偏低，直接影响 M1/M4 排期）、硬约束**五条 → 八条**（新增 `#[rust_name]` 全 crate 唯一否则 `LNK2005`、裸指针桥函数必须 `unsafe fn`、整层更新必须带释放-重载握手）；**§3.4** 收掉遗留的"4K 取舍等 P4"尾欠（真门槛是提交粒度不是拷贝）；**§4-M0** 记 ⑦ 并把 P4 从"仍待做"移出、P5 行标注 `glslc` **不再阻塞 M4**；**§1/§0 定版表**把"两道延迟风险"改为已付清；**M4a** 达标路径改为 provider 脏矩形、`ExternalTextureItem` 降为大区域提交专用并写入释放-重载硬约束；**§8** R2 的"否决权在 P4"收口为"否决未发生"、R11 残余只剩 `ShaderEffect` 一条；**§9.3** 后端矩阵口径改为 P1/P3/P4，**§9.4** 补 ③④⑤⑥ 四条量具判据；**§10** 划掉 P4；**附录 B** 补 3 个源文件（`overlay_probe.rs` 732 行 / `overlay_source.{h,cpp}` 305 行，现 17 个文件、C++ 侧 715 行）、四份 10 档日志与取证注意 11–15 条（弃疗均值不可读、`overlayDescribe()` 只报末档画布、套件常量与双档重建、P4 顺带复跑 P1 的交叉核对值、后端生效要靠 `rhi=/quick=` 字段自证）。
+
+**V1.7 变更**：spike 增量 6 = **P5 依赖能力审计跑完，判"通过 —— 但带三处承诺范围收窄"**（这是五张探针表里唯一一张"能力可行性"表，不产生延迟数据）。载体两处：`spike/p5-audit/`（616 行独立 bin，`--no-default-features` 即把采集引擎从 WGC 切回 GDI，无需改代码）与 `spike/hello-cxxqt/cpp/audit_source.{h,cpp}`（115 行，`--audit` 无头分支直接打印，不经 QML）。九条结论：
+
+- ① **xcap 物理分辨率取帧 = 可用**：`Monitor::width/height` 就是 `DEVMODEW.dmPelsWidth/Height` 量级的物理值（3072×1920，不是 DIP），取帧尺寸与 `geom()` 逐像素相等（`matches_geom=true`），`scale_factor=2.000` 正确；且 **`Window::bounds()` 已经是 `DWMWA_EXTENDED_FRAME_BOUNDS`**（3072×1824，而 `GetWindowRect` 给 3098×1850 含 13 px 不可见收缩边）⇒ §2.1 原来那条"边界要取 extended frame bounds"的手工义务**由依赖代劳了**。
+- ② **WGC 不比 GDI 快 —— P1 留给 M1 的"采集侧对照"因此提前有了答案**：首帧 **952.6 ms(WGC) vs 142.4 ms(GDI)**；稳态四次 66.8/68.4/89.3 vs 75.0/86.6/99.1；**512×512 局部取帧 55.1 ms(WGC) vs 17.9 ms(GDI)**，因为 WGC 无视请求区域、每次拿整帧。WGC 唯一赢在几何精确（窗口图恰好等于 DWM 边界；`PrintWindow` 漂成 3059×1811 与 3041×1811，且有一次 **513 ms** 离群）。⇒ **"BitBlt 46–55 ms ⇒ 换 WGC"这个期望不成立**：采集侧真要提速只剩 **DXGI duplication** 一条，而**局部区域就该走 GDI**。
+- ③ **圆角：系统不给半径，采集也不给 alpha** ⇒ **PRD §5.5.6 的"使用系统窗口原始圆角"无法从系统读取**。`DWMWA_WINDOW_CORNER_PREFERENCE` 可读（4/4、6/6），但它是 **4 值枚举**（Default/DontRound/Round/RoundSmall），**没有任何像素半径 API**；两条采集路径返回的帧**采样点 100% alpha=255**（Edge 顶部两角是"不透明的黑"144/144）⇒ 圆角只能**我们自己 mask**，半径作常量/可配置项（写进 PRD §11 项 5 那份平台能力矩阵的不可用格）。
+- ④ **`RealWindowFromPoint` 不存在**：本机 `user32` 导出表在 **10.0.26200 上没有这个导出**（`RealChildWindowFromPoint` 有），`windows` 0.62.2 也未绑定 ⇒ §0/D3、§2.1、§3.6 三处引用作废。替代路径已实测成立：**`WindowFromPoint` 本身就会跳过 `WS_EX_TRANSPARENT` 的分层置顶窗**（探针窗加 flag 前 `hit_ours=true`、加后 `false` 并落到下面 3072×1824 的 Edge），所以窗口选取直接用 `WindowFromPoint` + `GetAncestor(GA_ROOT)`；z 序回退遍历 0.8–1.6 ms 命中。
+- ⑤ **格式清单可以整体保住，但要立一条架构规则**：PRD §5.8.3 导入 7 格式（PNG/JPG/BMP/TGA/ICO/TIFF/GIF）与 §5.5.5"至少 PNG/JPG/BMP"的保存下限，`image` 0.25.10 **逐条 enc+decode 实测全过**。两处限制：**ICO 编码器只收 `1..=256`**（300×200 直接报错 ⇒ 存图标必须先缩放），DDS 无编码器、HDR/EXR/Farbfeld 拒 `Rgba8`（三者都不在 PRD 内）。反面是 **Qt 的写入器只有 BMP/CUR/ICO/JFIF/JPEG/JPG/PBM/PGM/PNG/PPM/XBM/XPM**：**TGA/TIFF/GIF/WebP 一个都写不出**（`qsvg` 只读）⇒ **落盘与剪贴板的位图编码一律走 Rust `image`，禁止 `QImage::save`**；补装 `qtimageformats` 也救不了这一点 —— 官方文档写明 **TGA 只读**，且它不含 ICO 编码。
+- ⑥ **`glslc` 缺口的性质改判**：`glslc_exe=NO`、`qsb_exe=NO`、`Qt6ShaderTools.dll=NO`；`aqt list-qt` 确认 `qtshadertools` / `qtquickeffectmaker` / `qtimageformats` **都是可装模块而本机未装**，而 `aqt list-tool windows desktop` 的清单里**没有独立的 glslc 条目** ⇒ 修复动作是**补装模块**（对既有 Qt 目录的写操作，需单独授权后再动），不是装某个 tool。同时**本机已有两条 qsb-free 备选**：`QtQuick.Effects`（`MultiEffect`）与 `QtQuick.Shapes` 都在盘上 ⇒ §3.5① 那条"单个 `ShaderEffect`"律条有了不用 `.qsb` 的候选形态可测。
+- ⑦ **依赖解析 17 个 spec：16 过 1 不过** —— `apng` 最新只有 **0.3.4**，§2.1 原来写的"0.4"不存在（也不是 stale，是版本号记错）；`tray-icon` 0.19 可解析但仍按 D3 决定不用。
+- ⑧ **P2 多屏异 DPI 在本机不可测**：`monitor|count=1`，只有 1 块屏。P2 从"待测"改为**硬件阻塞**，于是 §8-R3 的"v1 限定每屏独立截图"这条降级**不能提前被证伪**，必须留到有多屏环境时补跑。
+- ⑨ 顺带一条运行时事实：`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 在 Qt 已自设的情况下**仍返回 `Ok(())`、awareness 0→2**（P3 期间那条"早调反而 Access is denied"是发生在 Qt 初始化之前），所以打包后的 manifest 验证项仍要做一次，别把"Qt 已经设好了"当成"我们不用管"。
+
+联动修订共 14 处：**§1** 摘要新增一条 P5 产品可见影响；**§2.1** 五行改写 + 新增"圆角 / DWM 几何"与"**Qt 安装组件完整性**"两行；**§2.2** 版本锁补 aqt 模块清单，并新增"workspace 里**每个** crate 都要带 `rust-toolchain.toml`"与"库路径 vs 二进制路径"两条陷阱（本机 rustup 默认 host 是 gnu，新 crate 漏了就在 `dlltool.exe` 上死掉）；**§3.3** 新增一条 P5 规则：**位图编码一律走 Rust `image`，禁 `QImage::save`**；**§3.5①** 新增 ⑥（`glslc` 缺口性质改判 + 两条 qsb-free 候选 + 补装需授权）与 ⑦（**采集帧全不透明 ⇒ 圆角必须自 mask、阴影要外扩**）；**§0/D3** 与 **§3.6** 的 `RealWindowFromPoint` 换成 `WindowFromPoint` + `WS_EX_TRANSPARENT`，`winId()` shim 行划掉"DWM 边界"，硬约束 2 的导入库清单缩为 user32/gdi32/shcore，**§3.6 体量 C++ 715 → 830 行**；**§4-M0** 进度记 ⑧（= 本次 P5 增量）、P5 行出数、P2 行改为硬件阻塞、退出标准改为"五张已回写四张 + 打包未收口"；**§4-M1/M3** 各改一条（采集对照范围、圆角自 mask）；**§5 裁剪表** 5.5.6/5.5.7 行补收窄理由；**§7.1** 手工义务第 1 条据实缩；**§8** R3 补"P2 本机不可跑"、R4 补两条采集实测、R11 的 `glslc` 尾巴改为"补装需授权 + 三条候选"、**新增 R12「Qt 装齐 ≠ 能力齐」**；**§9.2** 手测项据实改写并加两条；**§10** 划掉 P5、新增第 7 项；**附录 B** 拆成 B.1/B.2，补 `p5-audit/`（616 行 + 4 份日志）与 `audit_source.{h,cpp}`，取证注意加 16–19 条（gnu 陷阱、库/二进制路径、**采集耗时 debug 与 release 差一个数量级**、`GetVersionEx` 会被 manifest 骗）。
+
+**V1.8 变更**：spike 增量 7 = **P6：按授权补装 `qtshadertools` + `qtimageformats`，复跑 P1 的 `ShaderEffect` 变体，并给"视觉验收"这件事补出一台可用量具**。四条结论，其中第一条直接作废 V1.5~V1.7 反复引用的那条缺口：
+
+- ① **`glslc` 从来不是前提，`qsb` 一个人就能干活**：`aqt install-qt … -m qtshadertools qtimageformats` 之后 `qsb.exe=YES`、`Qt6ShaderTools.dll=YES`，而 **`glslc` 依然 `NO` —— 它根本不随 `qtshadertools` 发行**。`qsb --qt6` 自带 GLSL 前端，把 `#version 440` 的 Vulkan GLSL 直接烘成 Qt Shader Bundle（`--qt6 -b` 展开为 `--glsl "100 es,120,150" --hlsl 50 --msl 12`；6.10.1 的 qsb 没有 `--vulkan`、没有 `-i/--info`）。⇒ **Cargo 主导构建可以在 `build.rs` 里烘着色器，不需要 CMake、不需要 glslc**，P5 那句"变体不可构建"与 V1.5 的"偏差声明"同时收回。落地形态：`build.rs` 跑 `qsb` 输出到 `OUT_DIR`，再生成一份 `.qrc`（前缀 `/qt/qml/dev/falconshot/spike/qml`，因为 `fragmentShader: "dim_hole.frag.qsb"` 是**相对 QML 文档**解析的）交给 `CxxQtBuilder::qrc()`；`QmlModule` 只认 `qml_file(s)`，而 `QResourceFile` 没有被 cxx-qt-build 0.10.0 重新导出，所以手写 `.qrc` 是这条路唯一可行的写法（新增 §3.6 硬约束 9）。
+- ② **`ShaderEffect` 变体测了，通过，且买不到性能**：同一个 release 二进制用 `P1_DIM=shader` 切换两档，`status = 0 (Compiled)` 在默认 RHI（D3D11）上一次成功；`REVEAL p50` 108.3 ms（4-`Rectangle` 档同二进制 p50 100.5、逐 session 65.9–111.7 ms，冷启动那一次 186.2，**run-to-run 离散大于两档之差**）、`DRAG-FRAME p50` **16.63 vs 16.61 ms**、p95 17.17 vs 17.10 —— 60 Hz 面板上两者**不可分辨**。⇒ §3.5① 那条"变暗 + 挖洞必须走单个 `ShaderEffect`"的律条**首次被量化并且达标**，R11 的最后一条尾巴（"未量化"）消失；但它**没有换来延迟收益**，所以这条律条的理由要重新表述为"**为了 4 个 `Rectangle` 表达不了的形状**（圆角选区、多段选区、羽化边），而不是为了快"（见 §3.5① ⑧）。
+- ③ **视觉验收量具要换一台，因为第一台是瞎的**：给"遮罩到底画在哪"做像素级验收，先后做了三版才可用。**v1** 用整屏"洞内 vs 洞外"均值比 → 被壁纸自身的亮度梯度骗过（`ratio=1.256` 判成"洞外没变暗"）；**v2** 改成"洞 vs 紧邻 160 px 环带" → **连已知正确的 4-`Rectangle` 对照档都判错**（`band/in=1.163`），这才确认坏的是量具不是渲染；**v3** 改成"当前帧 vs 另一个 DIB 槽里那份遮罩前的桌面"，比值精确落在 1.000/1.000/1.000 —— 于是查出这条真正的硬事实：**对屏幕 DC 做 GDI `BitBlt` 拿不到我们自己那个 Qt Quick 窗口的内容**（合成器换链内容不进屏幕 DC 的重定向表面）。⇒ 换第二台量具：`QQuickWindow::grabWindow()` 读场景图实际渲染结果（6.10.1 仍在、文档已标废弃、**必须 GUI 线程**、且**不能持有 provider 会再取的那把锁** —— `QMutex` 不可重入），配一张 `mask-grab.png` 给人看。**两档变体的读数逐位相同**：`hole=1.047 band=0.400 rest=0.400`（0.400 正是 `1 − 0x99/0xff`，1.047 是白色选区边框那 4 px 抬上去的），从 PNG 上量出的边框外接框 `(2067,1200)-(2879,1707)` 与声明的洞矩形 `(2067,1200)-(2880,1708)` **逐设备像素对齐**（差 1 px 是半开区间约定），两档一致 ⇒ 着色器里 `gl_FragCoord → DIP` 的 `deviceSize/dpr` 换算在 dpr 2.0 上是对的。跨run 全图像素差：均值 0.0883/255，99.51% 的像素在 4/255 以内，剩下 0.49% 是两次运行之间桌面内容自己变了（时钟），不是变体差异。**教训写成判据**（§9.4 ⑦）：**任何"看画面对不对"的量具，第一次运行必须拿去量一个已知正确的对照配置，量具自己不合格就不许给结论下判断。**
+- ④ 组件补齐后**格式清单的判定不变，但理由要更新**：读格式 15 → **21**（新增 ICNS/TGA/TIF/TIFF/WBMP/WEBP），写格式 12 → **17**（新增 ICNS/TIF/TIFF/WBMP/WEBP），imageformats 插件 4 对 → **9 对**。而 **GIF 与 TGA 仍然只能读不能写**（与 P5 按官方文档的预判一致）⇒ **§3.3 那条"位图编码一律走 Rust `image`、禁 `QImage::save`"原样有效，补装模块救不了它**；`fmt_qoi` 两档都是 0。另抓到一处**审计工具自己的假阴性**：`--audit` 里 `tiff_plugin_dll=NO`/`webp_plugin_dll=NO` 是去 `bin/` 找插件，而插件在 `plugins/imageformats/`（同一行清单里 `qtiff.dll`/`qwebp.dll` 明明列着）—— 与 §B.3 第 17 条是同一类错误，判据要写在"文件存在性"的每一格上。
+
+联动修订共 17 处：**§0 定版行**与 **§1** 摘要删掉"`ShaderEffect` 欠一轮复跑 / 需授权补装"这条尾巴；**§2.1**"Qt 安装组件完整性"行由"缺两件"改为"已补齐 + `glslc` 本就不随模块发行"、编解码行补写 21/17 的新清单（并补 `tiff_plugin_dll` 那两条假阴性）；**§2.2** Qt 锁法那一格给出可重跑的 `aqt -m` 命令与"验文件"清单；**§3.3** 给 `QImage::save` 禁令补一条**范围澄清**（spike 诊断产物例外，产品路径零例外）；**§3.5①** ⑤ 偏差声明收回、⑥ 改判、新增 **⑧**（两档 A/B 表 + 视觉验收三版教训 + 几何逐设备像素对齐）；**§3.6** 硬约束 8 条 → **9 条**（`build.rs` 烘 qsb + 手写 qrc 前缀 + `near`/`far`），C++ shim 体量 **830 → 992 行**并拆出"量具部分不进产品"的净估；**§4-M0** 记 ⑨、P1 行改为"两档变体均已实测"、P5 行 ⑥ 格补"已按授权补齐"、退出标准措辞更新；**§4-M1** 净增两条（R13 的四路采集可见性对照、挖洞两档可切换 + 着色器进正式构建）并写明已吃掉 7–10 天区间的上沿；**§5 裁剪表**补一条"为什么本版不在表里落一行"的说明（R13 是**待答的能力问题**，不是已证的不可实现；等 M1 四路对照判死再动 5.8.1/5.8.2 与 5.5.8 的理由栏）；**§7.1** Cargo 能力表加一行"着色器烘焙"、手工义务三项 → **四项**（`.qrc` 前缀对齐）；**§8** R11 最后一条尾巴收口（残余只余 software 档 + shader 组合，给出回退画法）、R12 补"补齐后仍要复核再改承诺 + CI 断言里不许出现 `glslc`"、**新增 R13「自家 Qt Quick 窗口可能进不了采集链路」**；**§9.1** 加两条无头断言（`ShaderEffect status` 必须为 0、qsb 失败升硬错误）与一条量具自检规则；**§9.2** 加两条手测（自家窗可截性、software 兜底档遮罩）；**§9.4** 加判据 **⑦**（视觉量具必须先过已知正确对照 + 期望值来自常量 + 量具与被测走不同通路）；**§10** 划掉第 4/7 项里"等 glslc"的两条遗留、第 7 项的待授权动作、新增第 8 项（P6 全貌）；**附录 B.1** 补 `shaders/dim_hole.frag` 与 `build.rs` 的 qsb 步骤（现 **20 个源文件、C++ 992 行**、`frozen_source` 346 → 508、`mask_probe` 505 → 588）；**B.2** 补两份 `p6-qt-audit-*.log` 与 `diff_grabs.py`/`geom_check.py` 与两张 PNG；**B.3** 补四份新日志说明（含"同档位两次运行差 30 ms"这一对）、`P1_DIM` 的两档跑法（cmd 与 Git Bash 两式）、取证注意 **20–25 条**（`run.cmd` 只转发 `%~1`、Git Bash 引号两条规则、**陈旧二进制会让能力日志说谎 ⇒ 日志首行必须自带构建身份**、`grabWindow()` 的三条使用限制、winnt.h 的 `near`/`far` 与 `.h` 不是合法 GLSL swizzle、pyenv shim 吃不下多行 `-c`）。
+
+**V1.8 定稿前的一次全文一致性通读，另修四处与 P6 无关但会误导读者的东西**，都记下来以免以后被当成"内容变更"：① **§1 的粗量级合计是 stale** —— 分项已在 V1.1 上调 30%（52–79 工作日），合计却仍写"约 9–12 周"（那是上调前的和），改为 **10–16 周**，M4 占比按实算改为 35%；② **§10 的条目在源码里是 1,2,3,4,5,7,8,6** —— CommonMark 按位置重新编号，所以渲染出来是 1–8 而**与文中所有"第 N 项"交叉引用错开一位**，已把"构建编排"这条移回第 6 位；③ **两张表被日志字段名打断** —— `monitor|count=1` 里的裸 `|` 在表格里是单元格分隔符，R3 行与 M0 的 P2 行各多出一列，改为"monitor 段给 `count=1`"（表格外仍保留原样字面，因为那里不受影响）；④ **§8 风险表 R11 排在 R7 与 R8 之间**（V1.1 插入时的遗留），已按 ID 排序为 R1–R13。附带一条 B.2 的可重跑性说明：`frozenWindowCheck()` 写的是相对路径 `mask-grab.png`，落在**进程 cwd**（`spike/hello-cxxqt/`），每跑一次覆盖一次，归档必须当次改名。校验方式：脚本扫全文 12 张表的列数（0 处不符）与代码围栏配对。
+
+**V1.9 变更**：spike 增量 8 = **P7 打包可行性探针跑完，判"通过 —— 但默认打包会产出一个骗过冒烟测试的残废包"**。这一轮补的是 §4-M0 退出标准的**另一半**（"一条命令从零到安装包"），载体新增 `spike/p7-package/`（`deploy.cmd` 打包脚本 + `run_clean.cmd` 环境净化门 + 十个 dist 目录（P7 的九个 + P8 的 `dist-ci`，含 `dist-bare` 负对照）、19 份日志与 11 份清单/体积快照），并**修掉 `spike/hello-cxxqt/cpp/audit_source.cpp` 的部署态假阴性**（115 → 191 行）。五条结论：
+
+- ① **默认 `windeployqt` 对"QML 写在 qrc 里"这种工程是零可见性的，而它的产物看起来是好的**：不加 `--qmldir` 那一份包，exe 能启动、`platforms/qwindows.dll` 正常加载、`--audit` 打出完整的 21 个读格式清单 —— 然后**一个界面都不加载**，`engine.load()` 之后只有 `module "QtQuick.Controls" is not installed` / `module "QtQuick.Window" is not installed` 两条 qWarning 和**永不返回的 `exec()`**。Windows 上 QML 加载失败不落 stdout，所以连重定向日志里都像"程序在正常运行"。**这不是"少几个文件"，是"启动成功但功能为零"**，任何只看退出码或只看进程存活的 CI 都会放它过线（§7.2）。
+- ② **能抓住它的门是"净化环境 + 无头断言"，不是安装目录看起来完整**：`run_clean.cmd` 把 `PATH` 削成"候选目录 + System32"，抹掉 `QT_PLUGIN_PATH`/`QML2_IMPORT_PATH`/`QT_QML_IMPORT_PATH`/`QMAKE`/`INCLUDE`/`LIB` 共 10 个变量，再跑两件事 —— `--audit`（无头）与默认档（起窗自动跑 P1/P4 套件），**断言 `[P1] suite start` 与 `[P1] DIM rects shaderStatus=0` 两行必须出现**。配套一条负对照：只放裸 exe 的目录跑出 `exitlevel=-1073741515`（`0xC0000135 STATUS_DLL_NOT_FOUND`），**证明这套环境真的隔离，而不是"候选目录恰好还能看见 Qt 安装"**。另外 `--release` 确实排除了 `*d.dll` 调试插件对，qsb 烘进二进制的着色器在部署副本里仍读 `status = 0`（§7.2、§9.1）。
+- ③ **钉住的一行命令与它的三个非显然事实**（`deploy.cmd`，实测 **1316 文件 / 66.78 MiB / 0 条 warning**，GUI 门通过）：`--release --dir <out> --qmldir <源 qml 目录> --no-compiler-runtime --no-system-dxc-compiler --no-opengl-sw --no-translations --skip-plugin-types qmltooling <exe>`。三个必须写进脚本而不是记在脑子里的事实：**a) `windeployqt` 不复制目标 exe**，`--dir` 只在它周围铺依赖 ⇒ 手工 `copy` 是打包的一部分，第一次跑差点因为"目录里没有 exe"而被误读成部署成功；**b) `--compiler-runtime` 会把 `vc_redist.x64.exe` 放进应用目录**，实测那一份 **24.45 MiB（25.6 MB，下文口语写的"25 MB"即此件）**；不是系统级安装。再加上 vcvars 环境下的 DXC 负载 **15.09 MiB**（`dxcompiler` 13.65 + `dxil` 1.44）⇒ 这两个开关给错，包就从 66.77 MiB 涨到 106.31 MiB（**+39.54 MiB**，即 `dist3` 那一格）；两个必须显式关掉，体积才回得到 67 MiB 级；**c) 同一行命令在不同打包 host 上产出不同的 `d3dcompiler`** —— 无 VS 开发者环境时给的是 **Qt 自带那份 6.3.9600.16384**（4,173,928 B，落地名 `D3Dcompiler_47.dll`，md5 `b0ae3aa9…`），有 vcvars 时给的是 **Windows SDK redist 那份 10.0.26100.7705**（4,741,488 B，落地名 `d3dcompiler_47.dll`，md5 `19e527a3…`，两个 md5 都直接对上了源文件 ⇒ 来源不是推测）。**文件数不变、两档 GUI 门都过，但包内容差 0.54 MiB 且文件名大小写翻转** —— 这条对"同一 commit 出可复现产物"是实质威胁，写进 §8-R14（§7.2）。
+- ④ **打包不裁剪能力，但原来的探针在部署目录里是瞎的**：`reader_formats` / `writer_formats` / 12 行 `fmt_*` 在源目录运行、`dist8`、`dist9` 三种环境下**逐字节相同**（12 个 `fmt_*` 探针里 11 读 / 8 写；**全量清单是 21 读 / 17 写，这两个数不是同一件事**，见 §2.1）⇒ §2.1 那套编解码承诺不因部署形态改变。反面是文件类字段全假：部署副本报 `platforms_dir=MISSING`、`imageformats_dir=MISSING`、`plugin_subdirs=MISSING`、`svg_dll=NO`、`qsb_exe=NO`。**根因不是"缺插件"，是 `QLibraryInfo::path()` 说的是配置时布局**：windeployqt 把每种插件平铺到应用目录根，且**不写 `qt.conf`**（实测 `dist8`/`dist9` 里都没有），于是它报的 `<appdir>/plugins`、`<appdir>/bin`、`<appdir>/lib` 三个目录一个都不存在。修法已落地：**每个"文件存在性"判据都按候选根列表解析**（`applicationDirPath()` + `QCoreApplication::libraryPaths()` + `QLibraryInfo` 各路径），并让日志自报 `app_dir=` / `library_paths=` 与"是哪个根答的话"（延续 §B.3 第 22 条"日志必须自证身份"）。**修完的净效果是两条**：源目录那一轮里 `tiff_plugin_dll`/`webp_plugin_dll` 由 `NO` 变 `yes@…/plugins`，与同一张日志上方的 `imageformats_dir` 一致 —— **§2.2 末段与 R12 ③ 那条"结论与同轮另一字段矛盾则探针作废"的判据，这是第一次被真正兑现而不只是被写下**；以及 **§2.1 依赖的任何一条能力结论都没有因此改变**（三种环境的 codec 字段 diff 为空），所以 V1.8 的承诺范围不需要动。
+- ⑤ **R9 从"要合规"变成"有一个具体的缺口要补"**：pinned 输出里许可证材料 **0 命中**（`*licen*`/`*copying*`/`*gpl*`/`*.txt`/`*.md` 全 0），而 aqt 装的 Qt 安装树里也只有 CMake 管道的 5 个同名文件 —— **`windeployqt` 不部署许可证文本，Qt 安装里也没有可抄的 LGPL/FDL 全文** ⇒ `licenses/` 目录必须我们自己取得并随包提供（PRD §12.4），这一步现在无人认领、也没有工具会替我做（§8-R9）。
+
+联动修订共 11 处：**新增 §7.2「打包（windeployqt）实测」**（P7 全部数据的主落点）；**§2.2** 末段那条"假阴性"判据补一条 P7 复核（结构性修法：候选根列表 + 自报身份的根）；**§3.6** shim 体量 **992 → 1068 行**（涨幅全在审计探针）；**§4-M0** 进度块加 **⑩**、`spike/hello-cxxqt/` 源文件数 **19 → 20 修正**（V1.8 漏改，B.1 已是 20）、"末次 P5"改为"末次 P7"、退出标准的另一半由"待做"改为"打包侧已收口、CI 侧未收口"；**§7** 发布包那两行改为引用 §7.2 并写死 `licenses/` 需自备；**§8** R9 补实测缺口、**新增 R14「打包产物的可复现性与'启动即成功'的假象」**；**§9.1** 把"净化环境 + 两行断言"立成 CI 必须步骤并写清负对照；**§10** 第 6 项的打包侧按实测收口（脚本已是 `deploy.cmd`，剩 CI）；**附录 B.1** 更新 `audit_source` 行数与 C++ 合计；**新增 附录 B.4** `spike/p7-package/`；**B.3** 补取证注意 **26–31 条**（`%*` 不跟随 `SHIFT`、Git Bash 的 `cmd //c`、`grep -c` 命中 0 会断掉 `&&` 链、平铺布局 vs `QLibraryInfo`、windeployqt 不复制 exe、打包结果依赖 VS 环境与开关、**按 md5 而不是文件名认包内组件**）。
+
+**V1.9 定稿前的一次全文一致性通读，另修五处会误导读者的东西**，其中四处（②③④⑤）是 §7.2 的体积数字与目录实测不符 —— 全部对着 `spike/p7-package/` 重测再改，④ 还与同一句话里的 `qml/` 大小直接打架：① **§7.2 与 PRD §7.2 撞名** —— 本版新立了本文的 §7.2「打包」，而 M3 那行"剪贴板无内容、超大图、解码失败不崩（§7.2/§8.1/§8.2）"引的是 **PRD** 的同号章节，裸引用从此歧义，已补 `PRD` 前缀。**这不是"漏了前缀"，是一条新立的章节号把原有裸引用变成了歧义引用**，所以顺手把判据定下来：本文外部引用大量是裸号，是否致错只看**号码与本文标题撞不撞** —— §5.x.y、§8.x、§10.2、§11、§12.4、§14.4 在本文没有对应小节，裸引不改变指向；会撞的只有 §7.x（已修）与 §9.x，而 §9.x 那一组五条（§9.1–§9.5）写在"### 9.4 MVP 验收门（对齐 PRD §9）"标题之下，作用域已由标题限定，故不动；§7.4/§7.5 两处原文本就写着"技术方案"。② **同一张表里 `dist4` 与 `dist9` 体积不同却并排写成 66.78** —— 差额 14,848 B **恰好等于两个 exe 文件本身的大小差**（1,060,352 − 1,045,504）；把两包根目录逐文件对齐比对，**唯一不同的就是 `hello-cxxqt.exe` 那一项**，31 个 DLL 一字不差（抽查 `d3dcompiler_47.dll` 两边 md5 同为 `19e527a3…`）⇒ 结论是 `dist4` 装的是 P7 改写前的探针 exe，不是"打包不稳定"；表格改为"66.77 / 66.78"并写明原因。③ **`--no-*` 挡在外面那三个数全错**：`opengl32sw.dll` 写作 20.16 MiB 实为 **19.68 MiB**（20,639,888 B，原数是小数 MB 与 MiB 混着抄）、`vc_redist` 25 MB 实为 **24.45 MiB**、DXC 负载"14 MiB"实为 **15.09 MiB**（`dxcompiler` 13.65 + `dxil` 1.44）⇒ 三者与 `dist3 − dist4 = 39.54 MiB` 现在能对上账。④ **"六套 Controls 样式约 10 MiB"是硬伤** —— 它比它所在的 `qml/`（9.22 MiB）还大，同一句话自己否决自己；实测 `Controls` 全树 **1234 文件 / 6.79 MiB**、六套样式目录 **1179 文件 / 5.96 MiB**、而 **`FluentWinUI3` 一套就 845 文件 / 4.98 MiB**，"下一刀砍哪"的坐标因此从"六套样式"精确到"一套样式"。⑤ **"DLL 根目录 29 个 / 54.2 MiB"含 exe 又不含 exe** —— 根目录实为 **32 个文件 / 54.24 MiB = 31 个 DLL（53.24）+ exe（1.00）**。有意不改的一类：V1.8 变更块里"992 行"那几处**是对 P6 时点的记录**，本版已在 §3.6 与 B.1 改成 1068。校验方式：脚本扫全文 **15 张表**的列数（0 处不符）、代码围栏配对（24 个标记 = 12 段）、粗体标记逐行奇偶（0 处不配对）、**附录 B.3 取证注意编号 1–31 连续**、**§10 条目源码顺序 1–9 连续**（正是 V1.8 栽过的那一类缺陷）、以及每条 `§N.M` 引用与本文标题求差集。
+
+**V1.10 变更**：spike 增量 9 = **P8 CI 串联跑完，M0 退出标准的另一半从"叙述"变成"一条命令"，判定「通过 —— 但这道门只能读日志内容，退出码在好坏两种包上都是 1」**。载体在 `spike/p7-package/` 里新增 `ci_local.cmd`（193 行，deps → build → deploy → 无头审计 → GUI 门 → 负对照 → 产物清单，任一环断链即 `exit /b 1`）与 `ci.yml`（94 行，hosted 提案），产物目录多一个 `dist-ci`、证据多一个 `logs-p8/`（10 份）。五条结论：
+
+- ① **GUI 模式下这个应用永不自行退出，而每一次 GUI 运行的退出码都是 1 —— 好坏包都一样**。实测：`dist9` 在净化环境里 t=30 s 就跑完 P1+P4 全套（套件正文 180 行，`taskkill` 后收尾追加 `exitlevel` 共 181 行），此后进程常驻不动（等待探针一路到 t=140 s 仍活着、**日志一行都不再增长**），`exitlevel` 只有从外部杀掉才拿得到；而 P7 归档的**六份** GUI 日志（`dist`/`dist2`/`dist4`/`dist5`/`dist8`/`dist9`）无一例外以 `exitlevel=1` 收尾。**⇒ 退出码在这个工程里不是信号，任何"看进程活没活/看退出码"的 CI 写法都会把好包判死、把坏包放过**。顺带查出一件让人不舒服的事：**五份"好包"的日志全部截在 59～91 行之间，没有一份跑到 P4 的第 3 档之后**（末行分别是 `4k-whole`/`4k-whole-copy`/`4k-whole-250ms` 的第 2～4 次提交，而 P4 是 10 档 × 12 次提交，完整套件 181 行）—— 门当时仍然成立只因为 `[P1] suite start`（第 25 行）与 `shaderStatus=0` 两行落在截断之前，但**"截得多早"本身是门的一个洞**。
+- ② **门的形态因此定型成"四条断言 + 一条完成标记"**（`ci_local.cmd` 步 5）：`[P1] suite start`（QML 真加载并实例化到会自己打点）、`[P1] DIM rects shaderStatus=0`（qrc 前缀 + `.qsb` 烘焙 + `ShaderEffect` 装载三件事在部署形态下仍对）、**`[P4] provider calls=`（新增 —— 套件跑到最后一行，堵住 ① 里那个洞）**、以及**反向断言 `is not installed` 必须不出现**（残废包打的原文就是这句）。第四条与反向断言各自挡掉一类假过：只考前两条，"UI 起来了但 overlay provider 没装上"的包能过；不考反向断言，就得靠人去读日志。
+- ③ **"看目录像不像样、看进程在不在、看退出码"三条常用判据在同一次运行里被同时证伪**：`ci_local.cmd dist gate-only` 跑 P7 那个不加 `--qmldir` 的残废包，输出 `step=audit status=pass`（插件、21 个读格式、`platforms/qwindows.dll` 全在）+ 三条 GUI 断言全 `MISSING` + `is not installed` `PRESENT` + `files=72 < 1300` ⇒ `verdict=FAIL exit=1`。**R14 从"我这么写"变成"一条命令当场演示"**，两份判决日志 `logs-p8/p8-verdict-pass-dist-ci.log` 与 `p8-verdict-fail-naive-dist.log` 互为正反。
+- ④ **时间与体积都落在能排期的量级**：整链 **140.2 s**（build 52 / deploy 17 / 无头审计 3 / GUI 门 64 / 负对照+清单 3），产物 **1316 文件 / 66.24 MiB / 0 条 windeployqt warning**，包内 `D3Dcompiler_47.dll` 4,173,928 B、md5 `b0ae3aa9…` 与 Qt 安装自带那份逐字节一致 ⇒ **P7 说的"vcvars 只该作用在 build 这一步"是被测出来的，不是被要求的**：`env.cmd` 的 `setlocal` 把 vcvars 关在子作用域里，而 rustc 的 msvc host 自己就能找到 `link.exe`，所以 hosted 那边甚至不必激活 vcvars，产物天然就是 66.24 这一档（`ci.yml` 里写成断言）。
+- ⑤ **hosted 那一半没跑过，本文不把它写成证据**：本目录至今不是 git 仓库、没有远端，`ci.yml` 是照本地已跑通的 `ci_local.cmd` 逐步对齐写的**提案**。两件事只有真 runner 能答，已立 **R15**：GUI 门能否在无桌面会话/无 GPU 的 runner 上活下来（包里 `--no-opengl-sw` 恰好关掉了软件 GL，这是 P7 主动做的体积取舍与 CI 能力之间的一处正面冲突），以及 runner 产物的 `d3dcompiler` 来源是否仍等于 Qt 自带那份。
+
+顺手修掉一处**精度缺陷**（不是内容变更）：§7.2 ④ 那句"逐字节相同（11 读 / 8 写）"里的 11/8 是 **12 行 `fmt_*` 探针**的命中数，而全量清单是 **21 readers / 17 writers**（本轮 CI 包的 `--audit` 又打了一遍这两个数）。两个数在原文里挨着放会被读成同一件事、进而与 §2.1 的 21/17 打架，四处引数已全部改写为"`fmt_*` 探针 11 读 / 8 写；全量 21 读 / 17 写"。
+
+联动修订共 **8 组**：① **文档头**（版本号 V1.10、修订日期、输入依据补 P8 的四个脚本与 `logs-p8/` 十份证据）；② **§0 定版行、§1 摘要、§2.2 载体句**三处把"CI 还没做"改为"本地半边已收口、只剩 hosted 待 git 化"；③ **§4-M0** 进度块加 **⑪**、"仍待做"里 CI 那半由"未落地"改为"本地已串通、hosted 待 git 化"、退出标准两半同时收口、A 段的 CI 条改按 `ci_local.cmd` 的实测写；④ **§7.2** 标题与载体行按 P7/P8 实物更新、② 改名（两行断言扩成四条加一条完成标记）、新增 **⑤ CI 串联（P8）**、"与安装器的边界"末段按实测更新；⑤ **§8** R14 补"好包与坏包的退出码同值"这条实测与"退出码不得作为断言"的结论、**新增 R15「CI runner 可能跑不了 GUI 门」**；⑥ **§9.1** 打包门的断言从两行改为四行 + 完成标记，并补"120 s 是上限而不是等待时长"与五条配套约束；⑦ **§10** 第 6 项 CI 侧按实测收口、第 8/9 项补交叉引用、**新增第 10 项**（P8 全貌）；⑧ **附录**：B.3 补取证注意 **32–38 条**（含 `goto`/标签的 `.cmd` 必须是 CRLF、GUI 档 `exitlevel` 不携带结论、`for /f` 吃内层引号、`start` 的嵌套引号、`timeout` 不能当 CI 的 sleep（stdin 重定向罢工 + Git 的 coreutils 抢名字）、`.cmd` 正文只用 ASCII、自动清理目录前必须先限定可删的名字）、B.4 清点新增脚本与产物（**十个 dist 目录**与 `logs-p8/` 十份）。**P8 没有动 `spike/hello-cxxqt/` 与 `spike/p5-audit/` 的任何源文件，所以附录 B.1/B.2 的清点与 C++ 行数合计不变（仍 20 个源文件 / 1068 行）。**
+
+**V1.11 变更**：spike 增量 10 = **P9「许可证与包内二进制的来源」跑完，判「通过 —— 第三方清单可以从本机离线生成，但许可证全文与两个二进制来源必须外部取得」**。这是 M0 剩下三条待办里唯一不需要外部条件的一条（另两条：hosted workflow 要先 git 化 + 一台真 runner，安装器选型要拍板），载体 `spike/p9-licenses/`（`collect.py` 201 行 + `qtdist_scan.py` 212 行 + `gen_notices.py` 139 行 + `provenance.py` 198 行 + `evidence/` 五份 + `licenses/` 92 份文本 + `out/THIRD-PARTY-NOTICES.md` 958 行草稿）。五条结论：
+
+- ① **`licenses/` 缺的是「全文」，不缺「清单」**：aqt 装的 Qt 树里带 `sbom/` 共 20 个文件 / 39.52 MiB，其中 7 份 `*.spdx.json` 合计 **343 条 package 记录**（qtbase 136 / qtdeclarative 144 / qttools 36 / qtimageformats 9 / qtshadertools 8 / qtsvg 7 / qttranslations 3），每条都带 `name`/`versionInfo`/`licenseConcluded`/`licenseDeclared`/`copyrightText`，7 份 SBOM 合计 **12 条 `hasExtractedLicensingInfos`，12 条全部带非空 `extractedText`**（字段名是 `extractedText`，按 `licenseText` 去读会全部读成空串），覆盖 **6 个不同 LicenseRef id**：qtbase 5 段（PCRE2 二进制例外 1,852 字符、ICC 463、Qt-Commercial 462、Lcs-Telegraphics 139、SHA1 公有领域 144）+ qtshadertools 的 `LicenseRef-MIT-Khronos-old` 1,304；`LicenseRef-Qt-Commercial` 在 7 份 SBOM 里各出现一次⇒ **`gen_notices.py` 已经把它们渲染成 958 行第三方声明草稿**，R9 里那句「没有工具会替我做」现在要收窄成「清单有现成的机器可读源，全文没有」。
+- ② **V1.9 那条「整棵 Qt 安装树只有 5 个许可证同名文件」被逐文件复核成立**：10,495 个文件里按严格命名判据只有 `lib/cmake/Qt6/3rdparty/{extra-cmake-modules,kwin}/COPYING-CMAKE-SCRIPTS`（各 1,349 B）、`lib/cmake/Qt6/QtPublicSbomLicenseHelpers.cmake`（3,391 B）、`share/qt6/wayland/protocols/MIT_LICENSE.txt`（1,073 B）、`share/qt6/wayland/protocols/text-input/v2/HPND_LICENSE.txt`（1,115 B）—— **三个是 CMake 管道、两个是 wayland 协议 XML 的附带声明，没有一个覆盖 Qt 库本体**。放宽到「文件名带许可证语义」（把 7 份 SBOM JSON 与 34 份 `REUSE.toml` 算进来）是 49 个 / 11.52 MiB，其中 11.3 MiB 是 SBOM 本身。标准 SPDX id 共 **32 个**（外加 6 个 LicenseRef）。逐个拿去和本地「许可证命名文件」对：脚本判 **21 个无本地全文**，剩下 11 个「有匹配」里 **8 个是文件名撞词的假命中**（`Unicode-3.0`→`include/QtHarfbuzz/harfbuzz/hb-unicode.h`、`Zlib`→`include/QtZlib/zlib.h`、`X11`→`FindXKB_COMMON_X11.cmake`、`Libpng`/`libpng-2.0`→`mkspecs/modules/qt_ext_libpng.pri`、`MPL-2.0`→Rust 侧 `thiserror-impl-LICENSE-APACHE`、`GPL-2.0-or-later`/`GPL-3.0-or-later`→`LGPL-2.1-or-later.txt`），站得住的只有 3 个（`Apache-2.0`、`MIT`、`HPND`）⇒ **真正要外部取得的全文是 29 个 id，21 只是严格命名口径的下限**；那 21 个里还混着 `NOASSERTION`（不是许可证，是"未声明"）与 `blessing`（`QSQLiteDriverPlugin_Attribution_sqlite` 的 `licenseConcluded` 字面值就是这个词）。命中次数前三是 `GPL-3.0-only` 242、`GPL-2.0-only` 190、`LGPL-3.0-only` 186。
+- ③ **Rust 侧自动化可行，但运行时闭包里仍有 4 个 crate 没有许可证全文**：`cargo metadata --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc` 给出 **53 个包（根 + 52 个依赖）**，按 `resolve.nodes[].deps[].dep_kinds` 走闭包得到 **运行时 34、纯构建期 18、dev 0**（顶层 `deps[].kind` 对普通依赖是 `null`，拿它当 `normal` 会算错；本轮先算出过一版"运行时 52、构建期 24"，52+24=76 已经大于图里全部 52 个非根包，**算术上不可能，是桶重叠的产物** —— 自检一条：分桶之和必须等于非根包数，34+18=52 才对）。34 个运行时 crate **全部带 SPDX `license` 字段、全部宽松许可、零 copyleft**，7 种表达式：`MIT OR Apache-2.0` 26 / `Apache-2.0 OR MIT` 2 / `Unlicense OR MIT` 2 / `Apache-2.0` 1 / `MIT` 1 / `Zlib` 1 / `(MIT OR Apache-2.0) AND Unicode-3.0` 1。从本地 registry 缓存抓到 **92 份许可证文件、按 sha256 去重只剩 28 份不同文本**（同一份 MIT 重复 22 次、Apache 21 次）⇒ `licenses/` 的 Rust 部分是 432,717 B 量级的事（脚本自报 "copied 94" 与目录实测 92 差 2 ⇒ **计数以目录为准，不采信脚本自己的 tally**）。**整个依赖图有 7 个 crate 的发布包里没有任何许可证文件，落在运行时闭包内的是 4 个**：`cxx-qt`、`cxx-qt-lib`、`cxx-qt-macro`、`cxx-qt-gen`（都标 MIT OR Apache-2.0）；另外 3 个（`cxx-qt-build`、`qt-build-utils`、`codespan-reporting`）只在构建期桶里，不随包分发但同样是声明材料的一部分。直接列它们的解包目录，只有 `Cargo.toml`/`Cargo.lock`/`README.md`/`build.rs`/`src/` ⇒ **必须自备一份规范 MIT + 一份 Apache-2.0 兜底**，「整条链交给 `cargo-about` 一类的工具就完事」在本机不成立。
+- ④ **包里有一个谁都没声明的 Windows 系统二进制**：`dist-ci` 的 73 个 DLL 中，与 `C:/Windows/System32` 同名文件**逐字节相同的恰好 1 个 = `icuuc.dll`（36,864 B，md5 `be9504ec…`，文件日期 2026-02-13）**；同名而不同字的也恰好 1 个 = `D3Dcompiler_47.dll`（P7 已证它来自 Qt 自带那份）；其余 71 个在 System32 里没有对应物。而 `icuuc.dll` **不在 Qt 安装树的任何位置**（整棵树唯一带 “icu” 的名字是 `include/QtCore/QBasicUtf8StringView`）、**不在 windeployqt 自己的 `To be deployed` 清单里**（`p8-deploy.log:76` 只有一句裸的 `Updating icuuc.dll.`）、**不在那 343 条 SBOM 记录里的任何一条**，**却确实是 `Qt6Core.dll` 的 PE 导入表点名的依赖**（解析出 29 项导入，含 `icuuc.dll`）⇒ 我们随包再分发了一份微软系统二进制，其许可证材料、来源与可替换性都不在任何现有清单上，且换一台构建机就会复制那台机器的 ICU ⇒ **新立 R16**。
+- ⑤ **`--no-compiler-runtime` 那步退让现在有了导入表背书**：包内没有任何 MSVC 运行时 DLL，而 `Qt6Core`/`Qt6Gui` 的导入表点名要 `MSVCP140.dll`/`MSVCP140_1.dll`/`MSVCP140_2.dll`/`VCRUNTIME140.dll`/`VCRUNTIME140_1.dll` 与 9 个 `api-ms-win-crt-*` —— 本机 GUI 门能过，只是因为这台机器装了 VS 2022 Community 且净化门保留 System32 在 PATH 上 ⇒ **「安装器必须负责 vc_redist」不是偏好而是硬要求**；本机可直接取用的那份在 `C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Redist/MSVC/14.44.35112/vc_redist.x64.exe`，**25,635,768 B = 24.45 MiB**，与 P7 量的 `--compiler-runtime` 产物同尺寸。
+
+联动修订共 **6 组**：**§4-M0** 进度块加 **⑫**、退出标准与「仍待做」里 `licenses/` 那条按实测收窄；**§7.2** 新增 **⑥ 许可证与包内二进制来源（P9）**、「与安装器的边界」末段把三件待办改成两件 + 一条新风险；**§8** R9 整行重写（清单可生成 / 全文 29 个 id 待取 / Rust 侧运行时 34 个 crate、28 份去重文本、4 个洞）、R14 补「同尺寸不同来源」这条实测、**新增 R16「包里混入无声明的系统二进制与未声明的运行时依赖」**；**§10** **新增第 11 项**（P9 全貌）并把 `licenses/` 从「无归属」改判为「有脚本、缺全文、待指派」；**附录 B.3** 补取证注意 **39–44 条**（短词根匹配子串会假阳性、SBOM 字段名是 `hasExtractedLicensingInfos` 复数、`cargo metadata` 的 `deps[].kind` 对普通依赖是 null 要看 `dep_kinds`、md5 同名比对要区分「相同/不同/无对应物」三档、PE 导入表要自己解析而不是搜字符串、许可证文本要按内容去重而不是按文件名）；**新增附录 B.5** `spike/p9-licenses/` 载体清点（四个脚本 750 行、五份 evidence、92 份文本、958 行草稿）与 §B.3 的 39–44 条同批；**§0/§1/§2.2** 的「M0 剩三件」同步改为「剩两件 + 一条新风险」。
+
+**本轮自纠四处**（都是同一天内重跑抓出来的，不是留给下一版的事）：① Rust 闭包先算成"运行时 52 / 纯构建期 24"，**两桶之和 76 已大于图里全部 52 个非根包**，按 `resolve.nodes[].deps[].dep_kinds` 修正为 **运行时 34 / 构建期 18 / dev 0**（34+18=52 才对）；② "21 个 SPDX id 本地无全文"只是脚本口径的下限 —— 对 32 个标准 id 逐个复核"匹配到的到底是什么"，发现 11 个"有匹配"里 **8 个是文件名撞词**（`Zlib`→`include/QtZlib/zlib.h`、`Unicode-3.0`→`hb-unicode.h`、`MPL-2.0`→Rust 侧 `LICENSE-APACHE`、`GPL-*-or-later`→`LGPL-2.1-or-later.txt`），**真正要外部取得的是 29 个 id，可辩护的本地全文只有 3 个**；③ LicenseRef 全文的字段是 **`extractedText`**，按 `licenseText` 去读会把 12 条全部读成空串 —— 实际是 **12 条记录 / 6 个 LicenseRef id**，不是"qtbase 5 段"；④ 无文本的 crate "7 个"跨了两个桶，**落在运行时闭包内的只有 4 个**（`cxx-qt` 家族），另 3 个只在构建期。四处都已回写正文（§7.2 ⑥、§4-M0 ⑫、§10 第 11 项、§8-R9），教训落成 §B.3 第 **39–41 条与第 44 条**；并新增第四个脚本 `provenance.py`（198 行）与 `evidence/binary-provenance.txt`（54 行）—— **三档 md5 与 PE 导入表的全部数字自此由它出具，不再靠会话里的临时命令**。
+
+---
+
+## 0. 三项决策定版（D1/D2/D3 + spike 复核）
+
+
+
+| # | 技术方案原表述 | 核验结论 | 处置 |
+|---|---|---|---|
+| **D1** | §3.1 用 QML 实现截图工具栏、标注工具栏、`PinWindow.qml` | 遮罩/贴图/标注是绘制延迟敏感面，业界证据（Flameshot 31k★、ksnip 3.3k★）用 QWidget + QPainter；**已知的 Rust+Qt 截图/贴图工具数量为 0**，无先例可抄 | **✅ 已定：走 QML**。风险以 M0 的量化探针 + 明确降级点承接（见 §4-M0、R11） |
+| **D2** | §6 示例用 `#[cxx_qt::bridge]` + `#[qinvokable]` + QML 侧 `startCapture()` | CXX-Qt 0.10.0（2026-08-24）仍在维护，但声明必须写进 `extern "RustQt"`、`#[qproperty(TYPE, NAME)]` 挂在类型别名上、**0.7 起取消 camelCase 自动转换**（示例的 `startCapture()` 会静默失效）。技术方案设想的"Qt 官方 Rust 绑定 `qt_core`/`qt_gui`/`qt_quick`"不存在——`qt_core` 停在 0.5.0（2020），`qt_quick` 从未发布；Qt 公司真实产品 `qtbridge` 是 0.3.0-beta 且自身依赖 `cxx-qt 0.10`，`gui` 模块只绑了 `QGuiApplication` | **✅ 采用 CXX-Qt 0.10.0**（走 QML 后它仍是唯一活跃且胜任的选择）。技术方案 §6 整节按 §3.7 的正确写法重写；`qtbridge`/`rust-qt` 一律不作为选型依据 |
+| **D3** | §10.2 自行调用 Win32 实现分层/穿透/置顶 | Qt 的 Windows 平台插件已实现：`WS_EX_LAYERED` 由 frameless+alpha/`opacity<1`/`WindowTransparentForInput` 推导，`WS_EX_TRANSPARENT` 由 `WindowTransparentForInput` 得到，`Qt::WindowStaysOnTopHint` 与 `QWindow::opacity` 可直接设 | **✅ 成立**。原生 Win32 调用缩到 3 处（DWM 边界、`RealWindowFromPoint`、`WDA_EXCLUDEFROMCAPTURE` 可选）。鼠标穿透从 Phase 2 提回 MVP（M2）。**但见 §3.6：QWindow 未被绑定，必须靠 shim。** **已实测（P3）**：`exStyle=0x80028`，LAYERED/TRANSPARENT/TOPMOST 同时为 1，推导链在 Qt 6.10.1 上成立。**P5 更正三处引用**：`RealWindowFromPoint` 在本机 `user32` 无此导出且 `windows` 0.62.2 未绑定 ⇒ 窗口命中改走**已实测可用**的 `WindowFromPoint` + `GetAncestor(GA_ROOT)`（穿透窗本来就跳过）；DWM 边界**不需要 shim**，`xcap::Window::bounds()` 已经就是 `DWMWA_EXTENDED_FRAME_BOUNDS`。剩下的原生调用只有 1 处必做（`WDA_EXCLUDEFROMCAPTURE` 仍是可选增强）。**P6 给这最后一处开了一个问号**：实测**屏幕 DC 的 GDI `BitBlt` 本来就读不到自家 Qt Quick 窗**（`1.000/1.000/1.000`，而 `grabWindow()` 读出 `0.400`）⇒ 如果四路采集都看不见自家窗，那这条"排除出自家窗"的增强在遮罩路径上就是多余的，它真正的用武之地变成**贴图窗**（见 R13，M1 出能力矩阵） |
+| **定版** | — | 我原先建议 v1 纯 Widgets、工期可省约 2–3 周。你选了 QML，工期与风险同时上升。**M0 spike 已把结构性风险清掉（构建链 + 三者共存 + 边界成本），D1/D2/D3 定版**；**P1（2026-10-05）与 P4（同日）已把三类延迟敏感面里最重的两面量化完，结论都是"越线的不是 QML"**（P1：冷启动 + 采集 API；P4：无越线项，图元提交与"什么都不画"同档）。**⇒ 全线 QML 的选择现在有两道实测背书，§4 的混合方案（遮罩+画布改 `QWidget`）可以正式判定不启动** | 按本文件推进 M1/M4。~~M0 只剩 P2（多屏异 DPI）与 P5（依赖能力审计）两张表未填~~ **P5 已于 2026-10-05 出数并通过**（增量 6）：**xcap 物理取帧可用、7 个导入格式全部保住、采集侧对照提前定案为"GDI 首选、WGC 不提速"**，同时**买出三条改写**：`RealWindowFromPoint` 作废、"系统原始圆角"删出承诺范围、位图编码禁走 `QImage::save`。P2 判为**硬件阻塞**（本机单屏），不是能力结论。**⇒ M0 的五张探针表就此只剩打包与 P2 两个尾巴，且都不再关于"选型对不对"**。~~`ShaderEffect` 变体仍欠一轮复跑（本机缺 `qtshadertools`/`glslc`，补装需授权）~~ **P6 已补测并通过（同日增量 7）**：授权补装后 `qsb` 单独就能烘着色器（`glslc` 本就不随模块发行），`ShaderEffect` 单趟变体在默认 RHI 上 `status=Compiled`、与 4-`Rectangle` 档在 `REVEAL`/`DRAG-FRAME` 上不可分辨，且像素级验收证明洞的位置**逐设备像素正确**。**M0 的选型问题至此全部有实测答案。剩下的两条尾巴（打包与 CI）已依次收口**：P7 给出 `deploy.cmd` + 净化环境门（§7.2 ①–④），P8 把它们与门、负对照、产物清单串成一条 `ci_local.cmd` 并跑出 `verdict=PASS steps=7`（§7.2 ⑤）。**M0 现在只剩两件待办，外加一条 P9 新开的风险**：hosted workflow（要先 git 化 + 一台真 runner，R15）与安装器选型（它现在多一条必须项：装 `vc_redist`）；`licenses/`（R9）那条同日拆开 —— **清单侧已成可重跑脚本，全文侧是一次外部取得 + 一次指派**；新立 **R16**：包里会混进谁都没声明的系统二进制（`icuuc.dll` 与 System32 那份逐字节相同），而包里一个 MSVC 运行时都没有（§7.2 ⑥、§10 第 11 项） |
+
+---
+
+## 1. 结论摘要
+
+- **形态**：Qt 6 + QML/Qt Quick 承担全部界面与三类关键窗口；Rust 拥有领域模型、图像算法、历史、配置、并发；CXX-Qt 0.10 做 QObject/property/signal/model 桥接；**外加一层强制 C++ shim**（QWindow/QQuickWindow/场景图纹理/GDI 采集均未被绑定，绕不过去）。体量按 spike 实测改为 **900–1200 行**（原估 300 行偏低；四个 shim 到 P6 已到 **992 行**，而托盘/`ExternalTextureItem` 还没写，见 §3.6）。
+- **节奏**：M0–M5 串行。M1 结束"能截到图并复制"，M2 结束"能贴回屏幕"，两者合起来即可发精简版。
+- **~~最大风险是构建链~~ —— 已于 2026-10-04 排除**：Qt 6.10.1 + MSVC + CXX-Qt 代码生成 + Cargo 已在 `spike/hello-cxxqt/` 跑通，且**不需要 CMake**（原以为六方交汇最难的一环，Cargo 单路径即可）。选型正式定版，剩余构建风险只有增量编译 33–46 s（R1）。踩出来的三条硬约束（`cxx`/`cxx-gen` 锁步、shim 需显式 Win32 导入库、Qt 6.10 alpha API 改名）都记进 §2.2 与 §3.6。
+- **~~现在的最大风险是遮罩与标注画布的 QML 渲染延迟~~ —— 两面都已量化并排除**（遮罩半边见 P1，2026-10-05 §3.5①：单纹理每 session 上传一次、provider 1 µs、稳态 QML 侧仅 28–57 ms、事件环从不饱和；**标注半边见 P4，同日 §3.5②：4K 图层上单图元提交与"什么都不画"参照档同档，`work~` 1–5 ms，三后端 + debug 四份数据一致**）。**⇒ 全线 QML 的两道最贵风险已付清，混合方案降级不需要二次拍板。** 剩余未知数不再关于延迟，也不再关于能力：~~两张表未填 —— P2 多屏异 DPI 与 P5 依赖能力审计~~ **P5 已于 2026-10-05 出数并通过**（§2.1 + §4-M0 增量 6），**P2 判为硬件阻塞**（本机单屏，非"不通过"）。只剩一条尾巴~~：`ShaderEffect` 变体因本机缺 `glslc`/`qtshadertools` 未测（影响遮罩视觉方案，补装需授权；已探明 `QtQuick.Effects`/`QtQuick.Shapes` 两条 qsb-free 备选在盘上）~~ **⇒ 该尾巴已于 2026-10-05 P6 收掉**（授权补装两模块后复跑：`qsb` 不需要 `glslc` 就能烘 `.qsb`，`ShaderEffect` 单趟变体编译通过、延迟与 4-`Rectangle` 档不可分辨、挖洞位置逐设备像素正确；见 §3.5① ⑧）。~~**M0 现在只剩一条尾巴：打包脚本 + CI。**~~ **这两条尾巴已依次收口：P7（2026-10-06）交付 `deploy.cmd` + 净化环境门，P8（同日）把它们与门、负对照、产物清单串成一条 `ci_local.cmd` 并跑出 `verdict=PASS steps=7`（§7.2 ⑤）。M0 剩下两件待办而不是未知数：hosted workflow（要先 git 化 + 一台真 runner，R15）、安装器选型（现在还要负责装 `vc_redist`）；`licenses/`（R9）同日由 P9 拆开成"清单可重跑 + 全文待外部取得 + 待指派"，并新立 **R16**（包内混入无声明的系统二进制、包内缺全部 MSVC 运行时，§7.2 ⑥、§10 第 11 项）。**P1 真正换来的两条与 QML 无关的瓶颈仍然有效：**冷启动首帧 +62~117 ms** 与 **BitBlt 46–55 ms（4K 外推 60–85 ms）**，对应 M1 两条前置动作（遮罩窗开机预热、采集侧 WGC/DXGI 对照）。**P4 换来的是一条 M4 前置约束**：整层位图重挂必须先释放再重载（§3.6 约束 8）。已排除的结构性风险另有"三者共存"（P3）。处置仍是把"每帧必须做什么"写死成约束（§3.5）——冻结画面纹理一次上传、选区挖洞走单个 ShaderEffect、标注层由 Rust 栅格化后走脏矩形纹理、进行中笔迹只在 QML 本地预览，禁止 `Canvas`。
+- **MVP 明确不含**：OCR/二维码、标注重编辑与逐对象变换、GIF/APNG、多选/分组/Solo、虚拟桌面、原生分享、界面元素层级检测、热区、命令行接口、macOS/Linux。逐项理由见 §5。
+- **P5（2026-10-05）在产品可见面上留下三条改动**：① **格式清单不用删** —— PRD §5.8.3 的 7 个导入格式与 §5.5.5 的保存下限在 Rust `image` 上逐条实测通过，代价是立一条规则"**所有位图编码走 Rust，禁 `QImage::save`**"（补装插件前 Qt 写不出 TGA/TIFF/GIF/WebP；**P6 补齐后仍写不出 TGA/GIF**，所以这条不松动，见 §3.3）；② **"使用系统窗口原始圆角"这条承诺删除** —— 系统只给 4 值枚举不给半径，且采集帧全不透明，改为我们自己 mask + 可配半径；③ **窗口命中测试改用 `WindowFromPoint`** —— `RealWindowFromPoint` 在本机根本不存在。另有一条工程结论值得早说：**Windows Graphics Capture 不是延迟解药**（首帧慢 6.7 倍、局部区域慢 3 倍），M1 的采集侧对照因此聚焦 DXGI duplication 而不是 WGC。
+- **P6（2026-10-05）在产品可见面上留下一条待答、一条定案**：**待答** —— **我们自己的 Qt Quick 窗口可能进不了采集链路**（GDI 屏幕 DC 读不到遮罩窗，`1.000/1.000/1.000`；场景图 `grabWindow()` 读得到）。这不推翻任何选型，但它决定**"贴图窗能不能被再截一次""遮罩期再截屏的语义"这类用户可见承诺**，所以列为 R13 并把四路对照（GDI / WGC / `PrintWindow` / DXGI duplication）排进 M1；**定案** —— 遮罩的变暗 + 挖洞**用单个 `ShaderEffect`**，且**不是因为它快**（与 4-`Rectangle` 档在四档指标上不可分辨），而是因为圆角选区/多段选区/羽化边这类形状 `Rectangle` 拼图表达不了；同时保留 4-`Rectangle` 作 `software` 兜底档的回退画法。工程侧净收益一条：**着色器烘焙进 Cargo 路径只需 `qsb`，`glslc` 与 CMake 都不需要**，所以 QML 侧的自定义视觉效果从此不在构建链的风险清单上。
+- **粗量级**（单人工作日，非承诺）：M0 5–8 · M1 7–10 · M2 6–9 · M3 7–11 · M4 18–28 · M5 9–13，合计 **52–79 工作日 ≈ 10–16 周**（QML 决策相对 Widgets 方案多约 2–3 周，主要落在 M0 与 M4）。M4（标注）占 **约 35%**（18–28 / 52–79）。*（本次一致性通读修正：合计原写"9–12 周"，那是 V1.1 上调 30% **之前**的分项之和；分项已改、总数漏改。）*
+
+---
+
+## 2. 技术选型定版
+
+### 2.1 依赖清单
+
+| 能力 | 选型 | 成熟度 | 备注 |
+|---|---|---|---|
+| UI / 窗口 | Qt 6 QML + Qt Quick + Qt Quick Controls 2 | solid | **实测环境钉在 6.10.1 msvc2022_64**（aqt 目录名是 `msvc2022_64`，不是 `win64_msvc2022_64`）。`QQuickWindow.devicePixelRatio` 自 6.11 才暴露，若要用需升版本 |
+| Rust↔Qt 桥接 | **CXX-Qt 0.10.0** + `cxx-qt-lib`(feature `qt_full`) + `CxxQtBuilder::cpp_file` | usable（0.x，需锁版本） | Qt 支持 5.15 LTS 与全部 Qt 6；**Cargo 可完全主导构建，不需要 CMake**（spike 已验证）。**`cxx` 与 `cxx-gen` 必须锁步**，见 §2.2 |
+| 原生窗口 shim | 自研 C++（`qshim.cpp`） | — | **必需**，见 §3.6 |
+| 屏幕/窗口捕获 | `xcap` 0.9.8（GDI 为默认路径，**`wgc` 是可选 feature**） | **P5 已实测可用**（2026-10-05） | 物理分辨率取帧成立：`Monitor::width/height` = 物理 3072×1920（非 DIP），取帧与 `geom()` 逐像素相等，`scale_factor=2.000`。**但 `wgc` feature 不是提速项**：首帧 952.6 ms vs GDI 142.4 ms，稳态四次 66.8/68.4/89.3 vs 75.0/86.6/99.1，**512×512 局部取帧 55.1 vs 17.9 ms**（WGC 每次拿整帧）。⇒ **默认路径就是首选路径**，WGC 只在需要"窗口图恰好等于 DWM 边界"时开。Win11 圆角**不**原生入图，见下方"圆角"行 |
+| 逐窗捕获兜底 | `PrintWindow` + `PW_RENDERFULLCONTENT` | usable | 翻转模型/DXGI swapchain（游戏、部分 Electron）必为黑/残缺。**P5 实测**：尺寸会漂（3059×1811、3041×1811 vs DWM 的 3072×1824），且有一次 **513 ms** 离群 ⇒ 兜底路径不能假定"与主路径同尺寸"，输出前按请求几何裁剪 |
+| 窗口枚举与几何 | `xcap::Window::all()` + `windows` `WindowFromPoint`/`GetAncestor(GA_ROOT)` | **P5 已实测** | **`Window::bounds()` 已经是 `DWMWA_EXTENDED_FRAME_BOUNDS`**（3072×1824），原计划的"手工取 DWM 边界、不用 `GetWindowRect`"这条义务由依赖代劳（`GetWindowRect` 给 3098×1850，含 13 px 不可见收缩边）。枚举 10–11 窗 0.1–3.9 ms，`z()` 0.07–0.53 ms/窗。**~~`RealWindowFromPoint`~~ 作废**：本机 10.0.26200 的 `user32` 无此导出，`windows` 0.62.2 也未绑定；实测 **`WindowFromPoint` 自己就会跳过 `WS_EX_TRANSPARENT` 的分层置顶窗**，够用于窗口选取（z 序回退遍历 0.8–1.6 ms 命中） |
+| 全局热键 | `global-hotkey` 0.8（`RegisterHotKey`） | solid（**P5 依赖解析通过**） | **独占一条带消息泵线程**；不用 `rdev`（LL hook 拖慢全系统） |
+| 托盘 | `QSystemTrayIcon`（经 shim 暴露给 QML，或保留最小 C++ 宿主） | solid | 不引入 `tray-icon`（P5：0.19 能解析，但按 D3 决定不用） |
+| 编解码 | `image` 0.25.10 + `zune-jpeg` 0.5 | **P5 已实测 + P6 复核** | PRD §5.8.3 导入 7 格式（PNG/JPG/BMP/TGA/ICO/TIFF/GIF）与 §5.5.5 保存下限（PNG/JPG/BMP）**逐条 enc+decode 全过**，不依赖任何 Qt 插件。三条限制：**ICO 编码器只收 `1..=256`**（300×200 直接报错 ⇒ 存图标先缩放）；DDS 无编码器；HDR/EXR/Farbfeld 拒 `Rgba8`（后两者不在 PRD 内）。**架构规则：落盘与剪贴板的位图编码一律走 Rust `image`，禁止 `QImage::save`** —— 补装 `qtimageformats` 前 Qt 写入器只有 BMP/CUR/ICO/JFIF/JPEG/JPG/PBM/PGM/PNG/PPM/XBM/XPM，**TGA/TIFF/GIF/WebP 一个都写不出**。**P6 补装后写得出 TIF/TIFF/WEBP/ICNS/WBMP，但 `TGA` 与 `GIF` 仍是只读**（`fmt_tga=reader=1 writer=0`、`fmt_gif=reader=1 writer=0`）⇒ **这条规则不因补装而松动，只是理由从"能力缺失"变成"能力不齐 + 不依赖插件"**。导入侧 readers 15 → 21（+ICNS/TGA/TIF/TIFF/WBMP/WEBP） |
+| 动图（Phase 2） | `gif` 0.14 + WinRT `BitmapDecoder`（APNG） | usable（**P5 依赖解析通过**） | `image` 无 APNG。**§2.1 原记的 `apng 0.4` 不存在** —— 最新是 **0.3.4**（也不是 stale，是版本号写错）。`gif` 0.14 可解析；`image` 自身的 GIF 编码只出静图 |
+| 马赛克/模糊 | 自研最近邻降采样 + 可分离 O(n) box blur + `rayon` | solid | `imageproc` 无快速 box blur，不引 |
+| 存储 | `rusqlite` 0.40 + `bundled` | solid | 零运行时依赖 |
+| 配置 | `toml_edit` 0.25 + `serde` | solid | 选 `toml_edit` 保用户注释往返 |
+| 原子写 | `atomic-write-file` 0.3 | solid | PRD §7.2 断电安全 |
+| 用户目录 | `directories` 6.0 | solid | |
+| Win32 | `windows` 0.62.2（**锁死**） | solid（**P5 依赖解析通过**） | 每个 0.x 都是 breaking，禁 caret 依赖。P5 实测：`Win32_Graphics_Dwm`/`HiDpi`/`WindowsAndMessaging` 够用，但 **`RealWindowFromPoint` 未绑定**（系统里也没有这个导出） |
+| 圆角 / DWM 几何 | `DwmGetWindowAttribute`（经 `windows` crate，**不需要 shim**） | **P5 已实测：能力不足** | `DWMWA_EXTENDED_FRAME_BOUNDS` 6/6 可读且与 xcap 的 `bounds()` 一致 ⇒ **几何这条通了**。圆角那条**不通**：`DWMWA_WINDOW_CORNER_PREFERENCE` 虽 4/4 可读，但是**只有 4 个枚举值（Default/DontRound/Round/RoundSmall），系统不暴露像素半径**；且两条采集路径返回的帧**采样点全部 alpha=255** ⇒ **PRD §5.5.6 的"使用系统窗口原始圆角"不能实现为"读系统的"，只能自 mask**（半径作可配置常量，默认档在 M3 定）。同一条事实顺带否掉了 §2.1 原先"Win11 DWM 圆角原生入图"那句 |
+| **Qt 安装组件完整性** | `aqt install-qt … --modules …` | **P5 实测缺两件 → P6 已补齐并复核实测通过** | P5 那轮缺的是 `qtimageformats` 与 `qtshadertools`。**P6 按用户授权补装后逐项复核**（`python -m aqt install-qt windows desktop 6.10.1 win64_msvc2022_64 -m qtshadertools qtimageformats --outputdir C:/Users/baiyl3/dev/qt`，523.5 s，写进既有目录、不动已装文件）：`qsb_exe` **NO→yes**、`Qt6ShaderTools.dll` **NO→yes@bin**、imageformats 插件 4 对 → **9 对**、readers 15→21 / writers 12→17。**但 `glslc_exe` 仍是 NO** —— `qtshadertools` 在 Windows 上**根本不随包发 `glslc`**（与 `aqt list-tool windows desktop` 里没有该条目一致），原记的"装完要核实 glslc 是否随模块发行"就此有了答案：**不发行，而且也不需要**，`qsb --qt6` 自带烘焙（见 §3.5①⑥）。仍**未装**的只有 `qtquickeffectmaker`（P6 实测无需）。P5 那句"缺 `qtshadertools` ⇒ `ShaderEffect` 变体欠测"已作废，该变体已于 2026-10-05 补测通过。**另有一条取证坑**：`--audit` 里 `tiff_plugin_dll=NO` / `webp_plugin_dll=NO` 是**假阴性** —— 那两个探针只在 `bin/` 找，而插件在 `plugins/imageformats/`（同一份日志的 `imageformats_dir` 就列着 `qtiff.dll`/`qwebp.dll`），与 §2.2 的"librariesPath vs binariesPath"同一类错误 |
+| OCR（Phase 2） | `Windows.Media.Ocr`（零下载）+ PP-OCRv5 ONNX / `ort` 2.0-rc（可选包） | usable | `oxiquote` 不存在；`leptess`/`tesseract` 中文弱且 stale |
+| 条码（Phase 2） | `rxing` 0.9（QR+一维，吃内存亮度缓冲） | usable | 避开 LGPL-3.0 的 `zedbar` |
+
+### 2.2 版本锁定动作（M0 内完成）
+
+Rust toolchain、Qt 小版本与组件集、CXX-Qt/cxx-qt-lib/cxx、CMake、MSVC 工具集，写进 `rust-toolchain.toml` / `Cargo.toml` + `Cargo.lock` / CI matrix（构建改为 Cargo 主导后，版本锁的事实来源是 Cargo.lock 而非 `CMakeLists.txt`，见 §7.1）；`setup → build → package` 固化为一条可重跑脚本（**P7/P8 的实物是三件：`deploy.cmd` + `run_clean.cmd` + `ci_local.cmd`，见 §7.2**）。**`package` 之后那一格（声明与来源）P9 也做成了可重跑脚本**：`spike/p9-licenses/` 四个脚本 750 行，一头出 958 行 `THIRD-PARTY-NOTICES.md` 草稿（343 条 SBOM 记录 + 12 条内嵌 LicenseRef 全文），一头把包内 73 个 DLL 与 System32 做三档来源比对（§7.2 ⑥、§8-R9/R16、§B.5）；**但许可全文本身与 `vc_redist` 不在脚本能力圈内**，前者要外部取、后者归安装器。技术方案 §6.2 的 `QMAKE` 环境变量约定保留。
+
+**spike 已定版并验证的组合**（2026-10-04）：
+
+| 件 | 值 | 锁法 |
+|---|---|---|
+| Qt | 6.10.1，模块 qtbase/qtdeclarative/qtsvg/qttools **+ qtshadertools + qtimageformats** | **一条可重跑命令**：`aqt install-qt windows desktop 6.10.1 win64_msvc2022_64 -m qtshadertools qtimageformats --outputdir <前缀>`（P6 实测 523.5 s，对既有树是增量写入，装完原套件仍能编译运行）。**P5 曾判"组件集不齐"，P6 已补齐并复核**：装完必须**验文件而不是验清单**，CI 断言四条 —— `bin/qsb.exe` 存在、`bin/Qt6ShaderTools.dll` 存在、`plugins/imageformats/` 里 `qtiff.dll`/`qwebp.dll`/`qtga.dll`/`qgif.dll` 在、`plugins/platforms/qwindows.dll` 在。**`glslc` 不在断言里，因为 `qtshadertools` 在 Windows 上根本不发行它**（P6 实测 `glslc_exe=NO` 而 `qsb_exe=yes`，`qsb --qt6` 自带烘焙，见 §3.5①⑥）；`aqt list-tool windows desktop` 里也没有独立 glslc 条目 ⇒ 谁写脚本时把 glslc 当成必装项，就会把一个不存在的需求变成构建红灯 |
+| MSVC 工具集 | 14.44.35207（VS2022 Community） | `vcvarsall.bat x64` 前置 |
+| rustup host | **`x86_64-pc-windows-msvc`** | `rust-toolchain.toml` 强制；本机默认 gnu host 链不上 Qt 的 MSVC 目标文件 |
+| CXX-Qt | 0.10.0（cxx-qt / -lib / -build / -gen） | Cargo.toml |
+| **cxx / cxx-gen** | **必须成对 `=1.0.176` / `=0.7.176`** | 见下 |
+| CMake / Ninja | VS 自带 3.31.6 / 1.12.1 | 免额外安装 |
+
+**`cxx` 版本陷阱（本次最贵的一个坑，务必进 CI 约束）**：`cxx` 与 `cxx-gen` 同源同步发布（`cxx 1.0.N` ↔ `cxx-gen 0.7.N`），生成的 C++/Rust 符号名只在两者同号时对齐。
+
+- 放任解析到 `cxx 1.0.202`（cxx-qt 0.10.0 只写 `cxx = "1.0"`，caret 会自动飘上去）→ `#[cxx_qt::bridge]` **宏展开阶段**就失败：`error: non-foreign item macro in foreign item position: include`，指向 `include!("cxx-qt-lib/qstring.h")`，且伴随一条指向属性本身的 `expected one of …, found /`。报错误导性极强，看着像自己源码写错了 —— 我为此白改了三轮 `#[namespace]`。
+- 只钉 `cxx = "=1.0.176"` 而不管 `cxx-gen` → 宏能过、C++ 能编，**链接期 2392 个 `rust$cxxqtlib1$… / rust$cxxqtgen1$…` unresolved**。
+- 正解：两个都钉。`cxx-gen` 是我的直接依赖的**传递 build-dependency**，得在本 crate `[build-dependencies]` 里写 `cxx-gen = "=0.7.176"` 才能把整张图统一到同号版本。
+- 依据：cxx-qt 0.10.0 仓库自带 `Cargo.lock` 就是 `1.0.176 / 0.7.176`。**正式工程直接 vendor 一份 `Cargo.lock` 并用 `cargo build --locked`**，别依赖 caret。
+
+**aqt 的退出码会说谎**：首次 `aqt install-qt` 返回 0，但 qtbase 因镜像超时实际失败，留下"有 qtdeclarative 没 qtbase"的半成品套件。装完必须验文件而不是验退出码：`bin/Qt6Core.dll` 与 `bin/qmake.exe` 存在才算成功。
+
+**`rust-toolchain.toml` 要 workspace 里每个 crate 都带一份**（P5 撞出来的）：本机 rustup 默认 host 是 **gnu**，只有 spike 目录靠自己的 `rust-toolchain.toml` 钉在 `stable-x86_64-pc-windows-msvc`。新建的 `spike/p5-audit/` 漏了这份文件，于是以 gnu target 编译，死在 `error calling dlltool 'dlltool.exe': program not found` —— 报错误导性十足，看着像工具链坏了，实际是 host 选错。正式工程若走 Cargo workspace，`rust-toolchain.toml` 放在 workspace 根即可覆盖全部 crate，但**任何独立 crate（spike、探针、xtask 单跑）都必须自带一份**，否则 CI 之外的每一次本地构建都会踩。
+
+**Qt 侧的取证有个隐蔽陷阱**：`QCoreApplication::librariesPath()` 与 `binariesPath()` 是两个不同目录（`plugins/` vs `bin/`），拿前者去找 `Qt6Svg.dll` 会得出**假阴性**。P5 第一轮日志里 `svg_dll=NO` 就是这么错的，改成"两处都找"之后实测 `yes@…/bin`。**同类误判在"能力审计"里代价很高（会据此删功能），所以 P5 把这条写成了硬性复核项。** P6 又撞了一次同类的：**补装之后 `--audit` 仍报 `tiff_plugin_dll=NO` / `webp_plugin_dll=NO`**，但这两个探针找的是 `bin/`，而 imageformats 插件在 `plugins/imageformats/` —— 同一份日志上方两行的 `reader_formats` 已经列出 TIF/TIFF/WEBP、`imageformats_dir` 已经列出 `qtiff.dll`/`qwebp.dll`。**判据：一个能力结论若与同一次运行里另一条独立字段矛盾，以字段为准、探针作废**，别拿单条 `=NO` 删功能。
+
+**P7 把这条判据兑现了，并查清它不是"少搜一个目录"而是"搜错了坐标系"**（2026-10-06）：那条 `tiff_plugin_dll` 的写法是拿 `plugins/imageformats/qtiff.dll` 去拼 `bin/` 与 `lib/` —— 前缀与根目录错配，所以**它在源目录那一轮就一直是 `NO`**，与 P6 补装与否无关。而把同一个探针搬到部署副本上，误判范围扩大到全部文件类字段：`platforms_dir=MISSING`、`imageformats_dir=MISSING`、`plugin_subdirs=MISSING`、`svg_dll=NO`、`qsb_exe=NO`。根因是 **`QLibraryInfo::path()` 报告的是 Qt 配置时的布局，不是这份包的实际布局**：windeployqt 把每种插件平铺到应用目录根（`<appdir>/platforms`、`<appdir>/imageformats`），把 DLL 放在 exe 旁边，**且不写 `qt.conf`**（实测部署目录里没有），于是 `path(PluginsPath)` 给出的 `<appdir>/plugins`、`path(BinariesPath)` 给出的 `<appdir>/bin` 是三个不存在的目录。**修法（已进 `audit_source.cpp`，也是产品侧任何运行期自检的写法）：文件探针一律按候选根列表解析 —— `applicationDirPath()` + `QCoreApplication::libraryPaths()` + `QLibraryInfo` 各路径 —— 并且日志要自报 `app_dir=` / `library_paths=` 和"是哪个根给出的答案"**（延续 §B.3 第 22 条）。修完两条结果都值得记：**源目录轮的 `tiff_plugin_dll`/`webp_plugin_dll` 变 `yes@…/plugins`，与 `imageformats_dir` 对齐**；**而 §2.1 里任何一条能力结论都没变**（`reader_formats`/`writer_formats`/`fmt_*` 在源目录、`dist8`、`dist9` 三种环境下逐字节相同）⇒ 探针修正不推翻承诺范围，只推翻"我们查文件的方式"。另记一条避免误读：修完后部署副本里 `qsb_exe=NO`、`install_plugin_subdirs=NO` 是**正确答案**而不是缺口 —— 那是构建宿主机上的工具，本就不进发布包。
+
+---
+
+## 3. 架构
+
+### 3.1 分层
+
+```
+QML 层（声明式，不含业务规则）
+├── CaptureMask.qml        每 QScreen 一个：冻结画面 + 变暗 + 选区挖洞 + 控制点
+├── Magnifier.qml          独立小窗，自带裁剪纹理
+├── AnnotationToolbar.qml  工具/颜色/线宽，含悬停滚轮微调
+├── AnnotationCanvas.qml   仅绘制"进行中"图元的临时预览
+├── PinWindow.qml          缩放/旋转/翻转走 Item 变换，窗口态经 shim
+├── HistoryPage.qml / SettingsPage.qml / PalettePage.qml / HotkeyPage.qml
+└── Theme/（深浅色 + 主题色 + 放大镜样式）
+        │  CXX-Qt（Rust QObject：property / signal / QAbstractListModel / qinvokable）
+        ▼
+Rust Core（可脱离 Qt 编译与单测）
+├── capture      DisplayInfo / Frame / CaptureService（冻结屏幕→取帧）
+├── geometry     PhysicalRect / 坐标换算 / 跨屏拼接 / 窗口吸附
+├── annotation   Document / Element / Command / UndoStack / HitTest / 栅格化器
+├── imageops     crop / scale / gray / invert / pixelate / blur / roundcorner / border / encode
+├── history      SQLite + 文件存储 + 三重保留清理
+├── config       TOML 读写 + 原子替换 + 迁移
+├── pin          PinItem 状态机（与窗口无关）
+└── tasks        TaskId / CancellationToken / 线程池
+        ▲
+        │  C++ shim（§3.6）：QWindow/winId/setOpacity/setFlag + 场景图纹理项
+```
+
+沿用技术方案 §5 末句约束：**QML 不直接调用捕获引擎与存储，一律经 Rust Controller/Model**。
+
+### 3.2 Rust↔QML/C++ 边界契约（9 条硬规则）
+
+违反任一条，在 4K/多屏下都会变成延迟或悬垂引用。
+
+1. **几何只用物理像素**：跨边界一律 `i32` 物理 `Rect`。DIP 只允许存在于 QML 层内部；px↔dip 转换点全项目唯一（PRD §5.3.7 单位切换在此实现）。
+2. **发布即不可变**：`Arc<FrameBuffer>` 一旦交给场景图，Rust 侧永不原地改写；修改一律产生新缓冲。这让 Copy-on-Write 成为语言性质而非同步机制。
+3. **纹理只在 GUI 线程上传/析构**，`QSGTexture` 持有外部缓冲的 `Arc` 克隆，最后一个持有者释放。
+4. **热路径不过边界**：鼠标移动、控制点拖动、进行中笔迹预览只在 QML 本地绘制；一次完整操作结束才提交一个 Command（技术方案 §8 落成硬规则）。
+   **spike 实测的成本结构**（debug 与 release 几乎同值，说明瓶颈不在 Rust 计算）：
+   - QML → Rust `qinvokable` 空调用：**0.10–0.15 µs/次**（20 万次 21–30 ms）。边界本身极便宜，一次交互调一两次完全不心疼 —— 规则 4 的理由**不是**调用开销。
+   - 写一个**未被 QML 绑定**的 `qproperty`：**<1 µs/次**。
+   - 写一个**被 QML `Label.text` 绑定**的 `qproperty`：**20–34 µs/次**。
+   结论：贵的不是跨界，是**属性变更触发的绑定重算**。所以规则 4 的准确表述是"不要让高频变化的值成为 QML 绑定源"，而不是"不要频繁调用 Rust"。4K@150% 拖拽 8 ms/帧的预算下，绑定写上限约 **240–400 次/帧**；一条进行中的笔迹若把控制点/尺寸标签都绑到 Rust 属性上就会直接吃满，必须走 QML 本地 `x/y/width/height`。
+5. **禁止在每帧 property binding 里做字符串/日期转换**；字符串只在建会话与出结果时跨边界。（上表的 20–34 µs 正是 `qsTr("…%1").arg(i32)` 这一条绑定的代价，直接坐实本条。）
+6. **禁止逐事件 JS 处理器**：遮罩内 mouseMove 不得触发 `qinvokable` 调用链；QML 侧自行维护预览态。
+7. **每个后台任务带 `TaskId` + `CancellationToken`**，窗口析构前取消，回调投递前检查宿主存活（技术方案 §9）。
+8. **`unsafe` 只出现在 `frame_bridge.rs` 与 `qshim.cpp`**，其余 crate 出现 `unsafe` 视为缺陷；两处必须有 ASan + Miri 覆盖。
+9. **跨线程投递必须有 in-flight 上限，丢帧优于排队**（spike 增量 3 新增，见 §3.4）。实现取 **2**：后台线程发现"已投递但尚未在 GUI 线程执行完"的帧数 ≥2 就直接丢弃最新帧，而不是继续 `queue`。
+   **实测对照**（同样的 GUI 侧 12 ms/帧工作量、同样的 120 Hz 生产者）：不设上限 → 平均延迟 **113 ms**、最差 **228 ms**、QML tick 7/40；上限 2 → 平均 **7.2 ms**、最差 **11.6 ms**、tick 20/26，而**有效帧率两边都是 74 Hz**。
+   即队列深度**不买到吞吐，只买到陈旧**。截图遮罩是"必须显示最新画面"的面，228 ms 的滞后选区等于不可用；这条与规则 4 一起构成 M1 遮罩帧通路的设计约束。
+
+### 3.3 帧缓冲所有权
+
+技术方案 §7.5 建议"先 Qt 持有 QImage、允许少量拷贝，性能验证后再引入共享缓冲"。**本计划偏离该顺序**：QML 遮罩需跟随鼠标持续重绘，4K RGBA ≈ 31.6 MiB；而规则 2 已消掉共享缓冲最难的部分（写语义），实现只剩析构回调。故 M1 起即采用技术方案 §7.4 的共享不可变缓冲。
+
+> **P1 实测对纹理投递方式的一次改判（2026-10-05）**：`QQuickImageProvider` 原被本文归给"Phase 2 历史缩略图"，但 P1 用它把冻结画面送进 QML 后测得 **provider 回调 1 µs、每个 capture session 恰好一次**（QML 侧剩余 28–57 ms 全是纹理上传 + polish + 首次 present，与投递方式无关）。也就是说**遮罩主路径可以就用 image provider 起步**：Rust 侧零 `unsafe`，C++ 侧只需一个 `QQuickImageProvider` 子类 + 一个把 provider 挂到 engine 上的安装器（P1 的 `frozen_source` 里就是这两小块，采集那一大块另算），且 `QImage` 浅拷贝不复制像素。`ExternalTextureItem`（§3.6 的 `QSGSimpleTextureNode` 路线）因此从"M1 前置"降级为"M1 之后的优化项"，收益是省掉每 session 一次 31.6 MiB 缓冲的双簿记与 `CreateDIBSection` 生命周期管理，而不是省跨界。规则 8 的 `unsafe` 面积随之可缩。
+
+> **spike 增量 3 对该论证的一次收窄**：实测 release 档"每帧全拷贝"的代价是 1080p 0.31–0.35 ms/帧、4K 2.0 ms/帧（约 6% GUI 线程占空比 @30 Hz），**拷贝本身可承受**，debug 档看到的 4K 坏数字是 debug 假象。因此偏离技术方案的真正理由不再是"拷贝不可接受"，而是：① 每帧一次 31.6 MiB 分配/释放的抖动与峰值内存（多屏更甚）；② 生命周期只在 GUI 线程闭包内可证；③ 规则 2 的代价已经很低。结论不变（仍走共享缓冲），论据换了——见 R2 与 §3.4。
+
+> **P4 实测把 `ExternalTextureItem` 的降级收回一半（2026-10-05）**：P1 那句"降级为优化项"对**遮罩**成立（一次 session 一次上传，provider 完全够），但对**标注 overlay 不成立**，理由不是跨界开销而是拷贝：脏矩形经 image provider 时，`QImage::copy(rect)` 是路径里最贵的一项（套件 99 次调用 avg 516 µs / worst 9 853 µs，且提交耗时不与上传字节数单调相关 —— 6.1 MB 的矩形比 22.5 MB 的 painted 整窗更慢）。所以分工按面积定：**小图元（≤约 1/8 层面积）走 provider 脏矩形（免 shim、Rust 零 `unsafe`）；大区域或整层提交走 `ExternalTextureItem`（免拷贝）**。M1 前置地位不变的是遮罩那半边（不需要它），M4 需要在"马赛克/模糊/整层重栅格"这三处把它补上。另有一条来自 P4 的硬约束与 shim 无关：**任何整层位图经 `Image` 上屏，两次提交之间必须有一次"空 source 且已完成 present"的释放节拍**，否则第二次起永久停住（§3.5② ③④）。
+
+> **P5 立的一条编码路径规则（2026-10-05）**：**所有落盘与剪贴板位图编码走 Rust `image`/`zune-jpeg`，禁止 `QImage::save`**。依据不是风格而是能力实测：Qt 的 `QImageWriter::supportedFormats` 只有 **BMP/CUR/ICO/JFIF/JPEG/JPG/PBM/PGM/PNG/PPM/XBM/XPM**，PRD §5.8.3 要的 **TGA/TIFF/GIF 一个都写不出来**（`qsvg` 也只读不写）；补装 `qtimageformats` 后官方文档仍写明 **TGA 只读**，且 ICO 编码不在其内。这条规则顺带让 §3.3 的共享缓冲更划算：**导出链路可以一直留在 Rust 侧的不可变像素缓冲上，不必为了"交给 Qt 存盘"而反向构造一个 `QImage`**（那会引入一次额外拷贝与一次跨语言生命周期）。另外两条实现细节直接进 `imageops::encode` 的契约：**ICO 输出前必须自行缩到 `1..=256`**（`image` 的 ICO 编码器对 300×200 直接报错），**JPG 输出前必须自己做透明区填充**，并按 PRD §5.5.6 那句"输出为 JPG 时应提示透明区域会被填充"给出提示（`image` 不会替你做 alpha→背景合成，而 Qt 的 writer 会 —— 走 Rust 就把这一步显式写出来）。
+
+> **P6 对这条规则做两件事：加强 + 划一个明确的例外口子（2026-10-05）**。① **补装 `qtimageformats` 之后规则不动**，因为写得出的是 TIF/TIFF/WEBP/ICNS/WBMP，而 **`fmt_tga` 与 `fmt_gif` 实测仍 `reader=1 writer=0`** —— 理由从"Qt 写不出"收窄为"**Qt 写不齐，且产品不该把编码能力挂在某个插件装没装上**"。② **唯一例外是 spike 自己的诊断工件**：P6 的量具需要把 `QQuickWindow::grabWindow()` 的 `QImage` 落盘成 PNG 才能跨运行比对像素，代码里就一行 `grab.save("mask-grab.png")`（`cpp/frozen_source.cpp` 的 `frozenWindowCheck`），它**只在 `spike/` 下、只在探针路径里、不进任何产品链路**，注释里已就地标注本豁免。**判据写死为：产品代码零例外，spike 诊断需在调用点就地声明豁免并说明用途** —— 别让"探针能用"变成"M4 也能用"的口子。
+
+### 3.4 线程模型
+
+```
+Qt GUI 线程         唯一可触碰 QQuickWindow / QSGTexture / 托盘 / 剪贴板 / 场景图
+Rust 线程池         imageops 编码、历史缩略图、磁盘写入、标注层栅格化（重活可下放）
+平台线程 A          global-hotkey 消息泵 → 队列事件回 GUI 线程
+平台线程 B          WGC 帧回调（D3D11 device + RoInitialize）→ 同上
+```
+
+Rust 侧绝不持有 `QObject` 裸指针；跨线程一律经 CXX-Qt 的线程辅助排队到 QObject 所在线程。
+
+**该机制已于 spike 增量 3 实测通过**（`spike/hello-cxxqt/src/pump.rs`，2026-10-05）。落地形态与三条结论：
+
+- **写法**：`impl cxx_qt::Threading for T {}` 必须**写在 bridge 模块内**（不写就没有 `qt_thread()`）；`let t = self.qt_thread();` 取出的 `CxxQtThread<T>` 是 `Send + Sync`，可 `move` 进后台线程；后台侧只调 `t.queue(closure)`，闭包在 QObject 所在线程执行且执行期间持有对象锁，因此闭包里 `set_*` 属性、发 `qsignal` 都是安全的。`queue` 不阻塞生产者，宿主析构后返回 `ObjectDestroyed`——**生产循环用 `t.is_destroyed()` 早退 + `queue(..).ok()`**，不要 `unwrap`（对象销毁与线程退出天然竞争）。
+- **Windows 无退路需求**：KDAB 自己在 `cxx-qt/src/lib.rs` 的文档示例上挂着 `FIXME: test doesn't link correctly on Windows`，我们这条路径（共享 Qt 6.10.1 + MSVC x64 + Cargo 主导，debug 与 release 双档）**编译、链接、运行全通过**。§3.4 的线程模型不需要备选设计。
+- **成本结构**：投递本身几乎免费（64 B 帧 @60 Hz 平均 **157 µs**、最差 1.0 ms），真正决定延迟的是 GUI 线程上每帧要做的事。
+
+| # | 配置（quick 档，帧数 ÷5，**debug 构建**） | landed/dropped | 有效 Hz | queue avg / worst | GUI 拷贝/帧 | QML tick got/exp |
+|---|---|---|---|---|---|---|
+| 1 | 64 B @60 Hz 纯投递 | 30/0 | 59 | 157 µs / 1.0 ms | — | 31/31 |
+| 2 | 1080p RGBA @60 Hz | 30/0 | 59 | 427 µs / 5.6 ms | 323 µs | 31/32 |
+| 3 | 1080p RGBA @120 Hz | 48/0 | 119 | 178 µs / 0.85 ms | 366 µs | 25/25 |
+| 4 | **4K RGBA @30 Hz** | 12/0 | 29 | 3.35 ms / **33.8 ms** | **1.91 ms** | **21/26** |
+| 5 | 1080p @240 Hz 上限 2 | 48/0（未触发丢帧） | 237 | 121 µs / 0.66 ms | 348 µs | 13/13 |
+| 6 | 1080p @120 Hz，GUI 注入 12 ms/帧，**不设上限** | 48/0 | 74 | **113 ms / 228 ms** | 487 µs | **7/40** |
+| 7 | 同上，**上限 2** | 31/丢 17 | 74 | **7.2 ms / 11.6 ms** | 490 µs | 20/26 |
+
+同一份代码 `cargo build --release` 复测（`thread-suite-release.log`），三处差异决定结论怎么写：
+
+- **投递与拷贝与 profile 基本无关**：cfg1 157→113 µs、cfg2 427→175 µs、cfg3/cfg5 同量级；1080p 拷贝 0.31–0.35 ms、4K 拷贝 2.0 ms 几乎不变（本就是内存带宽受限）。
+- **cfg4 那行的坏数字是 debug 假象**：release 下 4K@30 Hz 是 `avgQueue=167 µs / worst=323 µs / tick 25/26`，而不是 debug 的 3.35 ms / 33.8 ms / 21/26。所以"每帧全拷贝在 4K 上不可行"这句**不能按 debug 数字下结论**——单看拷贝，4K@30 Hz 在 release 下每帧吃 2 ms（约 6% GUI 线程占空比），可承受。真正的门槛不在拷贝而在**纹理上传 + 场景重绘**，那是 P4 要量的（本 spike 用 `spin_us` 注入工作量正是为了承认这一项无法在此测）。
+- **cfg6/7 的 A/B 与 profile 无关**：113 ms vs 7.2 ms、tick 缺口 33/40 vs 4/26、有效帧率同为 74 Hz。规则 9 成立，且与构建档位无关。
+
+读表两条：① 6–7 是规则 9 的依据；② 1080p 全拷贝 60/120 Hz 下缺口 ≤1 tick，是"共享缓冲尚未落地时的合规中间态"。
+**P4 已把这条尾欠收掉（2026-10-05）**：当时说"4K 的取舍等 P4 数据再定"，P4 量到的答案是 —— 4K 上**真正的门槛不在拷贝也不在上传字节数，而在提交粒度**：图元尺寸的脏矩形 `work~` 只 0.0–6.2 ms（多数 ≤3.4 ms）（本表 4K 全拷贝 2.0 ms/帧是同一量级），而整层重挂无论拷贝与否都会第二次提交起停住。所以规则 9 的 in-flight 上限继续适用于"后台线程 → GUI"，overlay 侧则改为"**每图元一次提交 + 一次脏矩形**"，两者不是同一层的事，不必再为 4K 调整拷贝策略。数据见 §3.5②。
+
+
+测量本身的两个坑（已踩，写进附录 B）：`property int` 存 `Date.now()` 的 epoch 毫秒会溢出（预期 tick 数算出 1.1e11）；套件若紧跟自测启动，第 1 档会把**启动积压**（自测阻塞事件环约 400 ms）读成 90 ms 稳态延迟，必须延后 2.5 s 到空闲再测。
+
+
+### 3.5 三类延迟敏感面的渲染策略（走 QML 的核心约束）
+
+这是 D1 决策的落地形态，也是 R11 的缓解主体。**每一面都规定了"每帧必须做什么"**：
+
+**① 截图遮罩**
+- 冻结画面作为**单个纹理，一次 capture session 只上传一次**；重绘不重复上传。
+- 变暗层 + 选区"亮洞"用**一个 `ShaderEffect`（or 单个 `QSGFillNode`）完成**，不用多层 `Rectangle` 拼、不用 `Canvas`、不用 `QtGraphicalEffects` 的运行时模糊。**P6 已量化这条（§3.5① ⑧）：两档在所有延迟指标上不可分辨，所以它的地位是"形状表现力换的"而不是"性能换的"；`QT_QUICK_BACKEND=software` 兜底档是唯一例外，那里回退 4-`Rectangle`（P1 已实测该档 reveal p50 69.7 ms 达标）。**
+- 控制点/尺寸标签为普通 `Rectangle`/`Text`，只在拖拽时改 `x/y`（几何变更不触发纹理上传）。
+- 放大镜为**独立小窗 + 自带裁剪纹理**，避免在遮罩上重绘高倍像素。
+- 每 QScreen 一窗；不假设屏幕相邻（Qt 高 DPI 文档明确警告 "islands-of-screens"）。
+
+  **P1 实测结论（2026-10-05，spike 增量 4，release 档）**：本机 3072×1920@200%（dpr 2.00、逻辑 1536×960）、面板 **60.0 Hz**。热键=t0 由 Rust 打点，"遮罩可见"=首个 `frameSwapped`。
+  - **组件拆分**（`reveal − capture` = 纯 QML 侧成本：provider → 纹理上传 → polish → 首次 present）：
+
+    | 后端 | BitBlt p50 | QML 侧 p50（稳态） | 冷启动首帧 QML 侧 | reveal p50 | reveal 最差 | 拖拽 present p50 / worst |
+    |---|---|---|---|---|---|---|
+    | D3D11（`QSG_RHI_BACKEND=direct3d11`） | 45.8 ms | 46.4 ms（4K 合成 56.9） | **100.2 ms** | 87.8 ms | 162.0 ms | 16.63 / 18.83 ms |
+    | OpenGL（`QSG_RHI_BACKEND=opengl`） | 51.6 ms | 31.7 ms（4K 合成 39.7） | **120.4 ms** | 78.1 ms | 181.2 ms | 16.59 / 32.26 ms |
+    | software（`QT_QUICK_BACKEND=software`） | 47.9 ms | 28.8 ms（4K 合成 22.9） | 30.8 ms | 69.7 ms | 91.2 ms | 15.93 / **38.91** ms |
+    | debug 档（默认后端） | 48.9 ms | 57.4 ms | 132.8 ms | 85.2 ms | 201.9 ms | 16.61 / 21.57 ms |
+
+  - **① 单纹理路径成立，且不是瓶颈**：5 个 session provider 恰好被调 **5 次**（每 session 一次），avg/worst = **1 µs**（`QImage` 浅拷贝，零像素复制）。4K 合成帧（3840×2160）与本机原生帧的 QML 侧成本只差约 15–25%，说明**上传成本不是 `≤8ms` 的威胁**，故 §3.3 里 `ExternalTextureItem` 的收益主要是省 31.6 MiB 分配抖动，不是省跨界。
+  - **② 拖拽不达 8 ms 是 vsync 地板，不是渲染环饱和**。五个 session 的拖拽窗口里，8 ms 的输入心跳累计发出 **227–228** 次选区变更，只有 **120** 次 present（1.9× 过订），而 16 ms 的 pacer 每一档都被足额兑现（GPU 档 **121/116**、software 档 **128/127**，即"该响多少次就响了多少次甚至更多"）。GUI 线程有余量 ⇒ present 间隔 16.6 ms 就是 60 Hz 的对齐值。**判据更正**：60 Hz 面板上"帧时间 ≤8ms"不可用 present 间隔证伪，改用"输入:present 比 ≥2 且 pacer 缺口 ≤1 tick"。software 档是唯一在输入侧掉量的：累计只有 **190** 步（少 16%），8 ms 的 `dragStep` 定时器约六分之一没按点兑现，加上 worst 38.9 ms ≈ 2.3 个 vsync，故 **software 只作驱动故障兜底，不作遮罩支持配置**。
+  - **③ 真正越线的是冷启动，不是稳态**：GPU 三档的首个 reveal 比本档 p50 多 **+62 ~ +117 ms**（QML 侧 94–133 ms vs 稳态 28–57 ms），software 档只多 +21 ms。⇒ M1 必须**开机预热**：启动即建遮罩窗并推一帧空纹理后隐藏，把场景图/驱动的 warm-up 从用户热键路径挪走。这是一条新增硬约束，写进本节与 M1 清单。
+  - **④ BitBlt 占预算一半，触发的是采集 API 换路，不是 QML 降级**：3072×1920（23.6 MB）**46–55 ms**，按线性外推 4K（33 MB）**60–85 ms**；叠加稳态 QML 侧 30–57 ms ⇒ 4K 稳态 90–140 ms（贴线）、冷启动 160–220 ms（越线）。所以 §3.5② 的"备选路径"应重定向为**采集侧升级**：M1 需对 Windows Graphics Capture / DXGI duplication 做一次同法对照（同一 `reveal` 定义、同一 provider 路径）。**P5 已于同日把这半张对照做完：WGC 出局**（首帧 952.6 ms vs GDI 142.4 ms；512×512 局部 55.1 vs **17.9 ms**，因为 WGC 每次抓整帧），⇒ **只剩 DXGI duplication 一条可试**，局部区域一律走 GDI。见 §2.1 与 §4-M1。**遮罩本身维持 QML**，P1 不提供改 `QWidget` 的理由。
+  - **⑤ 偏差声明（P6 已撤销其核心那条，2026-10-05）**：P1 那轮的变暗+挖洞确实是 **4 个 `Rectangle` 拼图**，当时给的阻碍是"本机缺 `qtshadertools`/`glslc`，`.qsb` 无法生成"。**P6 把这个阻碍证伪了**（`qsb` 随 `qtshadertools` 到位、且 `qsb --qt6` 不需要 `glslc`，见 ⑥），单个 `ShaderEffect` 变体已编译、已上屏、已与 4-`Rectangle` 版跑同一套 P1 套件（数据见 ⑧）。**⇒ "§3.5① 的核心律条尚未被量化"这句作废：律条已量化，结论是"维持"**，只是维持的理由从"更快"换成"形状表现力"（⑧ ①）。P1 结论里"纹理路径 + 事件环 + vsync"这三块不受影响。**保留的限制**：本机面板非 4K，"4K@150%"一档仍用 3840×2160 合成帧走同一纹理通路替代，采集耗时按外推而非实测。
+  - **⑥ `glslc` 这条尾巴的性质，P6 给出了最终改判（2026-10-05）**：P5 查的是"缺什么"，P6 查的是"补齐以后到底要不要 `glslc`"，答案是**不要**。`qtshadertools` 在 Windows 上发行 `qsb.exe` + `Qt6ShaderTools.dll`，**不发行 `glslc`**（补装后实测 `qsb_exe=yes`、`shader_tools_dll=yes@bin`、而 `glslc_exe` 仍是 `NO`；这也解释了 `aqt list-tool windows desktop` 里为什么没有独立 glslc 条目 —— **不是清单漏了，是压根没有**）。而 **`qsb --qt6` 自己就能把 `#version 440` 的 Vulkan GLSL 烘成 `.qsb`**（`--qt6` 是 `-b` 的语法糖，等价 `--glsl "100 es,120,150" --hlsl 50 --msl 12`），全流程**既不用 glslc、也不用 CMake**，就在 `build.rs` 里一次 `Command::new(qsb)`。P1 的 `ShaderEffect` 变体因此在本机默认（D3D11）RHI 上 `status = 0 (Compiled)` 并正常上屏。**两条工程口径**：① 6.10.1 的 `qsb` **没有 `--vulkan`、也没有 `-i/--info`**，别照抄新文档的命令行；② **`.qsb` 必须落在 QML 文档相对解析能命中的 qrc 前缀下**（本工程是 `/qt/qml/dev/falconshot/spike/qml`），前缀错了就是 `status = 2 (Error)` 而不是编译期报错。**P5 留的两条 qsb-free 备选（`QtQuick.Effects` 的 `MultiEffect`、`QtQuick.Shapes`）降为备档**：律条已由 `ShaderEffect` 实测达标，无需再为速度比它们。**唯一还开着的组合是 `QT_QUICK_BACKEND=software` 兜底档**：`ShaderEffect` 依赖 RHI，software 后端上大概率不可用（**未实测**）。由于 §3.5① ② 已把 software 定为"驱动故障兜底、不作支持配置"，正确处置不是补一个 shader 变体，而是**遮罩保留一条非 shader 的回退画法**（4-`Rectangle` 拼图已被 P1 实测在 software 档达标 reveal p50 69.7 ms，直接充当兜底即可）。
+  - **⑦ P5 补的一条采集语义（影响 M3 不属于 M1）**：两条采集路径（GDI 与 WGC）返回的帧**四角 12×12 采样的 alpha 全是 255**（Edge 顶部两角甚至是"不透明的纯黑"144/144），也就是**截图里根本不含"窗口圆角外的透明"**这件事；而 `DWMWA_WINDOW_CORNER_PREFERENCE` 只有 4 个枚举值、**系统不暴露像素半径**。⇒ **PRD §5.5.6 的"使用系统窗口原始圆角"不能实现为"从系统读"，只能我们按可配半径自己 mask 四角**（`imageops::roundcorner` 从"可选美化"升为 §5.5.6 的唯一实现路径）。同一条实测也否掉了 §2.1 原先那句"Win11 DWM 圆角原生入图"。**顺带厘清阴影**：采集几何恰好等于 DWM 可见框（3072×1824），**系统阴影不在图里**；PRD §5.5.7 要的"阴影"本来就是**我们渲染的效果**（配置阴影强度与边距），所以那条不受影响；受影响的是 **§5.2.6 那句"可按设置决定是否包含窗口阴影"** —— 要做"包含"，必须**先按可见框外扩再合成**，不能指望采集给。
+  - **⑧ P6 的 A/B：`ShaderEffect` 变体实测通过，但"通过"这个词底下有四条更值钱的东西（2026-10-05，release 档、默认 RHI/D3D11、5 session × 两种挖洞画法）**
+
+    | 指标 | 4 个 `Rectangle`（P1 原方案） | 单个 `ShaderEffect`（本节律条） | 判读 |
+    |---|---|---|---|
+    | `REVEAL` p50 / p95 / max | 100.5 / 186.2 / 186.2 ms | 108.3 / 151.6 / 151.6 ms | **p50 两档都在线内（100.5 / 108.3，线 = 150 ms）**；p95 那一次两档都是冷启动首帧（186.2 / 151.6），归 §3.5① ③ 的预热义务管，**不是画法差异**。两档 p95 差 34 ms 而**同档内 5 个 session 的极差就有 120 ms** ⇒ 差异不可分辨 |
+    | `reveal − capture`（纯 QML 侧）稳态区间 | 58.8 / 63.7 / 61.9 / 69.2 ms | 49.8 / 62.2 / 59.6 / 58.0 ms | 中位 66.5 vs 60.9 ms，shader 略低（少 3 个 item 的 polish），但落在采集抖动里 |
+    | 冷启动首帧 QML 侧 | 95.5 ms | 90.6 ms | 两条都还是 §3.5① ③ 那条 +62~117 ms 预热义务，画法是次要项 |
+    | `DRAG-FRAME` p50 / p95 / max | 16.61 / 17.10 / 18.09 ms | 16.63 / 17.17 / 17.32 ms | **同一枚 vsync 地板**，小数点后一位不分胜负 |
+    | pacer 兑现 / provider 调用 | 120/116；5 次 avg 1 µs | 121/116；5 次 avg 0 µs | 事件环都不饱和，纹理仍是一 session 一次上传 |
+
+    - **① 律条维持，理由换掉**：挖洞**该用单个 `ShaderEffect`，但不是因为它快** —— 四档指标里没有任何一项差异大于同档内 run-to-run 散布。**真正的理由是形状表现力**：亮洞一旦要圆角、要 L 形/多块选区、要跟随放大镜的软边，`Rectangle` 拼图就变成"N 个 item × 每块单独对齐"，而 shader 里是一条 `step()`/SDF 表达式。延迟既已证明不构成否决，就按表达力选型。**这也把 §3.5① 那条"不用多层 `Rectangle` 拼"从性能律条重新定性为可维护性律条** —— 以后有人拿 P1 的 4-`Rectangle` 数据来论证"可以拼图"，是误用：那份数据证明的是"拼与不拼在 60 Hz 上不分胜负"，不是"拼图更好"。
+    - **② `BitBlt` 屏幕 DC 看不见我们自己的 Qt Quick 窗**（本轮最意外的一条）。同一个 session，两个量具读同一片像素：GDI 路径 `frozenSelfCheck` 给 **`hole=1.000 band=1.000 rest=1.000 DIM-WRONG`**（连"什么都不变暗"的已知正确对照档也是 1.000），场景图路径 `frozenWindowCheck`（`QQuickWindow::grabWindow()`）给 **`hole=1.047 band=0.400 rest=0.400 DIM-OK`**。**⇒ 遮罩"是否真的变暗"这类视觉验收，量具必须读场景图，不能用 `PrintWindow`/`BitBlt` 那一族**；对 M2/M3/M4 的连带影响更实际：**截图功能可能截不到我们自己的遮罩/贴图窗**（遮罩窗已实测，**贴图窗同类但未实测**；且这只是"一路采集看不见"，不等于"四路都看不见"，R13 的四路对照要给这张表）。这与 D3 的 `WDA_EXCLUDEFROMCAPTURE` 是同一族问题，M1 就要按这条设计自截图路径与排除策略。
+    - **③ 量具必须在"已知正确答案"上先跑一遍，这一条花了三轮才立住**。同一个像素比对的三个版本：v1 拿全屏均值比 ⇒ 被壁纸差异带偏（读出 1.256）；v2 改成选区邻域对照 ⇒ **仍然在已知正确的 `rects` 档上判 `DIM-WRONG`**（1.163，即 GDI 根本读不到遮罩）；v3 换成场景图 grab ⇒ `rects` 与 `shader` **两档读出逐字相同的一行**（`hole=1.047 band=0.400 rest=0.400 luma=91.8/40.7/44.8 n=25781/32800/310059`）。`band/rest = 0.400` 正好等于 `1 − 0x99/0xff = 0.4`（变暗色 `#99000000`），**这条解析值对上才是"量具可信"的证据**，而 `hole=1.047 > 1` 是选区那圈 4 设备像素白边。**写进 §9.4：任何视觉验收量具，先在"应当判对"的对照档上跑，判不对就先修量具、不许修结论。**
+    - **④ 选区几何在 dpr 2.00 下精确到设备像素**。shader 用 `gl_FragCoord` + `ubuf.deviceSize` 换算 DIP，从 grab 出来的 PNG 里反解白边包围盒得 `(2067,1200)-(2879,1707)`，与声明的 `(2067,1200)-(2880,1708)` **恰好差一个右/下开区间约定**（即逐像素相等）。两档 PNG 的跨运行逐像素最大通道差：均值 **0.0883/255**，**99.51 % 像素 ≤4/255**，剩余集中在桌面内容（两次运行之间壁纸上的窗口自己变了）。**⇒ 遮罩"截图坐标系 ↔ DIP ↔ 设备像素"三层换算的正确性，从此有了可重跑的自动判据，不必靠人眼盯对齐。**
+
+
+**② 标注画布**
+- 双缓冲：`base`（截图原图，不可变）+ `overlay`（标注层，透明底，**仅脏矩形重栅格化**）。
+- overlay 由 **Rust 栅格化**；**P4 达标路径**是"脏矩形 → `QQuickImageProvider` → 一个 rect 大小的 `Image`"，用的就是 P1 那对 `provider + QML_ELEMENT 安装器`（§3.6 已列），**不需要新增场景图 shim**。`QSGSimpleTextureNode`/`ExternalTextureItem` 路线（规则 2/3/8）降级为**仅在单次提交面积接近整层时**才需要（马赛克/模糊整块、Phase 2 元素树整层重栅格），依据见下方 P4 实测结论 ②。
+- 进行中图元的预览由 QML 本地 `Shape`/`Canvas`（**仅此一处允许 Canvas**，且只覆盖图元包围盒）绘制；提交后 Rust 重栅格化并失效脏矩形。
+- 导出时 Rust flatten base+overlay。
+- 好处：编辑态与原始截图天然隔离（PRD §5.7.1），undo 只回滚文档不回滚像素。代价：MVP 阶段图元"画完即拍平"，**逐对象重编辑（选/移/缩/旋）留 Phase 2**，届时 overlay 从位图升级为元素树驱动。
+- ~~备选（更慢，作为降级项）：整体改 `QQuickPaintedItem` CPU 栅格 + 上传，4K 下帧时间显著劣化~~ **P4 改判**：`QQuickPaintedItem` 并不比脏矩形慢（下表 `work~2.59` vs 400×300 脏矩形 `work~3.41`）。它不是降级项，而是**另一条同等合格的路**；取舍依据从"谁快"换成"单次上传面积"与"要不要 Rust 侧参与栅格"。
+
+  **P4 实测结论（2026-10-05，spike 增量 5，release 档 × 三后端 + debug 档一轮）**：overlay 图层 3840×2160（31.6 MiB）与本机 3072×1920（22.5 MiB）两档，每档 12 次提交，提交节拍 13 ms（故意不是 16.67 ms 的整约数，让相位散开）；一次提交 = 一次图元栅格 + 一个 `frameSwapped`，二者严格一对一。`work~ = mean − vsync/2`，用来把"present 落在下一个 vsync"的档位与"真的花了时间"的档位分开。表格数字为 **p50 / p90 / max（ms）与 `work~`**；**弃疗** = 连续 3 次提交在 3200 ms 内一次 present 都没有，套件按规则离开该档。
+
+  | 上传方式 | D3D11（默认） | OpenGL | software | debug 档（默认） |
+  |---|---|---|---|---|
+  | `qml-whole-layer` 4K @13 ms | **弃疗** @4/12，首帧 25.18 | **弃疗** @4/12，首帧 36.87 | **弃疗** @4/12，首帧 20.50 | **弃疗** @4/12，首帧 30.85 |
+  | `qml-whole-layer` 4K @250 ms（人手速率） | **弃疗** @3/12，**0 次成功**，mean=3200.00 | 同 | 同 | 同 |
+  | `qml-whole-clear` 4K @250 ms（先释放再重载） | 12/12 15.29 / 18.51 / 19.00 `work~5.55` | 12/12 10.19 / 12.31 / **14.91** `work~1.84` | 12/12 14.01 / 14.79 / 15.32 `work~5.68` | 12/12 14.18 / 18.09 / 19.92 `work~4.93` |
+  | `qml-whole-copy` 4K @13 ms（Qt 自有整层深拷贝） | **弃疗** @4/12，首帧 13.47 | **弃疗** @4/12，首帧 18.21 | **弃疗** @4/12，首帧 18.87 | **弃疗** @4/12，首帧 11.54 |
+  | `qml-dirty-rect` 4K 400×300 @13 ms | 12/12 11.38 / 17.55 / 19.76 `work~3.41` | 12/12 6.49 / 7.28 / 14.96 `work~0.00` | 12/12 6.55 / 6.73 / 13.62 `work~0.00` | 12/12 10.38 / 16.08 / 17.26 `work~0.71` |
+  | `qml-dirty-rect` 4K 1600×1000 @13 ms | 12/12 13.91 / 18.59 / 19.30 `work~5.11` | 12/12 8.39 / 9.08 / 9.47 `work~0.06` | 12/12 6.35 / 7.13 / 7.37 `work~0.00` | 12/12 15.22 / 18.69 / 19.86 `work~6.24` |
+  | `qml-whole-layer` native @13 ms | **弃疗** @4/12，首帧 23.22 | **弃疗** @4/12，首帧 19.88 | **弃疗** @4/12，首帧 15.82 | **弃疗** @4/12，首帧 18.85 |
+  | `qml-dirty-rect` native 400×300 | 12/12 11.07 / 16.40 / 17.01 `work~1.97` | 12/12 6.52 / 7.09 / 8.61 `work~0.00` | 12/12 6.62 / 7.10 / 12.11 `work~0.00` | 12/12 9.68 / 16.46 / 16.65 `work~1.67` |
+  | `painteditem-fallback` 整窗口 CPU 栅格 + 上传 | 12/12 11.25 / 16.83 / 16.87 `work~2.59` | 12/12 6.61 / 7.18 / 8.50 `work~0.00` | 12/12 5.64 / 6.00 / 12.62 `work~0.00` | 12/12 10.93 / 16.21 / 16.66 `work~2.38` |
+  | `plain-rectangle` 参照（同窗、无位图） | 12/12 10.53 / 16.54 / 17.55 `work~0.59` | 12/12 6.69 / 7.60 / 9.70 `work~0.00` | 12/12 6.01 / 7.15 / 10.11 `work~0.00` | 12/12 9.72 / 15.19 / 17.29 `work~0.97` |
+
+  - **① 通过线达标**：单图元尺寸的提交在 4K 图层上全部 12/12，`work~` **0.0–6.2 ms**。参照行 `plain-rectangle`（同窗、什么都不传）`work~0.0–1.0` ⇒ **图元提交→上屏的真实增量成本是 1–5 ms**。**这条结论必须按 P1 的判据更正来读，否则会读成"p90 没达标所以勉强通过"**：**同一后端内**把脏矩形与参照档对齐，p50 只贵 **0～3.4 ms**、p90 只贵 **−1.2～+3.5 ms**（例：release D3D11 参照 10.53/16.54 vs 400×300 脏矩形 11.38/17.55；OpenGL 参照 6.69/7.60 vs 6.49/7.28，甚至更快），而 vsync 相位抖动本身就是 ±8 ms 量级 —— 也就是说在 60 Hz 面板上 **"≤16 ms" 这条线对图元提交已经不可分辨**（它与"什么都不画"同档），真正有区分度的读数只有 `work~` 与 `stalled`。**⇒ §3.5② 的脏矩形路线按纯 QML 走通，R11 的"遮罩+画布改 C++ `QWidget`"降级项没有触发证据，P4 出数后可以宣布 M4 按拍平式落地的前置条件成立。**
+  - **② 成本不与上传字节数单调相关，这一点决定 M4 的技术选择**：1600×1000 脏矩形（6.1 MB）`work~5.11`，而整窗口 painted（22.5 MB）只要 `work~2.59`。差在**路径**不在字节 —— provider 路线要多过一趟 Qt 的 image-loading 队列 + `QImage::copy(rect)` 深拷贝（四份数据的 provider avg **504–516 µs**、worst **7.5–9.9 ms**、整套件吐出 **875.7 MB**，四舍五入到 0.1 MB 完全相同），painted 则在 sync 阶段就地栅格。**产品含义**：标注里出现大区域一次性提交（马赛克、模糊、整层重栅格）时，正确反应是**换成免拷贝的 `ExternalTextureItem`**，而不是继续加大脏矩形；这条正是 §3.3 那次"降级"改判需要收回的部分。
+  - **③ 整层重挂不是"慢"，是结构性不可用**：`qml-whole-layer` 第一次提交能上屏（11.5–36.9 ms，多数已过线），**第二次起永久停住**。四个变量全部排除：三后端（含**根本没有 GPU 纹理的 software 档**）、两分辨率、两种缓冲归属（浅拷贝外部 `Vec` vs Qt 自有 `copy()`）、两节拍（13 ms 与**人手能产生的 250 ms**）。而且 250 ms 一档更糟 —— **第一次就挂**，mean 恰好 3200.00，说明不是"请求太密把队列堆爆"的排队积压。⇒ 候选机制收窄到 **Qt Quick 的 Image/场景图这一层**（旧 `QSGTexture` 引用未放导致新上传上不了屏），不是驱动资源 churn。**spike 没有定位到具体代码行，结论也不依赖机制。**
+  - **④ 唯一有效的解法是"释放-重载握手"**：`qml-whole-clear` 与 `qml-whole-250ms` 字节量、节拍完全相同，只在提交前先让 `source` 为空（binding 转空 → 纹理被放）**并等一次 `frameSwapped`**，然后再挂新 URL —— 12/12、`work~1.84–5.68`、`stalled=0`，三后端 + debug 四份数据全过。这正是 **P1 一直隐式在做的事**（两次 capture session 之间遮罩窗被隐藏，纹理随窗口一起放掉），P1 因此从没撞上这个坑。**固化为一条硬约束**：任何"整层位图 + `Image`/image provider"的用法，两次提交之间必须有一个 `source` 为空且已完成 present 的节拍；做不到就用图元级脏矩形（①），或走 `ExternalTextureItem`（②）。
+
+**③ 贴图窗口**
+- 缩放/旋转/翻转用 `Item.scale/rotation/mirroring`，纯 GPU 变换，成本近零。
+- **透明度必须走 `QWindow::setOpacity`（经 shim），不能用 `Item.opacity`**：后者只淡化 QML 内容，窗口仍吃鼠标；PRD §5.9.4 要的是真窗口透明，且要和 §5.9.13 鼠标穿透共存。
+- 逐像素 alpha 要求 frameless；`QSurfaceFormat::setAlphaBufferSize(8)` **必须在创建第一个窗口之前调用**（进程级、顺序敏感，经 shim）。
+- 已知冲突点：Qt 在重算 need 时会**剥离 `WS_EX_LAYERED`**，D3D11 后端（Windows 默认）用 `SetLayeredWindowAttributes` 表达窗口透明度。per-pixel alpha + 可调 opacity + 穿透三者共存是 M0-P3 探针，必须实测。
+- **P3 实测结论（2026-10-04，通过）**：纯 QML 声明的 frameless 窗
+  `color:"transparent"` + `opacity:0.55` + `flags: Qt.Window | FramelessWindowHint | WindowTransparentForInput | WindowStaysOnTopHint`
+  经 shim 读回原生样式为 `exStyle=0x80028` → **LAYERED=1、TRANSPARENT=1、TOPMOST=1 同时成立**，`alphaBufferSize=8`，`class=QQuickWindowQmlImpl`（QML `Window` 就是 QQuickWindow，`qobject_cast<QWindow*>` 可达）。即三者共存**不需要手工维护 `WS_EX_*`**，Qt 6.10 自己算对了；§3.6 的 shim 只用于"读回来验证"和后续 DWM 边界，不承担样式纠偏。
+  留一条尾巴：`LAYERED=1` 是由 `opacity<1` 触发的。当 `opacity=1` 而仅靠逐像素 alpha 时 Qt 可能给出 `LAYERED=0`（DWM 合成路径），届时贴图窗"取消穿透但保留半透明"的组合仍需在 M2 复测一次。
+
+### 3.6 强制 C++ shim 清单
+
+`cxx-qt-lib` 与 `qtbridge` **均未绑定 `QWindow`/`QQuickWindow`**，以下能力在纯 Rust 里拿不到。这不是可选优化，是 M0 交付物。
+
+| shim 项 | 用途 | 为何绕不过 |
+|---|---|---|
+| `winId()` → HWND | `WDA_EXCLUDEFROMCAPTURE`、跨屏迁移、托盘/菜单定位 | QWindow 未绑定。**P5 把"DWM 边界"从本行划掉了**：`xcap::Window::bounds()` 已经是 `DWMWA_EXTENDED_FRAME_BOUNDS`，而 `DwmGetWindowAttribute` 由 `windows` crate 直接绑定（实测 6/6 可读，且 xcap 的 `id()->u32` 回推 HWND 也够用 ——  Win32 保证句柄只有低 32 位有效）。**本行现在只为"我们自己那个窗口的 HWND"服务**（Qt 侧拿不到，见 P3），不再为"读别人的窗口"服务 |
+| `setOpacity(double)` | §3.5③ 真窗口透明 | 同上 |
+| `setFlag(Qt::WindowTransparentForInput)` | 鼠标穿透（D3 收益点） | 同上 |
+| `raise()` / `setFlag(StaysOnTopHint)` 时序封装 | PRD §5.11 Solo、置顶 | 同上 |
+| `ExternalTextureItem`（`QSGSimpleTextureNode` + 外部 RGBA 缓冲 + 析构回调） | §3.5② overlay 纹理挂载 | 场景图项必须 C++ 写。**P1 后降级 → P4 收回一半**：遮罩主路径用 `QQuickImageProvider` 已足（非 M1 前置）；overlay 的**小图元**提交也不必（脏矩形走 provider 已达标），但**大区域 / 整层提交必须走它**，因为 provider 路径的 `QImage::copy` 是那里最贵的一项（§3.3 P4 改判、§3.5② ②）。落点：M4 的马赛克、模糊、Phase 2 整层重栅格三处 |
+| 采集 shim：`CreateDIBSection` 双缓冲 + `BitBlt(SRCCOPY)` + `GdiFlush()`（P1 已实测走通） | §3.5① 冻结画面取帧 | GDI/`HDC`/`HBITMAP`/`BITMAPINFO` 全部未被绑定，且 `CreateDIBSection` 自己拥有像素内存，Rust 侧无法安全接管 |
+| `QSurfaceFormat::setAlphaBufferSize(8)` 的进程级一次性调用 | 逐像素 alpha | 必须在首个窗口前，CXX-Qt 无生命周期点；且见下方 API 更正 |
+| `QSystemTrayIcon` 宿主 + 菜单转发 | 托盘 | QML 无托盘类型 |
+| 顶层窗口枚举 + `qobject_cast<QWindow*>` 读原生样式 | M0 P3 探针、后续疑难定位 | QWindow 未绑定；QML 拿不到 `winId` |
+| Rust 拥有的像素 → C++ 的**非拥有发布**（`void publish(const uint8_t*, w, h)` + provider 侧 `QImage(...)` 浅拷贝） | §3.5② overlay 供帧（P4 已实测走通） | 场景图只认 C++ 侧构造的 `QImage`/`QSGTexture`，而像素内存的所有者必须是 Rust。**spike 里 `Vec` 全程存活所以安全，产品里不成立** —— 规则 2/3 要求换成"共享不可变缓冲 + 最后一个持有者释放"（见 §3.3 与附录 B 第 10 条：P4 shim 里那处刻意的 `g_retired` 泄漏就是这条约束的反面教材） |
+| `QQuickImageProvider` 子类 + 一个 `QML_ELEMENT` 安装器（收 `QQuickWindow*`，`qmlEngine(window)->addImageProvider(...)`） | §3.5① 冻结画面进 QML、§3.5② overlay 脏矩形（P1/P4 均已实测走通） | `QQmlApplicationEngine` 在 CXX-Qt 里是 `#[base = QQmlEngine]` 但**不生成基类访问器**，Rust 侧安全地拿不到 engine 指针；`addImageProvider` 又要求 `*mut QQmlImageProviderBase`（所有权移交）。**P4 补充**：同一个子类的 `requestImage` 里按 id 里的 `x/y/w/h` 只 `copy(rect)` 脏矩形，就是标注层的达标形态；`QQuickPaintedItem` 作为对照项也已实测合格，两者按单次上传面积选，不按"谁快"选 |
+
+总量估 250–350 行 C++（含 moc 处理），通过 `CxxQtBuilder::cpp_file` 编入。**P1 后修正 → P4 再修正 → P5 三修 → P6 四修 → P7 五修**：spike 里四个 shim 实际已到 **1068 行**（`window_probe` 64 + `frozen_source` **508**（P6 从 346 涨来，涨幅几乎全是"读回像素做视觉验收"那套量具：`measureAgainst`/`frozenSelfCheck`/`frozenWindowCheck` + `grab` 落盘）+ `overlay_source` 305 + `audit_source` **191**（P7 从 115 涨来，涨幅全部是"部署态按候选根列表解析文件探针"这次修正，见 §2.2 末段与 §7.2 ④），含头文件），而托盘/`ExternalTextureItem` 还没写。原估严重偏低，正式 shim 按 **900–1200 行**排，且 moc 部分见下条硬约束。**排期影响**：M1 的"`qshim.cpp` 起骨架"与 M4 的 overlay 纹理项都按这个量重排 —— shim 不是"顺手写写"的配角，单是 P1/P4 两个探针就已经产出 715 行必须长期维护的代码（P5 又加了 115 行，但那一块是**审计工具**、不进产品）。**但"1068 行"不等于"1068 行产品 shim"**：`frozen_source` 里那 ~160 行像素比对量具、`audit_source` 的 191 行（P7 后仍是纯审计工具，产品里只保留 §9.1 的断言形态）、以及 `frozenWindowCheck` 的 `grab.save()` 都属**探针专用**，正式工程要么不进 shim、要么按 §9.1 的形态进测试目标。**估给 M1 的净数仍是"四个产品 shim 项 ≈ 900–1200 行"**（采集 + provider 安装器 + `winId`/样式读回 + 托盘，`ExternalTextureItem` 归 M4）。**P5 同时把 shim 清单缩了一项**：DWM 边界不经 shim（`windows` crate + xcap 已覆盖），所以正式的 shim 项从原表 10 项减为 9 项，而 `RealWindowFromPoint` 那一类"未绑定的 Win32 调用"根本不存在，不构成 shim 需求。**P6 没有再缩项，但给"provider 安装器"那一项补了一个新姐妹：`ShaderEffect` 的着色器资源装载（硬约束 9）** —— 它不是 C++ 代码，是 `build.rs` + `.qrc`，所以不计入 shim 行数。**P7 也不缩项，但给"运行期自检"这类代码立了一条写法约束**：任何查 Qt 布局的文件探针都必须按候选根列表解析并自报身份（§2.2 末段），否则产品在部署形态下的自检会系统性地报假故障。
+
+**spike 实测出的九条 shim 硬约束**（不写进规范，第一个真实 shim 就会卡住）：
+
+1. **Qt 6.10 已删除 alpha-buffer 那套 API**。`QSurfaceFormat::alphaBuffer()/setAlphaBuffer(bool)` 与 `QWindow::supportsAlphaBuffer()` 均不存在（编译期 C2039），现为 **`setAlphaBufferSize(int)` / `alphaBufferSize()`**。技术方案与本计划 V1.0 里写的 `setDefaultAlphaBuffer(true)` 是 Qt 5 时代签名。
+2. **Cargo 主导构建不会替 shim 带上 Win32 导入库**。调 `GetWindowLongPtrW` 链接期 LNK2019 `__imp_GetWindowLongPtrW`；CMake 路径由 `target_link_libraries` 兜住，Cargo 路径必须自己 `println!("cargo:rustc-link-lib=user32")`。后续 shim 用到 gdi32/shcore/dwmapi/user32 都要逐个显式声明 —— 建议 `build.rs` 里集中一份清单。**P5 把这份清单缩了两项**：① `DwmGetWindowAttribute` 经 `windows` crate 的 `Win32_Graphics_Dwm` feature **已在纯 Rust 侧走通**（6/6 窗口成功），既不需要 shim 也不需要 `dwmapi` 导入库；② 原计划"在 shim 里包一个未绑定的 `RealWindowFromPoint`"**作废** —— 该导出在本机 10.0.26200 上不存在（`GetProcAddress` 返回 null，`windows` 0.62.2 也未导出），改用**已绑定**的 `WindowFromPoint`，同样不进 shim。⇒ 清单最终为 **user32 + gdi32 + shcore**（shcore 仍待 M1 的 DPI 路径实测确认）。
+3. **`include!` 前缀就是 Cargo 包名原样**。包名 `hello-cxxqt` → 暂存目录 `…/out/cxxqtbuild/include/hello-cxxqt/`，于是必须写 `include!("hello-cxxqt/window_probe.h")`。带连字符的包名可用但难看，正式 crate 已在 §7 定名为 **`qt_bridge`（下划线）** 避开；仍不满意可用 `crate_include_root` 覆写。
+4. **`.cpp_files` 里的 `.h` 会被自动 moc，且 moc 产物由 builder 自己编译**。`cxx-qt-build` 的判据是 `enable_moc = is_header`，所以把头文件塞进 `cpp_files` 就够；**不要**再手写 `#include "moc_frozen_source.cpp"`（CMake 时代的老习惯），会重复定义。P1 的 `FrozenInstaller` 能进 QML 就是靠这条：moc 以 `--uri dev.falconshot.spike` 运行，产出的 `qml_metatypes.json` 被喂给 `qmltyperegistrar` 生成模块注册表。
+5. **Cargo 路径下的 C++→QML 注册只有 `QML_ELEMENT` 一条道**。`qmlRegisterType(uri, maj, min, "Name")` 撞 `Namespace 'dev.falconshot.spike' has already been used for type registration`，因为该 URI 已经是静态 QML 模块。凡 shim 要暴露一个 QML 可视类型，就必须带 `QML_ELEMENT` 并被列进 `cpp_files`，`main.rs` 里不留注册代码。
+6. **`#[rust_name]` 在一个 crate 内必须全局唯一，撞名是链接期才炸**。cxx 用 Rust 侧名字索引生成符号（`cxxbridge1$describe`），所以两个 bridge 模块各自把函数改名成 `describe` / `provider_calls`，编译全过、`link.exe` 报 `LNK2005: ... already defined`（P4 撞 `mask_probe` 四次）。正式工程里 shim 函数一律带子系统前缀（`overlayPublish` / `frozenPublish`），`#[rust_name]` 用 `overlay_provider_calls` 这种全名。**排查顺序**：LNK2005 先 grep 全 crate 的 `rust_name` 与函数名，不要怀疑构建脚本。
+7. **桥接函数收裸指针必须写成 `unsafe fn`，即使在 `unsafe extern "C++"` 块里**。cxx 的报错是 `error[cxx]: pointer argument requires that the function be marked unsafe`，且不会因为"整个 block 已经 unsafe"而放行 —— 判据在函数签名上，不在 block 上。规则 8 说的"`unsafe` 只出现在两处"因此要在**声明侧与调用侧各计一次**：`unsafe extern` 声明 + `unsafe { publish(ptr, w, h) }` 调用。
+8. **整层位图经 `Image`/image provider 上屏，必须"先释放、再重载"，且释放要等一次 present**。同一 URL 位置换新图元，第二次提交起永久停住（3200 ms 无 present），三后端 / 两分辨率 / 两种缓冲归属 / 两节拍全部复现；把 `source` 置空一拍、等 `frameSwapped`、再挂新 URL 就全绿（§3.5② ③④）。**任何"整层更新"的写法（Phase 2 元素树整层重栅格、动效层、GIF 预览帧）都受这条约束**，用它就必须带上这个握手；否则请改走图元级脏矩形或 `ExternalTextureItem`。
+9. **着色器要进 QML，走"`build.rs` 调 `qsb` + 手写 `.qrc`"这一条道，且 `.qrc` 前缀不是随便写的**（P6 新增）。三处细节各自都会静默失败：① **`qsb` 由 `qtshadertools` 模块发行，`glslc` 不发行**，所以烘焙命令是 `qsb --qt6 -o out.qsb in.frag`，别去依赖 glslc 或 CMake 的 `qt_add_shaders`；② **`QmlModule` 只认 `qml_file(s)`，`QResourceFile` 没有被 cxx-qt-build 0.10.0 重新导出**，所以非 QML 资源（`.qsb`、字体、图标）只能自己生成一份 `.qrc` 交给 `CxxQtBuilder::qrc(path)`；③ **`ShaderEffect.fragmentShader: "dim_hole.frag.qsb"` 是相对所在 QML 文档解析的**，于是 `.qrc` 的 `prefix` 必须等于 QML 文档所在的 qrc 路径（本工程 `/qt/qml/dev/falconshot/spike/qml`）。前缀写错的表现为运行时 `status = 2 (Error)`，**构建一切正常** —— 所以 §9.1 要加一条断言：跑一次无头实例，抓 `ShaderEffect status`，非 0 即失败。**另有 `near`/`far` 一条同名陷阱**：`winnt.h` 把它们 `#define` 成了常量，shim 里不能出现这两个标识符（含 `Q_PROPERTY(NAME near)` 这类），要写 `nearMm`/`farEdge` 或 `#undef`。
+
+### 3.7 CXX-Qt 0.10 的正确写法（替换技术方案 §6）
+
+技术方案 §6 的示例在 0.10 上无法编译/静默失效。当前形态：
+
+```rust
+#[cxx_qt::bridge]
+pub mod qobject {
+    unsafe extern "C++" {
+        include!("cxx-qt-lib/qstring.h");
+        type QString = cxx_qt_lib::QString;
+    }
+
+    // 自有 C++ shim：include 前缀 = Cargo 包名原样（含连字符），由 build.rs 生成暂存目录
+    unsafe extern "C++" {
+        include!("hello-cxxqt/window_probe.h");
+        #[rust_name = "probe_all_windows"]
+        fn probeAllWindows() -> QString;
+    }
+
+    extern "RustQt" {
+        #[qobject]
+        #[qml_element]                          // 缺这行 QML 里就没有 Probe {} 这个类型
+        #[qproperty(i32, counter)]
+        #[qproperty(QString, last_from_qml)]
+        type CaptureController = super::CaptureControllerRust;
+
+        #[qinvokable]
+        #[cxx_name = "startCapture"]            // 0.7+ 不自动 camelCase，逐个显式声明
+        fn start_capture(self: Pin<&mut Self>);
+
+        #[qinvokable]
+        #[cxx_name = "recordFromQml"]
+        fn record_from_qml(self: Pin<&mut Self>, message: &QString);
+
+        #[qsignal]                              // 安全 fn 签名，不是 unsafe fn
+        #[cxx_name = "captureCompleted"]
+        fn capture_completed(self: Pin<&mut Self>, file_path: &QString);
+    }
+}
+
+// 实现体在 bridge 外面，`qobject` = 桥模块名
+#[derive(Default)]
+pub struct CaptureControllerRust {
+    counter: i32,
+    last_from_qml: QString,
+}
+
+impl qobject::CaptureController {
+    // setter 按值取 `Pin<&mut Self>`，所以要么 `mut self` 要么每写一次就 `as_mut()` 再借用
+    pub fn record_from_qml(mut self: Pin<&mut Self>, message: &QString) {
+        let text = message.to_string();
+        self.as_mut().set_last_from_qml(QString::from(&*text));
+    }
+}
+```
+
+以下为 **M0 spike 实测**（`spike/hello-cxxqt`，Qt 6.10.1 msvc2022_64 + CXX-Qt 0.10.0）逐条确认，技术方案 §6 的旧写法四条都不成立：
+
+1. 声明进 `extern "RustQt"`；`#[qproperty(TYPE, NAME)]` 挂类型别名而非字段。
+2. **QML 侧调用名不再自动 camelCase**，逐项 `#[cxx_name = "..."]`（或整块 `#[auto_cxx_name]`）。
+3. `#[qsignal]` 是 `extern "RustQt"` 里的**安全 fn 签名**；技术方案 §6 的 `impl qobject::T { #[qsignal] pub unsafe fn ... }` 位置与安全性都不对。
+4. `#[qml_element]` 必写，否则 QML 里 `Probe {}` 直接报未注册。
+5. **新增坑**：生成的 setter 按值消耗 `Pin<&mut Self>`。`self.set_x(..); self.set_y(..);` 会 E0382 use-after-move，必须 `mut self` + `self.as_mut().set_x(..)`。这是写第一个 Controller 时必然踩的，先记在这里。
+
+命名规范定稿：Rust 侧 snake_case + 每个暴露项显式 `#[cxx_name]` camelCase，禁用 `#[auto_cxx_name]`（可让 grep 直接对齐两侧名字，QML 里不存在两种风格）。
+
+
+---
+
+## 4. 里程碑
+
+### M0 · 构建地基 + QML 可行性探针（5–8 工作日）
+
+目标：证明 Qt6 + CXX-Qt + Cargo + QML 能跑，并**量化 QML 做三类窗口的代价**。未达标不进 M1。
+
+> **M0 进度（2026-10-04 起，随增量更新，末次 2026-10-06 P7）**：构建链与最小链路**已跑通并完成选型验证**，载体 `spike/hello-cxxqt/`（现 20 个源文件，Cargo 主导、无 CMake）+ `spike/p5-audit/` + `spike/p7-package/`。
+> 已证：① Cargo 可完全主导 Qt+CXX-Qt 构建；② QML↔Rust 三个方向全通（invokable / QString / qsignal→Connections）；③ `.cpp_file` shim 编入成功且能拿到 `QWindow*`/`HWND`/原生样式；④ **P3 通过**（alpha+opacity+穿透+置顶共存）；⑤ **线程模型通过**（2026-10-05 增量 3：后台线程 → `CxxQtThread::queue` → 属性写 + `qsignal` → QML，Windows 下编译链接运行全通，KDAB 的 Windows `FIXME` 不影响本路径），并据此新增边界规则 9。数据见 §3.4。
+> 边界成本量化见 §3.2 规则 4/5，投递成本与丢帧策略见 §3.2 规则 9 / §3.4，shim 九条硬约束见 §3.6，版本锁与 `cxx` 陷阱见 §2.2。
+> ⑥ **P1 遮罩延迟（2026-10-05，增量 4）有条件通过** —— 载体新增 `cpp/frozen_source.{h,cpp}`（BitBlt 双缓冲 + `QQuickImageProvider` + `QML_ELEMENT` 安装器）与 `src/mask_probe.rs`（状态机 + 全部打点）。三后端（D3D11/OpenGL/software）× debug/release 各一轮。**结论是"QML 不是瓶颈"**：单纹理一次上传成立（provider 1 µs、每 session 恰一次），稳态 QML 侧 28–57 ms；越线项是冷启动首帧（+62~117 ms）与 BitBlt（46–55 ms，4K 外推 60–85 ms），两者都不在 QML 层 ⇒ 不触发"遮罩改 C++ QWidget"。数据与三条新增硬约束见 §3.5①。
+> ⑦ **P4 标注 overlay（2026-10-05，增量 5）通过** —— 载体新增 `cpp/overlay_source.{h,cpp}`（Rust 像素的非拥有发布 + 脏矩形 `requestImage` + `QQuickPaintedItem` 对照项 + 安装器，305 行）与 `src/overlay_probe.rs`（10 档套件状态机，732 行）。4K 图层 × 三后端 × release/debug 共四份数据：**图元尺寸提交全部达标**（400×300 p50 6.5–11.4 ms、1600×1000 p50 6.4–13.9 ms，参照行说明真实增量成本 1–5 ms），**降级动作不启动**，且原本当作降级项的 `QQuickPaintedItem` 实测并不更慢。**换到两条比原通过线更值钱的约束**：整层位图重挂会在第二次提交起永久停住（四组变量全排除），唯一解法是"空 source → 等 present → 挂新 URL"的释放-重载握手；提交耗时与上传字节数不单调相关，因为 provider 路径含 `QImage::copy` 深拷贝 ⇒ 大区域提交改走 `ExternalTextureItem`。数据见 §3.5②，约束见 §3.6 第 6–8 条。P4 不需要 `ShaderEffect`，与 `glslc` 缺失无关。
+> （⑦ 顺带）证掉两条 §3.6/§7 之外的实现前提：**`QML_ELEMENT` 是 Cargo 路径下唯一的 C++ 类型注册方式**（`qmlRegisterType` 撞 "Namespace … already used"，**P4 的 `OverlayInstaller`/`PaintedOverlay` 第二次走同一条道，再次确认**）；**Qt 6.10 已自行把进程设为 `PER_MONITOR_AWARE_V2`**（手工早调反而 `Access is denied`），所以 M0 A 段那条"PerMonitorV2 manifest"从"必做"降级为"验证项"。
+> ⑧ **P5 依赖能力审计（2026-10-05，增量 6）通过** —— 载体新增 `spike/p5-audit/`（616 行独立 bin，`--no-default-features` 即把采集引擎从 WGC 切回 GDI）与 `spike/hello-cxxqt/cpp/audit_source.{h,cpp}`（115 行，`--audit` 无头分支，不经 QML）。**这是五张表里唯一一张能力表，结论不产生延迟数据**。逐条判定：**`xcap` 物理取帧可用**且 **`Window::bounds()` 已经是 `DWMWA_EXTENDED_FRAME_BOUNDS`**（原计划那条手工义务由依赖代劳）；**`wgc` 不是提速项**（首帧 952.6 vs 142.4 ms、512×512 局部 55.1 vs **17.9 ms**）⇒ **P1 留给 M1 的"采集侧 WGC/DXGI 对照"提前定案：GDI 就是首选，真要提速只剩 DXGI duplication**；**TGA/ICO/TIFF/GIF 编码逐条实测可用**，PRD §5.8.3 的 7 个导入格式**一个都不必删**（限制：ICO 只收 `1..=256`）⇒ 新立一条架构规则：**位图编码一律走 Rust `image`，禁 `QImage::save`**（Qt 写入器实测写不出 TGA/TIFF/GIF/WebP）；**`DwmGetWindowAttribute` 圆角不可用**（4 值枚举、无像素半径，且两条采集路径的帧采样点 **100% 不透明**）⇒ **PRD §5.5.6"使用系统窗口原始圆角"删出承诺范围，改为自 mask + 可配半径**；**`RealWindowFromPoint` 在本机不存在**（`user32` 无此导出、`windows` 0.62.2 未绑定）⇒ §0/D3、§2.1、§3.6 三处引用作废，改用实测成立的 **`WindowFromPoint` + `WS_EX_TRANSPARENT`**（穿透窗对命中测试本来就隐形 —— **但这是 P3 与 P5 两段各证一半拼起来的推链，"在 Qt 窗上直接测命中"还没做过，M3 要补一次端到端**）；**Qt 组件缺口精确到两件**（`qtimageformats`、`qtshadertools` 未装，`aqt list-qt` 确认可装、`aqt list-tool` 无独立 glslc，**补装需单独授权**），本机已有 `QtQuick.Effects`(`MultiEffect`)/`QtQuick.Shapes` 两条 **qsb-free 备选**。依赖解析 **17 spec 16 过 1 不过**（`apng` 只有 **0.3.4**，§2.1 原写 0.4 是我记错版本号）。顺带把 **P2 判成硬件阻塞**（`monitor|count=1`）。数据见 §2.1 与附录 B。
+> ⑨ **P6 工具链补齐 + `ShaderEffect` 变体补测（2026-10-05，增量 7）通过** —— 用户授权"安装必要的模块"后做的一轮，载体是 `build.rs`（qsb 烘焙 + 生成 `.qrc`，102 行）、`shaders/dim_hole.frag`（31 行）、`cpp/frozen_source.cpp` 里新增的**场景图量具**（`frozenWindowCheck` = `QQuickWindow::grabWindow()` + 像素比对 + PNG 工件）与 `spike/p5-audit/` 的 `p6-qt-audit-{BEFORE,AFTER}.log`。**四件事**：① **`glslc` 从来不是前提** —— 补装 `qtshadertools` 后 `qsb_exe=yes`、`Qt6ShaderTools.dll=yes`、而 `glslc_exe` **仍是 NO**（它不随模块发行），`qsb --qt6` 自带 GLSL 前端 ⇒ **Cargo 路径下着色器烘焙全程不需要 CMake**，P5 那句"变体不可构建"作废（§3.5① ⑥、§3.6 约束 9、§7.1 新增一行）。② **`ShaderEffect` 变体测了并通过，但买不到延迟**：同一 release 二进制 `P1_DIM` 切两档，`status = 0 (Compiled)`，`DRAG-FRAME p50` **16.63 vs 16.61 ms**、p95 17.17 vs 17.10，`REVEAL` 两档之差小于同档 run-to-run 散布 ⇒ **律条维持、理由从"快"换成"形状表现力"**（数据见 §3.5① ⑧）。③ **视觉验收获一条硬事实：屏幕 DC 的 GDI `BitBlt` 读不到我们自己的 Qt Quick 窗**（对照档读数 `1.000/1.000/1.000`，场景图 grab 读到 `1.047/0.400/0.400`，而 `0.400` 正是 `1 − 0x99/0xff`）⇒ 量具从 GDI 换到 `grabWindow()`，并**新立 §9.4 判据 ⑦"量具先在已知正确对照上跑通"**；顺带开出一个 M1 必答问题：**自截图链路（贴图窗、遮罩窗被截）到底能不能拿到像素**，见新增 R13。④ **能力清单复核**：readers 15→21、writers 12→17、imageformats 插件 4→9 对，**但 `TGA` 与 `GIF` 仍是只读**（`fmt_tga/fmt_gif = reader=1 writer=0`）⇒ **§3.3 的"`QImage::save` 禁令"原样维持**，只是理由换成"能力不齐 + 不把编码挂在插件上"。
+> ⑩ **P7 打包可行性（2026-10-06，增量 8）通过 —— 但它属于 §4-M0 退出标准的另一半，不在"五张探针表"里**（那五张量的是"QML 能不能做这三类窗"与"依赖能不能给这些能力"，P7 量的是"能不能把已经做出来的东西变成一个在没有 Qt 的机器上跑得起来的目录"）。载体新增 `spike/p7-package/`：`deploy.cmd`（钉住的 windeployqt 一行 + exe 拷贝）、`run_clean.cmd`（把 `PATH` 削到"候选目录 + System32"、抹掉 10 个 Qt/构建相关环境变量，再跑候选 exe）、十个 dist 目录（P7 的九个 + P8 的 `dist-ci`，含 `dist-bare` 负对照）、19 份日志与 11 份清单/体积快照；同时**修掉 `cpp/audit_source.cpp` 的部署态假阴性**（115 → 191 行，§2.2 末段）。**四件事**：① **默认 windeployqt 对"QML 在 qrc 里"的工程可见性是零，而产物看着是好的** —— 不加 `--qmldir` 那份包能启动、`qwindows.dll` 加载、`--audit` 打满 21 个读格式，然后**一个 UI 都不加载**（只有两条 `module … is not installed` 的 qWarning 与永不返回的 `exec()`），且 Windows 上 QML 加载失败不落 stdout ⇒ **任何只看退出码或只看进程存活的 CI 都会放它过线**。② **门是"净化环境 + 两行无头断言"**：`--qmldir` + `--release` + 四个 `--no-*` 钉成一行后 **1316 文件 / 66.78 MiB / 0 warning**，在净化环境里必须打出 `[P1] suite start` 与 `[P1] DIM rects shaderStatus=0`；负对照（裸 exe 目录）`exitlevel=-1073741515`（`STATUS_DLL_NOT_FOUND`）证明这套环境真隔离。③ **三个不写进脚本就会被忘掉的事实**：`windeployqt` **不复制目标 exe**（`--dir` 只在它周围铺依赖）；`--compiler-runtime` 会把 **25 MB `vc_redist.x64.exe` 丢进应用目录**；**同一行命令在有无 VS 开发者环境两种 host 上产出不同的 `d3dcompiler`**（Qt 自带 6.3.9600.16384 / 4,173,928 B / 落地名 `D3Dcompiler_47.dll`，对 Windows SDK redist 10.0.26100.7705 / 4,741,488 B / `d3dcompiler_47.dll`，两个 md5 各自对上源文件）⇒ 文件数不变、两档门都过，但**包内容差 0.54 MiB 且文件名大小写翻转**（新立 §8-R14）。④ **打包不裁剪 codec 能力**（`reader_formats`/`writer_formats`/`fmt_*` 在源目录与两份部署包中逐字节相同，12 个 `fmt_*` 探针里 11 读 / 8 写（全量 21 读 / 17 写） ⇒ §2.1 与 §3.3 的承诺原样有效），**且 qsb 烘进二进制的着色器在部署副本里仍 `status = 0`**（§3.6 约束 9 的写法在打包后依然成立）。**另有一条 R9 的实测缺口**：pinned 包里许可证文本 **0 命中**，Qt 安装树里也没有可抄的 LGPL/FDL 全文 ⇒ `licenses/` 必须由我们自备（§8-R9）。
+> ⑪ **P8 CI 串联（2026-10-06，增量 9）通过 —— §4-M0 退出标准里"一条命令"那一半自此落地**。载体是 `spike/p7-package/ci_local.cmd`（193 行），把 P7 交付的四段脚本与门**串成一条**并加上首尾两段：**1 依赖自检**（`qmake.exe`/`windeployqt.exe`/`qsb.exe`/`platforms/qwindows.dll`/`imageformats/qtiff.dll` 五个必查文件，缺任一 `status=MISSING` 直接判死 —— 审的是**文件不是模块名**，与 §2.2 那条一致）→ **2 `cargo build --release`** → **3 `deploy.cmd dist-ci`**（windeployqt warning 计数必须为 0）→ **4 `run_clean.cmd --audit` 无头审计** → **5 GUI 门** → **6 负对照 `dist-bare`** → **7 产物清单 + 文件数下限**，任一断链 `exit /b 1`。**四条判读**：① **退出码在这个工程里不是信号** —— 每次 GUI 运行都以 `exitlevel=1` 收尾且**好坏包同值**（应用跑完套件不自行退出：等待探针里从 t=30 s 起日志恒为 180 行、进程到 t=140 s 仍活着），所以这道门只能读日志内容；门因此从 P7 的两行断言扩成 **四条断言 + 一条完成标记**（新增 `[P4] provider calls=` 证明套件跑到最后一行，另加**反向断言** `is not installed` 必须不出现）。② **旧门本身有个洞**：P7 归档的六份 GUI 日志里，五份"好包"分别截在 59/69/69/59/91 行，没有一份跑到 P4 的第 3 档之后（完整套件 181 行）；当时"门成立"纯靠那两行断言恰好落在截断之前 —— 完成标记那条就是补它（新门的 120 s 上限同理是**上限不是等待时长**）。③ **残废包被一条命令当场判死**：`ci_local.cmd dist gate-only` 同时打出 `step=audit status=pass`（插件、21 个读格式、`qwindows.dll` 全在）+ 三条断言 `MISSING` + `is not installed` `PRESENT` + `files=72 < 1300` ⇒ `verdict=FAIL exit=1`；与 `dist-ci` 的 `verdict=PASS steps=7` 互为正反（`logs-p8/` 两份判决日志）—— **R14 从叙述变成可复现演示**。④ **成本与产物都落在能排期的量级**：整链 **140.2 s**（build 52 / deploy 17 / 无头审计 3 / GUI 门 64 / 负对照+清单 3），**1316 文件 / 66.24 MiB / 0 warning**，包内 `D3Dcompiler_47.dll` 4,173,928 B、md5 `b0ae3aa9…` 与 Qt 安装自带那份逐字节一致 ⇒ **R14 那条"vcvars 只该作用在 build 一步"是被测出来的而不是被要求的**（`env.cmd` 的 `setlocal` 天然把 vcvars 关在子作用域，rustc 的 msvc host 自己找得到 `link.exe`，hosted 侧甚至不必激活它）。**hosted 那一半仍未跑过**（本目录不是 git 仓库、无远端），`ci.yml` 是提案；两条只有真 runner 能答的问题新立 **R15**（GUI 门能否在无桌面/无 GPU 会话活下来 —— 包里 `--no-opengl-sw` 正是 P7 主动关掉软件 GL 的那刀；runner 产物的 `d3dcompiler` 来源是否仍是 Qt 自带那份）。数据与判据见 §7.2 ⑤、§9.1。
+> ⑫ **P9 许可证与包内二进制的来源（2026-10-06，增量 10）通过 —— M0 三条待办里唯一不需要外部条件的那条，本轮收口一半**。载体 `spike/p9-licenses/`（`collect.py` 201 行 + `qtdist_scan.py` 212 行 + `gen_notices.py` 139 行 + `provenance.py` 198 行、`evidence/` 五份、`licenses/` 92 份文本、`out/THIRD-PARTY-NOTICES.md` 958 行草稿）。**四件产出**：① **第三方清单不必手抄**：Qt 安装自带 `sbom/`（20 个文件 / 39.52 MiB），其中 7 份 `*.spdx.json` 共 **343 条 package 记录**，每条带 `licenseConcluded`/`licenseDeclared`/`copyrightText`/`versionInfo`，12 条 `hasExtractedLicensingInfos` 全部带非空 `extractedText`，覆盖 6 个 LicenseRef id（qtbase 5 段 + qtshadertools 的 MIT-Khronos-old 1,304 字符）⇒ `gen_notices.py` 直接从本机渲染出声明草稿，**§8-R9 里「没有工具会替我做」那句要收窄**。② **但许可证全文确实要外部取得**：10,495 个文件里严格「许可证命名」的只有 **5 个**（3 个 CMake 管道 + 2 个 wayland 协议附带声明），没有一个覆盖 Qt 库本体；32 个标准 SPDX id 里脚本判 **21 个本地无全文**，但"有匹配"的 11 个中 8 个是文件名撞词（`Zlib`→`zlib.h`、`Unicode-3.0`→`hb-unicode.h`、`MPL-2.0`→Rust 的 `LICENSE-APACHE`），真正站得住的只有 `Apache-2.0`/`MIT`/`HPND` 三个 ⇒ **要外部取得的是 29 个 id**；命中最多的是 `GPL-3.0-only` 242 / `GPL-2.0-only` 190 / `LGPL-3.0-only` 186。Rust 侧 53 个包（根 + 52）按 `dep_kinds` 走闭包 = **运行时 34 / 纯构建期 18 / dev 0**（34+18=52 对得上；早先算出的 52/24 是桶重叠，相加已大于全图包数，算术上不可能）。34 个运行时 crate **全部宽松许可、零 copyleft**，92 份文本按 sha256 去重只剩 **28 份**；全图有 **7 个 crate 的发布包里根本没有许可证全文**，其中**落在运行时闭包内的是 `cxx-qt` 家族 4 个**，另 3 个（`cxx-qt-build`/`qt-build-utils`/`codespan-reporting`）只在构建期⇒ 必须自备规范 MIT/Apache 兜底，「整条链交给 `cargo-about` 一类的工具」在这里不成立。③ **包里有一个谁都没声明的 Windows 系统二进制**：`dist-ci` 的 73 个 DLL 中与 System32 同名且**逐字节相同**的恰好 1 个 = `icuuc.dll`（36,864 B，md5 `be9504ec…`），而同名不同字的也恰好 1 个 = `D3Dcompiler_47.dll`（P7 已证它来自 Qt 自带那份）。`icuuc.dll` 不在 Qt 安装树的任何位置、不在 windeployqt 自己的 `To be deployed` 清单里（`p8-deploy.log:76` 只有一句裸的 `Updating icuuc.dll.`）、不在那 343 条 SBOM 记录里，**却确实是 `Qt6Core.dll` 的 PE 导入表点名的依赖**（解析出 29 项导入）⇒ **新立 R16**。④ **`--no-compiler-runtime` 那步退让的前提被导入表证实**：`Qt6Core`/`Qt6Gui` 点名要 `MSVCP140.dll`/`MSVCP140_1.dll`/`MSVCP140_2.dll`/`VCRUNTIME140.dll`/`VCRUNTIME140_1.dll` 与 9 个 `api-ms-win-crt-*`，而包内一个都没有 —— 本机 GUI 门能过只因为这台机器装了 VS 2022 Community 且净化门保留 System32 在 PATH 上 ⇒ **「安装器必须负责 vc_redist」不是偏好而是硬要求**；本机可直接取用的那份 25,635,768 B = 24.45 MiB，与 P7 量的 `--compiler-runtime` 产物同尺寸。数据与判据见 §7.2 ⑥、§8-R9/R16。
+> **仍待做**：~~P5~~ 已出数；~~P1 的 `ShaderEffect` 变体补测（先决条件是授权补装 `qtshadertools`）~~ **P6 已补测并通过，两条 qsb-free 备选（`MultiEffect`/`Shapes`）降为备档，只剩 `QT_QUICK_BACKEND=software` 兜底档与 shader 的组合未测**（§3.5① ⑥ 末段，已给出处置：遮罩保留非 shader 回退画法）；~~打包~~ **P7 已把"一条命令产出可运行目录"做出来并过了净化环境门（§7.2）**；**P2 本机不可测（需第二块屏）**；PerMonitorV2 manifest **验证**（Qt 已默认 PMv2，这里只需确认打包后仍然成立 —— P7 顺带查明部署包里**没有 `qt.conf`**，所以这条验证要在 `dist` 目录下做而不是源目录，见 §7.2 ④）、热键线程、托盘、CMake vs Cargo 增量/全量对照实测（决策窗口在 I-3 前，见 §7.1）、**R13 那条"自家窗口可不可截"的采集侧对照**、~~**CI（`setup → build → package → 净化环境门 → artifact` 串成一条，P7 只交付了前三段与门的脚本，没交付把它们连起来的 workflow）**~~ **本地半边 P8 已串通并跑通（`ci_local.cmd` 一条命令、`verdict=PASS steps=7`，§7.2 ⑤）**；只剩 hosted 半边 —— 本目录至今不是 git 仓库、没有远端，`ci.yml` 是逐步对齐 `ci_local.cmd` 写的**提案**不是证据，且 hosted runner 能否养活那道 GUI 门只有真 runner 能答（**R15**）。**`licenses/` 这一条本轮拆开**：清单侧 P9 已给出可重跑脚本（`gen_notices.py` 从本地 SBOM 出 958 行第三方声明草稿，343 条记录、6 个 LicenseRef id 的全文（12 条 `extractedText`）随带），**全文侧仍是要外部取得的一次性动作 + 需要指派**（32 个标准 SPDX id 里 29 个本地拿不出可辩护的全文；Rust 运行时闭包 34 个 crate 里 4 个无文本，全图 7 个）；顺带查出一条**新的包内来源不明项 `icuuc.dll`**，已立 **R16**（§7.2 ⑥）。
+> 增量编译基线（单文件改动，Cargo 路径）：**cargo 33–46 s**，另加 `vcvarsall` 固定开销约 18 s（脚本层可摊薄）。
+
+**A. 构建链（3–5 天）**
+- Cargo workspace，**M0 后先按 Cargo 主导推进**（`CxxQtBuilder` + `QmlModule` 注册 QML 模块，spike 已证可行，见 §7.1）；CMake 主导路径作为 I-3 前的对照实测项，不是前置阻塞。
+- §3.7 的一个空 Rust QObject（含 property + signal + qinvokable）被 QML `Button` 调通并回传信号；命名规范定稿。
+- `qshim.cpp` 起骨架：`winId()`、`setOpacity`、`setDefaultAlphaBuffer` 一次性调用。
+- 进程 PerMonitorV2 DPI manifest（BitBlt 路径不开这个会拿到虚化位图）。**P1 期间更正**：Qt 6.10 启动时已把进程设为 `DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2`，spike 里手工早调反而失败（`Access is denied`，Qt 自己那条警告即证据），且 BitBlt 取到的是清晰帧（`frozenDescribe()` 的 `logPixels=192` 与物理 3072×1920 一致）。本条因此从"必做"改为"打包后验证一次 manifest 不与之冲突"。
+- `global-hotkey` 独立线程 → 队列事件回 GUI 线程；`QSystemTrayIcon` 托盘图标 + 一级菜单。**跨线程投递机制已由 spike 增量 3 验证**（§3.4），这里只剩接 `global-hotkey` crate 本身。
+- `toml_edit` 配置读写 + 原子替换；`tracing` 统一日志（Rust/C++ 同 sink）；Rust panic 捕获 + 崩溃 dump。
+- CI：Windows runner setup→build→package→artifact，缓存 Qt。**P8 已把这条的内容做出来并跑通本地半边**：`spike/p7-package/ci_local.cmd` 七步一条命令（依赖自检 → build → deploy → 无头审计 → GUI 门 → 负对照 → 产物清单，`verdict=PASS steps=7`、140.2 s），`ci.yml` 是 hosted 提案未跑过（§7.2 ⑤、R15）。
+
+**B. 能力与性能探针（2–3 天，结论回填本文档）**
+
+| 探针 | 通过线 | 失败动作 | 结果 |
+|---|---|---|---|
+| P1 遮罩延迟：4K@150% 单帧，冻结画面纹理 + 变暗 + 挖洞 + 拖选区 | 热键→遮罩可见 P95 ≤150ms；拖拽帧时间 ≤8ms | 换 §3.5② 备选路径；仍不达标则遮罩改 C++ QWidget（混合方案，需二次拍板） | **有条件通过**（2026-10-05，三后端 + debug/release 各跑一遍）。稳态达标：QML 侧仅 28–57 ms，单纹理一次上传已证（provider 5 次/session 1 次，1 µs）。**两处越线与 QML 无关**：冷启动首帧 +62~117 ms、BitBlt 46–55 ms（4K 外推 60–85 ms）。⇒ 降级动作重定向：不改 `QWidget`，改为 **M1 开机预热遮罩窗 + 采集侧 WGC/DXGI 对照**（**P5 已把这条对照做完一半：WGC 出局，只剩 DXGI duplication**，见下方 P5 行与 §4-M1）。"≤8ms"在 60 Hz 面板上按 present 间隔不可证伪，判据改为"输入:present ≥2 且 pacer 缺口 ≤1 tick"（已满足，software 后端除外）。~~**遗留**：`ShaderEffect` 变体因本机缺 `glslc`/`qtshadertools` 未测~~ **P6 已补测（2026-10-05，增量 7）：单个 `ShaderEffect` 变体 `status=0` 编译通过、A/B 与 4-`Rectangle` 档不可分辨（`DRAG-FRAME p50` 16.63 vs 16.61 ms）、像素级验收 `DIM-OK` ⇒ 通过线全绿，律条维持但理由改为"形状表现力"**（§3.5① ⑤⑥⑧）。数据见 §3.5① |
+| P2 多屏异缩放：双屏 100%+150%，跨屏选区拼成一张图 | 逐像素正确，无错位/留白/拉伸 | v1 限定"每屏独立截图"，跨屏拼接延后 | **硬件阻塞，本机不可测**（2026-10-05 P5 顺带核实：日志里 monitor 段给 `count=1`，只有一块 3072×1920@200%）。**不是"未做"，是"做不了"** ⇒ 这条降级线不能被提前证伪，v1 的"每屏独立截图"限制按 R3 保留，等到接上第二块屏再跑。P5 期间拿到的间接证据只有一条：`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 在 Qt 已自设的情况下仍返回 `Ok(())`、awareness 0→2（与 P3 期间"早调反而 `Access is denied`"并不矛盾 —— 那次发生在 Qt 初始化之前） |
+| P3 逐像素 alpha + `setOpacity` + 穿透三者共存（§3.5③ 冲突点） | 三者可独立开关且重算后不失效 | shim 里手工维护 `WS_EX_*`，接受与 Qt 版本耦合 | **已通过**（2026-10-04 spike 实测 `exStyle=0x80028`，LAYERED+TRANSPARENT+TOPMOST 同时为 1）→ 不触发降级，Qt 6.10 自行算对 |
+| P4 标注 overlay：脏矩形栅格化 + 纹理上传 | 4K 下单图元提交→上屏 ≤16ms | 接受 `QQuickPaintedItem` 或降分辨率编辑预览 | **已通过**（2026-10-05，release 档 × 三后端 + debug 档，10 档套件）。4K 图层上**图元尺寸提交全绿**：400×300 p50 6.5–11.4 ms / 1600×1000 p50 6.4–13.9 ms，`work~` **0.0–6.2 ms**。**判读要按 §9.4 的 ③④**：**同一后端内**脏矩形与"什么都不画"参照档对齐，p50 只贵 **0～3.4 ms**、p90 只贵 **−1.2～+3.5 ms**（参照档自身 `work~0.0–1.0`），所以这条线在 60 Hz 面板上对图元提交**已不可分辨**，真正达标的是 `work~`（增量成本 1–5 ms）与 `stalled=0`。**不触发降级动作**，且 `QQuickPaintedItem` 实测不比脏矩形慢（`work~2.59` vs 3.41），**降级项作废**。**换来两条新约束**：① 整层位图重挂（换 URL 不换窗口）在**三后端 / 两分辨率 / 两种缓冲归属 / 两节拍**下全部第二次提交起永久停住（3200 ms 无 present），唯一有效解法是"空 source → 等 present → 挂新 URL"的释放-重载握手（§3.5② ③④、§3.6 约束 8）；② 提交耗时不与上传字节数单调相关（6.1 MB 脏矩形比 22.5 MB 整窗 painted 更慢），因为 provider 路径含 `QImage::copy` 深拷贝（avg 504–516 µs / worst 7.5–9.9 ms / 套件吐出 875.7 MB）⇒ 大区域提交改走 `ExternalTextureItem`。数据见 §3.5② |
+| P5 依赖能力：`xcap` 物理分辨率取帧、TGA/ICO **编码**、`DwmGetWindowAttribute` 圆角、`RealWindowFromPoint` 命中 | 逐条记录实际可用/不可用 | 从承诺范围里删除（PRD §5.8.3 格式清单、§11 项 5 平台能力矩阵） | **已通过**（2026-10-05，spike 增量 6：`spike/p5-audit/` 616 行 × debug/release × WGC/GDI 三份 + Qt 侧 `--audit` 一份）。**逐条判定**：① **`xcap` 物理取帧可用**（`Monitor::w/h` 给物理 3072×1920、取帧与 `geom()` 相等、`scale_factor=2.000`），且 **`Window::bounds()` 已经就是 `DWMWA_EXTENDED_FRAME_BOUNDS`** ⇒ 原计划那条手工义务由依赖代劳。② **`wgc` feature 不是提速项**：首帧 952.6 vs GDI 142.4 ms、512×512 局部 55.1 vs **17.9 ms**（WGC 每次拿整帧）⇒ **P1 留给 M1 的"采集侧对照"提前定案：默认 GDI 就是首选，真要提速只剩 DXGI duplication**。③ **TGA/ICO/TIFF/GIF 编码可用**（`image` 0.25.10 逐条 enc+decode 全过，PRD §5.8.3 的 7 个导入格式**一个都不用删**），限制是 **ICO 只收 `1..=256`**、DDS 无编码器 ⇒ 配套一条架构规则：**位图编码一律走 Rust `image`，禁 `QImage::save`**（Qt 写入器实测写不出 TGA/TIFF/GIF/WebP。**P6 复核：补装 `qtimageformats` 后写得出 TIF/TIFF/WEBP/ICNS/WBMP，但 TGA 与 GIF 仍是 `reader=1 writer=0` ⇒ 这条规则原样有效，理由改为"能力不齐 + 不依赖插件"**）。④ **`DwmGetWindowAttribute` 圆角不可用**：`CORNER_PREFERENCE` 只是 4 值枚举，**系统不暴露像素半径**，且两条采集路径的帧**采样点 100% 不透明** ⇒ **PRD §5.5.6"使用系统窗口原始圆角"删出承诺范围，改为我们自 mask + 可配半径**。⑤ **`RealWindowFromPoint` 不存在**（10.0.26200 的 `user32` 无此导出，`windows` 0.62.2 也未绑定）⇒ §0/D3、§2.1、§3.6 三处引用作废，改用实测成立的 **`WindowFromPoint` + `WS_EX_TRANSPARENT`**（探针窗加 flag 后 `hit_ours` 由 true 变 false，穿透窗对命中测试隐形这件事 Qt/系统本来就做得到）。⑥ **Qt 组件缺口精确到两件**：`qtimageformats`、`qtshadertools` 均未装（`glslc`/`qsb`/`Qt6ShaderTools.dll` 全无），但 `aqt list-qt` 确认**可装**、`aqt list-tool` 里**无独立 glslc**；本机已有 `QtQuick.Effects`(`MultiEffect`)/`QtQuick.Shapes` 两条 qsb-free 备选。**补装是对既有 Qt 目录的写操作，需单独授权**（**P6 已按授权补装并复核：`qsb`/`Qt6ShaderTools.dll` 到位，`glslc` 确认不随模块发行；`MultiEffect`/`Shapes` 两条备选降为备档，`ShaderEffect` 本体已实测通过**）。⑦ 依赖解析 17 spec **16 过 1 不过**：`apng` 只有 **0.3.4**（§2.1 原写 0.4 是我记错版本号，不是 stale）。**不触发任何"删功能"以外的降级，但触发 1 条 PRD 承诺收窄（④）与 3 条新规则（②③⑤）**。数据见 §2.1 与附录 B |
+
+退出标准：一条命令从零到安装包；五张探针结论表已写回本文档（能力面在 §2.1，三张延迟面在 §3.5①②③）。**当前进度（2026-10-06 P8 后）：五张表全部有结论且已回写 —— P1 通过（三后端 + 两档挖洞画法，增量 4 的"有条件"里那个条件已由增量 7 满足）、P3 通过、P4 通过、P5 通过（含 1 条 PRD 承诺收窄）；P2 判为硬件阻塞（本机单屏），不是未完成而是不可完成。**
+**五张表里三张"延迟敏感面"探针（P1/P3/P4）全部没有触发混合方案降级，两张"能力面"探针（P2/P5）里只有 P5 出数并换出一条功能删除（系统原始圆角）。⇒ M0 的 go/no-go 里，"QML 能不能做这三类窗口"这个问题已经正式回答：能，且遮罩的两种画法都量化过（§3.5① ⑧）。P6 另开了一项**不在原五张表里**的能力问题（自家窗口可不可被截，R13），它不改变 go/no-go，但改变了 M1 的采集侧对照范围。** **退出标准的另一半在 P7/P8 两次增量里合上了：P7 给出可重跑的 `setup → build → package` 三段与"净化环境 + 无头断言"这道门，P8 把它们与门、负对照、产物清单串成一条 `ci_local.cmd` 并在本机跑出 `verdict=PASS steps=7`（§7.2 ⑤）。⇒ "一条命令从零到可运行目录"这件事已经有实测交付。但要说清这条命令的产物是什么：它到 **`dist-ci` 目录 + 归档**为止，"安装包"那一层（Inno/WiX/MSIX 的选型与 `licenses/` 目录）仍没做，也不在 spike 的授权范围里。** 所以 M0 收口现在剩的都是待办而不是未知数：**hosted workflow 需要先让这个目录成为 git 仓库并有远端**（`ci.yml` 是照本地跑通的链路写的提案，风险项 R15）、**`licenses/` 那份自备材料仍无归属**（R9）、**安装器选型**。
+**降级点**：构建链 8 天内跑不通 → 退回"纯 C++ 核心 + Rust 仅算法静态库"或重估非 Qt 栈；此时沉没成本 ≈ 8 天。
+
+### M1 · 截得下来（7–10 工作日）
+
+对应 PRD §5.2.1/5.2.2、§5.3.1、§5.3.10、§5.5.1/5.5.2/5.5.5。
+
+- `CaptureService`：屏幕枚举（位置/缩放/分辨率）→ **先冻结整屏**（创建遮罩前取帧，这是遮罩不进入截图的唯一可靠手段；`WDA_EXCLUDEFROMCAPTURE` 仅作 Win11 增强）→ 每 `QScreen` 起一个 `CaptureMask.qml` 窗。
+- **遮罩窗开机预热（P1 结论 ③，M1 必做）**：进程启动即创建遮罩窗、推一帧空纹理、随即隐藏，把 GPU 后端 62~117 ms 的首帧 warm-up 移出用户热键路径。不做这条，"热键→遮罩可见"的第一次按压必然越 150 ms 线。
+- **采集路径对照（P1 结论 ④ → P5 已定案一半，2026-10-05）**：BitBlt 实测 46–55 ms@3072×1920，4K 外推 60–85 ms，占掉预算一半。**原计划"试 WGC"这条已被 P5 直接否掉**：`xcap` 开 `wgc` 后首帧 **952.6 ms**（GDI 142.4 ms）、稳态四次 66.8/68.4/89.3（GDI 75.0/86.6/99.1，**互有胜负、没有一边倒**）、**512×512 局部取帧 55.1 vs 17.9 ms**（WGC 无视请求区域，每次抓整帧）。⇒ **WGC 不入选**，M1 只剩 **DXGI duplication** 一条可试，且必须用**同一 `reveal` 定义**；**局部区域（选区/放大镜）一律走 GDI**，这条已经不需要再测。PrintWindow 仍只作兜底（P5：尺寸会漂、有过 513 ms 离群，兜底路径不能假定与主路径同尺寸）。
+- **自家窗口可不可被截（P6 新开的对照，R13，与上一条同一批次做）**：P6 实测**屏幕 DC 的 GDI `BitBlt` 读不出自家 Qt Quick 遮罩窗**（`1.000/1.000/1.000`，而 `grabWindow()` 读出 `0.400`）。M1 要用**同一台像素量具**（§9.4 ⑦，先过已知正确对照）分别走 **GDI / WGC / `PrintWindow` / DXGI duplication**，出一张"哪一路看得见哪一类窗"的能力矩阵 —— 这张表同时决定 ① 遮罩期"再截一次"的语义、② **贴图（Pin）窗能否被后续截图/保存截到**（PRD 若承诺这条，MVP 之前必须有证据）、③ `WDA_EXCLUDEFROMCAPTURE` 到底还需要不需要做（若 GDI 本来就看不见自家窗，这条"增强"的价值要重新估）。**不做这条，M2 的"贴图可再截取"就是在无证据状态下承诺。**
+- **挖洞画法定案（P6 收口）**：遮罩用**单个 `ShaderEffect`**（§3.5① ⑧ 已实测：与 4-`Rectangle` 档在所有延迟指标上不可分辨，选它是因为**形状表现力** —— 圆角选区、多段选区、羽化边是拼图表达不了的）。**同时保留 4-`Rectangle` 作为 `QT_QUICK_BACKEND=software` 兜底档的回退画法**（shader 依赖 RHI，software 档未测）。两条都要在遮罩组件里可切换，不是二选一删一个。配套的工程活：**`build.rs` 里的 `qsb` 烘焙 + 手写 `.qrc`（前缀必须等于 QML 文档的 qrc 路径）从 spike 形态提升为正式构建步骤**，并把 §9.1 的两条断言（qsb 失败即硬错误、`ShaderEffect status` 必须为 0）一起搬过去。
+- 几何内核：物理/DIP 换算、虚拟桌面并集包围盒、跨屏选区拼接（异缩放不得错位/留白/拉伸，PRD §4.3）。
+- 选区交互：拖拽成框、8 控制点调整、Enter/双击确认、Esc 逐级退出（PRD §4.2）。
+- 输出：复制到剪贴板、另存为（PNG/JPG/BMP，JPG 质量参数）。
+- 屏幕变化：分辨率/插拔时裁剪到有效区并提示（PRD §8.5）。
+
+验证：`proptest` 覆盖坐标换算与拼接往返一致性；P1/P2 指标在真实双屏复测。**P6 给 M1 净增两条活（R13 的四路采集可见性对照、挖洞两档可切换 + 着色器烘焙进正式构建与 CI），量仍落在 7–10 天区间内，但已经把上沿吃掉 —— 若 M1 期内要再塞新功能，应从"选区交互"以外的项里砍。**
+退出标准：PRD §9.1"选区坐标、尺寸和跨屏结果准确"在 150% 下逐像素正确。
+
+### M2 · 贴得回去（6–9 工作日）
+
+对应 PRD §5.8.1、§5.8.2（仅图片）、§5.9.1/5.9.2/5.9.4/5.9.12/5.9.13/5.9.16/5.9.18。
+
+- `PinItem` 状态机（Rust）+ `PinWindow.qml`（frameless + alpha + StaysOnTop）。
+- 移动（跨屏、至少保留一部分可见，§5.9.1）、滚轮缩放（光标/中心为锚点，像素级 vs 平滑二选一，§5.9.2）、Ctrl+滚轮透明度（§5.9.4，走 `QWindow::setOpacity`；含"过低仍可找回"与一键回 100%）。
+- **鼠标穿透**（D3 提回本节）：shim 切 `WindowTransparentForInput`；必须同时提供快捷键/托盘取消入口（§5.9.13 硬要求），启用时给短暂状态提示。
+- 复制图片内容、关闭/销毁（销毁走确认或撤销，§5.9.18）、剪贴板图片→贴图（§8.1 空内容不建窗并提示）。
+- **"截贴图窗自己"这件事按 M1 的 R13 能力矩阵办事，不按 PRD 的默认预期办事**（P6 新增）：若四路采集都看不见自家 Qt Quick 窗，则 MVP 对"贴图可被再次截取"不给承诺，改为**每条贴图在 Rust 侧留一份源位图**（内存或磁盘缓存）用于"自我复制/自我保存/自我缩略"这三条用户可见路径 —— 这条兜底本来就要为"历史回放重新贴图"服务，所以它不是额外架构，是同一份数据的第二个用途。
+
+验证：贴图覆盖任意区域、跨屏往返不丢、透明度与穿透可关；异常——剪贴板无内容、超大图、解码失败不崩（PRD §7.2/§8.1/§8.2）；P3 指标复测；**R13 的四路采集矩阵要在 M2 之前落地一次，且贴图窗自身要各跑一次（M1 那轮用的是遮罩窗）**。
+退出标准：M1+M2 已构成交付精简版的条件。
+
+### M3 · 选区精修与输出链路（7–11 工作日）
+
+对应 PRD §5.2.4/5.2.5/5.2.6、§5.3.2/5.3.6/5.3.9、§5.4.1/5.4.2/5.4.3、§5.5.3/5.5.4/5.5.6/5.5.7。
+
+- 窗口检测（高亮边界、单击选中、排除不可见/全透明窗、重叠取最直接可见者）+ 活动窗口截图 + `DWMWA_EXTENDED_FRAME_BOUNDS` 对齐真实边界。
+- 方向键 1px 微调与修饰键步长、选区输入宽高（明确锚点扩展方向、越界钳制）。
+- 放大镜（`Magnifier.qml` 独立小窗：像素网格、坐标、颜色值）+ 取色器（HEX/RGB/HSL，按原始屏幕像素取色不受遮罩影响，`C` 键复制）。
+- 延时截图（倒计时 + 捕获结束时指针状态）+ 重复上次截图（越界自动裁剪并提示）+ 鼠标指针合成（热点对齐）。
+- 自动保存 / 快速保存（命名含日期时间序号前缀、重名递增、失败保内容不关界面、成功通知可点开文件/目录，§8.3）。
+- 圆角外部透明（或按配置填充）、阴影与边框导出；JPG 提示透明将被填充。**P5 把"圆角"这条的实现路径钉死为"我们自己 mask"**：系统不给半径（`DWMWA_WINDOW_CORNER_PREFERENCE` 只有 4 个枚举值），采集帧四角又全不透明，所以 **PRD §5.5.6 的"或使用系统窗口原始圆角"这一句删出承诺范围**（记入 PRD §11 项 5 那份平台能力矩阵），改为**可配置半径**，默认档在 M3 定（Win11 的可见圆角不是 API，只能按视觉对齐取样）。阴影那条不受影响：PRD §5.5.7 要的是我们渲染的效果，但采集几何等于 DWM 可见框 ⇒ "包含阴影"要先外扩边距再合成。
+
+验证：PRD §9.1 截图项全绿（元素检测除外）；取色值与 Win11 颜色选择器对拍；跨屏窗口检测不误命中本进程窗。
+退出标准：延时/重复/指针/圆角输出与设置一致。
+
+### M4 · 标注（拍平式，18–28 工作日）
+
+全项目最大单块，内部三刀，每刀可独立合并。
+
+**M4a 绘制与导出（9–13）**：`AnnotationCommand` + `UndoStack`（上限 200，超限保最近；连续样式变更 400ms 窗口内合并为一次撤销）；**Rust overlay 脏矩形栅格器 + `QQuickImageProvider` rect 请求（P4 达标路径，无需新 shim）**；`ExternalTextureItem` 只为**大区域提交**写（马赛克、模糊、整层重栅格 —— P4 依据：provider 路径的 `QImage::copy` 是那里最贵的一项，§3.5② ②）；工具 = 矩形、圆角矩形、椭圆/正圆（约束键）、直线、单向/双向箭头、铅笔、文本（字体/字号/颜色/对齐/背景/描边）、马赛克、模糊；工具独立记忆最近颜色与线宽（重启仍有效，§9.2）；多档线宽 + 悬停滚轮微调。**带一条 P4 硬约束**：任何"整层更新"路径（重栅格全部图元、撤销后整层刷新）必须实现释放-重载握手或走 `ExternalTextureItem`，否则第二次起不上屏（§3.6 约束 8）。
+**M4b 选择与擦除（5–8）**：框选/套索选 overlay 区域、橡皮擦（默认只擦标注层，"擦除到透明"须显式提示）、Ctrl+Z/Ctrl+Y 顺序对拍。
+**M4c 编号与贴图联动（4–7）**：自动编号（起始值/样式、删除后可选重排）、贴图后仍可继续标注、贴图窗复制/保存走同一 flatten 路径。
+
+验证：`UndoStack` 与文档模型为纯 Rust，单测全覆盖，含随机操作序列重放（属性测试：任意 apply/undo 序列后文档等于快照）；图像算法固定小图金样零像素差对拍；P4 在 4K 复测。
+退出标准：PRD §9.2 中"可创建、移动、修改、删除 + 撤销重做顺序 + 样式记忆重启有效"，**不含 §5.7.15/5.7.16 逐对象重编辑与旋转**。
+
+### M5 · 历史、快捷键与设置（9–13 工作日）
+
+- 历史：入库（含取消记录，受开关控制）、256px 缩略图、**三重保留上限同时生效**（条数 AND 年龄 AND 总字节，删到三条全过）、锁定项永不清理、回放上下条、重新复制/保存/贴图/回到原选区、单条/多条/全部清理（全部需二次确认）、占用空间展示。Rust 侧 `QAbstractListModel` + `QQuickImageProvider`（Phase 2 补真实缩略图，MVP 可先走文件 URL）。
+- 快捷键设置页（QML）：录制新组合、**冲突检测并显示冲突来源**、未改完不覆盖既有配置（§8.4）。
+- 设置页按 PRD §5.20.1 的 11 类，MVP 落 常规/截图/标注/贴图/输出/快捷键/历史/外观 8 类，热区与高级留空位。即时生效 + 需重启项显式标记。
+- 外观：跟随系统深浅色（`QStyleHints` 色彩方案变化）+ 手动浅/深 + 主题色 + 放大镜样式。
+- 开机自启。
+
+验证：PRD §9.4/9.5 对应项；历史保留策略纯 Rust 单测（不需 GUI）；快捷键冲突在真实占用下验证；QML binding 与 property 变更用 `QTest`/`qmllint` + 静态检查。
+退出标准：MVP 完成，进入 §5 Phase 2 排期。
+
+---
+
+## 5. 范围裁剪表
+
+| PRD | 功能 | 归属 | 理由 |
+|---|---|---|---|
+| 5.1.1/5.1.2 | 托盘后台 / 开机自启 | M0 / M5 | |
+| 5.2.1/5.2.2 | 热键 / 托盘启动截图 | M1 | |
+| 5.2.3 | 超级截图 | **不做** | 功能键+鼠标全局拖动需 LL hook，会拖慢全系统输入且易撞系统手势 |
+| 5.2.4/5.2.5/5.2.6 | 延时 / 重复上次 / 活动窗口 | M3 | |
+| 5.3.1/5.3.10 | 自由选区 / 跨屏 | M1 | |
+| 5.3.2 | 窗口检测 | M3 | **P5 已定实现路径**：`xcap::Window::all()` 给几何（= `DWMWA_EXTENDED_FRAME_BOUNDS`，实测与 `DwmGetWindowAttribute` 一致）+ `WindowFromPoint` 做 hover 命中；**不需要 `RealWindowFromPoint`**（本机该导出不存在）。"遮罩/贴图窗不吃掉命中测试"是**两段各自实测、串起来推**的链：P3 证 `WindowTransparentForInput` → `WS_EX_TRANSPARENT`（`exStyle=0x80028`），P5 证手工带该 flag 的分层置顶窗对 `WindowFromPoint` 隐形（`hit_ours` true→false）——**中间没有一次"在 Qt 窗上直接测命中"的端到端验证，M3 要补这一步**。回退路径 z 序遍历 0.8–1.6 ms |
+| 5.3.3/5.3.4 | 元素 / 层级元素检测 | **Phase 2（可砍）** | `uiautomation` 0.25 可用但浏览器/Electron 单次查询可阻塞 10–100ms；`FromPoint` 返回"最靠近根的父元素"需自行下钻找最深叶；且 UIA 调用必须在独立线程。PowerToys 文本提取器做了，Snipaste/ShareX 没做——差异化而非基线 |
+| 5.3.5–5.3.9 | 自定义位置尺寸 / 输入尺寸 / px↔dip / 固定比例 / 像素微调 | M3（固定比例并入尾部） | |
+| 5.4.1/5.4.2/5.4.3 | 放大镜 / 取色器 / 捕获指针 | M3 | |
+| 5.4.4/5.4.5 | 白板 / 透明白板 | Phase 2 | 与截图主链路正交 |
+| 5.5.1–5.5.5 | 确认 / 复制 / 自动保存 / 快速保存 / 另存为 | M1、M3 | |
+| 5.5.6/5.5.7 | 圆角 / 阴影边框 | M3 | **P5 收窄**：圆角只能自 mask + 可配半径，"使用系统窗口原始圆角"删出承诺（系统无半径 API、采集帧全不透明）；阴影按 §5.5.7 原意自渲染，需先外扩边距 |
+| 5.5.8 | 刷新截图 | Phase 2 | |
+| 5.5.9 | 原生分享 | **不做** | WinRT `DataTransferManager` 实际要求包身份，托盘应用不适配；降级为"打开方式" |
+| 5.5.10 | 发送到其他应用 | Phase 2 | |
+| 5.5.11 | 文件对话框联动隐藏贴图 | Phase 2 | |
+| 5.6.x | OCR / 二维码 / 条形码 | Phase 2 | `ort` 仍 rc；模型约 21MB 需作可选下载包分发 |
+| 5.7.1–5.7.14, 5.7.19–5.7.21 | 标注绘制/橡皮/撤销重做/线宽/颜色记忆 | M4 | |
+| 5.7.15–5.7.18/5.7.22 | 旋转 / 重编辑 / 多选 / 克隆 / 调色板共享 | **Phase 2** | 需把 overlay 从位图升级为元素树，见 §3.5② |
+| 5.8.1/5.8.2(图片) | 截图贴图 / 剪贴板图片贴图 | M2 | |
+| 5.8.2(文本/HTML/颜色)/5.8.3–5.8.6 | 文本·HTML·颜色卡片 / 文件贴图 / 网页图片 | Phase 2 | 文本卡片价值高，建议排在 OCR 之前 |
+| 5.9.1/5.9.2/5.9.4/5.9.12/5.9.13/5.9.16/5.9.18 | 移动/缩放/透明度/置顶/穿透/复制/关闭 | M2 | 穿透因 D3 提前 |
+| 5.9.3/5.9.5–5.9.11/5.9.14/5.9.15/5.9.17 | 精确尺寸/旋转/翻转/灰度/反色/裁剪/缩略图/GIF/Alpha背景/复制为文件 | Phase 2 | 灰度、反色、裁剪是纯 imageops 成本极低，作 Phase 2 首批 |
+| 5.10/5.11/5.12 | 多选批量 / Solo / 分组 | Phase 2 | 依赖 PinItem 集合语义 |
+| 5.13 | 虚拟桌面 | **不做** | 公开 `IVirtualDesktopManager` 仅 3 方法且被 MS 限定用途；可用路径依赖未公开接口，GUID 随 Windows 版本变 |
+| 5.14 | 截图历史 | M5 | |
+| 5.15 | 热区 | Phase 2 | 轮询/钩子与 §5.2.3 同源延迟风险 |
+| 5.16.1/5.16.2 | 快捷键配置 / 按应用排除 | M5 / Phase 2 | |
+| 5.17 | 命令行接口 | Phase 2（早期） | 成本低、自动化价值高，建议紧跟 M5 |
+| 5.18.1/5.18.2 | 托盘菜单 / 自定义鼠标动作 | M0+M1 / Phase 2 | |
+| 5.19 | 主题外观 | M5 | |
+| 5.20.1/5.20.2/5.20.3 | 设置分类 / 即时生效 / 配置导入导出 | M5 / Phase 2 | |
+| 5.21 | 更新 / 帮助 / 反馈 | Phase 2 | |
+| 6/7/8/9 | 数据、隐私、非功能、异常 | 贯穿 | 验收见 §9 |
+
+**"不做"三项**（5.2.3、5.5.9、5.13）建议在 PRD 同步标注为超出 Windows 平台能力范围，与 PRD §7.3"平台不支持的能力应自动隐藏或明确标记不可用"一致。
+
+**P6 未在本表落一行**，这是有意的：R13（自家 Qt Quick 窗口可能进不了采集链路）当前是**待答的能力问题**，不是已证的不可实现。它影响的不是"某项功能做不做"，而是"实现形态与措辞"（见 §4-M2 的源位图兜底）。若 M1 的四路对照判为"四路都看不见自家窗"，则本表要按 PRD 的"自动隐藏或明确标记不可用"口径动 **5.8.1/5.8.2** 与 **5.5.8** 两行的理由栏 —— 现在动就等于替一个还没测的结论预先删承诺。
+
+---
+
+## 6. 数据结构（技术方案 §11 建议项 4 的落地）
+
+### 6.1 配置（`config.toml`，经 `toml_edit` 往返保留注释）
+
+按 PRD §5.20.1 分 11 节：`[general] [capture] [annotation] [pin] [output] [hotkey] [hot_corner] [appearance] [history] [advanced] [about]`。MVP 实际写前 6 + appearance + history，其余留空表占位，避免 Phase 2 改 schema。
+
+写入一律 tmp→fsync→rename；解析失败则默认值启动，并把损坏文件保留为 `config.toml.broken-<ts>`（PRD §5.1.1）。
+
+### 6.2 历史（`history.db`，原图为文件，非 BLOB）
+
+```
+captures(
+  id INTEGER PK, captured_at INTEGER, monitor_id TEXT,
+  x INTEGER, y INTEGER, w INTEGER, h INTEGER,          -- 物理像素
+  source_kind TEXT,                                     -- region|window|element|manual|repeat
+  path TEXT,                                            -- 相对数据目录
+  thumb BLOB,                                           -- 256px JPEG ≈15KB
+  cancelled INTEGER, locked INTEGER, ocr_text TEXT, note TEXT
+)  INDEX(captured_at), INDEX(locked)
+```
+
+原图存 `history/<YYYY-MM-DD>/<id>.png`；清理器同时比较条数、年龄、总字节，三条件全过才停；`locked=1` 永不自动删。数据目录允许用户改（PRD §6.2），历史占用在设置页显示。
+
+### 6.3 贴图状态（可恢复，服务 PRD §7.2 崩溃恢复）
+
+```
+PinItem { id, image_ref, src_rect, pos_phys, size_phys, zoom, opacity,
+          rotation, flip_h, flip_v, grayscale, inverted,
+          topmost, click_through, group_id, solo_excluded,
+          alpha_bg_mode, thumbnail: Option<(mode, rect)>, gif: Option<PlayState> }
+```
+
+MVP 只实现 `pos/size/zoom/opacity/topmost/click_through`；其余字段先入 schema，Phase 2 逐个启用，避免状态机重构。每 5 秒与退出/崩溃时快照到 `pins.state.toml`。
+
+### 6.4 标注文档
+
+```
+Document { base_size, elements: Vec<Element>, next_counter }
+Element  { id: u64, kind: enum, geom, style, z, visible, locked, transform }
+Command  = Add(Element) | Remove(id, snapshot) | Move(id, from, to)
+         | Resize(id, from, to) | Style(Vec<(id, from, to)>) | Crop(rect, snapshot)
+           apply(doc) / invert(doc)          // 技术方案 §8.2 的 trait
+UndoStack { done: Vec<Command>, redo: Vec<Command>, cap: 200, merge_ms: 400 }
+```
+
+MVP 的 overlay 是栅格化位图，但**文档模型一开始就存 Element 列表**，Phase 2 重编辑只需替换渲染器，不必迁移数据。这是本节最重要的前瞻约束。
+
+---
+
+## 7. 工程结构与构建
+
+```
+ai-falconshot/
+├── Cargo.toml                  workspace（spike 已证 Cargo 可独立驱动 Qt，见 §7.1）
+├── CMakeLists.txt              可选项：只在打包/安装器或 §7.1 的对照实测时才需要
+├── crates/
+│   ├── core/                   无 Qt 依赖：capture/geometry/annotation/imageops/history/config/pin/tasks
+│   ├── platform-windows/       windows 0.62：DWM 扩展边界、WindowFromPoint 命中、WDA、Media.Ocr（P5：`RealWindowFromPoint` 不存在，已从本行划掉）
+│   └── qt_bridge/              CXX-Qt：controllers / models / qshim.cpp / frame_bridge.rs
+│                               ├── src/{capture,annotation,pin,history,settings}_controller.rs
+│                               ├── cpp/            薄 shim（§3.6）
+│                               └── build.rs（CxxQtBuilder）
+├── qml/
+│   ├── Main.qml  CaptureMask.qml  Magnifier.qml
+│   ├── AnnotationToolbar.qml  AnnotationCanvas.qml  PinWindow.qml
+│   ├── HistoryPage.qml  SettingsPage.qml  PalettePage.qml  HotkeyPage.qml
+│   └── theme/
+├── resources/                  图标、字体、i18n
+├── manifest.xml                PerMonitorV2
+└── tests/                      rust 单测 + proptest；QTest + qmllint；manual/ 手测矩阵
+```
+
+技术方案 §5 的 `qt/qml` + `qt_bridge` 结构在此恢复，`crates/core` 保持零 Qt 依赖以便 CI 上无 Qt 环境跑单测。
+
+**bridge crate 定名用下划线 `qt_bridge`**：§3.6 约束 3 实测，`.cpp_file` 的 `include!` 路径前缀是 Cargo 包名**逐字照搬**（`hello-cxxqt` 的连字符原样进了路径），能用但别扭，且一旦 shim 头文件被别处按 C++ 习惯包含就更绕。spike 里这是编译器报错才发现的，正式工程直接避开。`platform-windows` 保留连字符——它不挂 C++ shim，这条约束不生效。
+
+发布包：主程序 + Qt6 动态库 + `platforms/qwindows.dll` + **QML 模块目录** + 图片格式插件 + MSVC 运行时 + 许可证与第三方声明（PRD §12.4）。`qtquickcontrols2.conf` 与 QML 路径需在安装包内校验。**这行的每一格在 P7 都有了实测对应物，除"许可证"那一格反而更悬**：前四格由 `windeployqt --qmldir` 一条命令产出（§7.2），MSVC 运行时**我们主动关掉**（`--no-compiler-runtime`，改为安装器负责 —— 它否则会把 25 MB `vc_redist.x64.exe` 塞进应用目录），而**`licenses/` 工具一样也不给：windeployqt 不部署任何许可文本，aqt 装的 Qt 树里也没有可抄的 LGPL/FDL 全文**（P7 实测两个方向都 0 命中，见 §8-R9）。
+
+**必须动态链接**：Qt 走 LGPLv3，随包提供可替换的 Qt DLL 与 `licenses/`，不得把 Qt 库并入自有 exe。**P7 补一条好消息**：spike 的着色器是 qsb 烘进 exe 的（§3.6 约束 9），而 `Qt6Core/Gui/Quick/Qml` 全部以 DLL 形式落在应用目录根，**"可替换库"这个 LGPL 条件在 windeployqt 的默认平铺布局下天然成立** —— 换 Qt 版本只需换那批 DLL，不需要重新链接 exe。
+
+### 7.1 构建编排：原计划的前置假设已被 spike 推翻
+
+原计划（含技术方案 §5）默认 **CMake 主导**、Cargo 只是 CMake 里挂着的一个 `add_custom_command`。M0 spike 的实测结果是：**纯 Cargo 路径完全能撑起 Qt + CXX-Qt + MSVC**，无需 CMake 也能：
+
+| Cargo 主导路径能力 | spike 证据 |
+|---|---|
+| Qt 定位（qmake → 模块 include/lib 路径） | `cxx-qt-build` 读 `QMAKE` 环境变量即可完成，`env.cmd` 里指一次 |
+| `qt_module("Gui"/"Quick"/"Qml")` 链接 | 正常出 exe，无缺失符号。**P1 补充**：走 `QQuickImageProvider` + `qmlEngine()` 必须要 `Qml`，只声明 `Gui`/`Quick` 会缺符号 |
+| QML 资源编译（等价 `qt_add_qml_module`） | `CxxQtBuilder::new_qml_module(QmlModule…qml_file("qml/main.qml"))`，运行时按 `qrc:/qt/qml/dev/falconshot/spike/qml/main.qml` 加载成功 |
+| 薄 C++ shim（§3.6 强制项） | `.include_dir("cpp")` + `.cpp_files([...])` 编译并链接通过 |
+| moc / rcc | 由 `cxx-qt-build` 内部完成，无需外部工具链调用。**P1 补充**：`cpp_files` 里的 `.h` 会被自动 moc，`QML_ELEMENT` 因此能在纯 Cargo 路径下注册进模块 |
+| **着色器烘焙（等价 `qt_add_shaders`）** | **P6 新增，已实测**：`build.rs` 里一次 `Command::new(qsb).args(["--qt6","-o",out,in])` 就出 `.qsb`，**不需要 `glslc`、不需要 CMake**（`qtshadertools` 只发 `qsb`，见 §3.5① ⑥）。产物经手写 `.qrc` + `CxxQtBuilder::qrc(path)` 进二进制，运行时 `ShaderEffect status = 0 (Compiled)` |
+
+代价是 Cargo 路径独有的四项**手工义务**，细节已写进 §3.6 的九条硬约束，这里只做汇总：
+
+1. **Win32 导入库自己声明**——`user32`/`gdi32` 之类不会白给（CMake 的 `target_link_libraries` 本来会处理）。一条 `cargo:rustc-link-lib` 的事，但要记得；P1 的 BitBlt 就额外要 `gdi32`。**P5 之后清单收窄为 `user32 + gdi32 + shcore`**：DWM 属性走 `windows` crate 的 Rust 绑定，不需要 `dwmapi`，也不再需要为 `RealWindowFromPoint` 预留任何东西（该导出不存在，见 §2.1）。
+2. **`cxx` / `cxx-gen` 必须锁步**——§2.2 的锁表就是为这条建立的，CMake 路径同样受影响，不是 Cargo 专属。
+3. **增量编译**——Cargo 单 crate 内增量良好，但 `cargo clean -p cxx-qt-lib` 这类全量重跑在多 crate 工程里代价未知。
+4. **非 QML 资源要自己写 `.qrc`，且前缀必须与 QML 文档路径逐字对齐**（P6 新增）——`QmlModule` 只认 `qml_file(s)`，`QResourceFile` 没有被 cxx-qt-build 0.10.0 重新导出，所以 `.qsb`/字体/图标这类只能手写一份 `.qrc` 交给 `CxxQtBuilder::qrc(path)`。而 `ShaderEffect` 的 shader URL 是**相对所在 QML 文档**解析的，前缀写错不会编译报错、只会运行时 `status = 2 (Error)`（§3.6 约束 9）。CMake 的 `qt_add_resources(qps1)` + `qt_add_shaders` 本来把这两步缝在一起，Cargo 路径下缝合线在我们手里。
+
+**所以现在的处置是"Cargo 主导作为工作默认，CMake 作为待测备选"，而不是两者并列待定**——M0/M1 直接按 Cargo 路径搭，不额外维护一份 CMake 编排；到 I-3 前补一次对照实测再决定是否切换。真正需要量的不是"能不能建起来"（已证能），而是这两个数字：
+
+- **日常增量**：改一行 `crates/core` 的 Rust，到 exe 重新可用的墙上时间（Cargo 主导 vs CMake + `cargo build` 混合，预期同一量级）。
+- **全量重跑**：`cargo clean` 后重建（Cargo 主导）vs `cmake --build . --target clean` 后重建（CMake 主导）。差异主要来自 Qt 头的 moc/rcc 重复处理，以及 Cargo 无法把 C++ 侧编译分摊到多个 target。
+
+打包（windeployqt + 安装器 + 许可证目录）倾向**独立于编排方式**：做成 `cargo xtask package` 或一个 `packaging/` 脚本，两种编排共用同一份清单，避免 I-3/I-4 阶段因为编排选择而被打包细节反向绑死。M0 之后先按 Cargo 主导推进（无 CMake 环境依赖，CI 也更薄），到 **I-3 前**用一次对照实测收口。
+
+### 7.2 打包、CI 与许可证来源：`windeployqt` + `ci_local.cmd` + `p9-licenses/` 实测（P7/P8/P9，2026-10-06）
+
+这一节填的是 §7 那句"发布包 = 主程序 + Qt DLL + 插件 + QML 目录 + 运行时 + 许可证"里**以前没人验过的那一半**。结论先说：**默认打包会产出一个"启动正常、依赖齐全、功能为零"的包**，而它能不能被发现，取决于你有没有一道不看退出码的门。载体 `spike/p7-package/`（`deploy.cmd` + `run_clean.cmd` + `ci_local.cmd`（193 行，P8 的串联）+ `ci.yml`（94 行，hosted **提案**，未跑过）+ 十个 dist 目录（含 `dist-bare` 负对照与 `dist-ci` 产物）、19 份 P7 日志与 11 份清单/体积快照、`logs-p8/` 十份 P8 证据，见 附录 B.4）。
+
+**钉住的一行**（`deploy.cmd <out-dir> [with-vcvars]`，实测 **1316 文件 / 66.78 MiB / 0 条 warning**）：
+
+```bat
+windeployqt --release --dir <out> --qmldir <源 qml 目录> ^
+  --no-compiler-runtime --no-system-dxc-compiler --no-opengl-sw ^
+  --no-translations --skip-plugin-types qmltooling  <exe>
+copy /y <exe> <out>\          :: windeployqt 不替你复制 exe
+```
+
+**九种包形态的实测对照**（体积按 MiB；"净化环境"列是 `run_clean.cmd` 的结论，见下文）：
+
+| 包 | 命令差异 | 文件数 | 体积 | windeployqt warning | 净化环境下 | 判读 |
+|---|---|---|---|---|---|---|
+| `dist` | 裸跑（无 `--qmldir`） | 72 | 71.07 | 2 | **程序起来、UI 一个不加载** | **最危险的一格**：能过"看目录像不像样"，也能过"看进程在不在" |
+| `dist2` | 加 `--qmldir` | 1360 | 93.63 | 2 | 有 UI | UI 出来了，代价是比候选包多 44 个文件 / 26.9 MiB |
+| `dist3` | 在 vcvars 下做过度裁剪 | 1319 | 106.31 | 0 | — | **裁剪关错开关会变大**：多进 `vc_redist` 24.45 MiB + DXC 15.09 MiB，比候选包重 **39.54 MiB** |
+| `dist4` `dist9` | **钉住的这一行**（with vcvars） | **1316** | **66.77 / 66.78** | **0** | **有 UI，`shaderStatus=0`** | 候选包（`dist4` 装的是 P7 改写前的探针 exe，故少 0.01 MiB，见 附录 B.4） |
+| `dist8` | **同一行，不激活 vcvars** | **1316** | **66.24** | **0** | **有 UI，`shaderStatus=0`** | 与 `dist9` 只差一个 `d3dcompiler`（见 ③） |
+| `dist5` | `dist4` 删 `d3dcompiler_47.dll` | 1315 | 62.24 | — | 有 UI | **弱结论**：只证明"捆绑那份不是唯一来源"，因为 `System32` 里有同名 DLL |
+| `dist6` | 钉住的行，但**不**复制 exe | 1315 | 65.23 | 0 | — | 证明 `--dir` 不替你搬 exe |
+| `dist-bare` | 只放 exe 的负对照 | 1 | 1.00 | — | 起不来，`exitlevel=-1073741515`（`STATUS_DLL_NOT_FOUND`） | **隔离有效性的证据**：这套 env 真的看不见 Qt 安装 |
+
+**① 默认打包为什么"看着是好的"**：本工程的 QML 由 `CxxQtBuilder::new_qml_module()` 编进资源系统（§7.1、§3.6 约束 9），磁盘上**没有可供扫描的 QML 源**，于是 `windeployqt` 扫不到任何 import —— 它据此判断"这个包不需要 QML 模块"，`--dir` 下只留一个空的 `qml/`。**产物启动得起来**：`platforms/qwindows.dll` 在、`--audit` 打出完整的 21 个读格式清单、`QGuiApplication` 与 `QQmlApplicationEngine` 都非空。然后 `engine.load()` 只留下两条 qWarning（`module "QtQuick.Controls" is not installed`、`module "QtQuick.Window" is not installed`）和一个**永不返回的 `exec()`**。而 §B.3 第 6 条那条老事实在这里正中要害：**Windows 上 QML 加载失败不落 stdout**，所以连重定向日志都像"程序在正常运行"。⇒ **修法是把源目录喂给它**：`--qmldir <spike>/qml`（扫源码而不是扫产物），文件数从 72 跳到 1360，那一下跳变就是"QML 模块从不存在到存在"。
+**② 门：净化环境 + 日志内容断言（P7 立两行，P8 扩成四条 + 一条完成标记，见 ⑤）**。`run_clean.cmd <dist>` 把 `PATH` 削成"候选目录 + System32 + System + PowerShell"，抹掉 `QT_PLUGIN_PATH`/`QT_QPA_PLATFORM_PLUGIN_PATH`/`QML2_IMPORT_PATH`/`QML_IMPORT_PATH`/`QT_QML_IMPORT_PATH`/`QT_DIR`/`QT_PLUGIN_CONF`/`QMAKE`/`INCLUDE`/`LIB`，再跑两档：**`--audit`（无头，不建窗）与默认档（起窗即自动跑 P1/P4 套件）**。CI 要断言的是**日志里必须出现这两行**：`[P1] suite start`（证明 QML 真的加载并实例化到了会自己打点的程度）与 `[P1] DIM rects shaderStatus=0`（证明 qrc 前缀、`.qsb` 烘焙、`ShaderEffect` 装载三件事在部署形态下仍然对，§9.1）。**`--audit` 单独不足以作为门** —— 上面那张表的 `dist` 行就是它过线而 UI 为零的实例。另配 `dist-bare` 那条负对照，否则"门通过"可能只是因为环境没真的净化（`PATH` 残留 Qt 目录是很容易发生的事，本仓库的 `env.cmd` 就专门往 `PATH` 里加）。
+**③ 同一行命令在两种 host 上产出不同的包**（这是可复现性问题，不是体积问题）：
+
+| 打包 host | 落地的文件名 | 版本 | 字节数 | md5 | 来源（按 md5 直接对上，不是推测） |
+|---|---|---|---|---|---|
+| 无 VS 开发者环境（`dist8`） | `D3Dcompiler_47.dll` | 6.3.9600.16384 | 4,173,928 | `b0ae3aa9…` | Qt 安装自带 `bin/d3dcompiler_47.dll` |
+| 激活 `vcvarsall x64`（`dist9`） | `d3dcompiler_47.dll` | 10.0.26100.7705 | 4,741,488 | `19e527a3…` | Windows SDK `Redist/D3D/x64/d3dcompiler_47.dll` |
+
+**文件数不变、两档都过 GUI 门、体积差 0.54 MiB、但文件名大小写翻转** ⇒ 任何"按路径列表做产物清单/校验和"的 CI 步骤会在两种 host 之间报出假差异。处置：**打包脚本固定不依赖 VS 环境**（`dist8` 档），需要 VC 运行时就交给安装器；并把"产物清单"的比对口径写成大小写不敏感。顺带一条同源观察：`--compiler-runtime`/`--no-compiler-runtime` 与 `--no-system-dxc-compiler` 这两个开关**还决定 `windeployqt` 会不会去找 VS**——裸跑时那 2 条 warning 就是 `Cannot find any version of the dxcompiler.dll and dxil.dll` 与 `Cannot find Visual Studio installation directory, VCINSTALLDIR is not set`，钉住之后 0 条。**warning 数在这套脚本里是"关开关"的指示器，不是"包坏了"的指示器**，别看错了对象。
+**④ 打包不裁剪能力，但它会裁剪你的自检**：`reader_formats` / `writer_formats` / 12 行 `fmt_*` 在源目录、`dist8`、`dist9`、`dist-ci` 四处**逐字节相同**（12 个 `fmt_*` 探针里 11 读 / 8 写；全量清单 21 读 / 17 写，两个数不能混着引）⇒ §2.1 的编解码承诺与 §3.3 的 `QImage::save` 禁令**不随部署形态变化**，这条现在是有证据的而不是假设。反面是**文件类探针在部署目录里全线失真**（`platforms_dir=MISSING`、`svg_dll=NO`、`qsb_exe=NO`），根因与修法都写在 §2.2 末段（`QLibraryInfo` 报的是配置时布局，windeployqt 平铺且不写 `qt.conf`）。**一条直接的连带义务**：§4-M0 A 段那条"PerMonitorV2 manifest 打包后验证一次"必须在 `dist` 目录下做，而且要验 `--audit` 修好之后的版本 —— 拿旧探针验新包，会得到一批"部署缺插件"的假故障。
+**体积构成**（`dist4`，66.77 MiB，下列每个数字都是本轮对着目录重测的）：`qml/` **1269 文件 / 9.22 MiB**（数量绝对大头，体积却不是），根目录 **32 个文件 / 54.24 MiB = 31 个 DLL（53.24 MiB）+ exe（1.00 MiB）** —— DLL 前五名为 `Qt6Core` 9.63、`Qt6Gui` 9.08、`Qt6Quick` 6.20、`Qt6Qml` 5.09、`d3dcompiler_47` 4.52；`imageformats/` 9 个 / 1.77 MiB、`platforms/` 1 个 / 0.95 MiB。被三个 `--no-*` 挡在包外的大项：**`opengl32sw.dll` 19.68 MiB、`vc_redist.x64.exe` 24.45 MiB、DXC 负载 15.09 MiB（`dxcompiler` 13.65 + `dxil` 1.44）**（后两条只在开关给错时进来，`dist3` 就是那两个开关给错的产物）。**下一刀的坐标要落在 `qml/` 里而不是 DLL 上**：`Controls` 全树 **1234 文件 / 6.79 MiB**，占 `qml/` 的 74%、占整包的 10%；其中六套样式目录（Fusion/Material/Imagine/Universal/FluentWinUI3/Basic）**1179 文件 / 5.96 MiB**，而**单 `FluentWinUI3` 一套就是 845 文件 / 4.98 MiB**（其余五套加起来 0.98 MiB）—— 因为 `--qmldir` 扫出来 import 了 `QtQuick.Controls` 就连带全部样式（`--skip-plugin-types` 管不到 QML 模块，要改 QML 侧只 import 需要的样式或事后删目录），**留作 M5 体积预算项，不在 P7 里顺手做**：现在砍会同时改掉 §9.1 那道门的被测对象。
+
+**⑤ CI 串联（P8，同日增量 9）：一条命令跑完整链，判据全部读日志、不读退出码**。`ci_local.cmd <dist> [gate-only]`（193 行）七步 —— **1 依赖自检**（`bin/qmake.exe`、`bin/windeployqt.exe`、`bin/qsb.exe`、`plugins/platforms/qwindows.dll`、`plugins/imageformats/qtiff.dll` 五个文件逐条报 `present`/`MISSING`：**审文件不审模块名**，§2.2 那条判据至此落成脚本）→ **2 `cargo build --release`** → **3 `deploy.cmd`**（`Warning: Cannot find` 计数必须为 0）→ **4 `run_clean.cmd --audit`**（要求出现 `reader_formats=`）→ **5 GUI 门** → **6 负对照 `dist-bare`**（必须 `exitlevel=-1073741515`）→ **7 产物清单**（文件数下限 1300），任一步断链即 `exit /b 1`。
+**四行断言 + 一条完成标记，以及它们各自挡掉的那类假过**：`[P1] suite start`（QML 真加载并实例化到会自己打点的程度）、`[P1] DIM rects shaderStatus=0`（qrc 前缀 + `.qsb` 烘焙 + `ShaderEffect` 装载三件事在部署形态下仍对）、**`[P4] provider calls=` 完成标记**（套件跑到最后一行才打 —— ② 那两行只证明"前半截起来了"，P7 五份好包日志全截在 59～91 行、没一份跑到 P4 第 3 档之后，正是这个洞的实例）、**反向断言 `is not installed` 必须不出现**（残废包打的原文就是这句）。GUI 门的 120 s 是**上限而不是等待时长**，跑满即 `status=FAIL reason=no-completion-marker`。**为什么不能用退出码**：应用在套件跑完后不自行退出（`exec()` 常驻：等待探针里从 t=30 s 到 t=140 s 日志恒为 180 行、进程始终活着），退出码只能从外部 `taskkill` 之后的 `exitlevel` 里取，而**好包与坏包取到的都是 1** ⇒ 在这个工程里"看退出码""看进程存活""看目录里有没有 Qt DLL"三条常用冒烟判据**会同时把好包判死、把坏包放过**（R14）。
+**同一条命令同时给出正反两面**：`ci_local.cmd dist-ci` ⇒ `verdict=PASS steps=7`，整链 **140.2 s**（build 52 / deploy 17 / 无头审计 3 / GUI 门 64 / 负对照+清单 3），产物 **1316 文件 / 66.24 MiB / 0 warning**；`ci_local.cmd dist gate-only`（① 表里那行不加 `--qmldir` 的残废包）⇒ `step=audit status=pass` + 三条断言 `MISSING` + `is not installed` `PRESENT` + `files=72 < 1300` ⇒ `verdict=FAIL steps=4`、`exit=1`。**"审计满分"与"UI 为零"在同一轮日志里并存** —— 两份判决文件（`logs-p8/p8-verdict-pass-dist-ci.log`、`logs-p8/p8-verdict-fail-naive-dist.log`）互为正反。
+**一条 P7 只是要求、P8 测出结果的东西**：CI 包里 `D3Dcompiler_47.dll` 4,173,928 B、md5 `b0ae3aa9…` 与 Qt 安装自带那份逐字节一致 ⇒ **打包那一步确实没被 vcvars 污染**（`env.cmd` 的 `setlocal` 把它关在 build 一步内；rustc 的 msvc host 自己找得到 `link.exe`，hosted 侧甚至不必激活它），产物天然落在 ③ 表第一行那一档。**hosted 那一半仍未跑过** —— 本目录不是 git 仓库、没有远端，`ci.yml`（94 行）是照 `ci_local.cmd` 逐步对齐写的提案；两条只有真 runner 能答的问题新立 **R15**（GUI 门能否在无桌面/无 GPU 的会话里活下来 —— 包里的 `--no-opengl-sw` 正是 ③ 那三个 `--no-*` 里主动关掉软件 GL 的那刀，与 CI 能力正面冲突；以及 runner 产物的 `d3dcompiler` 来源是否仍是 Qt 自带那份）。
+
+**⑥ 许可证与包内二进制的来源（P9，同日增量 10）：清单可以离线生成，全文与两个二进制的来源不能**。载体 `spike/p9-licenses/`（四个脚本 750 行、五份 evidence、`licenses/` 92 份文本、`out/THIRD-PARTY-NOTICES.md` 958 行草稿），五条实测：
+
+- **清单侧有一台现成的机器可读源**：Qt 安装自带 `sbom/`（20 个文件 / 39.52 MiB），其中 7 份 `*.spdx.json` 共 **343 条 package 记录**（qtbase 136 / qtdeclarative 144 / qttools 36 / qtimageformats 9 / qtshadertools 8 / qtsvg 7 / qttranslations 3），每条带 `licenseConcluded`/`licenseDeclared`/`copyrightText`/`versionInfo`；**12 条 `hasExtractedLicensingInfos` 全部带非空 `extractedText`**（字段名是 `extractedText` —— 按 `licenseText` 去读，12 条会全部读成空串），覆盖 **6 个 LicenseRef id**：qtbase 5 段（`BSD-3-Clause-with-PCRE2-Binary-Like-Packages-Exception` 1,852 字符、ICC 463、Qt-Commercial 462、Lcs-Telegraphics 139、SHA1 公有领域 144）加 qtshadertools 的 `LicenseRef-MIT-Khronos-old` 1,304；`LicenseRef-Qt-Commercial` 七份 SBOM 各出现一次。`gen_notices.py` 把这些直接渲染成 958 行草稿 ⇒ **「第三方声明」不再是手写项，而是一条可重跑命令**（这也把 §8-R9 从「无人认领」改判为「有脚本、缺全文、待指派」）。
+- **全文侧确实为零**：整棵 Qt 树 10,495 个文件里，严格「许可证命名」的只有 5 个 —— `lib/cmake/Qt6/3rdparty/extra-cmake-modules/COPYING-CMAKE-SCRIPTS` 与 `.../kwin/COPYING-CMAKE-SCRIPTS`（各 1,349 B）、`lib/cmake/Qt6/QtPublicSbomLicenseHelpers.cmake`（3,391 B）、`share/qt6/wayland/protocols/MIT_LICENSE.txt`（1,073 B）、`share/qt6/wayland/protocols/text-input/v2/HPND_LICENSE.txt`（1,115 B）—— **三个属于 CMake 管道、两个属于 wayland 协议 XML 的附带声明，没有一个覆盖 Qt 库本体**。把判据放宽到「文件名带许可证语义」则是 49 个 / 11.52 MiB，其中 11.3 MiB 就是那 7 份 SBOM 自己。SBOM 里的标准 SPDX id 共 **32 个**（外加 6 个 LicenseRef）。把每个 id 拿去和本地「许可证命名文件」对，脚本判 **21 个无本地全文**；剩下 11 个"有匹配"里 **8 个是文件名撞词的假命中** —— `Unicode-3.0`→`include/QtHarfbuzz/harfbuzz/hb-unicode.h`、`Zlib`→`include/QtZlib/zlib.h`、`X11`→`lib/cmake/Qt6/FindXKB_COMMON_X11.cmake`、`Libpng`/`libpng-2.0`→`mkspecs/modules/qt_ext_libpng.pri`、`MPL-2.0`→Rust 侧 `thiserror-impl-LICENSE-APACHE`、`GPL-2.0-or-later`/`GPL-3.0-or-later`→wayland 目录里那份 `LGPL-2.1-or-later.txt`。**站得住的只有 3 个**：`Apache-2.0`（Rust 侧那份）、`MIT` 与 `HPND`（wayland 协议目录附带声明）⇒ **真正要外部取得的是 29 个 id，21 只是严格命名口径给出的下限**；这 21 个还包含 `NOASSERTION`（不是许可证，是"未声明"，21 次）和 `blessing`（`QSQLiteDriverPlugin_Attribution_sqlite` 的 `licenseConcluded` 字面就是这个词）。命中次数前三：`GPL-3.0-only` 242、`GPL-2.0-only` 190、`LGPL-3.0-only` 186，`Qt-GPL-exception-1.0` 54 紧随 ⇒ **这是一次性外部取得动作，不是一次编码动作**。
+- **Rust 侧自动化基本可行，但运行时闭包里还差 4 份全文**：`cargo metadata --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc` 给出 **53 个包 = 根 + 52 个依赖**，按 `resolve.nodes[].deps[].dep_kinds` 走闭包得 **运行时 34 / 纯构建期 18 / dev 0**（顶层 `deps[].kind` 对普通依赖是 `null`，拿它当 `normal` 会算错闭包。**本轮先算出过一版 52/24，52+24=76 已经大于全图 52 个非根包 ⇒ 算术上不可能，是桶重叠**；这条自检——分桶之和必须等于非根包数——比任何单点数字都重要）。34 个运行时 crate **全部有 SPDX `license` 字段、全部宽松许可、零 copyleft**，表达式 7 种：`MIT OR Apache-2.0` 26、`Apache-2.0 OR MIT` 2、`Unlicense OR MIT` 2、`Apache-2.0` 1、`MIT` 1、`Zlib` 1、`(MIT OR Apache-2.0) AND Unicode-3.0` 1。从本地 registry 缓存抓到 **92 份许可证文件、按 sha256 去重只剩 28 份不同文本**（同一份 MIT 重复 22 次、Apache 21 次）⇒ `licenses/` 的 Rust 部分是 432,717 B 量级的事；脚本自报 "copied=94" 与目录实测 92 差 2，**计数一律以目录为准**。**全图有 7 个 crate 的发布包里没有任何许可证文件，落在运行时闭包内的是 4 个**：`cxx-qt`、`cxx-qt-lib`、`cxx-qt-macro`、`cxx-qt-gen`（都标 MIT OR Apache-2.0）；另 3 个 `cxx-qt-build`、`qt-build-utils`、`codespan-reporting`（Apache-2.0）只在构建期桶 —— 不随包分发，但仍属声明材料。直接列它们的解包目录，只有 `Cargo.toml`/`Cargo.lock`/`README.md`/`build.rs`/`src/`⇒ **必须自备一份规范 MIT + 一份 Apache-2.0 兜底**，「整条链交给 `cargo-about` 一类的工具就完事」在本机不成立。
+- **包里混进了一份没有任何声明的 Windows 系统二进制**：对 `dist-ci` 的 73 个 DLL 逐个与 `C:/Windows/System32` 同名文件比 md5，结果分三档 —— **逐字节相同恰好 1 个**（`icuuc.dll`，36,864 B，md5 `be9504ec…`，文件日期 2026-02-13）、**同名而不同字恰好 1 个**（`D3Dcompiler_47.dll`，即 ③/⑤ 那条「两档 host」的产物）、**其余 71 个在 System32 里没有对应物**。而 `icuuc.dll`：(a) 整棵 Qt 树里不存在（唯一带「icu」的路径是 `include/QtCore/QBasicUtf8StringView`）；(b) 不在 windeployqt 自己打印的 `To be deployed` 模块清单里，`logs-p8/p8-deploy.log:76` 只有一句裸的 `Updating icuuc.dll.`；(c) 不在上面那 343 条 SBOM 记录的任何一条里；(d) **确实是硬依赖** —— 手工解析 `dist-ci/Qt6Core.dll` 的 PE 导入表得到 29 项，`icuuc.dll` 在列。⇒ 我们随包再分发了一份微软系统二进制，许可证材料、来源与可替换性都不在任何现有清单上，而且换一台构建机就会复制那台机器的 ICU 版本（**新立 §8-R16**）。
+- **`--no-compiler-runtime` 的前提从「推断」升级为「导入表证据」**：同一张表里 `Qt6Core` 要 `MSVCP140.dll`/`MSVCP140_1.dll`/`VCRUNTIME140.dll`/`VCRUNTIME140_1.dll` 与 9 个 `api-ms-win-crt-*`，`Qt6Gui` 还要 `MSVCP140_2.dll`，而包里一个运行时 DLL 都没有。本机 GUI 门与无头审计能过，是因为这台机器装了 VS 2022 Community、且 `run_clean.cmd` 刻意保留 System32 在 PATH 上 ⇒ **「安装器必须负责 vc_redist」不是体积偏好而是硬要求**；本机可直接取用的源是 `C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Redist/MSVC/14.44.35112/vc_redist.x64.exe`，**25,635,768 B = 24.45 MiB**，与 ③ 里 `--compiler-runtime` 那份同尺寸（两档路径都真实存在，另一份在 `.../MSVC/v143/`）。
+**与安装器的边界**（P7 有意不越的部分）：`dist*` 是"目录形态的可运行包"，**不是安装包**。安装器选型（Inno Setup / WiX / MSIX）**仍未定**，归 §10 第 6 项之后的 M0 尾巴；`vc_redist` 由安装器做系统级安装而不是躺在应用目录 —— **P9 把这条从偏好升级为硬要求**：`Qt6Core`/`Qt6Gui` 的导入表点名要 `MSVCP140*.dll`/`VCRUNTIME140*.dll`（⑥）。`licenses/` 那份材料（R9）也归安装器内容而不是 `deploy.cmd` 的产物，**P9 已把它的清单侧做成可重跑脚本**（`gen_notices.py` → 958 行草稿）。**CI 侧的本地半边 P8 已收口**：`ci_local.cmd` 把 `依赖自检 → build → deploy.cmd → run_clean 审计 → GUI 门 → 负对照 → artifact` 串成一条并跑出 `verdict=PASS steps=7`（⑤），断言也已经是脚本里的 `findstr` 而不是叙述。**仍不在这条链里的只剩两件**：hosted workflow 需要这个目录先成为 git 仓库并有远端（`ci.yml` 是提案，风险项 R15）、"目录产物 → 安装包"那一层（安装器选型，且它现在多了一条必须项：装 vc_redist）。**`licenses/` 不再算"未知数"**：清单侧 P9 已收口，全文侧是 29 个标准 SPDX id + 运行时闭包内 4 个无文本 crate 的一次性外部取得动作（R9）。**但 P9 新开了一条谁都没声明的项**：包内的 `icuuc.dll` 与它背后的"打包机决定包内容"这类问题（R16、⑥）。
+
+---
+
+## 8. 风险登记册
+
+| ID | 风险 | 影响 | 缓解 | 触发即降级 |
+|---|---|---|---|---|
+| R1 | 增量编译慢：moc/代码生成叠加（可复现性部分已由 spike 排除，2026-10-04 五方链跑通并留下 `env.cmd`/`run.cmd` 可重跑脚本）。实测单文件改动 cargo 33–46 s + `vcvarsall` 固定 18 s | 迭代效率 | 全版本锁定 + `--locked`；CI 缓存 Qt 与 target；把生成物目录排除出增量；40 s 级对"1 人 + AI"可接受但需监控。**I-3 前按 §7.1 做一次 Cargo vs CMake 对照实测** | 多 crate 后劣化到分钟级 → 改 CMake/Ninja 主导或拆 crate；仍不可受 → 退回纯 C++ 核心 + Rust 仅算法静态库 |
+| R2 | 共享帧缓冲生命周期错误（悬垂/双重释放/跨线程 detach） | 随机崩溃、难定位 | §3.2 规则 2/3/8/9；unsafe 集中两处；ASan + Miri；4K 多屏 200 次连拍压测 | 接受每帧一次全拷贝（回技术方案 §7.2）。**spike 增量 3 已量化该降级（release 档）：1080p 拷贝 0.31–0.35 ms/帧、4K 拷贝 2.0 ms/帧，60/120 Hz 下事件环缺口 ≤1 tick —— 拷贝本身不构成否决**。**P4 已把当时的"否决权在 P4（纹理上传 + 场景重绘）"收口：否决没有发生** —— 4K 图层上图元尺寸提交 `work~` 仅 0.0–6.2 ms，故该降级项在性能维度上仍然可用。**但 P4 换出一条比拷贝更硬的生命周期约束**：整层位图经 `Image` 重挂会永久停住，根因指向"旧纹理引用未释放"（§3.5② ③），所以共享缓冲的**析构回调不是可选项**，它是整层更新能工作的唯一形态（另一条出路是每次提交前先释放一等再重载，见 §3.6 约束 8） |
+| R3 | 多屏异 DPI 遮罩定位与跨屏拼接错位 | 核心可用性 | 全链路物理像素；每 `QScreen` 一窗；不假设屏幕相邻；Qt 高 DPI 文档警告；M0-P2 门禁。**P5 状态更新：P2 探针在本机不可跑（日志 monitor 段给 `count=1`，单屏）**，所以这条风险的缓解证据目前只剩"全链路物理像素"这一半（P5 已实测 xcap 的 `Monitor` 几何与 `scale_factor` 落在物理值上），另一半（拼接、异缩放跟随）**仍是纯设计假设，直到有第二块屏** | v1 限定"每屏独立截图" |
+| R4 | 独占/翻转模型窗口与 DRM 内容截成黑图 | 用户预期落差 | PrintWindow 仅兜底；文档写能力矩阵。**P5 补两条实测**：① 兜底路径**尺寸会漂**（3059×1811 / 3041×1811 vs DWM 3072×1824）且有一次 **513 ms** 离群 ⇒ 兜底输出前必须按请求几何裁剪，不能假定同尺寸；② **两条采集路径的帧都全不透明**（四角 12×12 采样 alpha 恒 255），所以"截出来带系统圆角/透明边"这类预期本来就不成立，见 §3.5① ⑦ | 不做技术承诺，PRD 层面标注不可用 |
+| R5 | 标注（PRD 5.7 共 22 子项）工作量吞噬排期 | MVP 不可达 | M4 只做拍平式，重编辑独立 Phase 2；内部切 4a/4b/4c | 砍局部放大、旋转、套索 |
+| R6 | `ort` 仍 rc、PP-OCRv5 约 21MB + ORT 30–60MB | 分发体积与稳定性 | MVP 不含 OCR；Phase 2 先零依赖 `Windows.Media.Ocr`，ONNX 作可选包 | 只发 Windows OCR，承认中文弱 |
+| R7 | **CXX-Qt 是 0.x**（0.10.0，2–3 月一版），API 与宏语法漂移；`windows` 每个 0.x 都 breaking。**已发生一次真实事故**：caret 依赖自动飘到 `cxx 1.0.202`，`#[cxx_qt::bridge]` 在宏展开期失败且报错指向自己的 `include!` 行，误导三轮排查（详见 §2.2） | 升级即返工 | **vendor `Cargo.lock` + `cargo build --locked`**，`cxx`/`cxx-gen` 同号成对钉；bridge 保持薄；升级单独排期；§3.7 命名规范成文避免 camelCase 静默失效 | 手写 `extern "C"` shim 替换 CXX-Qt |
+| R8 | shim 与 Qt 内部行为耦合。**P3 已实测降级风险不发生**（2026-10-04：alpha+opacity+穿透+置顶四者共存，`WS_EX_*` 由 Qt 6.10 自己算对，无需手工维护）。残余风险收窄为两处：① `opacity=1` 时 Qt 走 DWM 合成路径可能给 `LAYERED=0`，"半透明贴图取消穿透"的组合 M2 复测；② Qt 升级可能改这套推导 | 贴图透明度/穿透偶发失效 | spike 的 `probeAllWindows()` 保留为回归工具，M2 起纳入手测矩阵；升级 Qt 必重跑 | 若 ① 不成立：shim 里手工维护 `WS_EX_*`，接受与 Qt 版本耦合 |
+| R9 | Qt LGPLv3 合规（动态链接、可替换库、第三方声明）+ QML 模块额外分发物 | 法务阻塞发布 | M0 就固定动态链接 + `licenses/` + QML 模块路径校验。**P7 把这行拆成"工具已给的"与"没人给的"两半，P9 再把"没人给的"拆成"清单"与"全文"两半**：**已给（P7）—— 可替换库条件天然成立**：windeployqt 的默认平铺布局让 `Qt6Core/Gui/Quick/Qml` 全部以独立 DLL 落在应用目录根，换 Qt 版本只换那批 DLL、不重链 exe。**已给（P9）—— 清单不必手抄**：Qt 安装自带 `sbom/`（20 个文件 / 39.52 MiB），7 份 `*.spdx.json` 合计 **343 条 package 记录**（qtbase 136 / qtdeclarative 144 / qttools 36 / qtimageformats 9 / qtshadertools 8 / qtsvg 7 / qttranslations 3），每条带 `name`/`versionInfo`/`licenseConcluded`/`licenseDeclared`/`copyrightText`，另有 **12 条 `hasExtractedLicensingInfos` 全部带非空 `extractedText`**（6 个 LicenseRef id）；`spike/p9-licenses/gen_notices.py` 已在离线状态下把这些渲染成 **958 行 `THIRD-PARTY-NOTICES.md` 草稿**。Rust 侧同理：`cargo metadata --offline --filter-platform x86_64-pc-windows-msvc` + 本地 registry 缓存抓到 **92 份许可证文本（sha256 去重 28 份 / 432,717 B）**，运行时闭包 34 个 crate **全部宽松许可、零 copyleft**。**还是没给（P9 实测）—— 许可证全文**：整棵 Qt 树 10,495 个文件里严格「许可证命名」的只有 5 个（3 个 CMake 管道 + 2 个 wayland 协议附带声明），**没有一个覆盖 Qt 库本体**；32 个标准 SPDX id 中脚本判 **21 个本地无全文**，而"有匹配"的 11 个里 **8 个是文件名撞词的假命中**（`Zlib`→`include/QtZlib/zlib.h`、`Unicode-3.0`→`hb-unicode.h`、`X11`→`FindXKB_COMMON_X11.cmake`、`Libpng`/`libpng-2.0`→`qt_ext_libpng.pri`、`MPL-2.0`→Rust 的 `LICENSE-APACHE`、`GPL-*-or-later`→`LGPL-2.1-or-later.txt`），站得住的只有 `Apache-2.0`/`MIT`/`HPND` 三个 ⇒ **真正要外部取得的是 29 个 id**（`GPL-3.0-only` 命中 242、`GPL-2.0-only` 190、`LGPL-3.0-only` 186、`Qt-GPL-exception-1.0` 54）；Rust 侧另有 **4 个运行时 crate（`cxx-qt`/`cxx-qt-lib`/`cxx-qt-macro`/`cxx-qt-gen`）与 3 个构建期 crate 的发布包里根本没有许可证文件** ⇒ 必须自备一份规范 MIT + 一份 Apache-2.0 兜底 | **P9 把这条从"无人认领"改判为"有脚本、缺全文、待指派"**：清单侧已收口（一条可重跑命令），剩下的是一次性外部取得动作（29 个标准全文 + 7 份 crate 兜底文本）加一次指派 —— 到 I-4（打包收口）之前定：`gen_notices.py` 进 `deploy.cmd` 的后置步骤、产物随 `licenses/` 进包，还是整层交给安装器。**不做的后果不是构建失败，而是发出去才被发现**；`windeployqt` 与 `aqt` 都不会替我们补上全文，这一点 P9 复核后仍然成立 |
+| R10 | 单人串行、无并行度，AI 产出需人验证 | 排期抖动 | 每里程碑"可运行可验证"为硬门禁；允许砍尾不许砍脊（选区/贴图链路不许被砍） | 拉长按期，不压缩验收 |
+| **R11** | **QML 做遮罩/标注/贴图的延迟不达预期，且无同类先例可参考**（现存 Rust 截图工具全是 GTK4/Tauri/egui/纯 Rust）。**P1 已把遮罩这半边量化掉**（2026-10-05，三后端）：越线的不是 QML，而是冷启动首帧与 BitBlt，二者都有非降级的解法（§3.5① ③④）。**P4 已把标注这半边量化掉**（同日，三后端 + debug）：4K 图层上单图元提交 `work~` 0.0–6.2 ms、`stalled=0`，且与"什么都不画"参照档同档（同后端内 p50 仅贵 0～3.4 ms）⇒ **延迟维度上 QML 三面已排二面，且都没有触发混合方案的理由**。贴图面（§3.5③）走的是 `Item.scale/rotation` + `setOpacity`，属结构性近零成本，P3 已证共存。~~残余风险只剩一处：`ShaderEffect` 变体因本机缺 `glslc` 未量化~~ **P6 已把最后这条尾巴收掉（2026-10-05，增量 7）：`qsb --qt6` 不需要 `glslc`，变体编译通过（`status=0`）、A/B 与 4-`Rectangle` 档在四档指标上不可分辨、像素级验收 `DIM-OK` ⇒ R11 的"未量化"项清零，遮罩三面（P1/P4/P6）全部有实测数据支撑，且没有一条指向 QML 本身**。**唯一还开着的组合是 `QT_QUICK_BACKEND=software` 兜底档 + `ShaderEffect`**（software 不走 RHI，shader 大概率不可用，**未实测**）⇒ 处置不是补测，而是 §3.5① ⑥ 那条：**遮罩保留一条非 shader 的回退画法**（4-`Rectangle` 已在 software 档实测 reveal p50 69.7 ms） | M1/M2/M4 返工，工期二次上浮 | M0 五张探针表 + P1/P4 量化通过线；§3.5 逐面写死"每帧必须做什么"；禁止 Canvas（预览层除外）；overlay 走脏矩形纹理（P4 达标路径）；**M1 两条前置动作：遮罩窗开机预热、采集侧对照（P5 已把对照范围缩到只剩 DXGI duplication，WGC 出局）**；**M4 一条前置约束：整层更新必须带释放-重载握手或走 `ExternalTextureItem`（§3.6 约束 8）** | 遮罩+画布改 C++ `QWidget`/`QPainter`，chrome 仍 QML（混合方案，需二次拍板，工期 +1 周）。**遮罩半边（P1）与画布半边（P4）均无触发证据 ⇒ 本项目现在可以正式判定该降级项不启动**；若后续在真 4K 面板或 software 兜底档复测出劣化，按 §9.4 的 `work~ ≤8ms` 回归线重开 |
+| **R12** | **Qt 安装"能编能跑"不等于"能力齐"**。P5 实测本机 6.10.1 缺 `qtimageformats`（→ 无 TIFF/WebP 插件）与 `qtshadertools`（→ 无 `glslc`/`qsb`/`Qt6ShaderTools.dll`），而**这两件事在 `cargo build` 成功、QML 界面正常显示的情况下完全看不出来** —— 只有直接问 `QImageWriter::supportedFormats` 和查文件才暴露。**更要紧的是这类缺口会误导选型**：若没做 P5，"用 Qt 存 GIF/TIFF"会一路写到 M3 才在运行时失败 | 功能清单与承诺范围失真；M3/M4 返工 | **P5 的审计口径固化为 CI 一步**：把 `--audit`（`spike/hello-cxxqt` 的无头分支）跑成断言 —— `writer_formats` 必须覆盖承诺格式、`glslc`/`qsb` 缺失时显式打 warning 而不是静默降级；setup 脚本按 `aqt list-qt … --modules` 的清单装模块并**验文件而非验退出码**（§2.2）。**所有位图编码走 Rust `image`**（§3.3 P5 规则），把"Qt 装了什么"从关键路径上摘掉。**P6 给这条风险补三点，两点是让 CI 别写错、一点是同类误判又发生了一次**：① **CI 断言里不许出现 `glslc`** —— `qtshadertools` 在 Windows 上不发行它，P6 补装后实测 `qsb_exe=yes` 而 `glslc_exe=NO`，把它当必装项会把一个不存在的需求变成红灯（§3.5① ⑥）；② **补装之后要重新问一次再改承诺**，不能沿用 P5 的清单：readers 15→21、writers 12→17，**但 `TGA`/`GIF` 仍只读**，所以 §3.3 那条禁令原样维持，而"Qt 能写 TIFF/WebP 了"这种新说法必须来自复核而不是推测；③ **同一次审计里又出了一次假阴性**：`--audit` 报 `tiff_plugin_dll=NO`/`webp_plugin_dll=NO`，实际插件就在 `plugins/imageformats/`（同一张日志的 `imageformats_dir` 已列出 `qtiff.dll`/`qwebp.dll`），探针只搜了 `bin/` ⇒ **CI 里这类"查文件"断言要查路径常量而不是猜目录，且任何单条 `=NO` 若与同一次运行的另一字段矛盾，以字段为准、探针作废**（§2.2 末段） | 某格式最终仍不可写 → 从 PRD §5.8.3/§5.5.5 承诺里删除并在能力矩阵标注，而不是加依赖硬凑 |
+| **R13** | **自家 Qt Quick 窗口可能进不了采集链路**（P6 撞出来的新问题，2026-10-05）。同一 session 里两台量具读同一片像素：`QQuickWindow::grabWindow()` 读出变暗（`band=0.400`，正是 `1−0x99/0xff`），而**对屏幕 DC 做 GDI `BitBlt` 读出来是 `1.000/1.000/1.000` —— 连"应当正确"的对照档也看不见那个窗口**。本机在默认 D3D11 RHI + 60 Hz 单屏下复现，根因未查（MPO/硬件覆盖层、layered 窗的重定向表面都在候选里）| **产品可见影响有三处**：① 遮罩期间"再截一次屏"的功能语义（截图里不含遮罩，这条其实是好事，但**必须知道它是 Qt 窗不进 GDI 采集，而不是我们把遮罩画在别处**）；② **贴图（Pin）窗内容能不能被后续截图/保存截到** —— PRD 若承诺"贴图可再被截取"，这条现在无证据；③ 任何"自截图/自我缩略/拖出保存后回读"的验收不能拿 `BitBlt` 当真相 | **M1 的采集侧对照扩一条**：原范围只剩 DXGI duplication（WGC 已被 P5 判出局），现在**同一台像素量具（§9.4 ⑦）分别对 GDI / WGC / `PrintWindow` / DXGI duplication 四路验"能不能看见自家 Qt Quick 窗"**，出一条能力矩阵；`WDA_EXCLUDEFROMCAPTURE`（D3 的可选增强）与此同批做，因为二者都改"谁进得了采集" | 若四路都拿不到自家窗：**PRD 层面把"贴图窗可被再次截取"标为不可承诺**（同 R4 的处置法，不承诺、不硬凑），必要时贴图内容另存一份 Rust 侧位图用于"截自己" |
+| **R14** | **打包产物可以"启动正常、依赖齐全、功能为零"，而默认 CI 判据看不出来**（P7，2026-10-06）。QML 走 qrc 内嵌时 `windeployqt` 扫不到任何 import ⇒ 部署出一个 **72 文件**的包：**exe 起得来、`qwindows.dll` 加载、`--audit` 打出完整 21 个读格式、`QGuiApplication` 与 `QQmlApplicationEngine` 都非空**，然后一个界面都不加载（两条 `module … is not installed` 的 qWarning + 永不返回的 `exec()`）。**Windows 上 QML 加载失败不落 stdout**（§B.3 第 6 条），所以重定向日志也像"正常运行" ⇒ **"退出码为 0"、"进程存活"、"目录里有 Qt DLL"这三条最常被拿来当冒烟判据的东西，在这里全部为真而包是废的**。**P8 再补反向的那半条，两条合起来才是完整结论**：退出码在这个工程里**连"好坏有别"都做不到** —— 应用跑完套件不自行退出，每次 GUI 运行都要外部 `taskkill` 才拿到 `exitlevel`，而**好包与坏包取到的都是 1**（实测：P7 归档的六份 GUI 日志无一例外 `exitlevel=1`，含候选包 `dist9` 与残废包 `dist`）⇒ **门只能读日志内容，退出码不得作为断言**（§7.2 ⑤） | **发出去的包打开就是一片空白**；比构建失败更糟，因为它会先过 CI | **打包脚本钉死 `--qmldir <源 qml 目录>`（不是产物目录）并把 `--release --no-compiler-runtime --no-system-dxc-compiler --no-opengl-sw --no-translations --skip-plugin-types qmltooling` 一起钉住**（`spike/p7-package/deploy.cmd`，实测 1316 文件 / 66.78 MiB / 0 warning）；**门改为"净化环境 + 日志内容断言"，P7 立两行、P8 扩成四条 + 一条完成标记**：`run_clean.cmd` 把 `PATH` 削到候选目录 + System32 并抹掉 10 个 Qt 变量，断言 `[P1] suite start`、`[P1] DIM rects shaderStatus=0`、`[P4] provider calls=`（完成标记）四行必须出现，另加**反向断言** `is not installed` 必须不出现（§7.2 ②⑤、§9.1）；**必配负对照**（只放裸 exe 的目录要起不来，实测 `exitlevel=-1073741515`）否则"门通过"可能只是环境没真净化。**P8 把这条链串成一条命令**：`spike/p7-package/ci_local.cmd`（193 行）跑 `依赖自检 → build → deploy → 无头审计 → GUI 门 → 负对照 → 产物清单`，实测好包 `verdict=PASS steps=7`、残废包 `verdict=FAIL steps=4 exit=1`（同一轮里 `step=audit status=pass` 与三条断言 `MISSING` 并存 ⇒ **本条风险从"叙述"变成"一条命令当场演示"**，两份判决日志在 `logs-p8/` 互为正反）。**同轮查出的第二条可复现性隐患**：同一行命令在有无 VS 开发者环境两种 host 上会打进**不同来源、不同版本、不同文件名大小写**的 `d3dcompiler`（Qt 自带 6.3.9600.16384/4,173,928 B/`D3Dcompiler_47.dll` 对 Windows SDK 10.0.26100.7705/4,741,488 B/`d3dcompiler_47.dll`，md5 各自对上源文件）⇒ **脚本固定不依赖 VS 环境，产物清单按大小写不敏感比对**（§7.2 ③）。**P9 给这条又加一档**：把 `dist-ci` 的 73 个 DLL 逐个与 `C:/Windows/System32` 同名文件比 md5，结果不是"有/无"两档而是**三档** —— 逐字节相同 1 个（`icuuc.dll`）、同名而不同字 1 个（`D3Dcompiler_47.dll`）、无对应物 71 个（`evidence/binary-provenance.txt`）⇒ **产物清单要按内容摘要比对并分三档记录**：只比文件名会把第一档那种"其实是构建机的系统二进制"当成自产物放行，只比大小会连第二档都分辨不出（§8-R16） | 门在 CI 里跑不起来（例如 runner 无桌面会话、`QT_QPA_PLATFORM` 只能 `offscreen`）⇒ 退一步：至少断言"部署目录里 `qml/QtQuick/Controls` 与 `qml/QtQuick/Window` 两个模块目录存在"，**这条文件断言能抓到 P7 那个 72 文件的残废包**，代价是它验不到 shader 装载（**这个情形已单立 R15，且这条退让路径至今没在真 runner 上验证过**） |
+| **R15** | **hosted CI runner 可能跑不了这道 GUI 门**（P8 新立，2026-10-06）。本地链已跑通，hosted **一次都没跑过**：本目录不是 git 仓库、没有远端，`ci.yml`（94 行）是照 `ci_local.cmd` 逐步对齐写的**提案**，本文不把它当证据。冲突点有两处，都是实测推出来的而不是想象的：**① P7 为体积主动做的那一刀与 GUI 门正面冲突** —— `--no-opengl-sw` 把 `opengl32sw.dll`（**19.68 MiB**）挡在包外，于是无 GPU/无桌面合成器的会话里 D3D11 建不起来就**没有软件 GL 可退**，而门的四条断言全部要求窗口真起来跑完 P1/P4 套件；**② §7.2 ③ 那条 host 差异在 runner 上往哪边偏未知** —— hosted runner 通常带 VS 与 Windows SDK，可能给出 SDK 那份 `d3dcompiler_47.dll`（10.0.26100.7705 / 4,741,488 B）而不是本地钉的 Qt 那份（6.3.9600.16384 / 4,173,928 B / md5 `b0ae3aa9…`）| CI 长红导致门被人手动关掉 ⇒ 退回 R14 那个"启动即成功"的假象；或 CI 绿而产物从未被真正验过；两种都比构建失败更贵 | `ci.yml` 里写明两条：**GUI 门能跑就跑、`verdict=PASS` 才允许上传 artifact**；若 runner 起不了窗，退到 §9.1 的文件断言并**在日志里显式打出"退让了什么"**，不许静默降级。第二条按本地基线断言包内 `d3dcompiler` 的来源与字节数，runner 给出另一档时按大小写不敏感比对并把差异记进日志（与 §7.2 ③ 的处置同一条） | 长期无 GUI 会话 ⇒ 把 GUI 门定为"每次发版本机跑一次 `ci_local.cmd`"，CI 只做 build + package + 文件断言；若实测确认 runner 必须软件 GL 才起得了窗，就**为 CI 单独产出一档带 `opengl32sw.dll` 的产物（+19.68 MiB）**，体积与可测性二选一由那次实测决定，不在本文预先替它选 |
+| **R16** | **包里可以混进谁都没声明的二进制，也可以缺谁都需要的运行时**（P9 新立，2026-10-06，两半都有实物）。**① 多出来的一行**：`dist-ci` 的 73 个 DLL 里 `icuuc.dll`（36,864 B，md5 `be9504ec…`）**与 `C:/Windows/System32` 那份逐字节相同**，而它 (a) 整棵 Qt 树里不存在（唯一含 "icu" 的路径是 `include/QtCore/QBasicUtf8StringView`）；(b) 不在 windeployqt 自己打印的 `To be deployed` 模块清单里，`logs-p8/p8-deploy.log:76` 只有一句裸的 `Updating icuuc.dll.`；(c) 不在上面那 343 条 SBOM 记录的任何一条里；(d) **却确实是硬依赖** —— 手工解析 `dist-ci/Qt6Core.dll` 的 PE 导入表得到 29 项，`icuuc.dll` 在列。⇒ 这是**构建机的系统二进制被顺手搬进了包**：许可证材料、来源与可替换性都不在任何现有清单上，换一台构建机就换一份 ICU 版本。**② 少掉的一行**：同一张导入表里 `Qt6Core` 要 `MSVCP140.dll`/`MSVCP140_1.dll`/`VCRUNTIME140.dll`/`VCRUNTIME140_1.dll` 与 9 个 `api-ms-win-crt-*`，`Qt6Gui` 与 `Qt6Quick` 还要 `MSVCP140_2.dll`，而**包内一个都没有** —— 本机 GUI 门与无头审计能过，只因为这台机器装了 VS 2022 Community，且 `run_clean.cmd` 刻意把 System32 留在 PATH 上 | 换一台机器装不上：缺运行时那半表现为 `0xc0000135` = `STATUS_DLL_NOT_FOUND`，正是 R14 负对照里那个 `exitlevel=-1073741515`（同一值的有符号写法）；多出来那半是合规与溯源断裂 —— 随包再分发一份无声明的微软系统二进制，LGPL 要求的"可替换库"对这份 DLL 无从谈起，而它由打包机决定、不由我们的任何脚本决定 | `spike/p9-licenses/` 四个脚本可重跑（`collect.py` 201 行 / `qtdist_scan.py` 212 行 / `gen_notices.py` 139 行 / `provenance.py` 198 行）。**产物清单加一档"逐文件来源摘要表"**：包内每个 DLL 记 sha256/md5、与 System32 同名文件的**三档**比对结果、以及是否出现在 SBOM 记录里；**任何落在"逐字节相同"档的文件必须显式定策**（剔除，或在声明材料里点名），不许默认放行。**`--no-compiler-runtime` 不是体积偏好，而是把一条硬依赖移交给安装器**：本机可直接取用的源是 `C:/Program Files/Microsoft Visual Studio/2022/Community/VC/Redist/MSVC/14.44.35112/vc_redist.x64.exe`（**25,635,768 B = 24.45 MiB**，与 §7.2 ③ 里 `--compiler-runtime` 那份同尺寸，另一份同尺寸副本在 `…/MSVC/v143/`）⇒ 安装器必须负责它，或包内自己带那几个 `MSVCP140*`/`VCRUNTIME140*` | 若下一版 Qt 不再需要随包 ICU（或改由安装器/OS 提供），把 `icuuc.dll` 剔出包并在能力矩阵标注前置条件；若目标机上 `vc_redist` 确实装不了，退一步为包单独带上那几个 MSVC 运行时 DLL，并接受由我们负责其再分发条款与后续更新 |
+
+---
+
+## 9. 测试与验收
+
+### 9.1 自动化（不需 GUI，CI 可跑）
+
+- **属性测试**：物理↔DIP 换算往返、跨屏矩形拼接、选区钳制不出屏、`UndoStack` 任意 apply/undo 序列后文档等于快照、文件命名模板与重名递增。
+- **图像算法金样**：马赛克/模糊/灰度/反色/圆角/边框，固定输入图 + 零像素差对拍（JPEG 走质量分档阈值）。
+- **存储**：历史三重保留、锁定项永不清理、损坏配置回退与 `.broken` 保留、原子写。
+- **边界防护**：超大图、异常尺寸、损坏文件解码失败不终止进程（PRD §7.2/§8.2）。
+- **静态检查**：`qmllint` + `qmlformat` 纳入 CI；CXX-Qt 生成物 diff 检查（防 camelCase 重命名回归）。
+- **无头能力断言（P6 定型，见 R12）**：`--audit` 那类不问运行时就知道答案的检查（格式清单、DLL/插件文件、Qt 版本）与必须起窗口的两件事一起进 CI —— ① **`ShaderEffect status` 必须是 0**：`.qrc` 前缀错、`.qsb` 没进二进制、qsb 烘焙静默失败，三种情况的**编译与启动全都正常**，只有实例化后读 `status` 才暴露（§3.6 约束 9）；② **`build.rs` 的 qsb 步骤不许"失败就跳过"** —— spike 里是 `warning + 返回 None` 的宽容写法，正式工程要把它升成硬错误，否则 CI 绿而 shader 不在包里。
+- **打包门：净化环境 + 四条日志断言 + 一条完成标记（P7 立、P8 定型，见 §7.2 ⑤ 与 R14/R15）**。CI 里 `deploy.cmd` 之后**不许**用"退出码为 0 / 进程活着 / 目录里有 Qt DLL"当冒烟判据 —— P7 实测这三种同时为真而包是废的（QML 在 qrc 里 ⇒ `windeployqt` 零可见性 ⇒ 72 文件的空壳）。**P8 补上反向的那半条：退出码同样不能当"失败"的信号** —— 这个应用跑完套件不自行退出，每次 GUI 运行都要外部 `taskkill` 才拿到 `exitlevel`，而**好包与坏包拿到的都是 1**，所以"看退出码"的写法会同时把好包判死、把坏包放过。**要断言的只有部署副本的日志内容**，`ci_local.cmd` 步 5 的四条：`[P1] suite start`（QML 真加载并实例化到会自己打点）、`[P1] DIM rects shaderStatus=0`（qrc 前缀 + `.qsb` 烘焙 + `ShaderEffect` 装载三件事在部署形态下仍对）、**`[P4] provider calls=` 完成标记**（套件跑到最后一行才打）、**反向断言 `is not installed` 必须不出现**（残废包打的原文就是这句）；120 s 是**上限而不是等待时长**，跑满即 `status=FAIL reason=no-completion-marker`。**五条配套约束，缺一条这道门就会假绿**：① **必带负对照** —— 只放裸 exe 的目录要 `exitlevel=-1073741515`（`STATUS_DLL_NOT_FOUND`），否则"门通过"可能只是 `PATH` 残留把 Qt 安装看见了（本仓库 `env.cmd` 就专门往 `PATH` 加，见 §B.3）；② **`--audit` 单独不构成门**，它验插件与格式却验不了 QML 加载（正是那 72 文件包的过线路径，P8 的 `gate-only` 运行里它与三条 `MISSING` 同轮出现）；③ **文件类断言要按候选根列表解析**，不能信 `QLibraryInfo`（部署包是平铺布局且没有 `qt.conf`，§2.2 末段）；④ **产物清单按大小写不敏感比对**，因为 `d3dcompiler` 的来源与文件名随打包 host 变（§7.2 ③）；⑤ **必须等到套件自己打完成标记，不许按固定秒数杀进程**（P8 新立）—— P7 归档的五份"好包"日志全部截在 59～91 行、没有一份跑到 P4 的第 3 档之后，"门当时成立"是断言恰好落在截断之前的运气。**成本已实测，可据此排期**：整链 **140.2 s**（GUI 门 64 s），产物 **1316 文件 / 66.24 MiB / 0 warning**。**runner 无桌面会话时的退一步**：断言部署目录里 `qml/QtQuick/Controls` 与 `qml/QtQuick/Window` 两个模块目录存在 —— 这条文件断言就能抓住那个空壳包；**但这条退让本身没在真 runner 上验证过，`ci_local.cmd` 里 GUI 门是主判据，退让版要在拿到 runner 的那一天现场改写（R15）**。
+- **视觉量具的自检（P6 新增，判据见 §9.4 ⑦）**：像素级验收脚本（`measureAgainst` + `grabWindow` 那套）每次跑**真实待验配置之前**，先跑一个已知正确的对照配置并断言读数落在解析已知值上（变暗 `#99000000` ⇒ 比值必为 `1 − 0x99/0xff = 0.400`）。**量具自己不合格就不许它对结论下判断。**
+
+### 9.2 需 GUI/真机，标记为 manual
+
+~~xcap 物理分辨率取帧~~（**P5 已于 2026-10-05 以程序化方式验过**：物理几何、`scale_factor`、取帧与 `geom()` 逐像素相等，见 §2.1；仍要在真实产品链路里手测一次"多屏 + 拔插"，因为 P5 那台机器只有 1 块屏）、遮罩跟随延迟、贴图穿透与置顶与透明度、剪贴板、快捷键冲突、托盘。**P5 另加两条**：**窗口命中选取**（用 `WindowFromPoint` 时确认遮罩/贴图窗自己不会挡住它 —— 加 `WS_EX_TRANSPARENT` 的那次实测正好是这条的自动化前置）与**圆角自 mask 的视觉验收**（系统不给半径，默认档要人眼看）。**P6 再加两条，都是量具换掉之后暴露出来的产品问题**：**① 自家窗口可不可被截**（R13）—— 用同一台像素量具分别走 GDI / WGC / `PrintWindow` / DXGI duplication，看贴图窗与遮罩窗各出现在哪几路里，结论进 §11 那份平台能力矩阵；**② `QT_QUICK_BACKEND=software` 兜底档下遮罩还能不能画对** —— `ShaderEffect` 依赖 RHI，本轮未测，按 §3.5① ⑥ 的处置它必须能退回非 shader 画法，退回逻辑要有人眼确认的一次。
+
+### 9.3 强制手测矩阵（PRD §7.3 + 技术方案 §14.4）
+
+单屏 100% · 双屏同缩放 · 双屏 100%+150% · 横+竖 · 125/150/175/200/300% 档 · HDR 与 SDR · 远程桌面 · 全屏游戏 · 快捷键被占用 · 剪贴板被占用 · 截图期间拔显示器 · **Qt 后端切换（D3D11 / OpenGL / software）各跑一遍 P1、P3 与 P4**。**P1 与 P4 这半边已于 2026-10-05 跑完**：P1 三后端数据见 §3.5①（D3D11 与 OpenGL 等价，software 拖拽尾延迟劣化到 2.3 个 vsync，定为驱动故障兜底档）；**P4 三后端 + debug 见 §3.5②**（图元级提交三档全绿，**整层重挂在三档下都在第二次提交停住 —— 即那个坑与后端无关，不能作为"换后端绕过"的手段**）。P3 那半边仍待在这三档下各复跑一次。**P6 的 `ShaderEffect` 档只覆盖了默认 RHI（D3D11）一档**，OpenGL 与 software 两档下的 shader 表现**未测**（software 大概率不支持，见 §3.5① ⑥），这张矩阵的"遮罩挖洞"一格要等 M1 用正式画法补齐时一起填，且必须带上 §9.4 ⑦ 的量具自检。
+
+### 9.4 MVP 验收门（对齐 PRD §9）
+
+- §9.1：热键/托盘/自定义三种启动；区域、窗口、固定比例、活动窗口四种截图；选区与跨屏结果准确；延时、重复、指针、圆角符合设置。**不含**元素检测。
+- §9.2：M4 工具均可创建与删除，撤销重做顺序正确，文字背景/描边输出正确，颜色与线宽记忆重启有效。**不含**重编辑与旋转。
+- §9.3：图片贴图；缩放、透明度、置顶、穿透、复制、关闭正确。**不含**多选/分组/Solo/GIF。
+- §9.4：复制、自动保存、快速保存、另存为可用；保存失败不丢内容；历史可浏览、恢复、删除并受三重上限控制；被取消截图在开关开启后可恢复。
+- §9.5：快捷键冲突检测准确；主题与系统切换同步。**其余 Phase 2**。
+- **性能（走 QML 后的硬门）**：热键→遮罩可见 P95 ≤150ms；4K@150% 遮罩内拖拽帧时间 ≤8ms（≥60fps）；单图元标注提交→上屏 ≤16ms；10 张贴图常驻显存增量 ≤400MB；M0 定基线、M5 复测，任一劣化 20% 以上视为回归。
+  **P1 后的判据更正（不放松阈值，只让它能被证伪）**：① `≤8ms` 在 60 Hz 面板上无法用 present 间隔判定（地板就是 16.6 ms），改用量具三条件 —— 输入:present ≥2、16 ms pacer 缺口 ≤1 tick、worst ≤ 2 个 vsync；② `≤150ms` 分冷/热两本账 —— 冷启动首帧（预热前）与稳态分别给 p50/p95，只报混合 p95 会同时掩盖这两个问题的方向。
+  **P4 后给 `≤16ms` 补的量具（同一问题的另一半：present 间隔达标也可能只是"运气地落在下一个 vsync"）**：③ **`work~ = mean − vsync/2` 才是判据**，pacer 取 13 ms（故意不是 16.67 的整约数，让提交相位散开）后 `work~` 近似真实工作量 —— `≤16ms` 用 **p90 对 16.67 ms 地板**判、`work~ ≤8ms` 作为**余量线**（M0 基线：脏矩形 400×300 `work~0.0–3.4`、1600×1000 `work~0.0–6.2`、无位图参照 `work~0.0–0.6`）；④ **必须给一条"什么都不画"的参照档**（`plain-rectangle`），否则无法区分"提交便宜"与"面板就这么慢"；⑤ **必须给"永久停住"留一个显式判据** —— 连续 3 次提交在 3200 ms 内无 present 即判该档失败并离开，且**弃疗次数本身要报**，只报均值会把 25 ms 与 3200 ms 混成同一个数字。⑥ **回归线**：M5 复测时若出现任一 `stalled>0`，即使 p50 仍达标也按劣化 20% 处理（这是 P4 学到的：这类坑的表现是"第一帧正常"）。
+  **P6 后给"画面对不对"这类视觉验收补的判据（同一族问题的第三半：延迟与吞吐都达标，画的可能根本是空的）**：⑦ **量具必须在已知正确的对照配置上先跑通，才允许它对被测配置下结论**。这条是被三次误判换来的：整屏均值比 → 被壁纸亮度梯度骗（读出 1.256）；改成邻域环带对照 → **连已知正确的 4-`Rectangle` 档都判成 `DIM-WRONG`**（1.163）；换成 `grabWindow()` → 读数 `0.400`，正好等于变暗色的解析值 `1 − 0x99/0xff`。⇒ **验收判据要写成"读数必须等于可解析的期望值"（颜色、alpha、几何都先算出理论值），而不是"读数看起来变了"**；配套两条：期望值必须来自常量而不是另一次测量，以及**量具与被测对象走不同通路**（被测是场景图渲染，量具就不能是 GDI 采集 —— P6 第一台量具正是死在这条上，见 R13）。
+- 隐私（PRD §6.3）：默认全本地，无未授权上传，日志脱敏。
+
+---
+
+## 10. 立即行动（M0 前五个工作日）
+
+1. ~~装齐并记录实际版本~~ **已完成**：Rust `stable-x86_64-pc-windows-msvc`、CMake 3.31.6 + Ninja 1.12.1（VS 自带，免安装）、MSVC 14.44.35207、Qt **6.10.1**（qtbase/qtdeclarative/qtsvg/qttools）。小版本落在 6.10 而非原计划的 ≥6.11 —— spike 用到的能力 6.10 全都有，`QQuickWindow.devicePixelRatio` 那条等到真要它时再升。
+2. ~~`hello-cxxqt` 最小链路~~ **已完成并通过选型验证**（2026-10-04）。偏差一处需说明：spike 走的是 **Cargo 主导**（`CxxQtBuilder` + `QmlModule`），不是 CMake + `qt_add_qml_module` —— 目的是最快证明"QML↔Rust 三方向 + QString + qsignal + shim 编入"这件事成立，CMake 是构建编排问题、不影响选型结论。CMake 主导路径与两条路径的增量编译对比**仍待做**，见下方第 6 项。
+3. ~~`qshim.cpp` 骨架~~ **已完成**：`cpp/window_probe.cpp` 经 `.cpp_file` 编入，未被 CXX-Qt 生成流程吞掉；实测能 `qobject_cast<QWindow*>`、拿 `HWND`、读 `GWL_STYLE/GWL_EXSTYLE`。注意 API 名是 `setAlphaBufferSize(8)`（6.10 已删 `setAlphaBuffer(bool)`），且需 `cargo:rustc-link-lib=user32`。
+4. ~~**跑 P1 遮罩延迟探针**~~ **已完成（2026-10-05，有条件通过，结论见 §3.5①）**：这是本项目最贵的一次性风险购买。**买到的答案是"QML 这层过关，钱要花在别处"** —— 冷启动预热与采集 API 换路，两条已作为前置动作写进 M1。~~剩余最大未知数只有 P4 的 overlay 脏矩形 + 纹理上传~~ **P4 已于同日完成并通过（§3.5②）：图元提交与"什么都不画"同档，QML 侧不再有需要花预算的未知数**。~~剩一条尾巴：`ShaderEffect` 变体等 `glslc` 装上后补测，它影响遮罩的视觉方案而非可行性~~ **这条尾巴已于 P6（同日增量 7）收掉：`glslc` 从来不是前提，`qsb --qt6` 自带烘焙；变体 A/B 通过，律条维持但理由改为形状表现力（§3.5① ⑤⑥⑧）**。
+5. ~~P3~~ 已通过（结论已回填 §3.5③、§3.6、§3.2 规则 4/5）。~~spike 增量 3 = 后台线程 → `CxxQtThread::queue` → QML 信号~~ **已通过**（2026-10-05，§3.4 实测表 + 新增边界规则 9）。~~**P4 标注 overlay 脏矩形 + 纹理上传**~~ **已通过**（2026-10-05 增量 5，§3.5② 三后端 + debug 四份数据）：**图元提交与"什么都不画"同档 ⇒ 全线 QML 的两道延迟风险（P1 遮罩 + P4 画布）都已付清，混合方案降级判定为不启动，不需要二次拍板**；换来两条 M4 前置约束（整层更新要释放-重载握手；大区域提交走免拷贝的 `ExternalTextureItem`）。~~**剩余**：P2（多屏异 DPI）、P5（依赖能力审计）~~ **P5 已完成（2026-10-05，增量 6，§2.1）**：xcap 物理取帧可用、7 个导入格式全保、WGC 出局、"系统原始圆角"删出承诺、`RealWindowFromPoint` 作废、Qt 组件缺口精确定位到 `qtimageformats` + `qtshadertools`。**P2 判为硬件阻塞**（本机单屏，`monitor|count=1`），不是未做。**⇒（P5 当时的状态：五张表出数四张）M0 唯一剩下的工作是打包脚本 + CI（下方第 6 项）—— 这张表在 P6（第 8 项）后补第五个结论：`ShaderEffect` 变体达标，R13 另开一项不在原五张表里的能力对照。**
+6. **构建编排**：**M0 起先走 Cargo 主导**（§7.1 已把 spike 证据写死：QML 模块注册、`qt_module`、`.cpp_file` shim、moc/rcc 全都不用 CMake）。CMake 主导不再单独搭，只在 I-3 前补一次对照实测：**日常增量**与**全量重跑**两个数字（改一行 `crates/core` 到 exe 可用；`cargo clean` vs CMake clean 后重建）。打包做成 `cargo xtask package` 或 `packaging/` 脚本，与编排方式解耦 —— **P7 已把这条的内容做出来了**：`spike/p7-package/deploy.cmd` 就是那份"与编排解耦的清单"（钉住的 windeployqt 一行 + exe 复制 + `run_clean.cmd` 门，实测 1316 文件 / 66.78 MiB / 0 warning，见 §7.2），正式工程要做的只是把它搬进 `xtask` 并把 `--qmldir` 指到 `qml/`。剩下的**CI 那半 P8 已在本地串通**：`ci_local.cmd` 一条命令把 `依赖自检（aqt 装完 Qt 后验文件）→ build → deploy → 无头审计 → 净化环境 GUI 门 → 负对照 → artifact` 连起来并跑出 `verdict=PASS steps=7`（§7.2 ⑤、§9.1）；hosted 那份 `ci.yml` 是照它逐步对齐写的**提案，未执行过** —— 本目录还不是 git 仓库、没有远端。**原先"目前无归属"的那条发布阻塞项 `licenses/`（R9）已于同日 P9 拆开（见下方第 11 项）**：清单侧有现成的机器可读源（Qt 自带 `sbom/`，`gen_notices.py` 一条命令出 958 行草稿），全文侧仍要自备 —— `windeployqt` 与 Qt 安装都不提供许可文本这一条 P9 复核后**依旧成立**，只是它从"没人做的事"变成"一次外部取得 + 一次指派"。
+7. ~~**P5 依赖能力审计**~~ **已完成（2026-10-05，spike 增量 6）**。载体 `spike/p5-audit/`（616 行独立 bin，feature `wgc` 控制采集引擎）+ `spike/hello-cxxqt/cpp/audit_source.{h,cpp}`（115 行，`--audit` 无头打印 Qt 侧格式与组件实况）。产出四份日志（debug-wgc / release-wgc / release-gdi / qt-audit）+ 一份 `aqt` 模块清单。**留下的三条永久变化**：位图编码禁走 `QImage::save`（§3.3）；"使用系统窗口原始圆角"从承诺里删（§5 裁剪表、M3）；窗口命中改用 `WindowFromPoint` + `WS_EX_TRANSPARENT`（§0/D3、§2.1、§3.6）。~~**留下的一个待授权动作**：补装 `qtshadertools`（+ 可选 `qtimageformats`）以复跑 P1 的 `ShaderEffect` 变体 —— 这是对既有 Qt 目录的写操作，P5 没有擅自执行~~ **该动作已于同日 P6 增量 7 按用户授权执行完毕**（见下方第 8 项）。
+8. ~~**补装 Qt 模块并复跑 `ShaderEffect` 变体**~~ **已完成（2026-10-05，spike 增量 7 = P6）**。用户授权"安装必要的模块"后：`aqt install-qt windows desktop 6.10.1 win64_msvc2022_64 -m qtshadertools qtimageformats`（523.5 s，写进既有目录）。**四件产出**：① **`glslc` 不随 `qtshadertools` 发行，而 `qsb --qt6` 自己就能烘** ⇒ Cargo 路径下着色器烘焙无需 CMake（§3.5① ⑥、§7.1 新增一行、§3.6 约束 9）；② **`ShaderEffect` 变体 A/B 通过**，`DRAG-FRAME p50` 16.63 vs 16.61 ms ⇒ 律条维持、理由换成形状表现力（§3.5① ⑧）；③ **视觉验收量具必须换**：屏幕 DC 的 GDI `BitBlt` 看不见自家 Qt Quick 窗，改用 `QQuickWindow::grabWindow()`，并新立 §9.4 判据 ⑦（量具先在已知正确对照上跑通）——**顺带开出 R13：贴图窗/遮罩窗到底能不能被截，M1 要用同一台量具对四路采集各验一次**；④ **能力清单复核**：readers 15→21、writers 12→17，但 **`TGA`/`GIF` 仍只读 ⇒ §3.3 的 `QImage::save` 禁令原样维持**。**M0 五张探针表至此全部有结论**（P1 有条件通过并补测收口、P3/P4/P5 通过、P2 硬件阻塞），**唯一剩下的 M0 工作是第 6 项的打包脚本 + CI**（该项的**打包侧已于同日 P7 完成**，见下方第 9 项；剩 CI 与 `licenses/` —— **CI 侧的本地半边又已于同日 P8 完成，见第 10 项**）。
+
+9. ~~**打包可行性（windeployqt + 净化环境门）**~~ **已完成（2026-10-06，spike 增量 8 = P7）**。这补的是 M0 退出标准的**另一半**（"一条命令从零到安装包"），不在原五张探针表里。载体 `spike/p7-package/`（`deploy.cmd` + `run_clean.cmd` + 十个 dist 目录（P7 的九个 + P8 的 `dist-ci`，含 `dist-bare` 负对照）、19 份日志与 11 份清单/体积快照），并顺带修掉 `cpp/audit_source.cpp` 的部署态假阴性（115 → 191 行）。**五件产出**：① **抓到一个"启动正常、依赖齐全、功能为零"的残废包** —— 默认 `windeployqt` 对 qrc 内嵌 QML 可见性是零，产物 72 文件、能起、`--audit` 满分，然后不加载任何 UI；Windows 上 QML 失败不落 stdout ⇒ **退出码 / 进程存活 / 目录里有 Qt DLL 这三条常用冒烟判据全部为真**（新立 **R14**，§7.2 ①）。② **门定型**：`--qmldir <源 qml>` 钉进脚本 + 净化环境跑两档 + 断言 `[P1] suite start` 与 `[P1] DIM rects shaderStatus=0` + `dist-bare` 负对照（`exitlevel=-1073741515`），已写进 §9.1 与 §7.2 ②。③ **钉住的一行实测 1316 文件 / 66.78 MiB / 0 warning**，三个非显然事实：`windeployqt` **不复制目标 exe**、`--compiler-runtime` 会往应用目录丢 **25 MB `vc_redist.x64.exe`**、**同一行命令在有无 VS 开发者环境时打进不同来源/不同大小写的 `d3dcompiler`**（md5 各自对上 Qt 安装与 Windows SDK 两个源文件）⇒ 可复现性写进 R14，脚本固定不依赖 VS（§7.2 ③）。④ **"打包会不会裁掉我们承诺的能力"这条问号被否掉**：`reader_formats`/`writer_formats`/`fmt_*` 在源目录与部署包中**逐字节相同**（`fmt_*` 探针 11 读 / 8 写，全量 21 读 / 17 写），qsb 烘进二进制的 shader 在部署副本里仍 `status = 0` ⇒ §2.1 与 §3.3 的承诺不随部署形态变化（§7.2 ④）。⑤ **R9 拆出一个当时无归属的阻塞项**：**`windeployqt` 与 Qt 安装树都不提供许可文本**（pinned 包 0 命中）⇒ `licenses/` 必须自备。**（同日 P9 把这条拆开：清单侧已收口、全文侧待外部取得，见第 11 项 —— 本项那句"只剩两件事"的判读已被 P9 更新为"只剩两件 + 一条新风险 R16"。）**
+
+10. ~~**CI 串联（把打包脚本与门连成一条命令）**~~ **本地半边已完成（2026-10-06，spike 增量 9 = P8）**；hosted 半边仍是待办，原因不是技术未知而是**这个目录还不是 git 仓库、没有远端**。载体：`spike/p7-package/ci_local.cmd`（193 行）+ `ci.yml`（94 行，**提案，本文不把它当证据**）+ 产物目录 `dist-ci` + 证据目录 `logs-p8/`（10 份）。**七步**：依赖自检（`qmake.exe`/`windeployqt.exe`/`qsb.exe`/`platforms/qwindows.dll`/`imageformats/qtiff.dll` 五个**文件**，缺任一即判死，§2.2"验文件不验模块名"至此落成脚本）→ `cargo build --release` → `deploy.cmd`（`Warning: Cannot find` 计数必须为 0）→ `run_clean.cmd --audit` → **GUI 门** → 负对照 `dist-bare` → 产物清单（文件数下限 1300）。**四件产出**：① **退出码在这个工程里不是信号** —— 应用跑完套件不自行退出，`exitlevel` 只能从外部 `taskkill` 后拿到，而**好包与坏包取到的都是 1** ⇒ §9.1 那条禁令补齐了反向的一半：既不能拿"退出码 0"当好包证据，也不能拿"非零退出码"当坏包证据。② **门从两行扩成四条断言 + 一条完成标记**（新增 `[P4] provider calls=` 与反向断言 `is not installed`），并新立一条配套约束"**必须等到套件自己打完成标记，不许按固定秒数杀进程**" —— 依据是 P7 那五份"好包"日志全部截在 59～91 行、没有一份跑到 P4 第 3 档之后（完整套件 181 行）。③ **R14 从叙述变成一条命令的现场演示**：`ci_local.cmd dist gate-only` 在同一轮里打出 `step=audit status=pass`（插件、21 个读格式、`qwindows.dll` 全在）+ 三条断言 `MISSING` + `is not installed` `PRESENT` + `files=72 < 1300` ⇒ `verdict=FAIL steps=4`、`exit=1`；`ci_local.cmd dist-ci` ⇒ `verdict=PASS steps=7`（两份判决日志互为正反）。④ **成本与产物都已知**：整链 **140.2 s**（build 52 / deploy 17 / 无头审计 3 / GUI 门 64 / 负对照+清单 3），产物 **1316 文件 / 66.24 MiB / 0 warning**，包内 `D3Dcompiler_47.dll` 4,173,928 B、md5 `b0ae3aa9…` 与 Qt 安装自带那份逐字节一致 ⇒ **P7 那条"vcvars 只该作用在 build 一步"是被测出来的而不是被要求的**（`env.cmd` 的 `setlocal` 天然隔离，rustc 的 msvc host 自己找得到 `link.exe`，hosted 侧甚至不必激活 vcvars）。**新增 R15**：runner 能否在无桌面/无 GPU 会话里跑这道 GUI 门（包里的 `--no-opengl-sw` 正是 P7 主动关掉软件 GL 那刀），以及 runner 产物的 `d3dcompiler` 来源是否仍是 Qt 自带那份。**⇒ M0 的待办清单当时剩三件，全部是待办不是未知数：hosted workflow（要 git 化 + 真 runner）、安装器选型、`licenses/`（R9）。****（同日 P9 把第三件拆开：清单侧收口、全文侧待外部取得 —— 见第 11 项；并新开 R16。）****（本项留下的 `licenses/` 那条同日由 P9 接手，见第 11 项；hosted 半边仍是第 10 项自己的尾巴，不是 P9 的。）**
+
+11. ~~**许可证与包内二进制的来源（把 `licenses/` 那条无归属阻塞项拆开）**~~ **清单侧已完成（2026-10-06，spike 增量 10 = P9）**；全文侧**从"无人认领"改判为"有脚本、缺全文、待指派"**，并顺带开出一条新风险 **R16**。载体 `spike/p9-licenses/`：四个脚本共 750 行（`collect.py` 201 / `qtdist_scan.py` 212 / `gen_notices.py` 139 / `provenance.py` 198）、`evidence/` 五份清点、`licenses/` 92 份文本（432,717 B）、`out/THIRD-PARTY-NOTICES.md` 958 行草稿。**五件产出**：① **第三方清单不必手抄** —— Qt 安装自带 `sbom/`（20 个文件 / 39.52 MiB），7 份 `*.spdx.json` 合计 **343 条 package 记录** + **12 条带非空 `extractedText` 的 LicenseRef（6 个 id）**；`gen_notices.py` 在离线状态下把它们渲染成 958 行草稿 ⇒ R9 那句"没有工具会替我做"收窄为**"清单有现成的机器可读源，全文没有"**。② **全文确实要外部取，而且比脚本口径更多** —— 10,495 个文件里严格「许可证命名」的只有 5 个（3 个 CMake 管道 + 2 个 wayland 协议附带声明），没有一个覆盖 Qt 库本体；32 个标准 SPDX id 中脚本判 21 个本地无全文，而"有匹配"的 11 个里 **8 个是文件名撞词的假命中**（`Zlib`→`include/QtZlib/zlib.h`、`Unicode-3.0`→`hb-unicode.h`、`MPL-2.0`→Rust 侧 `LICENSE-APACHE`、`GPL-*-or-later`→`LGPL-2.1-or-later.txt`）⇒ **站得住的只有 `Apache-2.0`/`MIT`/`HPND` 三个，真正要外部取得的是 29 个 id**。③ **Rust 侧自动化可行，但运行时闭包里有 4 个洞** —— 过滤到 `x86_64-pc-windows-msvc` 后 53 个包（根 + 52），按 `resolve.nodes[].deps[].dep_kinds` 走闭包 = **运行时 34 / 纯构建期 18 / dev 0**（本轮先算出过一版 52/24，两桶之和 76 已大于全图 52 个非根包，**算术上不可能，是桶重叠，已作废**）；34 个运行时 crate 全部宽松许可、零 copyleft；本地 registry 抓到 92 份文本、sha256 去重只剩 28 份；**运行时闭包内 4 个 crate（`cxx-qt`/`cxx-qt-lib`/`cxx-qt-macro`/`cxx-qt-gen`）的发布包里根本没有许可证文件**（全图 7 个，另 3 个只在构建期）⇒ 自备一份规范 MIT + 一份 Apache-2.0 兜底，"整条链交给 `cargo-about` 一类的工具"在本机不成立。④ **包里混入一份谁都没声明的 Windows 系统二进制** —— `icuuc.dll`（36,864 B，md5 `be9504ec…`）与 System32 那份**逐字节相同**，却不在 Qt 安装树、不在 windeployqt 自报的 `To be deployed` 清单（`p8-deploy.log:76` 只有一句裸的 `Updating icuuc.dll.`）、也不在那 343 条 SBOM 记录里，而手工解析的 `Qt6Core.dll` PE 导入表（29 项）点名要它 ⇒ **新立 R16**。⑤ **`--no-compiler-runtime` 的前提由推断升级为导入表证据** —— `Qt6Core` 要 `MSVCP140.dll`/`MSVCP140_1.dll`/`VCRUNTIME140.dll`/`VCRUNTIME140_1.dll` 加 9 个 `api-ms-win-crt-*`，`Qt6Gui`/`Qt6Quick` 还要 `MSVCP140_2.dll`，而包内一个都没有；本机门能过只因为装了 VS 2022 Community 且 `run_clean.cmd` 保留 System32 在 PATH 上 ⇒ **安装器必须负责 `vc_redist`**（本机可直接取用 `…/VC/Redist/MSVC/14.44.35112/vc_redist.x64.exe`，**25,635,768 B = 24.45 MiB**，与 §7.2 ③ 那份同尺寸）。**至此 M0 只剩两件 + 一条新风险**：hosted CI（要先 git 化 + 一台真 runner，R15）与安装器选型（它现在多一条必须项：装 `vc_redist`）；`licenses/` 不再是未知数，而是一次指派 + 一次外部取得。数据与判据见 §7.2 ⑥、§8-R9/R16。
+
+---
+
+## 附录：核验记录
+
+`技术栈选型核验记录.md`（466 行）保存 D1/D2/D3 结论的逐条出处，含 CXX-Qt 0.10 桥接写法原文、Qt `qwindowswindow.cpp` 中 `WS_EX_*` 推导逻辑、Qt 高 DPI 文档原文（"islands-of-screens"警告）、Flameshot/ksnip 实现证据、以及"QWindow/QQuickWindow 未被绑定、shim 必写"的依据。修订技术方案时以该文件为准。
+
+## 附录 B：M0 spike（可重跑）
+
+### B.1 `spike/hello-cxxqt/`（P1/P3/P4/P5-Qt侧/**P6**/**P7 复用与探针修正**）
+
+`spike/hello-cxxqt/`，**20 个源文件**：`Cargo.toml`、`rust-toolchain.toml`、**`build.rs`（102 行，P6 起多了一件事：定位 `qsb` → 烘 `shaders/dim_hole.frag` 到 `OUT_DIR` → 生成 `shaders.qrc` 交给 `CxxQtBuilder::qrc()`；qsb 失败只 `cargo:warning` 并返回 `None`，所以正式工程要把这条升成硬错误，见 §9.1）**、`src/main.rs`、`src/probe.rs`、`src/pump.rs`、`src/mask_probe.rs`（P1 状态机，**588 行**，P6 加了 `window_check` 桥与 session 1 的 grab 验收）、**`src/overlay_probe.rs`（P4 状态机 + 10 档套件，732 行）**、`qml/main.qml`（478 行）、**`shaders/dim_hole.frag`（31 行，P6 新增：`#version 440` 单遍"冻结 + 变暗 + 挖洞"，`gl_FragCoord` × `ubuf.deviceSize/dpr` 换 DIP，`step()` 乘出 `inside`）**、`cpp/window_probe.{h,cpp}`（64 行）、`cpp/frozen_source.{h,cpp}`（P1 shim，**508 行 = 头 75 + 源 433，P6 从 346 涨上来，涨幅几乎全是像素量具**：`measureAgainst` / `frozenSelfCheck`（GDI 侧）/ `frozenWindowCheck`（`grabWindow()` 侧）/ `FrozenInstaller::setWindow`）、**`cpp/overlay_source.{h,cpp}`（P4 shim：非拥有发布 + 脏矩形 provider + `QQuickPaintedItem` 对照 + 安装器，305 行）**、**`cpp/audit_source.{h,cpp}`（P5 shim：`QImageReader/Writer::supportedFormats` 逐格式探、插件目录与 QML 模块目录清点、`glslc`/`qsb`/`Qt6ShaderTools` 文件存在性，115 行 → **P7 改写成 191 行**：所有"文件存在性"判据从单路径改成候选根列表 `applicationDirPath()` + `libraryPaths()` + `QLibraryInfo` 各路径，并新增 `app_dir=` / `library_paths=` 两条自报字段与 `svg`/`tiff`/`webp`/`gif`/`tga` 五条插件级探针 —— 修的是部署态全线假阴性，见 §2.2 末段与 §7.2 ④）**、`env.cmd`、`run.cmd`。C++ 侧合计 **1068 行**（§3.6 体量估的事实来源；其中量具与审计那部分不进产品，见 §3.6 末段；**P7 的 +76 行全部落在审计探针上，产品 shim 的净估 900–1200 行不变**）。
+
+### B.2 `spike/p5-audit/`（P5 依赖侧，独立 crate，与 Qt 无关；**P6 的审计对照与两份比对脚本也寄存在此**）
+
+`Cargo.toml`（29 行）、`rust-toolchain.toml`（**必须存在**，见下方第 16 条）、`src/main.rs`（616 行，六个审计段：`audit_env / audit_monitors / audit_windows / audit_dwm / audit_hittest / audit_codecs`）。**feature `wgc` 默认开，`--no-default-features` 即把 `xcap` 的采集引擎切回 GDI，不需要改代码** —— 这是拿到 P5 那张 WGC/GDI 对照表的唯一开关。
+
+```bash
+cargo build --release
+./target/release/p5-audit.exe > p5-release-wgc.log        # 默认 = WGC
+cargo build --release --no-default-features
+cp target/release/p5-audit.exe target/release/p5-audit-gdi.exe
+./target/release/p5-audit-gdi.exe > p5-release-gdi.log    # GDI 对照
+```
+
+`p5-debug-wgc.log` / `p5-release-wgc.log` / `p5-release-gdi.log` 是 §2.1 三行 P5 结论的数据源；`p5-qt-audit.log`（在 B.1 目录下，`run.cmd 'target\release\hello-cxxqt.exe' --audit` 产出，**不进事件循环、不建窗口**）是 Qt 组件与格式清单的数据源；`p5-qt-modules.log`（在 `spike/p5-audit/` 下）是 `aqt list-qt … --modules` 与 `aqt list-tool windows desktop` 的原文。
+
+**P6 的工件也放在 `spike/p5-audit/`（同一套审计口径，只是"补装前 vs 补装后"）**：`p6-qt-audit-BEFORE.log` / `p6-qt-audit-AFTER.log` 是 §2.1 那行"组件完整性"改判的数据源（同一条 `--audit` 命令跑两遍，逐字段对比 ⇒ readers 15→21、writers 12→17、imageformats 插件 4→9 对、`qsb_exe` NO→yes、`shader_tools_dll` NO→yes、**`glslc_exe` 两遍都是 NO**）。两份分析脚本也在这里：**`diff_grabs.py`**（PIL，跨运行逐像素最大通道差 + 直方图，产出"均值 0.0883/255、99.51 % ≤4/255"那组数）与 **`geom_check.py`**（扫描 `min(R,G,B)>245` 的连续游程，从 PNG 里反解白色选区边框的外接框，与声明的洞矩形对拍 ⇒ `(2067,1200)-(2879,1707)` vs `(2067,1200)-(2880,1708)`）。两个 PNG 工件 `p6-grab-rects.png` / `p6-grab-shader.png`（各约 2.39 MB）是 `frozenWindowCheck()` 落盘的**诊断专用图**，也是 §3.3 那条 `QImage::save` 禁令唯一的、就地标注过的豁免点。**落盘位置要说清，否则重跑会覆盖证据**：代码写的是相对路径 `"mask-grab.png"`，所以它落在**进程的当前工作目录**（按本附录跑法就是 `spike/hello-cxxqt/`，那里现在这张图是"最后一次运行"的产物、每跑一次换一次），**每档跑完要立刻改名存档**才得到上面两份 —— 归档件在 `p5-audit/` 下，与活体 `mask-grab.png` 不是同一个文件。
+
+### B.3 运行方式、取证日志与踩坑清单（B.1/B.2 共用）
+
+取证日志：`p3-selftest.log`（P3 + 边界成本）、`thread-suite.log` / `thread-suite-release.log` / `thread-suite-pre-fix.log`（增量 3，§3.4 主表）、**P1 五档后端矩阵** `p1-debug-slack.log`、`p1-release-slack.log`、`p1-release-d3d11-v2.log`、`p1-release-opengl.log`、`p1-release-software.log`（§3.5① 主表数据源），另有 `p1-debug.log`、`p1-release-d3d11.log` 是加 tick/step 计数之前的一轮，reveal 数字仍有效、拖拽那半边已被 v2 取代。**P4 四档矩阵（§3.5② 主表数据源，均为 10 配置套件）**：`p4-10cfg-release-default.log`、`p4-10cfg-release-opengl.log`、`p4-10cfg-release-software.log`、`p4-10cfg-debug-default.log`；前缀 `p4-7cfg-*` / `p4-8cfg-*` 的三份 debug、三份 release 是**加 `qml-whole-clear`（释放-重载握手）与 250 ms 节拍 A/B 之前**的两轮，whole-layer 停住与脏矩形达标的数字仍有效，但**整层那一半的结论必须以 10 档版为准**（8 档里没有能过的那一行）。**P6 两份 A/B（§3.5① ⑧ 表的数据源，同一 release 二进制只换 `P1_DIM`）**：`p6r-rects.log`（4-`Rectangle` 档）与 `p6r-shader.log`（`ShaderEffect` 档），每份都同时含 P1 五 session 与 P4 十档套件（第 14 条那条"跑 P4 顺带跑 P1"仍然成立）；另有 `p6-release-rects.log` 与它的显式留档副本 `p6-release-rects-GDI-blind.log`（两份内容相同，副本按"证据是什么"改名保存）—— 那是**量具换成场景图 grab 之前**的一轮：`dim-check` 只有 GDI 那一行，读数 `hole=1.000 band=1.000 rest=1.000 DIM-WRONG`，**正是 R13 那条发现（`BitBlt` 看不见自家 Qt Quick 窗）的原始证据**；同一档 4-`Rectangle` 在该轮给出 `REVEAL p50=69.9 / p95=143.4 ms`，与 `p6r-rects.log` 的 `100.5 / 186.2 ms` 是**同二进制同档位的两次运行** —— 这个 30 ms 级别的 run-to-run 差大于两变体之间的差，正是 ⑧ 表"不可分辨"判读的依据。`p6-shader-debug.log` 是 debug 档的一次 `status=0` 确认，`p6-build.log` 是 qsb 烘焙进 `build.rs` 后的第一次完整构建输出。
+
+```bat
+:: 构建（vcvarsall + QMAKE 由 env.cmd 注入）
+cmd.exe /c "env.cmd cargo build"
+cmd.exe /c "env.cmd cargo build --release"
+
+:: 运行；启动即自动跑自测 + quick 档线程套件（帧数 ÷5，约 3 s）
+cmd.exe /c "run.cmd"                               :: debug
+cmd.exe /c "run.cmd target\release\hello-cxxqt.exe"
+
+:: P1/P4 后端矩阵：环境变量由调用侧注入，run.cmd 会原样传给进程
+set QSG_RHI_BACKEND=direct3d11                     :: 或 opengl
+set QT_QUICK_BACKEND=software
+
+:: P6：两档挖洞画法同一二进制，只换 P1_DIM（缺省 = 4 个 Rectangle）
+set P1_DIM=shader
+```
+
+Git Bash 侧的等价跑法（P6 两份 A/B 日志就是这么出来的，注意**参数整体加引号、`cargo` 命令不要加引号**）：
+
+```bash
+P1_DIM=shader ./env.cmd 'target\release\hello-cxxqt.exe' > p6r-shader.log
+./env.cmd 'target\release\hello-cxxqt.exe' > p6r-rects.log   # 不设 P1_DIM = 4-Rectangle 档
+./env.cmd "cargo build --release"
+```
+
+界面上三个按钮手工触发：`runSuite(quick)`、`runSuite(full ~12s)`、`stopSuite()`；窗口析构自动 `stopSuite()`。线程套件的 7 档配置写死在 `src/pump.rs` 的 `CONFIGS`，加档只需加一行；**P4 的 10 档写死在 `src/overlay_probe.rs` 的 `CONFIGS`**（`Upload` 枚举 6 个变体 = `qml-whole-layer | qml-whole-copy | qml-whole-clear | qml-dirty-rect | painteditem-fallback | plain-rectangle`，每档带 `canvas`/`bbox`/`pace_ms`），跑法同上，无需界面操作。两套件的口径不同要注意：线程套件量的是"后台 → GUI 投递"，P4 量的是"提交 → `frameSwapped`"，两个数字不可互相换算。
+
+取证注意（都是踩过的）：
+
+1. `env.cmd` 用 `%*` 转发命令，路径要写反斜杠（`target\debug\...`），`target/debug/...` 会被 cmd 解析失败。
+2. QML 的 `console.log()` 在 stdout 被重定向时不落盘，取证一律走 Rust 侧 `println!`（QML 通过 `probe.recordFromQml(str)` 把字符串递过来打印）。
+3. **QML `property int` 装不下 epoch 毫秒**：`Date.now()` 赋给 `int` 会溢出，算出来的"预期 tick 数"是 1.1e11。要么用 `property real`，要么像现在这样直接用 Rust 传回的 `wallMs` 推。
+4. **线程套件必须延后启动**：`Component.onCompleted` 里的自测会阻塞事件环约 400 ms（20 万次绑定写），紧接着跑套件会把这段启动积压读成 90 ms 的稳态投递延迟（`thread-suite-pre-fix.log` 第 1 档就是这样）。现在的写法是 `suiteKick` 定时器延后 2.5 s。
+5. 重建前先 `taskkill /IM hello-cxxqt.exe /F`，否则链接器报 `failed to remove file … Access is denied`。进程名带连字符（`hello-cxxqt.exe`），`tasklist` 过滤时别写成下划线。
+6. **QML 加载失败在 Windows 上不落 stdout**。root 对象构造出错时，错误只进调试器通道，重定向到文件的日志看起来像"程序啥也没说"。`run.cmd` 因此固定 `set QT_FORCE_STDERR_LOGGING=1` + `set QT_ASSUME_STDERR_HAS_CONSOLE=1`（`QT_LOGGING_TO_CONSOLE` 已废弃，只会多打一条警告）。P1 第一轮就是靠这两行才看见真正的原因。
+7. **`qproperty` 名进 QML 是 snake_case 原样**，只有 `#[qinvokable]`/`#[qsignal]` 认 `#[cxx_name]`。绑错不报错，只给 `Unable to assign [undefined] to …`，遮罩直接不显示。这条曾同时把增量 3 的 pump 标签打哑 —— 排查跨界失灵先核对属性名，别怀疑线程或时序。
+8. **backing struct 里放 `QString` 字段会毒死 `get_mut()`**：`QString` 内含 `PhantomPinned` ⇒ 结构 `!Unpin` ⇒ `self.as_mut().rust_mut().get_mut()` 编译期报 8 个 `E0277`。把成果改成走 `qsignal` 传 `&QString`（P1 的 `reportReady` 就是这么来的），别去写 unsafe 投影。
+9. **C++ 侧两条注册/时序红线**：往 Cargo 建的 QML 模块里 `qmlRegisterType` 会被拒（`Namespace … has already been used for type registration`），必须用 `QML_ELEMENT`，由 `moc` + `qmltyperegistrar` 生成注册表；`SetProcessDpiAwarenessContext` 早调反而 `Access is denied`（Qt 6.10 自己已设 PMv2）。另外 BitBlt 之后必须 `GdiFlush()` 才能在 CPU 侧读像素。
+10. **P1 shim 里有一处刻意的泄漏，别照抄进产品**：分辨率变化时旧帧进 `g_retired` 且**永不 `delete`**，因为已交给 QML 的 `QImage` 只是浅拷贝、像素内存仍属于那个 `Frame`。在探针里无害（一次会话最多切两三档），在产品里正是 §3.3 共享不可变缓冲 + 析构回调要解决的事 —— 让 `Frame` 的生命周期由最后一个 `QImage` 持有者决定，而不是靠"不释放"。P4 的 `overlayPublish()` 是同一类捷径（Rust 的 `Vec` 全程存活所以裸指针有效），§3.6 已把它列为"产品里必须替换"的 shim 行。
+11. **`[P4]` 里的 `mean=3200.00` 不是量具坏了**：3200 ms 是 `GIVE_UP_MS` 上限，弃疗样本按上限计入均值，以便与达标档同表可读。**读表只看 `stalled=N|GAVE UP at submit k/n` 与 `work~`，不要看 mean/p50** —— 那几个 3200 是结论，不是噪声。
+12. **`overlayDescribe()` 报的是会话结束时的画布**：日志里 `overlayCanvas=3072x1920 layerBytes=22.5MB` 是最后几档 native 的尺寸，**4K 档的 31.6 MiB 只能回 `CONFIGS` 的 `canvas: (3840, 2160)` 读**。同类陷阱还有 `providerInstalled=1`，它才是这一行要看的字段。
+13. **套件写死成 `const CONFIGS: [Config; N]`**：加一档要同步改数组长度、`submits_per_config` 的 quick 分频，以及 `Upload` 的 `match` 分支（新增枚举变体时编译器会指出两处非穷尽）。改完 **debug 与 release 都要重建** —— 两个二进制同名不同物，`run.cmd` 不带参数默认取 `target\debug\`。
+14. **跑 P4 会顺带把 P1 也跑一遍**（P4 套件挂在 `mask.onReportReady` 之后），所以四份 10 档日志同时是 P1 的额外复跑，可交叉核对：同机同二进制下 P1 `REVEAL p50` 落在 **59.8–74.5 ms**、`DRAG p50` **15.60–16.67 ms**、provider 仍是 5 calls / avg ≤1 µs，与 §3.5① 主表同档。
+15. **后端切换靠调用侧注入，且必须用日志字段自证**：`set QSG_RHI_BACKEND=opengl&& run.cmd …` 或 `set QT_QUICK_BACKEND=software&& run.cmd …`（`run.cmd` 原样把环境传给进程）。**别相信文件名**，每条日志的 `[P1] env … rhi=… quick=…` 才是这一档真实生效的后端 —— P4 那四份文件的该行已逐一核对（default / opengl / software / default+debug）。
+
+P5（依赖能力审计）新增的取证注意：
+
+16. **新建的独立 crate 必须自带 `rust-toolchain.toml`**。本机 rustup 默认 host 是 **gnu**，`p5-audit` 一开始漏了这份文件，于是死在 `error calling dlltool 'dlltool.exe': program not found` —— 报错完全没提"你选错了 target"，看着像工具链坏了。**同一条陷阱对 spike 与未来的 xtask/探针同样成立**，别指望 workspace 根的那份文件覆盖到目录外的 crate。
+17. **`librariesPath()` 与 `binariesPath()` 不是一个目录**（`plugins/` vs `bin/`）。第一版 `audit_source.cpp` 只在 `librariesPath` 下找 `Qt6Svg.dll`，得到 **假阴性 `svg_dll=NO`**；改成两处都找之后实测 `yes@…/bin`。**能力审计里的假阴性会直接导致删功能**，所以每个"文件存在性"判据都要写清搜了哪几个目录（现在的实现是 `existsAny({binaries, libs}, file)`）。
+18. **采集耗时 debug 与 release 差一个数量级，不能混着报**。同一个 WGC 首帧：debug **1239.7 ms** vs release **952.6 ms**；逐窗采集 debug **642–710 ms** vs release **83–391 ms**。P5 的 WGC/GDI 对照表因此**只用 release 两份**，debug 那份只用来证明"结论方向不是档位假象"。这条与 §3.4 增量 3 学到的"debug 假象"是同一类错。
+19. **`GetVersionEx` 会被 manifest 骗**，拿到的 build 号可能是假的。P5 的 `os_build()` 走 `LoadLibraryW("ntdll.dll") + GetProcAddress("RtlGetVersion")` 才拿到 **10.0.26200** —— 而"是哪个 Windows build"在这轮审计里是有判定力的（`RealWindowFromPoint` 是否存在就依赖它）。同类地，`RealWindowFromPoint` 的"不存在"要**同时验两处**才敢作废一条计划：导出表（`GetProcAddress` 返回 null）与 `windows` crate 绑定（0.62.2 未导出），两条都命中才写进 §2.1。
+
+P6（工具链补齐 + `ShaderEffect` A/B）新增的取证注意：
+
+20. **`run.cmd` 只转发 `%~1`，第二个参数起静默消失**。`run.cmd 'target\release\hello-cxxqt.exe' --audit` 会正常启动程序但**根本不进审计分支** —— 没有报错，只是日志里没有那几行。多参数一律走 `env.cmd`（它用 `%*`）。这类"参数被吃掉"的失败模式最坏的地方在于它长得像"功能没生效"，而不像"我没把参数传进去"。
+21. **Git Bash 里调 `.cmd` 的引号规则是反直觉的两条**：带反斜杠的单个参数要整体加引号（`'target\release\hello-cxxqt.exe'`，否则 bash 把 `\r` 之类吃掉），但 **`cargo build --release` 绝不能包成一个引号串**（`env.cmd` 会把整串当一个可执行文件名）。踩过的两种失败分别是"找不到文件"和"命令什么都不做"。
+22. **一份能力日志可能是旧二进制打出来的**。`--audit` 分支是后加的，用补装前那次构建留下的 release exe 跑，程序启动正常、参数被接受、**但审计那几行压根不存在**。⇒ **每条取证日志的第一行必须自带构建身份字段**：P5/P6 的 `--audit` 打 `runtime_qt=` / `built_qt=`，P1 的套件打 `dim=rects|shader` 与 `shaderStatus=`，P4 打 `overlayCanvas=`。**看见 `dim=shader` 才能把这份日志当 shader 档用**；只看文件名会在两次不同的运行之间张冠李戴（本轮 `p6-release-rects.log` 与 `p6r-rects.log` 就是同档位不同轮次、`REVEAL p50` 差 30 ms 的一对）。
+23. **`QQuickWindow::grabWindow()` 有三条使用限制**：**只能在 GUI 线程**（它要重跑场景图）；**内部会走渲染，因此可能回调 image provider** —— 我们的 `frozenWindowCheck()` 因此**故意在取锁之前调用**，`QMutex` 不可重入，先锁后 grab 是自死锁；**它是"当前帧的合成结果"而不是"屏幕上的最终像素"**（不参与 DWM 之后的路径），所以它能验证渲染逻辑，不能验证 §9.4 ⑦ 那条之外的东西（比如驱动覆盖层，见 R13）。
+24. **两个名字级别的坑，报错都不在名字上**：① `near` / `far` 是 `winnt.h` 里的 `#define`，**不能作 C++ 标识符**（含 `Q_PROPERTY`/信号参数），要写 `nearMm`/`farEdge` 或就地 `#undef`；② GLSL 的 swizzle 分量只有 `xyzw`/`rgba`，**`.h` 这种写法要到 `qsb` 阶段才炸**，而 `qsb` 的报错在 `build.rs` 里是 cargo warning（见第 25 条与 B.1 的 `build.rs` 说明）。
+25. **pyenv-win 的 `python` shim 吃不下多行 `-c`**：`python -c "多行"` 会吐 `IndentationError: unexpected indent` 夹一条 `|| goto :error`，看着像脚本写坏了。跨运行比对 PNG 这类一次性的活，**直接写成 `spike/p5-audit/*.py` 文件**（本轮的 `diff_grabs.py` / `geom_check.py` 就是这么来的），别在命令行里拼。
+
+P7（打包可行性）新增的取证注意：
+
+26. **cmd.exe 的 `%*` 不跟随 `SHIFT`**：`run_clean.cmd` 想"吃掉第一个参数、转发其余"，`shift` 之后 `%*` 打出来**仍然是原始全集** ⇒ 只能手工从 `%2 %3 … %9` 拼参数尾（现在的写法）。同一条链路上第 20 条（`run.cmd` 只转发 `%~1`）与本条是同一族失败：**批处理的参数转发没有报错这条路，它对错的做法一律给一个"看起来跑了"的结果**。
+27. **Git Bash 里调 `cmd` 必须写 `cmd //c`**：`cmd.exe /c "…"` 会被 MSYS 的路径转换把 `/c` 变成本地路径，于是 **cmd 只打印版本 banner 然后什么都不做** —— 没有错误码、没有输出，最像"脚本没生效"的一种失败形态。（第 21 条那两条引号规则仍然适用，两条叠加时先用 `//c` 再谈引号。）
+28. **`grep -c` 命中 0 时退出码是 1**，于是 `a && b && c` 里"什么都没找到"会把后半串**静默跳过**。本轮真实咬到一次：`grep -icE … && echo && for d in dist*; do …` 让九个 dist 的体积统计整段消失，看上去像循环坏了。**写检查用 `;` 分隔或补 `|| true`**，别让"没找到"这件事冒充"命令失败"。
+29. **`QLibraryInfo` 说的是配置时布局，不是部署布局**（本轮最贵的一条，因为**它不报错**）：windeployqt 把每种插件平铺到应用目录根、DLL 放 exe 旁边、**且不写 `qt.conf`**，于是 `path(PluginsPath)` 返回的 `<appdir>/plugins` 是个不存在的目录，所有基于它的"文件存在性"判据在**一个完全健康的包上全线报 `MISSING`/`NO`**。⇒ 一律按候选根列表解析并自报 `app_dir=` / `library_paths=`（§2.2 末段、§7.2 ④）。**同族陷阱**：`--audit` 过线不等于包好，它验插件与格式、**验不了 QML 加载**（§7.2 ① 那个 72 文件空壳包就是靠它打满分才露不出来）。
+30. **`windeployqt` 不复制你的 exe**：`--dir` 只在它周围铺依赖。第一次跑 `deploy.cmd` 出来的目录里根本没有 exe，与 `dist4` 的文件清单对不上才发现 ⇒ **"部署成功"与"包能跑"之间差一条 `copy`，这条必须属于打包脚本**。同类两则：`--compiler-runtime` 是把 **25 MB `vc_redist.x64.exe` 放进应用目录**（不是系统安装），以及 `--no-compiler-runtime` + `--no-system-dxc-compiler` **还决定 windeployqt 会不会去找 VS** —— 找不到就打 2 条 `Cannot find …` warning。**所以在这套脚本里 warning 数是"开关状态"的指示器，不是"包坏了"的指示器**，别看错对象。
+31. **别按文件名认包里的组件，要按 md5 + `ProductVersion`**：`d3dcompiler` 那两个落地名只差大小写，`ls` 看着是同一个文件；md5 一打才暴露是**两份不同的东西**（Qt 自带 6.3.9600.16384 / 4,173,928 B / `b0ae3aa9…` 对 Windows SDK redist 10.0.26100.7705 / 4,741,488 B / `19e527a3…`，且 `C:\Windows\System32\d3dcompiler_47.dll` 是第三个 md5 `f78476bd…` —— 三个都不同）。**这条同时决定了一轮消融实验的结论强度**：从包里删掉 `d3dcompiler_47.dll` 后程序照样起，**只能得出"捆绑那份不是唯一来源"，不能得出"可以不分发它"**，因为 System32 那份本来就在。
+32. **含 `goto` 或标签的 `.cmd` 必须是 CRLF**（P8 第一次运行整轮报废的原因）：cmd.exe 为找标签会按**字节偏移**回扫文件，LF-only 时每次落点都偏一位，于是**每行开头被吃掉 2～4 个字符** —— 本轮的真实症状是注释行 `rem P8: …` 报成 `'P8:' is not recognized`，几十行碎输出看着像语法错。**为什么 `deploy.cmd`/`run_clean.cmd` 从没暴露这件事**：它们没有标签，不需要回扫。⇒ 给 `.cmd` 加第一个 `:label` 之前先确认行尾；编辑管线默认给 LF，这个坑是**静默引入**的（`ci_local.cmd` 每次改动后都要重新过一次 normalize→CRLF）。
+33. **GUI 档的 `exitlevel` 不携带程序结论，好包坏包都是 1**（P8 最贵的一条判据变更）：应用跑完套件不自行退出，取证只能"后台起 → 轮询日志 → `taskkill`"，于是退出码反映的是 kill 而不是结论 —— 实测 P7 归档的六份 GUI 日志（候选包 `dist9` 与残废包 `dist` 都在内）**无一例外 `exitlevel=1`**。⇒ 门只能读**日志内容**（§9.1 的四条断言 + 完成标记）。同族的一个隐式判据更阴："按固定秒数杀进程"会让**截得多早**变成门的一部分 —— P7 那五份好包日志分别截在 59/69/69/59/91 行，没有一份跑到 P4 的第 3 档之后（完整套件 181 行），而门照样判"通过"。
+34. **`for /f "usebackq"` 会把内层引号喂给 cmd 自己的解析**（P8 第二次运行的原因）：想从一行"两个数"里取 tokens，写成带反引号命令的形式会得到 `step=artifact files=0` 这种**看起来像逻辑错**的结果。⇒ 可靠形状是**三段**：PowerShell 把结果写进文件（`logs-p8/p8-artifact.txt`）→ `set /p ART=<文件` 读回 → `for /f "tokens=1,2" %%a in ("%ART%")` 切分。**中间那个文件因此是必需产物，不是顺手留下的日志。**
+35. **`start` 里的嵌套引号不可靠**：`start "" "%COMSPEC%" /c "call "路径" …"` 的内层引号会被 `start` 的参数解析吞掉。⇒ `ci_local.cmd` 步 5 先 `pushd` 到脚本目录，再写 `start "p8gate" /min %COMSPEC% /c "call run_clean.cmd %DIST% > logs-p8\p8-gui-%DIST%.log 2>&1"` —— **引号层级降到一层、所有路径相对**，这一条与第 21 条（Git Bash 侧的引号规则）是两个方向上的同一类问题。
+36. **`timeout /t` 不能当 CI 里的 sleep，两条独立的理由**：① **stdin 被重定向时它直接罢工** —— 本轮探针实测 `ERROR: Input redirection is not supported, exiting the process immediately.`、`exit=1`（`/dev/null` 与管道两种给法都一样），也就是它不但没等、还留下一个非零码；② **Git 的 `PATH` 里有 coreutils `timeout`**，cmd 可能解析到那一份，实测报 `timeout: invalid time interval '/t'`、`errorlevel=125`。⇒ 等待一律写 `ping -n N 127.0.0.1 >nul`（同一探针实测 `errorlevel=0`，`ci_local.cmd` 的等待环就是这么写的）。
+37. **`.cmd` 正文只用 ASCII**：控制台码页不是 UTF-8 时，`§`/中文注释按 ANSI 解码成碎字节，再叠上第 32 条的偏移问题，**错误信息会指向另一个 bug**。`ci_local.cmd` 与 `deploy.cmd`/`run_clean.cmd` 的注释全是英文；中文说明只放本文档与 `ci.yml`（YAML 文件不受码页影响）。
+38. **脚本要清目录，必须先限定"只允许哪一个名字"**：`ci_local.cmd` 有一步 `rmdir /s /q` 重来 `dist-ci`，写法是 `echo.%DIST%|findstr /b /i /c:"dist-ci"` 打头 —— **不是"排除已知危险的"，是"除这一个之外一律不动"**，因为 `dist*` 那十个包每一个都是某条结论的物证（§B.4），而 `for /d … rmdir /s /q` 这类写法在变量被污染成空串时会扫到兄弟目录。**第一次跑完就核对十个 dist 目录是否都还在**（本轮核对过，都在）。
+39. **短词根做子串匹配会大面积假阳性，本轮在两个不相干的地方各犯一次**：`qtdist_scan.py` 第一版用 `gpl|mit|mpl|bsd|...` 的子串正则扫 10,495 个文件名，命中 **858** 个 —— `mpl` 撞进 `E·x·a·m·p·l·es`/`Templates`、`mit` 撞进 `submit`/`admit`；换成"先把文件名按非字母数字切词、再整词比对（外加 `licen`/`copyri` 这类前缀）"就是 **49 个宽松 / 5 个严格**。第二处在**许可证 id → 本地文件**那一侧：`Unicode-3.0`→`include/QtHarfbuzz/harfbuzz/hb-unicode.h`、`Zlib`→`include/QtZlib/zlib.h`、`X11`→`FindXKB_COMMON_X11.cmake`、`Libpng`/`libpng-2.0`→`mkspecs/modules/qt_ext_libpng.pri`、`MPL-2.0`→Rust 侧那份 `LICENSE-APACHE`、`GPL-2.0-or-later`/`GPL-3.0-or-later`→wayland 目录里的 `LGPL-2.1-or-later.txt` —— **32 个标准 id 里 11 个"有匹配"，其中 8 个是假的**（头文件、CMake 模块和另一份许可证不能充当全文）。⇒ 凡"用名字证明内容存在"的判据，输出要人工抽验一档，结论按"可辩护"而不是按"脚本命中"写（§7.2 ⑥）。
+40. **读 SPDX 文档要逐字核对字段名，这份 SBOM 的两个键都不合直觉**：顶层键是 `hasExtractedLicensingInfos`（**复数**），写成 `hasExtractedLicensingInfo` 会拿到空表 —— 空表不报错，只会让结论安静地变小（看起来像"这份 SBOM 根本没有 LicenseRef"）。每条 LicenseRef 的全文在 **`extractedText`** 字段里，**不是 `licenseText`**：按后者读，qtbase 那 5 段 1,852/463/462/139/144 字符的文本会全部读成空串，本轮两种错各犯过一次，都是同一类"合理地错着"。另外 `spdx-coverage.txt` 的 21 只是"严格命名文件匹配"的口径下限，配合上一条的 8 个假命中才能得出**真正要外部取得的 29 个 id**。
+41. **`cargo metadata` 的闭包要从 `dep_kinds` 走，并且给分桶加一条算术自检**：`resolve.nodes[].deps[].kind` 对普通依赖是 **`null`**（不是 `"normal"`），拿它当 `normal` 过滤会得到空闭包；同一节点里的 `dep_kinds[]` 才是权威记录（一个包可能有多条不同 kind 的边）。**更要紧的是自检**：本轮先算出"运行时 52 / 纯构建期 24"，两桶之和 **76 已经大于图里全部 52 个非根包** —— 这个矛盾不需要任何外部知识就能发现，是桶重叠（同一个包既进 runtime 又进 build）；修正后 **运行时 34 / 构建期 18 / dev 0，34+18=52 才对**。⇒ **凡是按类别分桶计数的探针，先把各桶相加跟总体数量对一遍，再写进结论**。同一条命令还有第二个坑：`cargo metadata --offline` 不加 `--filter-platform x86_64-pc-windows-msvc` 会 rc=101 报 `failed to download clap v4.6.7`，而那包根本不在运行时图里 —— 别让它引出"离线不可用"的错误结论。
+42. **"跟 System32 同名文件比哈希"的结果是三档，不是有/无两档**：`dist-ci` 的 73 个 DLL 逐个比 md5 ⇒ **逐字节相同 1 个**（`icuuc.dll`，36,864 B，`be9504ec…`）、**同名而不同字 1 个**（`D3Dcompiler_47.dll`：包内 4,173,928 B/`b0ae3aa9…` 来自 Qt，System32 那份 4,669,440 B/`f78476bd…`，Windows SDK 那档又是 4,741,488 B/`de8c2e2b…`，**三个尺寸三种来源，只比大小分不出来**）、**无对应物 71 个**。第一档意味着"打包机把自己的系统二进制顺手搬进了包"，它过不了任何"文件在不在清单上"的检查，因为只有文件名在清单上、内容不属于我们（R16、`evidence/binary-provenance.txt`）。
+43. **要知道一个 DLL 到底被谁需要，就自己解析 PE 导入表，别搜字符串**：数据目录 **index 1** 才是 import table，偏移是 `dd_off + 8`（PE32+ 的 optional header 从 `pe + 24` 起、数据目录基址在 `+112`；第一轮写成 `+104` 读到的是 export 目录，于是"导入表 0 项"这个假结果差点被当成结论）。解析出来 `Qt6Core.dll` **29 项**（含 `icuuc.dll`、`MSVCP140.dll`/`MSVCP140_1.dll`/`VCRUNTIME140.dll`/`VCRUNTIME140_1.dll`、9 个 `api-ms-win-crt-*`）、`Qt6Gui.dll` **24 项**（多一个 `MSVCP140_2.dll`）、`Qt6Quick.dll` 19 项。⇒ **搜字符串只能证明"提到过"，导入表才能证明"加载器会要它"** —— R16 那两半（`icuuc.dll` 是硬依赖、包里零个 MSVC 运行时）全靠这张表。顺带一条同族事实：R14 的负对照 `exitlevel=-1073741515` 就是 `0xC0000135` = `STATUS_DLL_NOT_FOUND` 的有符号写法，**两者是同一个数**。
+44. **许可证文本按内容去重，产物数量按目录实测**：`licenses/` 的 92 份文件按 sha256 只有 **28 份不同文本**（同一份 MIT 重复 22 次、Apache 21 次）⇒ 按文件名数会得出"要人工维护 92 份材料"的错误工作量，按内容数才知道真正的维护面是 28 份。另一侧是同一条纪律：`collect.py` 自报 `copied=94` 而目录实测 **92**，差 2 个 ⇒ **计数一律以目录为准，不采信脚本自己的 tally**。（这也是 `evidence/rust-*.txt|tsv` 必须跟 `licenses/` 同批重跑的原因：V1.11 本轮就是靠重跑抓出 52/24 那版错数的。）
+
+### B.4 `spike/p7-package/`（P7 打包可行性 + **P8 CI 串联**，2026-10-06）
+
+**四个脚本/清单**：
+- **`deploy.cmd <out-dir> [with-vcvars]`** —— 钉住的 windeployqt 一行 + exe 复制（§7.2）。第二参数控制打包前是否激活 `vcvarsall x64`，**这个开关本身就是被测对象**，不是便利项：留着它才得到 `dist9`，去掉它才得到 `dist8`。
+- **`run_clean.cmd <sub-dir> [args...]`** —— 环境净化门：`PATH` 削成"候选目录 + System32 + System + PowerShell"，抹掉 10 个 Qt/构建相关环境变量，并固定 `QT_FORCE_STDERR_LOGGING=1` + `QT_ASSUME_STDERR_HAS_CONSOLE=1`（第 6 条那两行在这里同样必需），然后跑候选 exe 并回显 `[P7] candidate/exe/cwd/PATH/exitlevel` 四行**自报字段**（第 22 条：门读的必须是这些字段而不是文件名）。
+- **`ci_local.cmd <dist> [gate-only]`（P8，193 行）** —— 把上面两个脚本与 build、无头审计、负对照、产物清单**串成一条命令**：七步、任一步断链即 `exit /b 1`（§7.2 ⑤）。**它含 `goto` 与标签，所以整个文件必须 CRLF**（第 32 条），正文只用 ASCII（第 37 条）。`gate-only` 是跳过 deps/build/deploy 的快档，P8 用它现场演示残废包被判死。
+- **`ci.yml`（P8，94 行）** —— hosted runner 的**提案**，照 `ci_local.cmd` 逐步对齐写的。**本目录不是 git 仓库、它从未被执行过，所以本文不把它当证据**；里面两条 TODO 只有真 runner 能答（R15）。
+
+```bat
+cmd.exe /c "deploy.cmd dist8"                :: 不激活 VS 开发者环境
+cmd.exe /c "deploy.cmd dist9 with-vcvars"    :: 激活
+cmd.exe /c "run_clean.cmd dist9 --audit"     :: 无头能力档
+cmd.exe /c "run_clean.cmd dist9"             :: 起窗自动跑 P1/P4 套件 —— 门的主档
+cmd.exe /c "ci_local.cmd dist-ci"            :: P8：整链七步，好包 verdict=PASS steps=7
+cmd.exe /c "ci_local.cmd dist gate-only"     :: P8：只跑门与对照，残废包 verdict=FAIL exit=1
+```
+
+Git Bash 侧一律写 `cmd //c "..."`（第 27 条）。**GUI 档不会自己退出**（`exec()` 一直阻塞），本轮的取证形态是"起后台进程 → 轮询日志出现完成标记 → `taskkill /IM hello-cxxqt.exe /F`"，于是 `[P7] exitlevel` 反映的是 kill 而不是程序结论 —— **这一档只读日志内容，不读退出码**（§9.1 断言的是四行文本 + 一条完成标记；P8 实测**好包与坏包的 `exitlevel` 都是 1**，第 33 条）。
+
+**十个 dist 目录，每个留着的理由**：
+
+| 目录 | 是什么 | 为什么不能删 |
+|---|---|---|
+| `dist` | 裸跑 windeployqt（无 `--qmldir`），72 文件 / 71.07 MiB | **R14 的物证**：起得来、`--audit` 满分、UI 为零 |
+| `dist-bare` | 只放 exe（1 文件 / 1.00 MiB） | 负对照：`exitlevel=-1073741515`，证明净化环境真的隔离了 Qt 安装 |
+| `dist2` | 加 `--qmldir`、什么都不裁，1360 / 93.63 MiB | "加 `--qmldir` 会多 1288 个文件"与"不裁会多 44 文件 / 26.9 MiB"两个数的来源 |
+| `dist3` | 在 vcvars 下做过度裁剪，1319 / 106.31 MiB | **裁错开关反而 +39.5 MiB** 的实例（`--no-*` 给错比不给更贵） |
+| `dist4` | 钉住的行（with vcvars），**旧探针 exe**，1316 / 66.77 MiB | §7.2 主表的原始件；**它的 `--audit` 那份日志是不可复用的**（探针修好了而包里的 exe 没换） |
+| `dist5` | `dist4` 删 `d3dcompiler_47.dll`，1315 / 62.24 MiB | 消融实验，**只允许弱结论**（第 31 条） |
+| `dist6` | 钉住的行但**不**复制 exe，1315 / 65.23 MiB | 第 30 条的物证：`--dir` 不替你搬 exe |
+| `dist8` / `dist9` | P7 收尾时的两档可复现对照（**新探针 exe**，无 / 有 vcvars），各 1316 文件，66.24 / 66.78 MiB | **§7.2 ③ 那组"同一行命令两种 host"的证据**：文件清单差恰好 1 项（`D3Dcompiler_47.dll` 对 `d3dcompiler_47.dll`），`--audit` 全文 diff **只差路径字符串**，两档 GUI 门都过 |
+| `dist-ci` | **P8 的 CI 产物**：由 `ci_local.cmd` 现场跑同一条 `deploy.cmd dist-ci` 生成，1316 / **66.24 MiB** | host 依赖那条的**第三次复现**：它落在 `dist8` 那一档（`D3Dcompiler_47.dll` 4,173,928 B、md5 `b0ae3aa9…` 与 Qt 安装自带那份逐字节一致）⇒ "部署步骤不激活 vcvars"是**可重复的测量**而不是当次运气；同时它是 §7.2 ⑤ 那个 `verdict=PASS steps=7` 的被测对象 |
+
+**19 份日志 + 11 份清单/体积快照**：
+- 门的主证据：`p7-gui-naive.log`（`dist` 无 UI，两条 `module … is not installed` 原文即 `module "QtQuick.Controls" is not installed` 与 `module "QtQuick.Window" is not installed`）、`p7-gui-deployed.log`（**= `dist2` 那一档**，第一行 `[P7] candidate=` 已核对）、`p7-gui-dist4.log`、`p7-gui-dist8.log`、`p7-gui-dist9.log`、`p7-gui-dist5-nod3dcompiler.log`；负对照 `p7-control-bare.log`。**§7.2 表里"净化环境下"那一列的每个字都出自这几份**，其中 `dist8`/`dist9` 两份是本轮（新 exe）跑的。
+- 能力探针的三个世代：`p7-audit-source.log`（**旧探针**，含 `tiff_plugin_dll=NO` 那条与同日志 `imageformats_dir` 自相矛盾的行）、`p7-audit-deployed-naive.log`（**旧探针在部署目录**的全线 `MISSING`/`NO`，即 §2.2 末段那个"搜错坐标系"的原样证据）、以及修正后的 **`p7-audit-source-v2.log` + `p7-audit-clean-dist8.log` + `p7-audit-clean-dist9.log`**。"**codec 字段逐字节相同**"这个结论是 `diff` 后三份的 `reader_formats`/`writer_formats`/`fmt_*` 得到的；"`dist8` 与 `dist9` 只差路径字符串"是这两份全文 `diff` 得到的。
+- `windeployqt` 输出七份：`p7-wdeploy-{naive,qmldir,trimmed,dist4,dist6-novcvars,dist8-novcvars,dist9-vcvars}.log` —— **§7.2 表里的 warning 计数（2/2/0/0/0/0/0）来自这里**，`--qmldir` 那两份的原文是 `Cannot find any version of the dxcompiler.dll and dxil.dll` 与 `Cannot find Visual Studio installation directory, VCINSTALLDIR is not set`。
+- 体积与清单：`p7-tree-{naive,qmldir,trimmed,dist4}.txt` 四份按顶层条目分解的体积快照；`p7-list-dist{4,5,6,8,9}.txt` 五份排序后的相对路径清单（**可复现性就是在它们之间 `diff` 出来的**：`p7-diff-4-9.txt` 为空 ⇒ `dist9` 逐路径复现 `dist4`；`p7-diff-8-9.txt` 恰好 4 行 ⇒ 只差那一个 `d3dcompiler`）；`mask-grab.png` 是 GUI 档在 `p7-package/` 这个 cwd 下落盘的那张诊断图（**同 附录 B.2 的重跑覆盖警告**，它是当次运行的产物、每跑一次换一次）。
+
+**`logs-p8/` 十份（P8 CI 串联，2026-10-06）**：`p8-build.log`（`cargo build --release` 全输出）、`p8-deploy.log`（windeployqt 那 0 条 warning 的证据）、**`p8-audit-dist-ci.log` + `p8-gui-dist-ci.log`（PASS 档）**—— 无头审计与 GUI 门两份，后者 181 行是完整套件、倒数第二行 `[P4] provider calls=99 …` 正是那条完成标记、**`p8-audit-dist.log` + `p8-gui-dist.log`（FAIL 档）**—— 同一个残废包 `dist`，审计那份**仍然满分**而 GUI 那份只有 12 行、两条 `module … is not installed` 原文都在、`p8-bare.log`（负对照 `exitlevel=-1073741515`）、`p8-artifact.txt`（第 34 条那一步的落盘件，文件数与体积由 PowerShell 写出）、**`p8-verdict-pass-dist-ci.log` 与 `p8-verdict-fail-naive-dist.log` 两份判决汇总互为正反**（§7.2 ⑤、R14）。**读法**：`[P8] step=…`、`[P8] assert=… status=found|MISSING|PRESENT|absent-as-expected`、`[P8] verdict=PASS|FAIL steps=N` 三类行；每份 GUI 日志首行仍带 `[P7] candidate=` 自报字段（第 22 条），所以"哪一档跑在哪个目录"始终可核对。
+
+
+
+### B.5 `spike/p9-licenses/`（P9 许可证与包内二进制的来源，2026-10-06）
+
+**四个脚本共 750 行**（全部只读 Qt 安装树 / registry 缓存 / `dist-ci`，不改 `spike/p7-package/`、不写 Qt 安装树）：
+- **`collect.py`（201 行）** —— Rust 侧：`cargo metadata --offline --format-version 1 --filter-platform x86_64-pc-windows-msvc` → 按 `resolve.nodes[].deps[].dep_kinds` 走闭包（**运行时 34 / 纯构建期 18 / dev 0**）→ 从 `~/.cargo/registry/src/*` 抓许可证文本进 `licenses/` → 出 `evidence/rust-deps.tsv`（52 条数据 + 表头）与 `evidence/rust-summary.txt`（21 行）。
+- **`qtdist_scan.py`（212 行）** —— Qt 侧：整树 **10,495 个文件**按切词后的许可证词根扫（严格 5 / 宽松 49）、`doc|sbom|mkspecs|share` 分段清点、7 份 SPDX 的 `packages[]` 与 `hasExtractedLicensingInfos` 解析、Windows Kits 的 `Licenses` 目录、`vc_redist.x64.exe` 两处候选、`dist-ci` 二进制清单、`licenses/` 的 sha256 去重 → `evidence/qt-dist-scan.txt`（359 行）。
+- **`gen_notices.py`（139 行）** —— 读那 7 份 `*.spdx.json`，把 **343 条 package 记录 + 12 条 `extractedText`** 渲染成 `out/THIRD-PARTY-NOTICES.md`（958 行、7 个模块段，SBOM 自己标的 `[shipped]`（qtbase 136 / qtdeclarative 144 / qtimageformats 9 / qtsvg 7）与 `[build-time]`（qttools 36 / qtshadertools 8 / qttranslations 3）原样带出，253 处 LicenseRef 全文就地内联），并出 `evidence/spdx-coverage.txt`（103 行：32 个标准 id × 本地全文可得性）。
+- **`provenance.py`（198 行）** —— 包内二进制那一半：73 个 DLL 对 System32 的**三档** md5 比对、Qt 树里的 "icu" 检索、手工解析 PE 导入表（`Qt6Core` 29 / `Qt6Gui` 24 / `Qt6Quick` 19 项）、"这些被点名的依赖在不在包里"、343 条 SBOM 记录里的 icu 检索、本机 `vc_redist` 定位、`D3Dcompiler_47.dll` 三个来源对照 → `evidence/binary-provenance.txt`（54 行）。
+
+**五份 evidence 清点**：`rust-deps.tsv` 53 行、`rust-summary.txt` 21 行、`qt-dist-scan.txt` 359 行、`spdx-coverage.txt` 103 行、`binary-provenance.txt` 54 行。**`licenses/`**：92 份文本 / 432,717 B / sha256 去重 28 份。**`out/THIRD-PARTY-NOTICES.md`**：958 行草稿，343 条记录，**未做任何人工编辑，也不是法务认可件** —— 它是"清单侧可重跑"的证据，不是最终交付物。
+
+```bash
+cd spike/p9-licenses
+PYTHONIOENCODING=utf-8 python collect.py        # Rust 闭包 + 文本抓取（全离线）
+PYTHONIOENCODING=utf-8 python qtdist_scan.py    # Qt 树 + SBOM + dist-ci 清点
+PYTHONIOENCODING=utf-8 python gen_notices.py    # 7 份 SPDX -> THIRD-PARTY-NOTICES.md
+PYTHONIOENCODING=utf-8 python provenance.py     # 三档 md5 + PE 导入表 + vc_redist 定位
+```
+
+**重跑要知道的三件事**：① `collect.py` 会**覆盖** `evidence/rust-deps.tsv`、`evidence/rust-summary.txt` 与 `licenses/`，它的数字随 `Cargo.lock` 变 ⇒ 引用前先重跑一次再抄（V1.11 本轮就是这样抓出 52/24 那版错数的，见 §B.3 第 41 条）；② `provenance.py` 里 System32 与 Visual Studio 的遍历根按本机写死（`C:/Windows`、`C:/Program Files[/ (x86)]/Microsoft Visual Studio/2022`），换构建机要改；③ **`dist-ci` 是 P8 那次 `ci_local.cmd` 的产物**，重跑 `ci_local.cmd` 会 `rmdir /s /q` 它再重新生成 —— 那两个 md5（`icuuc.dll` `be9504ec…`、`D3Dcompiler_47.dll` `b0ae3aa9…`）因此是**对当时那份产物的断言**，不是一句"永远如此"（§B.3 第 38 条同一个道理）。

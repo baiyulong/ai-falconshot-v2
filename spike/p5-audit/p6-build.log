@@ -1,0 +1,7 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.34
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+   Compiling hello-cxxqt v0.1.0 (C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\hello-cxxqt)
+    Finished `release` profile [optimized] target(s) in 47.29s

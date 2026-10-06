@@ -1,0 +1,53 @@
+bucket	crate	version	license-spdx	family	class	src-in-cache	license-files	description
+runtime	clang-format	0.3.0	MIT OR Apache-2.0	Apache	permissive	yes	LICENSES/Apache-2.0.txt,LICENSES/MIT.txt,licenses/Apache-2.0.txt,licenses/MIT.txt	A basic clang-format Rust wrapper
+runtime	codespan-reporting	0.12.0	Apache-2.0	Apache	permissive	yes	LICENSE	Beautiful diagnostic reporting for text-based programming languages
+runtime	convert_case	0.6.0	MIT	MIT	permissive	yes	LICENSE	Convert strings into any case
+runtime	cxx-gen	0.7.176	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	C++ code generator for integrating `cxx` crate into higher level tools
+runtime	cxx-qt-gen	0.10.0	MIT OR Apache-2.0	Apache	permissive	yes	-	Code generation for integrating `cxx-qt` into higher level tools
+runtime	cxx-qt-lib	0.10.0	MIT OR Apache-2.0	Apache	permissive	yes	-	Qt types for integrating `cxx-qt` crate with `cxx`
+runtime	cxx-qt-macro	0.10.0	MIT OR Apache-2.0	Apache	permissive	yes	-	A set of macros for Qt/C++ interop in Rust
+runtime	cxx-qt	0.10.0	MIT OR Apache-2.0	Apache	permissive	yes	-	Safe interop between Rust and Qt
+runtime	cxx	1.0.176	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Safe interop between Rust and C++
+runtime	cxxbridge-macro	1.0.176	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Implementation detail of the `cxx` crate.
+runtime	equivalent	1.0.2	Apache-2.0 OR MIT	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Traits for key comparison in maps.
+runtime	foldhash	0.2.0	Zlib	Zlib	permissive	yes	LICENSE	A fast, non-cryptographic, minimally DoS-resistant hashing algorithm.
+runtime	hashbrown	0.17.1	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	A Rust port of Google's SwissTable hash map
+runtime	indexmap	2.14.2	Apache-2.0 OR MIT	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	A hash table with consistent order and fast iteration.
+runtime	indoc	2.0.7	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Indented document literals
+runtime	link-cplusplus	1.0.12	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Link libstdc++ or libc++ automatically or manually
+runtime	proc-macro2	1.0.107	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	A substitute implementation of the compiler's `proc_macro` API to deco
+runtime	quote	1.0.47	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Quasi-quoting macro quote!(...)
+runtime	rustversion	1.0.23	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Conditional compilation according to rustc compiler version
+runtime	serde	1.0.229	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	A generic serialization/deserialization framework
+runtime	serde_core	1.0.229	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Serde traits only, with no support for derive -- use the `serde` crate
+runtime	serde_derive	1.0.229	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Macros 1.1 implementation of #[derive(Serialize, Deserialize)]
+runtime	static_assertions	1.1.0	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Compile-time assertions to ensure that invariants are met.
+runtime	syn	2.0.119	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Parser for Rust source code
+runtime	syn	3.0.6	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Parser for Rust source code
+runtime	termcolor	1.4.1	Unlicense OR MIT	MIT	permissive	yes	COPYING,LICENSE-MIT,UNLICENSE	A simple cross platform library for writing colored text to a terminal
+runtime	thiserror-impl	1.0.69	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Implementation detail of the `thiserror` crate
+runtime	thiserror	1.0.69	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	derive(Error)
+runtime	unicode-ident	1.0.26	(MIT OR Apache-2.0) AND Unicode-3.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT,LICENSE-UNICODE	Determine whether characters have the XID_Start or XID_Continue proper
+runtime	unicode-segmentation	1.13.3	MIT OR Apache-2.0	Apache	permissive	yes	COPYRIGHT,LICENSE-APACHE,LICENSE-MIT	This crate provides Grapheme Cluster, Word and Sentence boundaries acc
+runtime	unicode-width	0.2.2	MIT OR Apache-2.0	Apache	permissive	yes	COPYRIGHT,LICENSE-APACHE,LICENSE-MIT	Determine displayed width of `char` and `str` types according to Unico
+runtime	winapi-util	0.1.11	Unlicense OR MIT	MIT	permissive	yes	COPYING,LICENSE-MIT,UNLICENSE	A dumping ground for high level safe wrappers over windows-sys.
+runtime	windows-link	0.2.1	MIT OR Apache-2.0	Apache	permissive	yes	license-apache-2.0,license-mit	Linking for Windows
+runtime	windows-sys	0.61.2	MIT OR Apache-2.0	Apache	permissive	yes	license-apache-2.0,license-mit	Rust for Windows
+build	anyhow	1.0.104	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Flexible concrete Error type built on std::error::Error
+build	cc	1.6.0	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	A build-time dependency for Cargo build scripts to assist in invoking 
+build	cfg-if	1.0.5	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	A macro to ergonomically define an item depending on a large number of
+build	codespan-reporting	0.11.1	Apache-2.0	Apache	permissive	yes	-	Beautiful diagnostic reporting for text-based programming languages
+build	cxx-qt-build	0.10.0	MIT OR Apache-2.0	Apache	permissive	yes	-	Helpers for integrating `cxx-qt` crate into a Cargo build
+build	cxxbridge-flags	1.0.176	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Compiler configuration of the `cxx` crate (implementation detail)
+build	find-msvc-tools	0.1.14	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Find windows-specific tools, read MSVC versions from the registry and 
+build	getrandom	0.4.3	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	A small cross-platform library for retrieving random data from system 
+build	itoa	1.0.18	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Fast integer primitive to string conversion
+build	jobserver	0.1.35	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	An implementation of the GNU Make jobserver for Rust. 
+build	memchr	2.8.3	Unlicense OR MIT	MIT	permissive	yes	COPYING,LICENSE-MIT,UNLICENSE	Provides extremely fast (uses SIMD on x86_64, aarch64 and wasm32) rout
+build	qt-build-utils	0.10.0	MIT OR Apache-2.0	Apache	permissive	yes	-	Build script helper for linking Qt libraries and using moc code genera
+build	semver	1.0.28	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Parser and evaluator for Cargo's flavor of Semantic Versioning
+build	serde_json	1.0.151	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	A JSON serialization file format
+build	shlex	2.0.1	MIT OR Apache-2.0	Apache	permissive	yes	LICENSE-APACHE,LICENSE-MIT	Split a string into shell words, like Python's shlex.
+build	unicode-width	0.1.14	MIT OR Apache-2.0	Apache	permissive	yes	COPYRIGHT,LICENSE-APACHE,LICENSE-MIT	Determine displayed width of `char` and `str` types according to Unico
+build	which	8.0.6	MIT	MIT	permissive	yes	LICENSE.txt	A Rust equivalent of Unix command "which". Locate installed executable
+build	zmij	1.0.23	MIT	MIT	permissive	yes	LICENSE-MIT	A double-to-string conversion algorithm based on Schubfach and xjb

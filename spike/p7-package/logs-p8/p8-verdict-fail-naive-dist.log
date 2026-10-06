@@ -1,0 +1,14 @@
+[P8] run_id=周二 2026/10/06  1:58:13.32 dist=dist
+[P8] qt=C:\Users\baiyl3\dev\qt\6.10.1\msvc2022_64
+[P8] vcvars_in_scope=build-step-only deploy-runs-without-it
+[P8] mode=gate-only skipped=deps,build,deploy target=dist
+[P8] step=audit status=pass log=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\logs-p8\p8-audit-dist.log
+[P8] step=gui status=FAIL reason=no-completion-marker waited=120s
+[P8] assert=qml_loaded pattern="[P1] suite start" status=MISSING file=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\logs-p8\p8-gui-dist.log
+[P8] assert=shader_chain pattern="[P1] DIM rects shaderStatus=0" status=MISSING file=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\logs-p8\p8-gui-dist.log
+[P8] assert=suite_completed pattern="[P4] provider calls=" status=MISSING file=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\logs-p8\p8-gui-dist.log
+[P8] assert=no_module_gap pattern="is not installed" status=PRESENT file=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\logs-p8\p8-gui-dist.log
+[P8] step=neg-control status=pass reason=dll-not-found-as-expected
+[P8] step=artifact files=72 MiB=71.07
+[P8] step=artifact status=FAIL reason=file-count-below-floor floor=1300
+[P8] verdict=FAIL steps=4 logs=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\logs-p8

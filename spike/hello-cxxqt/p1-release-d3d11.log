@@ -1,0 +1,47 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.34
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+[rust] main entered
+[rust] app is_null: false  engine is_null: false
+[rust] got QString from QML: "[P1] addImageProvider via qmlEngine(window) = 1"
+[P1] viewport = 1536x960 DIP
+[rust] got QString from QML: "hello from QML"
+[rust] bump_counter -> counter=1, emitting counterBumped
+[rust] confirmSignal(1) -> Rust -> QML signal crossing closed
+[rust] got QString from QML: "QML -> Rust noop x200000 = 21 ms (0.105 us/call)"
+[rust] 20000 qproperty writes: bound-to-QML = 20 us/write, unobserved = 0 us/write
+[rust] confirmSignal(20000) -> Rust -> QML signal crossing closed
+[rust] engine.load() returned
+[rust] entering exec()
+[shim]topLevelWindows=3
+  class=ApplicationWindow_QMLTYPE_1_QML_10 title=AI Falconshot M0 spike - CXX-Qt 0.10 <-> Qt 6.10 visible=1 opacity=1.00 alphaBufferSize=8 qtFlags=0x1 hwnd=0x2720acc style=0x96cf0000 exStyle=0x100 LAYERED=0 TRANSPARENT=0 TOPMOST=0 TOOLWINDOW=0
+  class=QQuickWindowQmlImpl title=pin simulation visible=1 opacity=0.55 alphaBufferSize=8 qtFlags=0xc0801 hwnd=0x300178 style=0x96000000 exStyle=0x80028 LAYERED=1 TRANSPARENT=1 TOPMOST=1 TOOLWINDOW=0
+  class=QQuickWindowQmlImpl title=P1 mask visible=0 opacity=1.00 alphaBufferSize=8 qtFlags=0x40801 hwnd=0x110904 style=0x86000000 exStyle=0x80008 LAYERED=1 TRANSPARENT=0 TOPMOST=1 TOOLWINDOW=0
+[P1] suite start: 5 sessions, viewport=1536x960
+[P1] session 1 kind=bitblt-native frame=3072x1920 capture=70960us
+[P1]   mask presented: reveal=198.2ms
+[P1] session 1 bitblt-native reveal=198.2ms capture=70960us dragSteps=47 presents=24 frameAvg=15.75ms frameWorst=17.01ms
+[P1] session 2 kind=synthetic-4K frame=3840x2160 capture=7491us
+[P1]   mask presented: reveal=82.8ms
+[P1] session 2 synthetic-4K reveal=82.8ms capture=7491us dragSteps=45 presents=24 frameAvg=15.31ms frameWorst=17.00ms
+[P1] session 3 kind=bitblt-native frame=3072x1920 capture=40837us
+[P1]   mask presented: reveal=85.6ms
+[P1] session 3 bitblt-native reveal=85.6ms capture=40837us dragSteps=45 presents=24 frameAvg=15.31ms frameWorst=17.32ms
+[P1] session 4 kind=synthetic-4K frame=3840x2160 capture=2310us
+[P1]   mask presented: reveal=56.4ms
+[P1] session 4 synthetic-4K reveal=56.4ms capture=2310us dragSteps=45 presents=24 frameAvg=15.31ms frameWorst=17.13ms
+[P1] session 5 kind=bitblt-native frame=3072x1920 capture=46520us
+[P1]   mask presented: reveal=90.0ms
+[P1] session 5 bitblt-native reveal=90.0ms capture=46520us dragSteps=45 presents=24 frameAvg=15.32ms frameWorst=17.05ms
+[P1] REVEAL n=5 p50=85.6ms p95=198.2ms max=198.2ms  (pass line: <=150ms)
+[P1]   reveal#1 bitblt-native = 198.2ms
+[P1]   reveal#2 synthetic-4K = 82.8ms
+[P1]   reveal#3 bitblt-native = 85.6ms
+[P1]   reveal#4 synthetic-4K = 56.4ms
+[P1]   reveal#5 bitblt-native = 90.0ms
+[P1] DRAG-FRAME n=120 p50=16.66ms p95=17.05ms max=17.32ms  (pass line: <=8ms)
+[P1] provider calls=5 avg=1us worst=1us installed=true
+[P1] env virtualScreen=3072x1920@(0,0) logPixels=192x192 qtGeom=1536x960 dpr=2.00 refresh=60.0Hz frame=3072x1920 providerInstalled=1 providerCalls=5 rhi=default quick=default
+EXITCODE=1

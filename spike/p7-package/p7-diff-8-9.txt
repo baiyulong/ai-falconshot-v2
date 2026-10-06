@@ -1,0 +1,4 @@
+1d0
+< ./D3Dcompiler_47.dll
+30a30
+> ./d3dcompiler_47.dll

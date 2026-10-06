@@ -1,0 +1,5 @@
+[toolchain]
+# The default rustup host on this machine is x86_64-pc-windows-gnu, but Qt 6 MSVC
+# kits cannot be linked from a GNU-toolchain object file. Pin the MSVC host here so
+# the spike builds identically regardless of `rustup default`.
+channel = "stable-x86_64-pc-windows-msvc"

@@ -1,0 +1,144 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.34
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+[rust] main entered
+[rust] app is_null: false  engine is_null: false
+[rust] got QString from QML: "[P1] addImageProvider via qmlEngine(window) = 1"
+[rust] got QString from QML: "[P4] overlay addImageProvider = 1"
+[P1] viewport = 1536x960 DIP
+[rust] got QString from QML: "hello from QML"
+[rust] bump_counter -> counter=1, emitting counterBumped
+[rust] confirmSignal(1) -> Rust -> QML signal crossing closed
+[rust] got QString from QML: "QML -> Rust noop x200000 = 22 ms (0.11 us/call)"
+[rust] 20000 qproperty writes: bound-to-QML = 20 us/write, unobserved = 0 us/write
+[rust] confirmSignal(20000) -> Rust -> QML signal crossing closed
+[rust] engine.load() returned
+[rust] entering exec()
+[shim]topLevelWindows=4
+  class=ApplicationWindow_QMLTYPE_8_QML_10 title=AI Falconshot M0 spike - CXX-Qt 0.10 <-> Qt 6.10 visible=1 opacity=1.00 alphaBufferSize=8 qtFlags=0x1 hwnd=0x20b84 style=0x96cf0000 exStyle=0x100 LAYERED=0 TRANSPARENT=0 TOPMOST=0 TOOLWINDOW=0
+  class=QQuickWindowQmlImpl title=pin simulation visible=1 opacity=0.55 alphaBufferSize=8 qtFlags=0xc0801 hwnd=0x270af0 style=0x96000000 exStyle=0x80028 LAYERED=1 TRANSPARENT=1 TOPMOST=1 TOOLWINDOW=0
+  class=QQuickWindowQmlImpl title=P1 mask visible=0 opacity=1.00 alphaBufferSize=8 qtFlags=0x40801 hwnd=0x30b8c style=0x86000000 exStyle=0x80008 LAYERED=1 TRANSPARENT=0 TOPMOST=1 TOOLWINDOW=0
+  class=QQuickWindowQmlImpl_QML_11 title=P4 annotation overlay visible=0 opacity=1.00 alphaBufferSize=8 qtFlags=0x40801 hwnd=0x20b8a style=0x86000000 exStyle=0x80008 LAYERED=1 TRANSPARENT=0 TOPMOST=1 TOOLWINDOW=0
+[P1] suite start: 5 sessions, viewport=1536x960
+[P1] session 1 kind=bitblt-native frame=3072x1920 capture=64817us
+[P1]   mask presented: reveal=162.5ms
+[P1] session 1 bitblt-native reveal=162.5ms capture=64817us dragSteps=46 presents=24 ticks=24/24 frameAvg=15.68ms frameWorst=17.45ms
+[P1] session 2 kind=synthetic-4K frame=3840x2160 capture=6589us
+[P1]   mask presented: reveal=60.5ms
+[P1] session 2 synthetic-4K reveal=60.5ms capture=6589us dragSteps=45 presents=24 ticks=24/23 frameAvg=15.32ms frameWorst=17.17ms
+[P1] session 3 kind=bitblt-native frame=3072x1920 capture=51455us
+[P1]   mask presented: reveal=95.9ms
+[P1] session 3 bitblt-native reveal=95.9ms capture=51455us dragSteps=45 presents=24 ticks=23/23 frameAvg=15.31ms frameWorst=18.04ms
+[P1] session 4 kind=synthetic-4K frame=3840x2160 capture=2567us
+[P1]   mask presented: reveal=48.4ms
+[P1] session 4 synthetic-4K reveal=48.4ms capture=2567us dragSteps=45 presents=24 ticks=24/23 frameAvg=15.31ms frameWorst=18.29ms
+[P1] session 5 kind=bitblt-native frame=3072x1920 capture=56630us
+[P1]   mask presented: reveal=100.1ms
+[P1] session 5 bitblt-native reveal=100.1ms capture=56630us dragSteps=45 presents=24 ticks=24/23 frameAvg=15.30ms frameWorst=17.67ms
+[P1] REVEAL n=5 p50=95.9ms p95=162.5ms max=162.5ms  (pass line: <=150ms)
+[P1]   reveal#1 bitblt-native = 162.5ms
+[P1]   reveal#2 synthetic-4K = 60.5ms
+[P1]   reveal#3 bitblt-native = 95.9ms
+[P1]   reveal#4 synthetic-4K = 48.4ms
+[P1]   reveal#5 bitblt-native = 100.1ms
+[P1] DRAG-FRAME n=120 p50=16.62ms p95=17.36ms max=18.29ms  (pass line: <=8ms)
+[P1] slack: 16ms pacer fired 119/116; 226 drag steps -> 120 presents
+[P1] provider calls=5 avg=1us worst=1us installed=true
+[P1] env virtualScreen=3072x1920@(0,0) logPixels=192x192 qtGeom=1536x960 dpr=2.00 refresh=60.0Hz frame=3072x1920 providerInstalled=1 providerCalls=5 rhi=default quick=default
+[P4] suite start: 7 configs x 12 submits
+[P4]   submit 1/12 4k-whole commit->present=32.37ms raster=736us
+[P4]   submit 2/12 4k-whole: no present at 806ms
+[P4]   submit 2/12 4k-whole: NO PRESENT by 3200ms (counted as 3200ms)
+[P4]   submit 3/12 4k-whole: no present at 805ms
+[P4]   submit 3/12 4k-whole: NO PRESENT by 3200ms (counted as 3200ms)
+[P4]   submit 4/12 4k-whole: no present at 806ms
+[P4]   submit 4/12 4k-whole: NO PRESENT by 3200ms (counted as 3200ms)
+[P4] three presents missing in a row -> leaving this config
+[P4 cfg 0] 4k-whole               qml-whole-layer    n=4/12 commit->present p50=3200.00 p90=3200.00 max=3200.00ms  mean=2408.09  work~2399.76ms  slips=4  raster avg=175us worst=736us  GAVE UP at submit 4/12, stalled=3
+[P4]   submit 1/12 4k-dirty-400x300 commit->present=15.71ms raster=60us
+[P4]   submit 2/12 4k-dirty-400x300 commit->present=8.82ms raster=64us
+[P4]   submit 3/12 4k-dirty-400x300 commit->present=16.25ms raster=60us
+[P4]   submit 4/12 4k-dirty-400x300 commit->present=9.03ms raster=64us
+[P4]   submit 5/12 4k-dirty-400x300 commit->present=17.29ms raster=100us
+[P4]   submit 6/12 4k-dirty-400x300 commit->present=11.65ms raster=63us
+[P4]   submit 7/12 4k-dirty-400x300 commit->present=3.01ms raster=89us
+[P4]   submit 8/12 4k-dirty-400x300 commit->present=9.43ms raster=58us
+[P4]   submit 9/12 4k-dirty-400x300 commit->present=17.30ms raster=58us
+[P4]   submit 10/12 4k-dirty-400x300 commit->present=9.94ms raster=114us
+[P4]   submit 11/12 4k-dirty-400x300 commit->present=2.06ms raster=118us
+[P4]   submit 12/12 4k-dirty-400x300 commit->present=8.65ms raster=60us
+[P4 cfg 1] 4k-dirty-400x300       qml-dirty-rect     n=12/12 commit->present p50=9.94 p90=17.29 max=17.30ms  mean=10.76  work~2.43ms  slips=0  raster avg=75us worst=118us  stalled=0
+[P4]   submit 1/12 4k-dirty-1600x1000 commit->present=16.93ms raster=272us
+[P4]   submit 2/12 4k-dirty-1600x1000 commit->present=10.87ms raster=480us
+[P4]   submit 3/12 4k-dirty-1600x1000 commit->present=19.23ms raster=245us
+[P4]   submit 4/12 4k-dirty-1600x1000 commit->present=13.55ms raster=218us
+[P4]   submit 5/12 4k-dirty-1600x1000 commit->present=19.62ms raster=241us
+[P4]   submit 6/12 4k-dirty-1600x1000 commit->present=15.22ms raster=280us
+[P4]   submit 7/12 4k-dirty-1600x1000 commit->present=8.61ms raster=218us
+[P4]   submit 8/12 4k-dirty-1600x1000 commit->present=16.24ms raster=233us
+[P4]   submit 9/12 4k-dirty-1600x1000 commit->present=12.25ms raster=220us
+[P4]   submit 10/12 4k-dirty-1600x1000 commit->present=18.38ms raster=355us
+[P4]   submit 11/12 4k-dirty-1600x1000 commit->present=13.63ms raster=297us
+[P4]   submit 12/12 4k-dirty-1600x1000 commit->present=7.43ms raster=218us
+[P4 cfg 2] 4k-dirty-1600x1000     qml-dirty-rect     n=12/12 commit->present p50=15.22 p90=19.23 max=19.62ms  mean=14.33  work~6.00ms  slips=0  raster avg=273us worst=480us  stalled=0
+[P4]   submit 1/12 native-whole commit->present=17.31ms raster=679us
+[P4]   submit 2/12 native-whole: no present at 806ms
+[P4]   submit 2/12 native-whole: NO PRESENT by 3200ms (counted as 3200ms)
+[P4]   submit 3/12 native-whole: no present at 805ms
+[P4]   submit 3/12 native-whole: NO PRESENT by 3200ms (counted as 3200ms)
+[P4]   submit 4/12 native-whole: no present at 805ms
+[P4]   submit 4/12 native-whole: NO PRESENT by 3200ms (counted as 3200ms)
+[P4] three presents missing in a row -> leaving this config
+[P4 cfg 3] native-whole           qml-whole-layer    n=4/12 commit->present p50=3200.00 p90=3200.00 max=3200.00ms  mean=2404.33  work~2395.99ms  slips=3  raster avg=147us worst=679us  GAVE UP at submit 4/12, stalled=3
+[P4]   submit 1/12 native-dirty-400x300 commit->present=7.14ms raster=57us
+[P4]   submit 2/12 native-dirty-400x300 commit->present=14.88ms raster=62us
+[P4]   submit 3/12 native-dirty-400x300 commit->present=10.41ms raster=57us
+[P4]   submit 4/12 native-dirty-400x300 commit->present=16.57ms raster=65us
+[P4]   submit 5/12 native-dirty-400x300 commit->present=10.18ms raster=63us
+[P4]   submit 6/12 native-dirty-400x300 commit->present=2.86ms raster=59us
+[P4]   submit 7/12 native-dirty-400x300 commit->present=8.91ms raster=59us
+[P4]   submit 8/12 native-dirty-400x300 commit->present=16.20ms raster=60us
+[P4]   submit 9/12 native-dirty-400x300 commit->present=11.15ms raster=67us
+[P4]   submit 10/12 native-dirty-400x300 commit->present=17.68ms raster=57us
+[P4]   submit 11/12 native-dirty-400x300 commit->present=12.56ms raster=60us
+[P4]   submit 12/12 native-dirty-400x300 commit->present=3.18ms raster=57us
+[P4 cfg 4] native-dirty-400x300   qml-dirty-rect     n=12/12 commit->present p50=11.15 p90=16.57 max=17.68ms  mean=10.98  work~2.64ms  slips=0  raster avg=60us worst=67us  stalled=0
+[P4]   submit 1/12 painted-window commit->present=11.96ms raster=n/a
+[P4]   submit 2/12 painted-window commit->present=16.86ms raster=n/a
+[P4]   submit 3/12 painted-window commit->present=11.10ms raster=n/a
+[P4]   submit 4/12 painted-window commit->present=1.44ms raster=n/a
+[P4]   submit 5/12 painted-window commit->present=4.00ms raster=n/a
+[P4]   submit 6/12 painted-window commit->present=12.86ms raster=n/a
+[P4]   submit 7/12 painted-window commit->present=3.63ms raster=n/a
+[P4]   submit 8/12 painted-window commit->present=11.55ms raster=n/a
+[P4]   submit 9/12 painted-window commit->present=1.72ms raster=n/a
+[P4]   submit 10/12 painted-window commit->present=8.89ms raster=n/a
+[P4]   submit 11/12 painted-window commit->present=16.70ms raster=n/a
+[P4]   submit 12/12 painted-window commit->present=10.07ms raster=n/a
+[P4 cfg 5] painted-window         painteditem-fallback n=12/12 commit->present p50=11.10 p90=16.70 max=16.86ms  mean=9.23  work~0.90ms  slips=0  raster=n/a  stalled=0
+[P4]   submit 1/12 plain-rectangle commit->present=5.32ms raster=n/a
+[P4]   submit 2/12 plain-rectangle commit->present=11.79ms raster=n/a
+[P4]   submit 3/12 plain-rectangle commit->present=2.07ms raster=n/a
+[P4]   submit 4/12 plain-rectangle commit->present=9.57ms raster=n/a
+[P4]   submit 5/12 plain-rectangle commit->present=17.29ms raster=n/a
+[P4]   submit 6/12 plain-rectangle commit->present=11.47ms raster=n/a
+[P4]   submit 7/12 plain-rectangle commit->present=1.56ms raster=n/a
+[P4]   submit 8/12 plain-rectangle commit->present=8.91ms raster=n/a
+[P4]   submit 9/12 plain-rectangle commit->present=16.75ms raster=n/a
+[P4]   submit 10/12 plain-rectangle commit->present=10.88ms raster=n/a
+[P4]   submit 11/12 plain-rectangle commit->present=1.62ms raster=n/a
+[P4]   submit 12/12 plain-rectangle commit->present=9.11ms raster=n/a
+[P4 cfg 6] plain-rectangle        plain-rectangle    n=12/12 commit->present p50=9.57 p90=16.75 max=17.29ms  mean=8.86  work~0.53ms  slips=0  raster=n/a  stalled=0
+[P4] pass line: commit->present <=16ms at 4K (panel here is 60.0Hz, so one vsync = 16.67ms)
+[P4 cfg 0] 4k-whole               qml-whole-layer    n=4/12 commit->present p50=3200.00 p90=3200.00 max=3200.00ms  mean=2408.09  work~2399.76ms  slips=4  raster avg=175us worst=736us  GAVE UP at submit 4/12, stalled=3
+[P4 cfg 1] 4k-dirty-400x300       qml-dirty-rect     n=12/12 commit->present p50=9.94 p90=17.29 max=17.30ms  mean=10.76  work~2.43ms  slips=0  raster avg=75us worst=118us  stalled=0
+[P4 cfg 2] 4k-dirty-1600x1000     qml-dirty-rect     n=12/12 commit->present p50=15.22 p90=19.23 max=19.62ms  mean=14.33  work~6.00ms  slips=0  raster avg=273us worst=480us  stalled=0
+[P4 cfg 3] native-whole           qml-whole-layer    n=4/12 commit->present p50=3200.00 p90=3200.00 max=3200.00ms  mean=2404.33  work~2395.99ms  slips=3  raster avg=147us worst=679us  GAVE UP at submit 4/12, stalled=3
+[P4 cfg 4] native-dirty-400x300   qml-dirty-rect     n=12/12 commit->present p50=11.15 p90=16.57 max=17.68ms  mean=10.98  work~2.64ms  slips=0  raster avg=60us worst=67us  stalled=0
+[P4 cfg 5] painted-window         painteditem-fallback n=12/12 commit->present p50=11.10 p90=16.70 max=16.86ms  mean=9.23  work~0.90ms  slips=0  raster=n/a  stalled=0
+[P4 cfg 6] plain-rectangle        plain-rectangle    n=12/12 commit->present p50=9.57 p90=16.75 max=17.29ms  mean=8.86  work~0.53ms  slips=0  raster=n/a  stalled=0
+[P4] provider calls=85 avg=502us worst=4090us servedMB=432.8
+[P4] env overlayCanvas=3072x1920 layerBytes=22.5MB providerInstalled=1
+EXITCODE=1

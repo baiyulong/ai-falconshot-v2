@@ -1,0 +1,359 @@
+=== Qt install tree: C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64 ===
+files scanned: 10495 ; license-named files: 49 (11521344 bytes)
+    5405553  sbom/qtdeclarative-6.10.1.spdx.json
+    3690769  sbom/qtbase-6.10.1.spdx.json
+    1026841  sbom/qttools-6.10.1.spdx.json
+     958255  sbom/qttranslations-6.10.1.spdx.json
+     145717  sbom/qtimageformats-6.10.1.spdx.json
+      99857  sbom/qtsvg-6.10.1.spdx.json
+      98843  include/QtZlib/zlib.h
+      53263  sbom/qtshadertools-6.10.1.spdx.json
+      26374  share/qt6/wayland/protocols/appmenu/LGPL-2.1-or-later.txt
+       1349  lib/cmake/Qt6/3rdparty/extra-cmake-modules/COPYING-CMAKE-SCRIPTS
+       1349  lib/cmake/Qt6/3rdparty/kwin/COPYING-CMAKE-SCRIPTS
+       1115  share/qt6/wayland/protocols/text-input/v2/HPND_LICENSE.txt
+       1073  share/qt6/wayland/protocols/MIT_LICENSE.txt
+        972  share/qt6/wayland/protocols/xdg-shell/REUSE.toml
+        851  mkspecs/REUSE.toml
+        714  mkspecs/common/bsd/bsd.conf
+        626  mkspecs/modules/qt_lib_zlib_private.pri
+        525  modules/ZlibPrivate.json
+        415  share/qt6/wayland/protocols/color-management/REUSE.toml
+        391  share/qt6/wayland/protocols/text-input/v3/REUSE.toml
+        365  share/qt6/wayland/protocols/pointer-warp/REUSE.toml
+        358  lib/cmake/Qt6/3rdparty/kwin/REUSE.toml
+        323  share/qt6/wayland/protocols/wayland/REUSE.toml
+        306  share/qt6/wayland/protocols/fullscreen-shell/REUSE.toml
+        271  share/qt6/wayland/protocols/text-input/v2/REUSE.toml
+        270  share/qt6/wayland/extensions/REUSE.toml
+        263  share/qt6/wayland/protocols/tablet/REUSE.toml
+        259  share/qt6/wayland/protocols/wlr-data-control/REUSE.toml
+        246  share/qt6/wayland/protocols/xdg-activation/REUSE.toml
+        240  share/qt6/wayland/protocols/cursor-shape/REUSE.toml
+        216  share/qt6/wayland/protocols/wl-eglstream/REUSE.toml
+        213  share/qt6/wayland/protocols/appmenu/REUSE.toml
+        208  share/qt6/wayland/protocols/xdg-toplevel-icon/REUSE.toml
+        200  share/qt6/wayland/protocols/idle-inhibit/REUSE.toml
+        193  share/qt6/wayland/protocols/wp-primary-selection/REUSE.toml
+        191  share/qt6/wayland/protocols/linux-dmabuf/REUSE.toml
+        191  share/qt6/wayland/protocols/text-input/v1/REUSE.toml
+        189  share/qt6/wayland/protocols/pointer-gestures/REUSE.toml
+        188  share/qt6/wayland/protocols/xdg-foreign/REUSE.toml
+        186  share/qt6/wayland/protocols/presentation-time/REUSE.toml
+        185  share/qt6/wayland/protocols/xdg-system-bell/REUSE.toml
+        183  share/qt6/wayland/protocols/xdg-decoration/REUSE.toml
+        182  share/qt6/wayland/protocols/xdg-output/REUSE.toml
+        181  share/qt6/wayland/protocols/xdg-toplevel-drag/REUSE.toml
+        179  share/qt6/wayland/protocols/fractional-scale/REUSE.toml
+        178  lib/cmake/Qt6/3rdparty/extra-cmake-modules/REUSE.toml
+        178  share/qt6/wayland/protocols/viewporter/REUSE.toml
+        176  share/qt6/wayland/protocols/xdg-dialog/REUSE.toml
+        174  share/qt6/wayland/protocols/scaler/REUSE.toml
+
+=== what aqt actually installed for licensing purposes ===
+  doc          147 files       0.46 MiB
+      config/exampleurl-qt3d.qdocconf
+      config/exampleurl-qtactiveqt.qdocconf
+      config/exampleurl-qtandroidextras.qdocconf
+      config/exampleurl-qtbase.qdocconf
+      config/exampleurl-qtcharts.qdocconf
+      config/exampleurl-qtconnectivity.qdocconf
+      config/exampleurl-qtdatavis3d.qdocconf
+      config/exampleurl-qtdeclarative.qdocconf
+      config/exampleurl-qtdoc.qdocconf
+      config/exampleurl-qtgamepad.qdocconf
+      config/exampleurl-qtgraphicaleffects.qdocconf
+      config/exampleurl-qtimageformats.qdocconf
+      config/exampleurl-qtlocation.qdocconf
+      config/exampleurl-qtlottie.qdocconf
+      config/exampleurl-qtmacextras.qdocconf
+      config/exampleurl-qtmultimedia.qdocconf
+      config/exampleurl-qtnetworkauth.qdocconf
+      config/exampleurl-qtpositioning.qdocconf
+      config/exampleurl-qtpurchasing.qdocconf
+      config/exampleurl-qtquickcontrols.qdocconf
+      config/exampleurl-qtquickcontrols2.qdocconf
+      config/exampleurl-qtremoteobjects.qdocconf
+      config/exampleurl-qtscript.qdocconf
+      config/exampleurl-qtscxml.qdocconf
+      config/exampleurl-qtsensors.qdocconf
+      ... (122 more)
+  sbom          20 files      39.52 MiB
+      qtbase-6.10.1.source.spdx
+      qtbase-6.10.1.spdx
+      qtbase-6.10.1.spdx.json
+      qtdeclarative-6.10.1.source.spdx
+      qtdeclarative-6.10.1.spdx
+      qtdeclarative-6.10.1.spdx.json
+      qtimageformats-6.10.1.source.spdx
+      qtimageformats-6.10.1.spdx
+      qtimageformats-6.10.1.spdx.json
+      qtshadertools-6.10.1.source.spdx
+      qtshadertools-6.10.1.spdx
+      qtshadertools-6.10.1.spdx.json
+      qtsvg-6.10.1.source.spdx
+      qtsvg-6.10.1.spdx
+      qtsvg-6.10.1.spdx.json
+      qttools-6.10.1.source.spdx
+      qttools-6.10.1.spdx
+      qttools-6.10.1.spdx.json
+      qttranslations-6.10.1.spdx
+      qttranslations-6.10.1.spdx.json
+  mkspecs      599 files       0.67 MiB
+      REUSE.toml
+      aix-g++-64/qmake.conf
+      aix-g++-64/qplatformdefs.h
+      aix-g++/qmake.conf
+      aix-g++/qplatformdefs.h
+      android-clang/qmake.conf
+      android-clang/qplatformdefs.h
+      common/aix/qplatformdefs.h
+      common/android/qplatformdefs.h
+      common/bsd/bsd.conf
+      common/bsd/qplatformdefs.h
+      common/c89/qplatformdefs.h
+      common/clang-mac.conf
+      common/clang.conf
+      common/g++-base.conf
+      common/g++-macx.conf
+      common/g++-unix.conf
+      common/g++-win32.conf
+      common/g++.conf
+      common/gcc-base-mac.conf
+      common/gcc-base-unix.conf
+      common/gcc-base.conf
+      common/ghs-base.conf
+      common/ghs-integrity-armv7.conf
+      common/ghs-integrity-armv8.conf
+      ... (574 more)
+  share        102 files       0.66 MiB
+      qt6/wayland/extensions/README.md
+      qt6/wayland/extensions/REUSE.toml
+      qt6/wayland/extensions/brcm.xml
+      qt6/wayland/extensions/drm-egl-server-buffer.xml
+      qt6/wayland/extensions/hardware-integration.xml
+      qt6/wayland/extensions/libhybris-egl-server-buffer.xml
+      qt6/wayland/extensions/qt-dmabuf-server-buffer.xml
+      qt6/wayland/extensions/qt-text-input-method-unstable-v1.xml
+      qt6/wayland/extensions/qt-texture-sharing-unstable-v1.xml
+      qt6/wayland/extensions/qt-vulkan-server-buffer-unstable-v1.xml
+      qt6/wayland/extensions/qt-windowmanager.xml
+      qt6/wayland/extensions/server-buffer-extension.xml
+      qt6/wayland/extensions/shm-emulation-server-buffer.xml
+      qt6/wayland/protocols/MIT_LICENSE.txt
+      qt6/wayland/protocols/appmenu/LGPL-2.1-or-later.txt
+      qt6/wayland/protocols/appmenu/REUSE.toml
+      qt6/wayland/protocols/appmenu/appmenu.xml
+      qt6/wayland/protocols/appmenu/qt_attribution.json
+      qt6/wayland/protocols/color-management/REUSE.toml
+      qt6/wayland/protocols/color-management/qt_attribution.json
+      qt6/wayland/protocols/color-management/xx-color-management-v4.xml
+      qt6/wayland/protocols/cursor-shape/REUSE.toml
+      qt6/wayland/protocols/cursor-shape/cursor-shape-v1.xml
+      qt6/wayland/protocols/fractional-scale/REUSE.toml
+      qt6/wayland/protocols/fractional-scale/fractional-scale-v1.xml
+      ... (77 more)
+  qtbase-6.10.1.spdx.json: spdxId=SPDXRef-DOCUMENT packages=136 version=ocs/qtbase-90b845d1+HEAD
+  qtdeclarative-6.10.1.spdx.json: spdxId=SPDXRef-DOCUMENT packages=144 version=eclarative-22fb5e73+HEAD
+  qtimageformats-6.10.1.spdx.json: spdxId=SPDXRef-DOCUMENT packages=9 version=cs/qtimageformats-6.10.1
+  qtshadertools-6.10.1.spdx.json: spdxId=SPDXRef-DOCUMENT packages=8 version=ocs/qtshadertools-6.10.1
+  qtsvg-6.10.1.spdx.json: spdxId=SPDXRef-DOCUMENT packages=7 version=xdocs/qtsvg-4b1a183+HEAD
+  qttools-6.10.1.spdx.json: spdxId=SPDXRef-DOCUMENT packages=36 version=ocs/qttools-9e0030f+HEAD
+  qttranslations-6.10.1.spdx.json: spdxId=SPDXRef-DOCUMENT packages=3 version=cs/qttranslations-6.10.1
+
+=== sbom SPDX: total package records across the 7 modules ===
+  package records: 343
+  licenseConcluded tally:
+      186  LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+       54  LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0
+       21  NOASSERTION
+       16  MIT
+       10  BSD-3-Clause
+        6  Zlib
+        5  CC0-1.0
+        4  BSD-2-Clause
+        4  IJG AND BSD-3-Clause
+        3  FTL OR GPL-2.0-only
+        3  BSD-3-Clause AND LicenseRef-MIT-Khronos-old AND Apache-2.0 AND GPL-3.0-or-later WITH Bison-exception-2.2 AND AML-glslang
+        2  LicenseRef-BSD-3-Clause-with-PCRE2-Binary-Like-Packages-Exception
+        2  LicenseRef-Qt-Commercial OR BSD-3-Clause
+        2  Unicode-3.0
+        2  Libpng AND libpng-2.0
+        2  MIT AND MIT-open-group
+        2  BSL-1.0
+        2  LicenseRef-Qt-Commercial OR GPL-3.0-only
+        1  CC0-1.0 OR Apache-2.0
+        1  LicenseRef-SHA1-Public-Domain
+        1  Apache-2.0
+        1  MPL-2.0
+        1  AFL-2.1 OR GPL-2.0-or-later
+        1  BSD-2-Clause AND Imlib2
+        1  X11 AND HPND
+        1  LicenseRef-ICC-License
+        1  Apache-2.0 OR MIT
+        1  GPL-2.0-only WITH Linux-syscall-note
+        1  BSD-4-Clause
+        1  blessing
+        1  LicenseRef-Lcs-Telegraphics
+        1  libtiff
+        1  Apache-2.0 AND LicenseRef-MIT-Khronos-old
+        1  HPND-sell-variant
+        1  Apache-2.0 AND MIT
+  licenseDeclared tally:
+      186  LicenseRef-Qt-Commercial OR LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only
+       99  NOASSERTION
+       54  LicenseRef-Qt-Commercial OR GPL-3.0-only WITH Qt-GPL-exception-1.0
+        2  LicenseRef-Qt-Commercial OR BSD-3-Clause
+        2  LicenseRef-Qt-Commercial OR GPL-3.0-only
+
+=== REUSE / LICENSES material inside the Qt tree ===
+  FILE lib/cmake/Qt6/3rdparty/extra-cmake-modules/REUSE.toml  178 bytes
+  FILE lib/cmake/Qt6/3rdparty/kwin/REUSE.toml  358 bytes
+  FILE mkspecs/REUSE.toml  851 bytes
+  FILE share/qt6/wayland/extensions/REUSE.toml  270 bytes
+  FILE share/qt6/wayland/protocols/appmenu/REUSE.toml  213 bytes
+  FILE share/qt6/wayland/protocols/color-management/REUSE.toml  415 bytes
+  FILE share/qt6/wayland/protocols/cursor-shape/REUSE.toml  240 bytes
+  FILE share/qt6/wayland/protocols/fractional-scale/REUSE.toml  179 bytes
+  FILE share/qt6/wayland/protocols/fullscreen-shell/REUSE.toml  306 bytes
+  FILE share/qt6/wayland/protocols/idle-inhibit/REUSE.toml  200 bytes
+  FILE share/qt6/wayland/protocols/linux-dmabuf/REUSE.toml  191 bytes
+  FILE share/qt6/wayland/protocols/pointer-gestures/REUSE.toml  189 bytes
+  FILE share/qt6/wayland/protocols/pointer-warp/REUSE.toml  365 bytes
+  FILE share/qt6/wayland/protocols/presentation-time/REUSE.toml  186 bytes
+  FILE share/qt6/wayland/protocols/scaler/REUSE.toml  174 bytes
+  FILE share/qt6/wayland/protocols/tablet/REUSE.toml  263 bytes
+  FILE share/qt6/wayland/protocols/text-input/v1/REUSE.toml  191 bytes
+  FILE share/qt6/wayland/protocols/text-input/v2/REUSE.toml  271 bytes
+  FILE share/qt6/wayland/protocols/text-input/v3/REUSE.toml  391 bytes
+  FILE share/qt6/wayland/protocols/viewporter/REUSE.toml  178 bytes
+  FILE share/qt6/wayland/protocols/wayland/REUSE.toml  323 bytes
+  FILE share/qt6/wayland/protocols/wl-eglstream/REUSE.toml  216 bytes
+  FILE share/qt6/wayland/protocols/wlr-data-control/REUSE.toml  259 bytes
+  FILE share/qt6/wayland/protocols/wp-primary-selection/REUSE.toml  193 bytes
+  FILE share/qt6/wayland/protocols/xdg-activation/REUSE.toml  246 bytes
+  FILE share/qt6/wayland/protocols/xdg-decoration/REUSE.toml  183 bytes
+  FILE share/qt6/wayland/protocols/xdg-dialog/REUSE.toml  176 bytes
+  FILE share/qt6/wayland/protocols/xdg-foreign/REUSE.toml  188 bytes
+  FILE share/qt6/wayland/protocols/xdg-output/REUSE.toml  182 bytes
+  FILE share/qt6/wayland/protocols/xdg-shell/REUSE.toml  972 bytes
+  FILE share/qt6/wayland/protocols/xdg-system-bell/REUSE.toml  185 bytes
+  FILE share/qt6/wayland/protocols/xdg-toplevel-drag/REUSE.toml  181 bytes
+  FILE share/qt6/wayland/protocols/xdg-toplevel-icon/REUSE.toml  208 bytes
+
+=== Windows Kits 10 Licenses: C:/Program Files (x86)/Windows Kits/10\Licenses ===
+     248573  10.0.26100.0/sdk_license.rtf
+      22279  10.0.26100.0/sdk_third_party_notices.rtf
+
+=== MSVC redistributable installer present locally? ===
+    25635768  C:/Program Files/Microsoft Visual Studio\2022\Community\VC\Redist\MSVC\14.44.35112\vc_redist.x64.exe
+    25635768  C:/Program Files/Microsoft Visual Studio\2022\Community\VC\Redist\MSVC\v143\vc_redist.x64.exe
+
+=== pinned package binary inventory (C:/Users/baiyl3/Documents/projects/ai/ai-flaconshot-v2/spike/p7-package/dist-ci) ===
+Qt module DLLs: 29 (48.69 MiB)
+   10098912  Qt6Core.dll
+    9521376  Qt6Gui.dll
+     191712  Qt6LabsQmlModels.dll
+    1763552  Qt6Network.dll
+    1977568  Qt6OpenGL.dll
+    5335776  Qt6Qml.dll
+     160992  Qt6QmlMeta.dll
+     987872  Qt6QmlModels.dll
+      77536  Qt6QmlWorkerScript.dll
+    6505696  Qt6Quick.dll
+     101088  Qt6QuickControls2.dll
+    1783008  Qt6QuickControls2Basic.dll
+      63200  Qt6QuickControls2BasicStyleImpl.dll
+     198368  Qt6QuickControls2FluentWinUI3StyleImpl.dll
+    1419488  Qt6QuickControls2Fusion.dll
+     161504  Qt6QuickControls2FusionStyleImpl.dll
+    2869472  Qt6QuickControls2Imagine.dll
+      51424  Qt6QuickControls2ImagineStyleImpl.dll
+     294624  Qt6QuickControls2Impl.dll
+    1820896  Qt6QuickControls2Material.dll
+     297696  Qt6QuickControls2MaterialStyleImpl.dll
+    1503968  Qt6QuickControls2Universal.dll
+     111328  Qt6QuickControls2UniversalStyleImpl.dll
+      51936  Qt6QuickControls2WindowsStyleImpl.dll
+     421088  Qt6QuickEffects.dll
+     308448  Qt6QuickLayouts.dll
+     343776  Qt6QuickShapes.dll
+    2000096  Qt6QuickTemplates2.dll
+     628448  Qt6Svg.dll
+plugin DLLs: 0 (0.00 MiB)
+other DLLs: 44 (12.62 MiB)
+    4173928  D3Dcompiler_47.dll
+     103648  generic/qtuiotouchplugin.dll
+      72416  iconengines/qsvgicon.dll
+      36864  icuuc.dll
+      48864  imageformats/qgif.dll
+      57056  imageformats/qicns.dll
+      46816  imageformats/qico.dll
+     578784  imageformats/qjpeg.dll
+      40160  imageformats/qsvg.dll
+      39136  imageformats/qtga.dll
+     442592  imageformats/qtiff.dll
+      37600  imageformats/qwbmp.dll
+     563424  imageformats/qwebp.dll
+      71904  networkinformation/qnetworklistmanager.dll
+     998112  platforms/qwindows.dll
+      31456  qml/Qt/labs/qmlmodels/labsmodelsplugin.dll
+      31456  qml/QtQml/Models/modelsplugin.dll
+      31456  qml/QtQml/WorkerScript/workerscriptplugin.dll
+      31456  qml/QtQml/qmlplugin.dll
+      31456  qml/QtQuick/Controls/Basic/impl/qtquickcontrols2basicstyleimplplugin.dll
+      32480  qml/QtQuick/Controls/Basic/qtquickcontrols2basicstyleplugin.dll
+      31456  qml/QtQuick/Controls/FluentWinUI3/impl/qtquickcontrols2fluentwinui3styleimplplugin.dll
+    3198688  qml/QtQuick/Controls/FluentWinUI3/qtquickcontrols2fluentwinui3styleplugin.dll
+      31456  qml/QtQuick/Controls/Fusion/impl/qtquickcontrols2fusionstyleimplplugin.dll
+      32480  qml/QtQuick/Controls/Fusion/qtquickcontrols2fusionstyleplugin.dll
+      31456  qml/QtQuick/Controls/Imagine/impl/qtquickcontrols2imaginestyleimplplugin.dll
+      32480  qml/QtQuick/Controls/Imagine/qtquickcontrols2imaginestyleplugin.dll
+      31456  qml/QtQuick/Controls/Material/impl/qtquickcontrols2materialstyleimplplugin.dll
+      32480  qml/QtQuick/Controls/Material/qtquickcontrols2materialstyleplugin.dll
+      31456  qml/QtQuick/Controls/Universal/impl/qtquickcontrols2universalstyleimplplugin.dll
+      32480  qml/QtQuick/Controls/Universal/qtquickcontrols2universalstyleplugin.dll
+      31456  qml/QtQuick/Controls/Windows/impl/qtquickcontrols2windowsstyleimplplugin.dll
+     651488  qml/QtQuick/Controls/Windows/qtquickcontrols2windowsstyleplugin.dll
+      31456  qml/QtQuick/Controls/impl/qtquickcontrols2implplugin.dll
+      42208  qml/QtQuick/Controls/qtquickcontrols2plugin.dll
+      31456  qml/QtQuick/Effects/effectsplugin.dll
+      31456  qml/QtQuick/Layouts/qquicklayoutsplugin.dll
+     930016  qml/QtQuick/NativeStyle/qtquickcontrols2nativestyleplugin.dll
+      31456  qml/QtQuick/Shapes/qmlshapesplugin.dll
+      31968  qml/QtQuick/Templates/qtquicktemplates2plugin.dll
+      32480  qml/QtQuick/Window/quickwindowplugin.dll
+      31456  qml/QtQuick/qtquick2plugin.dll
+     104160  tls/qcertonlybackend.dll
+     263904  tls/qschannelbackend.dll
+
+=== collected Rust license texts: dedupe ===
+files: 92 ; distinct by sha256: 28
+  22 copy/copies  23f18e03dc49df91  e.g. anyhow-1.0.104-LICENSE-MIT
+  21 copy/copies  62c7a1e35f564068  e.g. anyhow-1.0.104-LICENSE-APACHE
+  10 copy/copies  a60eea8175145316  e.g. cc-1.6.0-LICENSE-APACHE
+   4 copy/copies  378f5840b258e277  e.g. cc-1.6.0-LICENSE-MIT
+   3 copy/copies  01c266bced4a434d  e.g. memchr-2.8.3-COPYING
+   3 copy/copies  7e12e5df4bae12cb  e.g. memchr-2.8.3-UNLICENSE
+   3 copy/copies  23860c2a7b5d96b2  e.g. unicode-segmentation-1.13.3-COPYRIGHT
+   3 copy/copies  7b63ecd5f1902af1  e.g. unicode-segmentation-1.13.3-LICENSE-MIT
+   2 copy/copies  0f96a83840e146e4  e.g. memchr-2.8.3-LICENSE-MIT
+   2 copy/copies  c16f8dcf1a368b83  e.g. windows-link-0.2.1-license-apache-2.0
+   2 copy/copies  c2cfccb812fe4821  e.g. windows-link-0.2.1-license-mit
+   1 copy/copies  074e6e32c86a4c0e  e.g. clang-format-0.3.0-LICENSES_Apache-2.0.txt
+   1 copy/copies  b85dcd3e453d0598  e.g. clang-format-0.3.0-LICENSES_MIT.txt
+   1 copy/copies  c71d239df91726fc  e.g. codespan-reporting-0.12.0-LICENSE
+   1 copy/copies  797087750c410307  e.g. convert_case-0.6.0-LICENSE
+   1 copy/copies  7365cc8878a1d7ce  e.g. equivalent-1.0.2-LICENSE-MIT
+   1 copy/copies  b1181a40b2a7b25c  e.g. foldhash-0.2.0-LICENSE
+   1 copy/copies  aaff376532ea30a0  e.g. getrandom-0.4.3-LICENSE-APACHE
+   1 copy/copies  523a42c25d245dde  e.g. getrandom-0.4.3-LICENSE-MIT
+   1 copy/copies  ff8f68cb076caf8c  e.g. hashbrown-0.17.1-LICENSE-MIT
+   1 copy/copies  ecc269ef87fd38a1  e.g. indexmap-2.14.2-LICENSE-MIT
+   1 copy/copies  553fffcd9b1cb158  e.g. shlex-2.0.1-LICENSE-APACHE
+   1 copy/copies  4455bf75a9115410  e.g. shlex-2.0.1-LICENSE-MIT
+   1 copy/copies  cfc7749b96f63bd3  e.g. static_assertions-1.1.0-LICENSE-APACHE
+   1 copy/copies  ea084a2373ebc1f0  e.g. static_assertions-1.1.0-LICENSE-MIT
+   1 copy/copies  f7db81051789b729  e.g. unicode-ident-1.0.26-LICENSE-UNICODE
+   1 copy/copies  0041560f5d419c30  e.g. which-8.0.6-LICENSE.txt
+   1 copy/copies  cb3c929a05e6cbc9  e.g. winapi-util-0.1.11-LICENSE-MIT

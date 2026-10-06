@@ -1,0 +1,17 @@
+# 构建产物
+**/target/
+__pycache__/
+*.pyc
+
+# 打包产物：里面是 Qt 的 LGPL 二进制、以及一份从 C:/Windows/System32 复制来的
+# icuuc.dll（见实施计划 §8-R16）。这两个都不适合进版本库，体积也到了 689 MiB。
+spike/p7-package/dist*/
+
+# 本机工具状态与临时脚本
+.qoder/
+
+# 编辑器/系统
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini

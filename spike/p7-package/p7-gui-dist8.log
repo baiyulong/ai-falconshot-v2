@@ -1,0 +1,59 @@
+[P7] candidate=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist8
+[P7] exe=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist8\hello-cxxqt.exe
+[P7] cwd=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package
+[P7] PATH=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist8;C:\WINDOWS\System32;C:\WINDOWS;C:\WINDOWS\System32\WindowsPowerShell\v1.0
+[rust] main entered
+[rust] app is_null: false  engine is_null: false
+[P1] ShaderEffect status = 0 (Compiled)
+[rust] got QString from QML: "[P1] addImageProvider via qmlEngine(window) = 1"
+[rust] got QString from QML: "[P4] overlay addImageProvider = 1"
+[P1] viewport = 1536x960 DIP
+[rust] got QString from QML: "hello from QML"
+[rust] bump_counter -> counter=1, emitting counterBumped
+[rust] confirmSignal(1) -> Rust -> QML signal crossing closed
+[rust] got QString from QML: "QML -> Rust noop x200000 = 19 ms (0.095 us/call)"
+[rust] 20000 qproperty writes: bound-to-QML = 20 us/write, unobserved = 0 us/write
+[rust] confirmSignal(20000) -> Rust -> QML signal crossing closed
+[P1] ShaderEffect status = 0 (Compiled)
+[rust] engine.load() returned
+[rust] entering exec()
+[shim]topLevelWindows=4
+  class=ApplicationWindow_QMLTYPE_9_QML_10 title=AI Falconshot M0 spike - CXX-Qt 0.10 <-> Qt 6.10 visible=1 opacity=1.00 alphaBufferSize=8 qtFlags=0x1 hwnd=0x1a0b3e style=0x96cf0000 exStyle=0x100 LAYERED=0 TRANSPARENT=0 TOPMOST=0 TOOLWINDOW=0
+  class=QQuickWindowQmlImpl title=pin simulation visible=1 opacity=0.55 alphaBufferSize=8 qtFlags=0xc0801 hwnd=0x240c6c style=0x96000000 exStyle=0x80028 LAYERED=1 TRANSPARENT=1 TOPMOST=1 TOOLWINDOW=0
+  class=QQuickWindowQmlImpl title=P1 mask visible=0 opacity=1.00 alphaBufferSize=8 qtFlags=0x40801 hwnd=0x80b52 style=0x86000000 exStyle=0x80008 LAYERED=1 TRANSPARENT=0 TOPMOST=1 TOOLWINDOW=0
+  class=QQuickWindowQmlImpl_QML_12 title=P4 annotation overlay visible=0 opacity=1.00 alphaBufferSize=8 qtFlags=0x40801 hwnd=0x250b1a style=0x86000000 exStyle=0x80008 LAYERED=1 TRANSPARENT=0 TOPMOST=1 TOOLWINDOW=0
+[P1] suite start: 5 sessions, viewport=1536x960, dim=rects
+[P1] session 1 kind=bitblt-native frame=3072x1920 capture=56130us
+[P1]   mask presented: reveal=150.4ms
+[P1]   dim-check gdi shot=3072x1920 hole=(2067,1200)-(2880,1708) hole=1.000 band=0.909 rest=0.402 luma=18.4/18.8/15.0 n=25781/32800/310059 DIM-WRONG
+[P1]   dim-check sg grab=3072x1920 saved=mask-grab.png hole=(2067,1200)-(2880,1708) hole=1.329 band=0.406 rest=0.402 luma=24.5/8.4/15.0 n=25781/32800/310059 DIM-WRONG
+[P1] session 1 bitblt-native reveal=150.4ms capture=56130us dragSteps=46 presents=24 ticks=25/24 frameAvg=15.70ms frameWorst=17.21ms
+[P1] session 2 kind=synthetic-4K frame=3840x2160 capture=7419us
+[P1]   mask presented: reveal=63.6ms
+[P1] session 2 synthetic-4K reveal=63.6ms capture=7419us dragSteps=45 presents=24 ticks=24/23 frameAvg=15.31ms frameWorst=17.29ms
+[P1] session 3 kind=bitblt-native frame=3072x1920 capture=38874us
+[P1]   mask presented: reveal=100.5ms
+[P1] session 3 bitblt-native reveal=100.5ms capture=38874us dragSteps=45 presents=24 ticks=24/23 frameAvg=15.31ms frameWorst=17.36ms
+[P1] session 4 kind=synthetic-4K frame=3840x2160 capture=2434us
+[P1]   mask presented: reveal=54.1ms
+[P1] session 4 synthetic-4K reveal=54.1ms capture=2434us dragSteps=45 presents=24 ticks=24/23 frameAvg=15.29ms frameWorst=17.56ms
+[P1] session 5 kind=bitblt-native frame=3072x1920 capture=41228us
+[P1]   mask presented: reveal=104.1ms
+[P1] session 5 bitblt-native reveal=104.1ms capture=41228us dragSteps=45 presents=24 ticks=24/23 frameAvg=15.32ms frameWorst=17.18ms
+[P1] REVEAL n=5 p50=100.5ms p95=150.4ms max=150.4ms  (pass line: <=150ms)
+[P1]   reveal#1 bitblt-native = 150.4ms
+[P1]   reveal#2 synthetic-4K = 63.6ms
+[P1]   reveal#3 bitblt-native = 100.5ms
+[P1]   reveal#4 synthetic-4K = 54.1ms
+[P1]   reveal#5 bitblt-native = 104.1ms
+[P1] DRAG-FRAME n=120 p50=16.60ms p95=17.27ms max=17.56ms  (pass line: <=8ms)
+[P1] slack: 16ms pacer fired 121/116; 226 drag steps -> 120 presents
+[P1] provider calls=5 avg=0us worst=1us installed=true
+[P1] DIM rects shaderStatus=0 (-1 means the shader was never instantiated)
+[P1] env virtualScreen=3072x1920@(0,0) logPixels=192x192 qtGeom=1536x960 dpr=2.00 refresh=60.0Hz frame=3072x1920 providerInstalled=1 providerCalls=5 rhi=default quick=default
+[P4] suite start: 10 configs x 12 submits
+[P4]   submit 1/12 4k-whole commit->present=22.28ms raster=1489us
+[P4]   submit 2/12 4k-whole: no present at 805ms
+[P4]   submit 2/12 4k-whole: NO PRESENT by 3200ms (counted as 3200ms)
+[P4]   submit 3/12 4k-whole: no present at 804ms
+[P7] exitlevel=1

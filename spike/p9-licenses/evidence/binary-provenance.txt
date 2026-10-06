@@ -1,0 +1,54 @@
+=== binary provenance: dist-ci DLLs vs C:\WINDOWS\System32 ===
+dist root   : C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist-ci
+dll count   : 73
+
+bucket A  byte-identical to a System32 same-name file : 1
+   icuuc.dll        dist=36864 sys=36864 md5=be9504ec4ec25574c255c50639b5dbdd
+bucket B  same name in System32, different bytes      : 1
+   D3Dcompiler_47.dll       dist=4173928 md5=b0ae3aa9dd1ebd60bdf51cb94834cd04 | sys=4669440 md5=f78476bd61be916d629ac603cc77335b
+bucket C  no same-name file in System32               : 71
+
+=== icuuc.dll: does the Qt install own it? ===
+files under Qt root whose name contains "icu": 1
+   include/QtCore/QBasicUtf8StringView
+
+dist icuuc.dll exists=True size=36864 md5=be9504ec4ec25574c255c50639b5dbdd
+system icuuc.dll exists=True size=36864 md5=be9504ec4ec25574c255c50639b5dbdd
+
+=== PE import tables (hand-parsed, data directory index 1) ===
+Qt6Core.dll    pe32plus=True imports=29
+   ADVAPI32.dll AUTHZ.dll KERNEL32.dll MPR.dll MSVCP140.dll MSVCP140_1.dll NETAPI32.dll OLEAUT32.dll SHELL32.dll USER32.dll USERENV.dll VCRUNTIME140.dll VCRUNTIME140_1.dll VERSION.dll WINMM.dll WS2_32.dll api-ms-win-core-synch-l1-2-0.dll api-ms-win-crt-environment-l1-1-0.dll api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-time-l1-1-0.dll api-ms-win-crt-utility-l1-1-0.dll icuuc.dll ntdll.dll ole32.dll
+   -> requires icuuc.dll
+   -> api-ms-win-crt-* count = 9 (api-ms-win-crt-environment-l1-1-0.dll api-ms-win-crt-filesystem-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-time-l1-1-0.dll api-ms-win-crt-utility-l1-1-0.dll)
+
+Qt6Gui.dll     pe32plus=True imports=24
+   DWrite.dll GDI32.dll KERNEL32.dll MSVCP140.dll MSVCP140_1.dll MSVCP140_2.dll Qt6Core.dll SHELL32.dll USER32.dll UxTheme.dll VCRUNTIME140.dll VCRUNTIME140_1.dll api-ms-win-crt-convert-l1-1-0.dll api-ms-win-crt-environment-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-utility-l1-1-0.dll d3d11.dll d3d12.dll dxgi.dll ole32.dll
+   -> api-ms-win-crt-* count = 8 (api-ms-win-crt-convert-l1-1-0.dll api-ms-win-crt-environment-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-stdio-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll api-ms-win-crt-utility-l1-1-0.dll)
+
+Qt6Quick.dll   pe32plus=True imports=19
+   KERNEL32.dll MSVCP140.dll MSVCP140_1.dll MSVCP140_2.dll Qt6Core.dll Qt6Gui.dll Qt6Network.dll Qt6OpenGL.dll Qt6Qml.dll Qt6QmlMeta.dll Qt6QmlModels.dll USER32.dll VCRUNTIME140.dll VCRUNTIME140_1.dll api-ms-win-crt-convert-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll
+   -> api-ms-win-crt-* count = 5 (api-ms-win-crt-convert-l1-1-0.dll api-ms-win-crt-heap-l1-1-0.dll api-ms-win-crt-math-l1-1-0.dll api-ms-win-crt-runtime-l1-1-0.dll api-ms-win-crt-string-l1-1-0.dll)
+
+icuuc.dll      pe32plus=True imports=0
+   
+
+=== is any of these needed DLLs shipped in the package? ===
+   icuuc.dll            in package = True
+   MSVCP140.dll         in package = False
+   MSVCP140_1.dll       in package = False
+   MSVCP140_2.dll       in package = False
+   VCRUNTIME140.dll     in package = False
+   VCRUNTIME140_1.dll   in package = False
+
+=== icuuc.dll in the Qt SBOM (all 7 spdx json files)? ===
+   total package records = 343 ; icu mentions = 0
+
+=== vc_redist candidates on this machine ===
+   25635768 B  C:/Program Files/Microsoft Visual Studio/2022\Community\VC\Redist\MSVC\14.44.35112\vc_redist.x64.exe
+   25635768 B  C:/Program Files/Microsoft Visual Studio/2022\Community\VC\Redist\MSVC\v143\vc_redist.x64.exe
+
+=== D3Dcompiler_47.dll: dist vs Qt tree vs SDK ===
+   dist      4173928 B md5=b0ae3aa9dd1ebd60bdf51cb94834cd04
+   qt/bin    4173928 B md5=b0ae3aa9dd1ebd60bdf51cb94834cd04
+   sdk(x64) 4741488 B md5=de8c2e2b48f979d0f5304ff5e84afe1a
+   System32  4669440 B md5=f78476bd61be916d629ac603cc77335b

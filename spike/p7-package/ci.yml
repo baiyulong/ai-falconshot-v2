@@ -1,0 +1,94 @@
+# M0 packaging gate -- the hosted twin of spike/p7-package/ci_local.cmd.
+#
+# NOT YET EXECUTED. As of 2026-10-06 this directory is not a git repository and there is
+# no remote, so nothing below has a runner log behind it. Every step mirrors the local run
+# that did execute (140 s, verdict=PASS, 1316 files / 66.24 MiB, plus the negative control
+# that returns FAIL on the crippled package). Do not treat this file as evidence; treat
+# logs-p8/p8-verdict-*.log as the evidence and this file as the proposal.
+#
+# Two things must be settled the first time it runs on a real runner, and neither is
+# answerable from a laptop:
+#   1. does the GUI gate survive a session without a desktop GPU (see the TODO below)?
+#   2. is the produced d3dcompiler Qt's (no-vcvars, 66.24 MiB) or the SDK's (vcvars,
+#      66.78 MiB)? The step intentionally never activates vcvars -- rustc's MSVC host
+#      finds link.exe itself -- so the answer should be 66.24 MiB. Assert it.
+
+name: m0-package-gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  QT_VERSION: "6.10.1"
+  QT_ARCH: "win64_msvc2022_64"
+  QT_MODULES: "qtdeclarative qttools qtimageformats qtsvg"
+
+jobs:
+  package-gate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Qt 6 MSVC kits cannot be linked from a GNU-toolchain object file, so the host
+      # triple is part of the contract, not a convenience (rust-toolchain.toml pins it
+      # for local runs; a bare runner has whatever rustup default the image ships).
+      - name: Rust MSVC host
+        shell: pwsh
+        run: |
+          rustup toolchain install stable-x86_64-pc-windows-msvc
+          rustup default stable-x86_64-pc-windows-msvc
+          rustc -vV
+
+      - name: Install Qt ${{ env.QT_VERSION }} (${{ env.QT_ARCH }})
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade aqtinstall
+          aqt install-qt windows desktop $env:QT_VERSION $env:QT_ARCH -m $env:QT_MODULES -O C:/qt
+          echo "QT_HOME=C:/qt/$env:QT_VERSION/$env:QT_ARCH" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+      # "aqt says it installed the module" is not evidence. This is the same five files the
+      # local spine checks; ci_local.cmd step 1 is the reference implementation.
+      - name: Verify files, not module names
+        shell: pwsh
+        run: |
+          foreach ($f in "bin/qmake.exe","bin/windeployqt.exe","bin/qsb.exe",
+                         "plugins/platforms/qwindows.dll","plugins/imageformats/qtiff.dll") {
+            $p = Join-Path $env:QT_HOME ($f -replace '/','\')
+            if (-not (Test-Path $p)) { throw "missing: $p" }
+            "present $p"
+          }
+
+      - name: Build (release, the artefact the gate runs)
+        shell: pwsh
+        working-directory: spike/hello-cxxqt
+        run: cargo build --release
+
+      # deploy.cmd is the pinned windeployqt line plus the exe copy, and it reads QT_HOME.
+      # No vcvars here on purpose: activating it swaps in a different d3dcompiler build.
+      - name: Deploy
+        shell: cmd
+        working-directory: spike/p7-package
+        run: deploy.cmd dist-ci
+
+      # The gate itself: headless audit, then four GUI assertions, then the negative
+      # control, then the artefact floor. Re-running the local script with QT_HOME set is
+      # the plan -- one implementation, two hosts, no drift between them.
+      - name: Gate
+        shell: cmd
+        working-directory: spike/p7-package
+        run: ci_local.cmd dist-ci gate-only
+
+      # TODO(first-runner-data): if this step is the one that dies, the runner has no
+      # usable session for Qt Quick. The documented retreat is to assert the deployed
+      # qml/QtQuick/Controls tree instead of launching a window (plan 9.1); that is a
+      # WEAKER gate and the weakening must be recorded, not silently accepted.
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: falconshot-spike-win-x64
+          path: spike/p7-package/dist-ci
+          if-no-files-found: error

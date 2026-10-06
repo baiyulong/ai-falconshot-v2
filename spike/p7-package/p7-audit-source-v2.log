@@ -1,0 +1,42 @@
+**********************************************************************
+** Visual Studio 2022 Developer Command Prompt v17.14.34
+** Copyright (c) 2025 Microsoft Corporation
+**********************************************************************
+[vcvarsall.bat] Environment initialized for: 'x64'
+[rust] main entered
+[shim]
+runtime_qt=6.10.1
+built_qt=6.10.1
+platform_name=windows
+app_dir=C:/Users/baiyl3/Documents/projects/ai/ai-flaconshot-v2/spike/hello-cxxqt/target/release
+plugins_path=C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/plugins
+qml_imports_path=C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/qml
+library_paths=C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/plugins C:/Users/baiyl3/Documents/projects/ai/ai-flaconshot-v2/spike/hello-cxxqt/target/release
+reader_formats=BMP,CUR,GIF,ICNS,ICO,JFIF,JPEG,JPG,PBM,PGM,PNG,PPM,SVG,SVGZ,TGA,TIF,TIFF,WBMP,WEBP,XBM,XPM
+writer_formats=BMP,CUR,ICNS,ICO,JFIF,JPEG,JPG,PBM,PGM,PNG,PPM,TIF,TIFF,WBMP,WEBP,XBM,XPM
+fmt_png=reader=1 writer=1
+fmt_jpg=reader=1 writer=1
+fmt_jpeg=reader=1 writer=1
+fmt_bmp=reader=1 writer=1
+fmt_tga=reader=1 writer=0
+fmt_ico=reader=1 writer=1
+fmt_tif=reader=1 writer=1
+fmt_tiff=reader=1 writer=1
+fmt_gif=reader=1 writer=0
+fmt_webp=reader=1 writer=1
+fmt_svg=reader=1 writer=0
+fmt_qoi=reader=0 writer=0
+imageformats_dir=C:\Users\baiyl3\dev\qt\6.10.1\msvc2022_64\plugins\imageformats[qgif.dll qgifd.dll qicns.dll qicnsd.dll qico.dll qicod.dll qjpeg.dll qjpegd.dll qsvg.dll qsvgd.dll qtga.dll qtgad.dll qtiff.dll qtiffd.dll qwbmp.dll qwbmpd.dll qwebp.dll qwebpd.dll]
+platforms_dir=C:\Users\baiyl3\dev\qt\6.10.1\msvc2022_64\plugins\platforms[qdirect2d.dll qdirect2dd.dll qminimal.dll qminimald.dll qoffscreen.dll qoffscreend.dll qwindows.dll qwindowsd.dll]
+install_plugin_subdirs=C:\Users\baiyl3\dev\qt\6.10.1\msvc2022_64\plugins[designer generic help iconengines imageformats networkinformation platforms qmllint qmlls qmltooling sqldrivers styles tls]
+qml_top_level=C:\Users\baiyl3\dev\qt\6.10.1\msvc2022_64\qml[QML QmlTime Qt QtCore QtNetwork QtQml QtQuick QtTest]
+glslc_exe=NO
+qsb_exe=yes@C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/bin
+shader_tools_dll=yes@C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/bin
+quick3d_dll=NO
+svg_dll=yes@C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/bin
+svg_plugin_dll=yes@C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/plugins
+tiff_plugin_dll=yes@C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/plugins
+webp_plugin_dll=yes@C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/plugins
+gif_plugin_dll=yes@C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/plugins
+tga_plugin_dll=yes@C:/Users/baiyl3/dev/qt/6.10.1/msvc2022_64/plugins

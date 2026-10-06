@@ -1,0 +1,22 @@
+[P8] run_id=周二 2026/10/06  2:06:04.60 dist=dist-ci
+[P8] qt=C:\Users\baiyl3\dev\qt\6.10.1\msvc2022_64
+[P8] vcvars_in_scope=build-step-only deploy-runs-without-it
+[P8] step=deps file=bin\qmake.exe status=present
+[P8] step=deps file=bin\windeployqt.exe status=present
+[P8] step=deps file=bin\qsb.exe status=present
+[P8] step=deps file=plugins\platforms\qwindows.dll status=present
+[P8] step=deps file=plugins\imageformats\qtiff.dll status=present
+[P8] step=build cmd=cargo build --release
+[P8] step=build status=pass
+[P8] step=deploy out=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist-ci
+[P8] step=deploy status=pass wdeployqt_warnings=0
+[P8] step=audit status=pass log=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\logs-p8\p8-audit-dist-ci.log
+[P8] assert=qml_loaded pattern="[P1] suite start" status=found
+[P8] assert=shader_chain pattern="[P1] DIM rects shaderStatus=0" status=found
+[P8] assert=suite_completed pattern="[P4] provider calls=" status=found
+[P8] assert=no_module_gap pattern="is not installed" status=absent-as-expected
+[P8] step=neg-control status=pass reason=dll-not-found-as-expected
+[P8] step=artifact files=1316 MiB=66.24
+[P8] step=artifact status=pass
+[P8] finish= 2:08:24.80 started= 2:06:04.60
+[P8] verdict=PASS steps=7 logs=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\logs-p8

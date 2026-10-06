@@ -1,0 +1,12 @@
+[P7] candidate=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist
+[P7] exe=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist\hello-cxxqt.exe
+[P7] cwd=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package
+[P7] PATH=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist;C:\WINDOWS\System32;C:\WINDOWS;C:\WINDOWS\System32\WindowsPowerShell\v1.0
+[rust] main entered
+[rust] app is_null: false  engine is_null: false
+QQmlApplicationEngine failed to load component
+qrc:/qt/qml/dev/falconshot/spike/qml/main.qml:3:1: module "QtQuick.Controls" is not installed
+qrc:/qt/qml/dev/falconshot/spike/qml/main.qml:2:1: module "QtQuick.Window" is not installed
+[rust] engine.load() returned
+[rust] entering exec()
+[P7] exitlevel=1

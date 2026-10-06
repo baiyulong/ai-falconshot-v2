@@ -1,0 +1,21 @@
+filter-platform: x86_64-pc-windows-msvc
+runtime crates: 34
+license files copied: 94
+distinct SPDX expressions in runtime closure:
+  26  MIT OR Apache-2.0
+   2  Apache-2.0 OR MIT
+   2  Unlicense OR MIT
+   1  Apache-2.0
+   1  MIT
+   1  Zlib
+   1  (MIT OR Apache-2.0) AND Unicode-3.0
+class breakdown (runtime):
+  30  permissive/Apache
+   3  permissive/MIT
+   1  permissive/Zlib
+crates with no license field (0):
+runtime crates with NO license text file found (4):
+  cxx-qt-gen 0.10.0  license=MIT OR Apache-2.0  src=C:\Users\baiyl3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cxx-qt-gen-0.10.0
+  cxx-qt-lib 0.10.0  license=MIT OR Apache-2.0  src=C:\Users\baiyl3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cxx-qt-lib-0.10.0
+  cxx-qt-macro 0.10.0  license=MIT OR Apache-2.0  src=C:\Users\baiyl3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cxx-qt-macro-0.10.0
+  cxx-qt 0.10.0  license=MIT OR Apache-2.0  src=C:\Users\baiyl3\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\cxx-qt-0.10.0

@@ -1,0 +1,37 @@
+[P7] candidate=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist
+[P7] exe=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist\hello-cxxqt.exe
+[P7] cwd=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package
+[P7] PATH=C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\spike\p7-package\dist;C:\WINDOWS\System32;C:\WINDOWS;C:\WINDOWS\System32\WindowsPowerShell\v1.0
+[rust] main entered
+[shim]
+runtime_qt=6.10.1
+built_qt=6.10.1
+platform_name=windows
+plugins_path=C:/Users/baiyl3/Documents/projects/ai/ai-flaconshot-v2/spike/p7-package/dist/plugins
+qml_imports_path=C:/Users/baiyl3/Documents/projects/ai/ai-flaconshot-v2/spike/p7-package/dist/qml
+reader_formats=BMP,CUR,GIF,ICNS,ICO,JFIF,JPEG,JPG,PBM,PGM,PNG,PPM,SVG,SVGZ,TGA,TIF,TIFF,WBMP,WEBP,XBM,XPM
+writer_formats=BMP,CUR,ICNS,ICO,JFIF,JPEG,JPG,PBM,PGM,PNG,PPM,TIF,TIFF,WBMP,WEBP,XBM,XPM
+fmt_png=reader=1 writer=1
+fmt_jpg=reader=1 writer=1
+fmt_jpeg=reader=1 writer=1
+fmt_bmp=reader=1 writer=1
+fmt_tga=reader=1 writer=0
+fmt_ico=reader=1 writer=1
+fmt_tif=reader=1 writer=1
+fmt_tiff=reader=1 writer=1
+fmt_gif=reader=1 writer=0
+fmt_webp=reader=1 writer=1
+fmt_svg=reader=1 writer=0
+fmt_qoi=reader=0 writer=0
+imageformats_dir=MISSING
+platforms_dir=MISSING
+plugin_subdirs=MISSING
+qml_top_level=(empty)
+glslc_exe=NO
+qsb_exe=NO
+shader_tools_dll=NO
+quick3d_dll=NO
+svg_dll=NO
+tiff_plugin_dll=NO
+webp_plugin_dll=NO
+[P7] exitlevel=0

@@ -1,0 +1,112 @@
+P5|begin|
+P5|env|capture_backend=wgc
+P5|env|os_build=10.0.26200
+P5|env|dpi_aware_before=0(PROCESS_DPI_AWARENESS(0))
+P5|env|set_pm_v2=Ok(())
+P5|env|dpi_aware_after=2(PROCESS_DPI_AWARENESS(2))
+P5|env|system_dpi=192
+P5|env|system_scale=2.00
+P5|env|sm_cxscreen=3072x1920
+P5|monitor|count=1
+P5|monitor|enumerate_ms=0.1
+P5|monitor|M0.device=\\.\DISPLAY1
+P5|monitor|M0.friendly=Unknown Monitor 65537
+P5|monitor|M0.geom=x=0 y=0 w=3072 h=1920
+P5|monitor|M0.primary=true
+P5|monitor|M0.builtin=true
+P5|monitor|M0.rotation=0
+P5|monitor|M0.frequency=60
+P5|monitor|M0.scale_factor=2.000
+P5|monitor|M0.capture=3072x1920 first=952.6ms
+P5|monitor|M0.matches_geom=true
+P5|monitor|M0.px=nonblack=5714/5916 black=202 opaque=5916/5916
+P5|monitor|M0.capture_x4=min=66.8 med=68.4 max=89.3
+P5|monitor|M0.region_512=512x512 55.1ms
+P5|window|count=10
+P5|window|enumerate_ms=2.0
+P5|window|z_per_window_ms=0.53
+P5|window|W1.title=Tasks - local - DPanel and 3 more pages - Work - Microsoft​ Edge
+P5|window|W1.geom=x=0 y=0 w=3072 h=1824
+P5|window|W1.hwnd_from_id=0x0509fc
+P5|window|W1.getwindowrect=3098x1850@-13,-13 ok=true
+P5|window|W1.capture=3072x1824 391.4ms
+P5|window|W1.px=nonblack=10830/11230 black=400 opaque=11230/11230
+P5|window|W1.corners=tl:op144/bl144/ct0/144 tr:op144/bl144/ct0/144 bl:op144/bl0/ct144/144 br:op144/bl0/ct144/144
+P5|window|W2.title=root@baiyl3-dev: ~/projects/mct/imfg-agent
+P5|window|W2.geom=x=0 y=0 w=3072 h=1824
+P5|window|W2.hwnd_from_id=0x0c0a68
+P5|window|W2.getwindowrect=3098x1850@-13,-13 ok=true
+P5|window|W2.capture=3072x1824 92.9ms
+P5|window|W2.px=nonblack=11230/11230 black=0 opaque=11230/11230
+P5|window|W2.corners=tl:op144/bl0/ct144/144 tr:op144/bl0/ct144/144 bl:op144/bl0/ct144/144 br:op144/bl0/ct144/144
+P5|window|W3.title=docker-compose.with-db.yaml - imfg-agent - TraeCode CN
+P5|window|W3.geom=x=0 y=0 w=3072 h=1824
+P5|window|W3.hwnd_from_id=0x0d03ac
+P5|window|W3.getwindowrect=3098x1850@-13,-13 ok=true
+P5|window|W3.capture=3072x1824 95.9ms
+P5|window|W3.px=nonblack=11226/11230 black=4 opaque=11230/11230
+P5|window|W3.corners=tl:op144/bl0/ct144/144 tr:op144/bl0/ct144/144 bl:op144/bl0/ct144/144 br:op144/bl0/ct144/144
+P5|window|W4.title=DEEPAGENTS_ASSISTANT_ID="iMFG_Agent" • - Sublime Text (UNREGISTERED)
+P5|window|W4.geom=x=0 y=0 w=3072 h=1824
+P5|window|W4.hwnd_from_id=0x0f030e
+P5|window|W4.getwindowrect=3098x1850@-13,-13 ok=true
+P5|window|W4.capture=3072x1824 83.3ms
+P5|window|W4.px=nonblack=11230/11230 black=0 opaque=11230/11230
+P5|window|W4.corners=tl:op144/bl0/ct144/144 tr:op144/bl0/ct144/144 bl:op144/bl0/ct144/144 br:op144/bl0/ct144/144
+P5|dwm|W1.attr=corner=Default corner_ok=true radius_exposed=no | extbounds_ok=true 3072x1824
+P5|dwm|W2.attr=corner=Default corner_ok=true radius_exposed=no | extbounds_ok=true 3072x1824
+P5|dwm|W3.attr=corner=Round corner_ok=true radius_exposed=no | extbounds_ok=true 3072x1824
+P5|dwm|W4.attr=corner=Default corner_ok=true radius_exposed=no | extbounds_ok=true 3072x1824
+P5|dwm|corner_attr_readable=4/4
+P5|dwm|corner_radius_api=none: DWMWA_WINDOW_CORNER_PREFERENCE is a 4-value enum (Default/DontRound/Round/RoundSmall), no pixel radius is exposed
+P5|hittest|export.RealWindowFromPoint=absent
+P5|hittest|export.RealChildWindowFromPoint=present
+P5|hittest|export.WindowFromPoint=present
+P5|hittest|export.GetAncestor=present
+P5|hittest|windows_crate_binding=windows 0.62.2 does not export RealWindowFromPoint (undocumented, arity unverifiable)
+P5|hittest|windowfrompoint_no_transparent_ex=hit_ours=true hwnd=HWND(0x200a14) rect=400x300@1336,810
+P5|hittest|windowfrompoint_with_transparent_ex=hit_ours=false hwnd=HWND(0xc0b6a) rect=3056x1588@8,228
+P5|hittest|zorder_walk=1.6 ms after 2 windows -> Some(("Tasks - local - DPanel and 3 more pages - Work - Microsoft\u{200b} Edge", 1))
+P5|codec|64x64.png=enc=9273B decode=64x64
+P5|codec|64x64.jpeg=enc=1774B decode=64x64
+P5|codec|64x64.bmp=enc=16506B decode=64x64
+P5|codec|64x64.tga=enc=16466B decode=64x64
+P5|codec|64x64.ico=enc=9295B decode=64x64
+P5|codec|64x64.tiff=enc=16598B decode=64x64
+P5|codec|64x64.gif=enc=3331B decode=64x64
+P5|codec|64x64.webp=enc=2604B decode=64x64
+P5|codec|64x64.qoi=enc=16449B decode=64x64
+P5|codec|64x64.pnm=enc=16451B decode=64x64
+P5|codec|64x64.dds=enc_err:The image format `Dds` is not supported
+P5|codec|64x64.hdr=enc_err:The encoder or decoder for Hdr does not support the color type `Rgba8`
+P5|codec|64x64.exr=enc_err:The encoder or decoder for OpenExr does not support the color type `Rgba8`
+P5|codec|64x64.ffdf=enc_err:The encoder or decoder for Farbfeld does not support the color type `Rgba8`
+P5|codec|300x200.png=enc=133028B decode=300x200
+P5|codec|300x200.jpeg=enc=19144B decode=300x200
+P5|codec|300x200.bmp=enc=240122B decode=300x200
+P5|codec|300x200.tga=enc=240950B decode=300x200
+P5|codec|300x200.ico=enc_err:The parameter is malformed: the image width must be `1..=256`, instead width 300 was provided
+P5|codec|300x200.tiff=enc=240214B decode=300x200
+P5|codec|300x200.gif=enc=28426B decode=300x200
+P5|codec|300x200.webp=enc=35274B decode=300x200
+P5|codec|300x200.qoi=enc=240153B decode=300x200
+P5|codec|300x200.pnm=enc=240069B decode=300x200
+P5|codec|300x200.dds=enc_err:The image format `Dds` is not supported
+P5|codec|300x200.hdr=enc_err:The encoder or decoder for Hdr does not support the color type `Rgba8`
+P5|codec|300x200.exr=enc_err:The encoder or decoder for OpenExr does not support the color type `Rgba8`
+P5|codec|300x200.ffdf=enc_err:The encoder or decoder for Farbfeld does not support the color type `Rgba8`
+P5|codec|256x256.png=enc=145289B decode=256x256
+P5|codec|256x256.jpeg=enc=20753B decode=256x256
+P5|codec|256x256.bmp=enc=262266B decode=256x256
+P5|codec|256x256.tga=enc=263180B decode=256x256
+P5|codec|256x256.ico=enc=145311B decode=256x256
+P5|codec|256x256.tiff=enc=262358B decode=256x256
+P5|codec|256x256.gif=enc=32389B decode=256x256
+P5|codec|256x256.webp=enc=38492B decode=256x256
+P5|codec|256x256.qoi=enc=262167B decode=256x256
+P5|codec|256x256.pnm=enc=262213B decode=256x256
+P5|codec|256x256.dds=enc_err:The image format `Dds` is not supported
+P5|codec|256x256.hdr=enc_err:The encoder or decoder for Hdr does not support the color type `Rgba8`
+P5|codec|256x256.exr=enc_err:The encoder or decoder for OpenExr does not support the color type `Rgba8`
+P5|codec|256x256.ffdf=enc_err:The encoder or decoder for Farbfeld does not support the color type `Rgba8`
+P5|end|

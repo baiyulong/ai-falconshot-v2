@@ -1,0 +1,103 @@
+=== license-named files available locally: 106 ===
+  qt-install             13
+  rust-license-texts     92
+  windows-kits           1
+
+=== distinct license id tokens across the 7 SBOMs ===
+    244  LicenseRef-Qt-Commercial
+    242  GPL-3.0-only
+    190  GPL-2.0-only
+    186  LGPL-3.0-only
+     54  Qt-GPL-exception-1.0
+     21  NOASSERTION
+     20  MIT
+     19  BSD-3-Clause
+      8  Apache-2.0
+      6  Zlib
+      6  CC0-1.0
+      5  BSD-2-Clause
+      4  IJG
+      4  LicenseRef-MIT-Khronos-old
+      3  FTL
+      3  GPL-3.0-or-later
+      3  Bison-exception-2.2
+      3  AML-glslang
+      2  LicenseRef-BSD-3-Clause-with-PCRE2-Binary-Like-Packages-Exception
+      2  MIT-open-group
+      2  Libpng
+      2  libpng-2.0
+      2  Unicode-3.0
+      2  BSL-1.0
+      1  LicenseRef-SHA1-Public-Domain
+      1  AFL-2.1
+      1  GPL-2.0-or-later
+      1  LicenseRef-ICC-License
+      1  Imlib2
+      1  X11
+      1  HPND
+      1  MPL-2.0
+      1  blessing
+      1  LicenseRef-Lcs-Telegraphics
+      1  Linux-syscall-note
+      1  BSD-4-Clause
+      1  libtiff
+      1  HPND-sell-variant
+
+package records total: 343 ; distinct license id tokens: 38 (LicenseRef: 6, SPDX std: 32)
+
+=== is a license TEXT for this id present locally? (matched against license-named files only) ===
+  AFL-2.1                                            NO LOCAL TEXT
+  AML-glslang                                        NO LOCAL TEXT
+  Apache-2.0                                         rust-license-texts:anyhow-1.0.104-LICENSE-APACHE
+  BSD-2-Clause                                       NO LOCAL TEXT
+  BSD-3-Clause                                       NO LOCAL TEXT
+  BSD-4-Clause                                       NO LOCAL TEXT
+  BSL-1.0                                            NO LOCAL TEXT
+  Bison-exception-2.2                                NO LOCAL TEXT
+  CC0-1.0                                            NO LOCAL TEXT
+  FTL                                                NO LOCAL TEXT
+  GPL-2.0-only                                       NO LOCAL TEXT
+  GPL-2.0-or-later                                   qt-install:share\qt6\wayland\protocols\appmenu\LGPL-2.1-or-later.txt
+  GPL-3.0-only                                       NO LOCAL TEXT
+  GPL-3.0-or-later                                   qt-install:share\qt6\wayland\protocols\appmenu\LGPL-2.1-or-later.txt
+  HPND                                               qt-install:share\qt6\wayland\protocols\text-input\v2\HPND_LICENSE.txt
+  HPND-sell-variant                                  NO LOCAL TEXT
+  IJG                                                NO LOCAL TEXT
+  Imlib2                                             NO LOCAL TEXT
+  LGPL-3.0-only                                      NO LOCAL TEXT
+  Libpng                                             qt-install:mkspecs\modules\qt_ext_libpng.pri
+  Linux-syscall-note                                 NO LOCAL TEXT
+  MIT                                                qt-install:share\qt6\wayland\protocols\MIT_LICENSE.txt
+  MIT-open-group                                     NO LOCAL TEXT
+  MPL-2.0                                            rust-license-texts:thiserror-impl-1.0.69-LICENSE-APACHE
+  NOASSERTION                                        NO LOCAL TEXT
+  Qt-GPL-exception-1.0                               NO LOCAL TEXT
+  Unicode-3.0                                        qt-install:include\QtHarfbuzz\harfbuzz\hb-unicode.h
+  X11                                                qt-install:lib\cmake\Qt6\FindXKB_COMMON_X11.cmake
+  Zlib                                               qt-install:include\QtZlib\zlib.h
+  blessing                                           NO LOCAL TEXT
+  libpng-2.0                                         qt-install:mkspecs\modules\qt_ext_libpng.pri
+  libtiff                                            NO LOCAL TEXT
+
+ids with no local text: 21
+  AFL-2.1
+  AML-glslang
+  BSD-2-Clause
+  BSD-3-Clause
+  BSD-4-Clause
+  BSL-1.0
+  Bison-exception-2.2
+  CC0-1.0
+  FTL
+  GPL-2.0-only
+  GPL-3.0-only
+  HPND-sell-variant
+  IJG
+  Imlib2
+  LGPL-3.0-only
+  Linux-syscall-note
+  MIT-open-group
+  NOASSERTION
+  Qt-GPL-exception-1.0
+  blessing
+  libtiff
