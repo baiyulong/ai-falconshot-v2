@@ -1,0 +1,40 @@
+=== MSIX toolchain on this machine (probe 2026-10-06) ===
+SDK bin: C:/Program Files (x86)/Windows Kits/10/bin/10.0.26100.0/x64
+makeappx.exe  present  584024 B
+makepri.exe  present  919896 B
+signtool.exe  present  543064 B
+ComparePackage.exe  present  48496 B
+MakeCert.exe  present  88408 B
+
+--- makeappx version (full stdout) ---
+Microsoft (R) MakeAppx Tool
+Copyright (C) 2013 Microsoft.  All rights reserved.
+
+Usage:
+------
+    MakeAppx <command> [options]
+
+Valid commands:
+---------------
+    pack        --  Create a new app package from files on disk
+    unpack      --  Extract an existing app package to files on disk
+    bundle      --  Create a new app bundle from files on disk
+    unbundle    --  Extract an existing app bundle to files on disk
+    encrypt     --  Encrypt an existing app package or bundle
+    decrypt     --  Decrypt an existing app package or bundle
+    convertCGM  --  Convert a source content group map (CGM) to the final content group map
+    build       --  Build packages using a packaging layout file
+
+For help with a specific command, enter "MakeAppx <command> /?"
+
+
+--- signtool: 'version' is not a command in this build (honest note) ---
+SignTool Error: A required parameter is missing.
+Usage: signtool <command> [options] or signtool @<response file>
+    sign       --  Sign files using an embedded signature.
+    timestamp  --  Timestamp previously-signed files.
+    verify     --  Verify embedded or catalog signatures.
+    remove     --  Remove embedded signature(s) or reduce the size of an
+                   embedded signed file.
+                   For help on a specific command, enter "signtool <command> /?"
+New-SelfSignedCertificate | module=PKI | 1.0.0.0
