@@ -62,7 +62,7 @@ pub struct Stats {
 }
 
 impl Stats {
-    fn of(f: &Frame) -> Stats {
+    pub(crate) fn of(f: &Frame) -> Stats {
         let n = f.width as usize * f.height as usize;
         if n == 0 {
             return Stats {
@@ -95,13 +95,16 @@ impl Stats {
         }
     }
 
-    fn line(&self) -> String {
+    /// The one-line reading of a frame: size, how much of it is the control, how
+    /// much of it is one repeated colour. Also what `--mask` prints per
+    /// `PrintWindow` flag, because a mask window has no control colour in it and
+    /// `flat` is the number that says so.
+    pub(crate) fn line(&self) -> String {
         format!(
             "{}x{} ctrl={:.3} flat={:.3}",
             self.w, self.h, self.ctrl, self.flat
         )
     }
-
     /// Half the control colour, which is what a correctly placed patch on a
     /// correctly cropped frame produces (the edge is black by design).
     fn saw_control(&self) -> bool {
@@ -109,14 +112,24 @@ impl Stats {
     }
 }
 
-/// The rows that decide the exit code and the rows that only report.
-struct Report {
+/// The rows that decide the exit code and the rows that only report. Shared with
+/// [`crate::mask_check`], because a mask has the same two kinds of line: a verdict
+/// and a reading.
+pub(crate) struct Report {
     out: Vec<String>,
     worst: Check,
 }
 
 impl Report {
-    fn row(&mut self, label: &str, verdict: Check, detail: String) {
+    /// Nothing said yet, and nothing failing yet.
+    pub(crate) fn new() -> Report {
+        Report {
+            out: Vec::new(),
+            worst: Check::Pass,
+        }
+    }
+
+    pub(crate) fn row(&mut self, label: &str, verdict: Check, detail: String) {
         if verdict > self.worst {
             self.worst = verdict;
         }
@@ -128,11 +141,11 @@ impl Report {
     /// paths are blind, and "blind" is a property of the machine rather than a
     /// failing test - until it is the only path left, which the scored rows above
     /// are the ones to notice.
-    fn note(&mut self, label: &str, detail: String) {
+    pub(crate) fn note(&mut self, label: &str, detail: String) {
         self.out.push(format!("{label:<22} {:<4} {detail}", "-"));
     }
 
-    fn finish(mut self, title: &str) -> (Check, String) {
+    pub(crate) fn finish(mut self, title: &str) -> (Check, String) {
         let verdict = self.worst;
         self.out.push(format!(
             "{title}: {}",
@@ -154,20 +167,25 @@ pub fn plant() -> Result<PinId, String> {
 
 /// One top-level window as the shim's machine-readable line describes it.
 #[derive(Debug)]
-struct Top {
-    hwnd: u64,
-    class: String,
-    phys: PhysRect,
-    visible: bool,
+pub(crate) struct Top {
+    pub(crate) hwnd: u64,
+    pub(crate) class: String,
+    pub(crate) phys: PhysRect,
+    pub(crate) visible: bool,
+    /// Empty for a window with no title. Titles are matched without spaces on
+    /// purpose - this is a whitespace-split field list, and `pinTopLevels` is a
+    /// debugging aid whose field order is not a contract.
+    pub(crate) title: String,
 }
 
-fn parse_levels(raw: &str) -> Vec<Top> {
+pub(crate) fn parse_levels(raw: &str) -> Vec<Top> {
     let mut out = Vec::new();
     for line in raw.lines() {
         let mut hwnd = None;
         let mut class = String::new();
         let mut phys = None;
         let mut visible = false;
+        let mut title = String::new();
         for field in line.split_whitespace() {
             if let Some(v) = field.strip_prefix("hwnd=0x") {
                 hwnd = u64::from_str_radix(v, 16).ok();
@@ -175,6 +193,8 @@ fn parse_levels(raw: &str) -> Vec<Top> {
                 class = v.to_string();
             } else if let Some(v) = field.strip_prefix("visible=") {
                 visible = v == "1";
+            } else if let Some(v) = field.strip_prefix("title=") {
+                title = v.to_string();
             } else if let Some(v) = field.strip_prefix("phys=") {
                 let n: Vec<i32> = v.split(',').filter_map(|s| s.parse().ok()).collect();
                 if n.len() == 4 {
@@ -193,6 +213,7 @@ fn parse_levels(raw: &str) -> Vec<Top> {
                 class,
                 phys,
                 visible,
+                title,
             });
         }
     }
@@ -213,8 +234,10 @@ fn pick_window(raw: &str, want: &PhysRect) -> Option<Top> {
         .map(|(_, t)| t)
 }
 
-/// `3072x1920 dpr=2.00` -> `(3072, 1920)`.
-fn parse_size(info: &str) -> Option<(u32, u32)> {
+/// `3072x1920 dpr=2.00` -> `(3072, 1920)`. Also what `--mask` reads the same
+/// `pinScreenGrabInfo` line with, because the second readback path is this one's
+/// fourth leg and both have to trust the size before they trust the pixels.
+pub(crate) fn parse_size(info: &str) -> Option<(u32, u32)> {
     let head = info.split_whitespace().next()?;
     let (w, h) = head.split_once('x')?;
     Some((w.parse().ok()?, h.parse().ok()?))

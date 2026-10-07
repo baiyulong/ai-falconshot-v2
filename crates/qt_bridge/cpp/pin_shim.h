@@ -43,6 +43,34 @@ void pinDropFrame(std::int64_t id);
 /// the render → encode → store → decode round trip is checked without a screen.
 QString pinSelfCheck(std::int64_t id);
 
+/// One frozen monitor for the capture mask, as raw RGBA8.
+///
+/// A string key, not an id: `pinIdOf` reads anything it cannot parse as -1, so a
+/// negative id is not addressable through the provider and a mask - which has no
+/// id at all - cannot share the pin store. Two maps, one lookup order.
+///
+/// Raw rather than PNG-encoded because §3.3's rule is about *product bitmaps*
+/// (files, clipboard), and this is a texture crossing from one module to another
+/// inside one process. Encoding 3072x1920 to PNG and back to feed the GPU is pure
+/// cost on the path the 150 ms promise is about.
+void maskStoreRaw(const QString &key, const QByteArray &rgba, std::int32_t width, std::int32_t height);
+/// The mask is closed: release the frame, which for a 4K desktop is 24 MB.
+void maskDropFrame(const QString &key);
+/// `key=.. null=.. w=.. h=.. stores=..`, for `--selftest` to assert on.
+QString maskSelfCheck(const QString &key);
+
+/// Qt's own screen list in device-independent pixels. A `Window`'s `x`/`y`/`width`
+/// are in that space, so a mask placed from the Win32 enumeration would land in
+/// the wrong pixels on any monitor that is not at 100% - the geometry has to come
+/// from Qt. Index 0 is whatever Qt ordered first.
+std::int32_t pinScreenCount();
+QString pinScreenName(std::int32_t index);
+std::int32_t pinScreenX(std::int32_t index);
+std::int32_t pinScreenY(std::int32_t index);
+std::int32_t pinScreenW(std::int32_t index);
+std::int32_t pinScreenH(std::int32_t index);
+double pinScreenDevicePixelRatio(std::int32_t index);
+
 /// One pixel of the stored frame as "r,g,b,a", or "oob". This is how §5.9.15's
 /// alpha board and the transparent margin get asserted instead of eyeballed.
 QString pinPixel(std::int64_t id, std::int32_t x, std::int32_t y);

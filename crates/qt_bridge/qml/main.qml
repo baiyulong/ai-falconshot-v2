@@ -1,9 +1,11 @@
 import QtQuick
 import dev.falconshot 1.0
 
-// The app's root. It has no scene of its own on purpose: the only visual things
-// this process makes are pin windows. §5.1's "no main window, a tray icon" ends
-// up looking exactly like this - a headful engine whose root object is invisible.
+// The app's root. It has no scene of its own on purpose: what this process shows
+// is either a pin window or a capture mask, both of which are full citizens of the
+// window list and neither of which wants a parent. §5.1's "no main window, a tray
+// icon" ends up looking exactly like this - a headful engine whose root object is
+// invisible.
 Item {
     id: app
 
@@ -13,6 +15,7 @@ Item {
     Component.onCompleted: {
         app.session.markLoaded()
         app.session.refresh()
+        app.session.refreshMasks()
     }
 
     // One window per pin, in z order.
@@ -38,5 +41,22 @@ Item {
         // `assign` rather than a property write: the window owns the PinView, and
         // the two have to be pointed at the same pin before the first frame.
         onObjectAdded: (index, object) => object.assign(app.session.pinId(index))
+    }
+
+    // One mask per screen, while a capture flow is running.
+    //
+    // A second `Instantiator` rather than a shared delegate: a pin's model is the
+    // set of pictures the user owns and a mask's model is the list of screens, and
+    // the two change for entirely unrelated reasons. `index` is the Qt screen
+    // index, which is what the mask state matched its frozen frame against.
+    Instantiator {
+        id: masks
+        model: app.session.mask_count
+
+        delegate: CaptureMask {
+            shim: app.shim
+        }
+
+        onObjectAdded: (index, object) => object.assign(index)
     }
 }

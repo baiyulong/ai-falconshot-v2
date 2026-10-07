@@ -70,11 +70,14 @@ pub mod qobject {
     }
 
     extern "RustQt" {
-        /// How many pins are on screen - the QML Repeater's model.
         /// How many pins are on screen - the model the QML Instantiator repeats.
         #[qobject]
         #[qml_element]
         #[qproperty(i32, count)]
+        /// How many screens the capture mask covers - the other `Instantiator`'s
+        /// model. Zero until a flow freezes the desktop, which is the normal state:
+        /// a mask window that exists before the pixels do is a black rectangle.
+        #[qproperty(i32, mask_count)]
         /// One line of feedback for the user, and the reason the output calls
         /// below answer with a string: §5.9.13 asks for a brief on-screen hint,
         /// and a hint has to say what actually happened rather than nothing.
@@ -85,6 +88,13 @@ pub mod qobject {
         /// mutation below also does it, so the count can never lag the set.
         #[qinvokable]
         fn refresh(self: Pin<&mut Self>);
+
+        /// Re-read the mask state, for the same reason [`Self::refresh`] re-reads
+        /// the pins. The mask has no per-window gestures yet, so this is the only
+        /// way its count moves; the selection flow makes that false soon.
+        #[qinvokable]
+        #[cxx_name = "refreshMasks"]
+        fn refresh_masks(self: Pin<&mut Self>);
 
         /// Called by `main.qml` once its root is built. See [`crate::state::qml_loaded`].
         #[qinvokable]
@@ -130,11 +140,13 @@ use core::pin::Pin;
 use cxx_qt_lib::QString;
 use falcon_core::geometry::PhysPoint;
 
+use crate::mask;
 use crate::state;
 
 #[derive(Default)]
 pub struct SessionRust {
     count: i32,
+    mask_count: i32,
     status: QString,
 }
 
@@ -142,6 +154,11 @@ impl qobject::Session {
     pub fn refresh(mut self: Pin<&mut Self>) {
         let n = state::with(|s| s.ids().len());
         self.as_mut().set_count(n as i32);
+    }
+
+    pub fn refresh_masks(mut self: Pin<&mut Self>) {
+        let n = mask::with(|m| m.slots.len());
+        self.as_mut().set_mask_count(n as i32);
     }
 
     pub fn pin_id(self: Pin<&mut Self>, index: i32) -> i64 {

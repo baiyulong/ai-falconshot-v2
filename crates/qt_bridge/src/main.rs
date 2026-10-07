@@ -1,6 +1,6 @@
 //! AI Falconshot - the process that owns the pin windows.
 //!
-//! Five modes, because "does it work" has five different answers:
+//! Six modes, because "does it work" has six different answers:
 //! * `--selftest` drives the state machine and the pixel pipeline and prints
 //!   PASS/FAIL per step, without ever creating a window. `--clipboard` and
 //!   `--capture` add the two checks that take over something real - the user's
@@ -13,9 +13,15 @@
 //!   StaysOnTop are checked as numbers rather than by someone squinting.
 //! * `--r13 <ms>` plants a control patch, lets Qt paint it, and then reads those
 //!   same pixels back through every capture path - the visibility matrix of R13.
+//! * `--mask <ms>` freezes the desktop, covers every screen with its own dimmed
+//!   copy for ms, and reads the dim and the hole back off those windows.
+//!   `--mask-soft` takes the four-rectangle path instead of the shader.
 //! * no flags: the app.
 
 mod capture;
+mod mask;
+mod mask_check;
+mod mask_view;
 mod pin_view;
 mod r13;
 mod session;
@@ -178,6 +184,18 @@ fn main() {
         }
     }
 
+    // §5.2's mask, for the same reason: the dim is only a number once something has
+    // painted it. The freeze and the textures have to be published before the QML
+    // engine exists, because a mask window that captures the screen it is about to
+    // cover would capture itself.
+    let mask_ms = after("--mask").map(|ms| ms.max(300));
+    if mask_ms.is_some() {
+        match mask_check::open(!flag("--mask-soft")) {
+            Ok(line) => println!("[mask] {line}"),
+            Err(e) => println!("[mask] 开不起来：{e}"),
+        }
+    }
+
     let probe = after("--probe");
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
@@ -191,6 +209,9 @@ fn main() {
         state::quit_after(ms);
     }
     if let Some(ms) = r13_ms {
+        state::quit_after(ms);
+    }
+    if let Some(ms) = mask_ms {
         state::quit_after(ms);
     }
 
@@ -247,6 +268,17 @@ fn main() {
         println!("{report}");
         println!(
             "[r13 after {ms} ms] qml_loaded={} {}",
+            state::qml_loaded(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
+    }
+
+    if let Some(ms) = mask_ms {
+        let (verdict, report) = mask_check::measure();
+        println!("{report}");
+        println!(
+            "[mask after {ms} ms] qml_loaded={} {}",
             state::qml_loaded(),
             state::desktop_summary()
         );

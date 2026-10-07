@@ -3,6 +3,7 @@
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QHash>
+#include <QtCore/QMap>
 #include <QtCore/QMutex>
 #include <QtCore/QMessageLogContext>
 #include <QtCore/QMutexLocker>
@@ -78,6 +79,12 @@ QString pinMessages()
 namespace {
 QMutex g_mutex;
 QHash<qint64, QImage> g_frames;
+
+// The mask's frozen desktop, keyed by string. Its own mutex because the two maps
+// are looked up in order and a lock held across the second lookup would be a
+// lock-ordering bug waiting for a second thread.
+QMutex g_maskMutex;
+QMap<QString, QImage> g_maskFrames;
 
 /// "7-3" -> 7. The revision suffix is what makes QML re-ask for a URL it has
 /// already cached; the digits before it are the pin.
@@ -192,7 +199,100 @@ QString pinPixel(std::int64_t id, std::int32_t x, std::int32_t y)
         .arg(qAlpha(px));
 }
 
+// ---------------------------------------------------------------- mask pixels
+
+void maskStoreRaw(const QString &key, const QByteArray &rgba, std::int32_t width, std::int32_t height)
+{
+    if (width <= 0 || height <= 0 || rgba.size() < width * height * 4) {
+        qWarning("maskStoreRaw(%s): %dx%d needs %d bytes, got %d",
+                 qPrintable(key), width, height, width * height * 4, rgba.size());
+        return;
+    }
+    // Borrowed first, then copied: the QByteArray is Rust's and dies when this
+    // returns, so the store must own its pixels.
+    const QImage borrowed(reinterpret_cast<const uchar *>(rgba.constData()),
+                          width,
+                          height,
+                          width * 4,
+                          QImage::Format_RGBA8888);
+    const QImage owned = borrowed.copy();
+    if (owned.isNull()) {
+        qWarning("maskStoreRaw(%s): Qt refused to take %dx%d RGBA8", qPrintable(key), width, height);
+        return;
+    }
+    QMutexLocker lock(&g_maskMutex);
+    g_maskFrames.insert(key, owned);
+}
+
+void maskDropFrame(const QString &key)
+{
+    QMutexLocker lock(&g_maskMutex);
+    g_maskFrames.remove(key);
+}
+
+QString maskSelfCheck(const QString &key)
+{
+    QImage img;
+    int stored = 0;
+    {
+        QMutexLocker lock(&g_maskMutex);
+        img = g_maskFrames.value(key);
+        stored = g_maskFrames.size();
+    }
+    return QString::fromLatin1("key=%1 null=%2 w=%3 h=%4 stores=%5")
+        .arg(key)
+        .arg(img.isNull() ? 1 : 0)
+        .arg(img.width())
+        .arg(img.height())
+        .arg(stored);
+}
+
 // ---------------------------------------------------------------- geometry
+
+namespace {
+QScreen *screenAt(std::int32_t index)
+{
+    const auto screens = QGuiApplication::screens();
+    if (index < 0 || index >= screens.size()) {
+        return nullptr;
+    }
+    return screens.at(index);
+}
+
+/// Qt's DIP rect for one screen. `QScreen::geometry()` is already in
+/// device-independent pixels and already relative to Qt's virtual desktop, which
+/// is the space a `Window`'s x/y live in - so a mask is placed from here and never
+/// from the Win32 enumeration.
+QRect screenGeometry(std::int32_t index)
+{
+    const QScreen *screen = screenAt(index);
+    return screen ? screen->geometry() : QRect();
+}
+} // namespace
+
+std::int32_t pinScreenCount()
+{
+    return QGuiApplication::screens().size();
+}
+
+QString pinScreenName(std::int32_t index)
+{
+    const QScreen *screen = screenAt(index);
+    return screen ? screen->name() : QString();
+}
+
+std::int32_t pinScreenX(std::int32_t index) { return screenGeometry(index).x(); }
+std::int32_t pinScreenY(std::int32_t index) { return screenGeometry(index).y(); }
+std::int32_t pinScreenW(std::int32_t index) { return screenGeometry(index).width(); }
+std::int32_t pinScreenH(std::int32_t index) { return screenGeometry(index).height(); }
+
+double pinScreenDevicePixelRatio(std::int32_t index)
+{
+    const QScreen *screen = screenAt(index);
+    return screen ? screen->devicePixelRatio() : 1.0;
+}
+
+// ---------------------------------------------------------------- desktop
 
 namespace {
 QRect desktopBounds()
@@ -329,6 +429,12 @@ QImage PinImageProvider::requestImage(const QString &id, QSize *size, const QSiz
     Q_UNUSED(requestedSize) // The window stretches; the bitmap is already the shown size.
     QImage img;
     {
+        // Mask keys first, as exact strings: a pin's id is `7-3`, which is never a
+        // key in this map, and a mask's `m0-display1-1` is never parseable as one.
+        QMutexLocker lock(&g_maskMutex);
+        img = g_maskFrames.value(id);
+    }
+    if (img.isNull()) {
         QMutexLocker lock(&g_mutex);
         img = g_frames.value(pinIdOf(id));
     }
