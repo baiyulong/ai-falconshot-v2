@@ -61,11 +61,14 @@ const RATIO_TOL: f64 = 0.05;
 /// QML and then creates the window, in that order, for the first time. The number
 /// it prints (1205 ms on this machine, 2026-10-06) is what the pre-warm has to
 /// reduce, and the ceiling is what the pre-warmed run will be checked against.
-const FIRST_FRAME_MS: u64 = 400;
+pub const FIRST_FRAME_MS: u64 = 400;
 
 /// Freeze and open the mask. Must run before the QML engine, so the windows exist
 /// when the event loop starts painting.
 pub fn open(shader: bool) -> Result<String, String> {
+    // The moment a hot key would have been pressed. Every later stamp is measured
+    // against this one when the cold path is split up.
+    crate::state::stamp("asked");
     let opened = mask::open_from_freeze(shader)?;
     let (pixels, hole) = mask::with(|m| (m.pixels_ms.unwrap_or(0), m.hole));
     // Every number this harness prints depends on which RHI drew them, and the only
@@ -76,6 +79,39 @@ pub fn open(shader: bool) -> Result<String, String> {
         "{} screen(s), backend={}, rhi={rhi}, freeze {} ms, pixels {} ms, hole={hole}, shader={shader}",
         opened.slots, opened.snap.backend, opened.ms, pixels
     ))
+}
+
+/// Every slot's first presented frame so far, as one short line.
+pub fn swap_line() -> String {
+    mask::with(|m| {
+        m.slots
+            .iter()
+            .map(|s| format!("{}={:?}", s.name, s.first_swap_ms))
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
+}
+
+/// Tear the mask down and open it again, inside a process that has already paid for
+/// Qt, the QML engine, the compiled document and a presented frame.
+///
+/// This is what §10-14 ② has been asking for: the cold `cold of` figure contains
+/// roughly a second of start-up that a resident product never pays on a hot key, and
+/// without a second round there is no number for the half it *does* pay. A failed
+/// round comes back as text rather than an error, because the caller is a timer
+/// handler with nowhere to send one.
+///
+/// The round's own first frame cannot be in its own line: `open()` returns before
+/// the event loop has painted, so the number only exists by the time the *next*
+/// round starts. Each line therefore reports the round before it, and the last is
+/// read by `main.rs` before [`measure`] closes the flow.
+pub fn warm_round(shader: bool) -> String {
+    let prev = swap_line();
+    mask::with(|m| m.close());
+    match open(shader) {
+        Ok(line) => format!("prev-swap[{prev}] | {line}"),
+        Err(e) => format!("prev-swap[{prev}] | 开不起来：{e}"),
+    }
 }
 
 /// The ratio of one sample: what the mask shows, over what was frozen there.

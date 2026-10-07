@@ -23,6 +23,39 @@ Item {
         app.session.markLoaded()
         app.session.refresh()
         app.session.refreshMasks()
+        app.session.refreshWarm()
+    }
+
+    // The `--mask` gauge's second and later rounds, which is the only way this
+    // process can measure what a hot key costs: by then Qt, the engine, the compiled
+    // document and one presented frame are all paid for, and none of that is a
+    // per-capture cost. Rust owns the arithmetic and the count; this Timer exists
+    // because nothing else here can act after the event loop starts.
+    //
+    // `running` binds to a qproperty rather than calling an invokable in a loop:
+    // `warm_left` notifies as it counts down, so the timer stops itself, and a
+    // handler that re-armed it would run rounds the plan never asked for.
+    //
+    // The two names are not spelled the same way, and this is measured rather than
+    // assumed: cxx-qt keeps a qproperty's Rust identifier (`warm_left`,
+    // `warm_step`, `mask_count` - read out of the generated moc table) and camelCases
+    // an invokable (`refreshWarm`, `warmRound`). An undefined property inside a
+    // binding is only a warning and leaves the binding at 0, which is why the first
+    // run of this timer loaded the document and then did nothing at all.
+    Timer {
+        id: warmRounds
+        interval: app.session.warm_step
+        repeat: true
+        running: app.session.warm_left > 0
+        // `onTriggered`, the signal handler - `triggered` is not a property, and
+        // assigning to a non-existent one is a document error that loses the whole
+        // file, not just this timer (§8-R14).
+        onTriggered: {
+            app.session.warmRound()
+            // Same screens, so no window was rebuilt - they have to be told the
+            // frame key changed, or they keep showing the round before this one.
+            app.refreshOtherMasks(null)
+        }
     }
 
     // One window per pin, in z order.

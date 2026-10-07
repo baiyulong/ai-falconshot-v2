@@ -82,6 +82,12 @@ pub mod qobject {
         /// below answer with a string: §5.9.13 asks for a brief on-screen hint,
         /// and a hint has to say what actually happened rather than nothing.
         #[qproperty(QString, status)]
+        /// Rounds the `--mask` gauge still owes, after the first one. A qproperty and
+        /// not a plain read because a QML `Timer`'s `running` has to *re-evaluate*
+        /// when it hits zero - an invokable the binding calls once would keep firing.
+        #[qproperty(i32, warm_left)]
+        /// How far apart those rounds sit, and therefore the `Timer`'s interval.
+        #[qproperty(i32, warm_step)]
         type Session = super::SessionRust;
 
         /// Re-read the state machine. QML calls this once at start-up and every
@@ -102,6 +108,17 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "endMask"]
         fn end_mask(self: Pin<&mut Self>);
+
+        /// Take the warm-round plan written from the command line. See
+        /// [`crate::state::WarmPlan`] for why a QML call is the only way in.
+        #[qinvokable]
+        #[cxx_name = "refreshWarm"]
+        fn refresh_warm(self: Pin<&mut Self>);
+
+        /// Run one warm round of the `--mask` gauge, and spend one from the budget.
+        #[qinvokable]
+        #[cxx_name = "warmRound"]
+        fn warm_round(self: Pin<&mut Self>);
 
         /// Called by `main.qml` once its root is built. See [`crate::state::qml_loaded`].
         #[qinvokable]
@@ -155,6 +172,8 @@ pub struct SessionRust {
     count: i32,
     mask_count: i32,
     status: QString,
+    warm_left: i32,
+    warm_step: i32,
 }
 
 impl qobject::Session {
@@ -174,6 +193,32 @@ impl qobject::Session {
         // capture, not per process.
         mask::with(|m| m.close());
         self.as_mut().set_mask_count(0);
+    }
+
+    pub fn refresh_warm(mut self: Pin<&mut Self>) {
+        let (left, step) = state::warm(|w| (w.left.max(0), w.step_ms.max(200)));
+        self.as_mut().set_warm_step(step);
+        self.as_mut().set_warm_left(left);
+    }
+
+    pub fn warm_round(mut self: Pin<&mut Self>) {
+        if *self.warm_left() <= 0 {
+            return;
+        }
+        // The same dim path the cold round drew, so the two numbers describe one
+        // drawing path rather than two.
+        let shader = state::warm(|w| w.shader);
+        let line = crate::mask_check::warm_round(shader);
+        state::warm(|w| {
+            let n = w.rounds.len() + 1;
+            w.rounds.push(format!("round {n}: {line}"));
+        });
+        let left = *self.warm_left() - 1;
+        self.as_mut().set_warm_left(left);
+        // The count normally does not move (same screens), so the windows survive
+        // the round and nothing rebuilds them. `main.qml` reloads them by hand, which
+        // is what gets them the new frame key - the old one is gone from the store.
+        self.as_mut().refresh_masks();
     }
 
     pub fn pin_id(self: Pin<&mut Self>, index: i32) -> i64 {

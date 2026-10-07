@@ -49,6 +49,9 @@ fn verdict_code(code: i32, verdict: state::Check) -> i32 {
 }
 
 fn main() {
+    // The clock the cold-path split is measured from, stamped before Qt says
+    // anything at all. See `state::stamp`.
+    state::stamp("main");
     // Before anything Qt has to say: a QML document that will not compile says so
     // only through the message handler, and a headless run would otherwise see a
     // silent zero.
@@ -196,7 +199,21 @@ fn main() {
         }
     }
 
+    // Extra rounds of the same freeze-and-open, run once the process is warm. The
+    // plan has to be written before the engine loads, because QML reads it in
+    // `Component.onCompleted` and only a QML timer can fire afterwards.
+    let warm_rounds = after("--warm-rounds").unwrap_or(0).max(0);
+    let warm_step = after("--warm-step").unwrap_or(1500).max(200);
+    if warm_rounds > 0 {
+        state::warm(|w| {
+            w.left = warm_rounds;
+            w.step_ms = warm_step;
+            w.shader = !flag("--mask-soft");
+        });
+    }
+
     let probe = after("--probe");
+    state::stamp("engine");
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
         engine.load(&QUrl::from("qrc:/qt/qml/dev/falconshot/qml/main.qml"));
@@ -204,6 +221,7 @@ fn main() {
         eprintln!("[falconshot] could not create QQmlApplicationEngine");
         std::process::exit(2);
     }
+    state::stamp("loaded");
 
     if let Some(ms) = probe {
         state::quit_after(ms);
@@ -212,7 +230,15 @@ fn main() {
         state::quit_after(ms);
     }
     if let Some(ms) = mask_ms {
-        state::quit_after(ms);
+        // A warm round needs the loop to still be running when its timer fires, and
+        // one more step after the last round before the read-back: the frame it
+        // published is what `--mask` measures.
+        let rounds_ms = if warm_rounds > 0 {
+            (warm_rounds + 1) * warm_step
+        } else {
+            0
+        };
+        state::quit_after(ms.max(rounds_ms));
     }
 
     let mut code = 0;
@@ -275,8 +301,47 @@ fn main() {
     }
 
     if let Some(ms) = mask_ms {
+        // The last round's first frames, read while its windows are still up -
+        // `measure()` closes the flow and the slots go with it.
+        let warm_swaps = if warm_rounds > 0 {
+            mask_check::swap_line()
+        } else {
+            String::new()
+        };
         let (verdict, report) = mask_check::measure();
         println!("{report}");
+        // One cold path, split into the parts a resident process has already paid
+        // before any hot key (Qt start-up, the QML engine, the document compile) and
+        // the parts it has not (the freeze, the texture hand-off, showing N windows
+        // and presenting their first frame). §10-14 ② is only reducible against the
+        // second group, so the two are printed apart rather than as one total.
+        println!("[mask cold] {}", state::stamp_line());
+        let part = |a: &str, b: &str| match state::between(a, b) {
+            Some(ms) => format!("{ms} ms"),
+            None => "-".to_string(),
+        };
+        println!(
+            "[mask cold split] qt+freeze={} (of which freeze+publish={}) engine+qml={} qml->first-frame={} total={}",
+            part("main", "engine"),
+            part("asked", "opened"),
+            part("engine", "loaded"),
+            part("qml", "swap"),
+            part("main", "swap")
+        );
+        // The rounds themselves, and the one number they were run for: milliseconds
+        // from *that* round's open to its first presented frame, which is what a hot
+        // key costs in a process that is already up. Each line names the round before
+        // it, because a round's own frame only lands after its handler has returned.
+        for line in state::warm(|w| w.rounds.clone()) {
+            println!("[mask warm] {line}");
+        }
+        if warm_rounds > 0 {
+            // The two halves added up, against the ceiling: the freeze and publish is
+            // the `freeze` field of the round's own line, the window and first frame is
+            // the slot figure. `first_swap_ms` starts its clock at the end of `open`,
+            // so the freeze is deliberately not inside it and the sum is.
+            println!("[mask warm {warm_rounds} round(s)] last: {warm_swaps}, window+frame vs ceiling {} ms (add each round's freeze ms for the hot-key total)", mask_check::FIRST_FRAME_MS);
+        }
         println!(
             "[mask after {ms} ms] qml_loaded={} {}",
             state::qml_loaded(),

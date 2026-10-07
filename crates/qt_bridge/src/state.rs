@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::Instant;
 
 use falcon_core::config::{AlphaBg, Pin as PinConfig};
 use falcon_core::encode::{self, EncodeOptions, Format};
@@ -351,14 +352,81 @@ static QML_LOADED: AtomicBool = AtomicBool::new(false);
 
 pub fn mark_qml_loaded() {
     QML_LOADED.store(true, Ordering::Relaxed);
+    stamp("qml");
 }
 
 pub fn qml_loaded() -> bool {
     QML_LOADED.load(Ordering::Relaxed)
 }
 
+/// Cold-path stamps: milliseconds since the first one, per named stage.
+///
+/// `--mask` prints one `cold of` figure and §10-14 ② has to reduce it, but a single
+/// number cannot say which part a pre-warm can even reach. Creating the QML engine
+/// and compiling the document is work a resident process has already finished before
+/// any hot key is pressed; the freeze, the texture hand-off and the first painted
+/// frame have not. Stamping both ends of each stage is what turns "1078 ms, reduce
+/// it" into "these 700 ms disappear by itself, these 378 ms are the ones to engineer".
+static CLOCK: OnceLock<Instant> = OnceLock::new();
+static STAMPS: Mutex<Vec<(&'static str, u64)>> = Mutex::new(Vec::new());
+
+/// Record `name` once, at its elapsed time. A second call with the same name is
+/// ignored on purpose: these mark the *first* time a stage happened, which is the
+/// only thing a cold path has.
+pub fn stamp(name: &'static str) {
+    let clock = CLOCK.get_or_init(Instant::now);
+    let ms = clock.elapsed().as_millis() as u64;
+    let mut v = STAMPS.lock().unwrap_or_else(PoisonError::into_inner);
+    if !v.iter().any(|(n, _)| *n == name) {
+        v.push((name, ms));
+    }
+}
+
+/// Milliseconds between two stamps, or `None` when either is missing. Missing is
+/// never reported as `0`: a stage that did not run must not read as one that was free.
+pub fn between(a: &str, b: &str) -> Option<u64> {
+    let v = STAMPS.lock().unwrap_or_else(PoisonError::into_inner);
+    let at = |n: &str| v.iter().find(|(x, _)| *x == n).map(|(_, ms)| *ms);
+    Some((at(b)? as i64 - at(a)? as i64).max(0) as u64)
+}
+
+/// `name=ms` for every stamp taken so far, in the order they were taken.
+pub fn stamp_line() -> String {
+    let v = STAMPS.lock().unwrap_or_else(PoisonError::into_inner);
+    v.iter()
+        .map(|(n, ms)| format!("{n}={ms}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn quit_after(ms: i32) {
     shim::quit_after(ms);
+}
+
+/// The `--mask` gauge's second and later rounds.
+///
+/// `main.rs` reads the command line and writes this before the QML engine exists;
+/// `Session` pulls it into qproperties from `Component.onCompleted`, because the
+/// qobject is created by QML and Rust has no handle to push through beforehand.
+/// Only a QML `Timer` can act once the event loop is running, and the question the
+/// rounds answer - what a hot key really costs - cannot be asked before then.
+#[derive(Default)]
+pub struct WarmPlan {
+    /// Rounds still owed. Counts down as they run, so the timer stops itself.
+    pub left: i32,
+    pub step_ms: i32,
+    pub shader: bool,
+    pub rounds: Vec<String>,
+}
+
+static WARM: OnceLock<Mutex<WarmPlan>> = OnceLock::new();
+
+pub fn warm<R>(f: impl FnOnce(&mut WarmPlan) -> R) -> R {
+    let mut guard = WARM
+        .get_or_init(|| Mutex::new(WarmPlan::default()))
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    f(&mut guard)
 }
 
 /// Where a new pin goes: beside the pointer, because that is where the user was

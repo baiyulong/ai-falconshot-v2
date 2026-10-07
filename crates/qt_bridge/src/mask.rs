@@ -120,6 +120,12 @@ pub struct MaskState {
     /// Pixels handed to Qt, and how long that took - the part of the 150 ms
     /// promise that is this module's to keep.
     pub pixels_ms: Option<u64>,
+    /// Bumped by every `open`, so a second capture in the same process gets keys
+    /// nobody has asked for yet. A constant revision would reuse the previous
+    /// frame's key, and `Image.cache: false` only re-requests when the URL changes:
+    /// a "re-capture" would then show the old freeze, which is exactly the bug
+    /// §5.2.4 cannot survive.
+    next_revision: u32,
     pub problems: Vec<String>,
 }
 
@@ -145,6 +151,7 @@ impl MaskState {
 
         let mut used = vec![false; snap.monitors.len()];
         let mut slots = Vec::new();
+        let revision = self.take_revision();
         for (index, screen) in screens.iter().enumerate() {
             let Some(frozen) = Self::match_monitor(snap, screen, &mut used, index) else {
                 self.problems.push(format!(
@@ -155,7 +162,7 @@ impl MaskState {
             };
             let info = &snap.monitors[frozen].info;
             let frame = &snap.monitors[frozen].frame;
-            let key = format!("{}-1", info.id);
+            let key = Self::frame_key(&info.id, revision);
             shim::store_raw(&key, &frame.pixels, frame.width, frame.height);
             slots.push(Slot {
                 index,
@@ -169,7 +176,7 @@ impl MaskState {
                     screen.h.max(1) as u32,
                 ),
                 scale: Scale::of(screen.dpr),
-                revision: 1,
+                revision,
                 swaps: 0,
                 first_swap_ms: None,
                 shader_status: None,
@@ -184,7 +191,26 @@ impl MaskState {
         self.shown = true;
         self.pixels_ms = Some(started.elapsed().as_millis() as u64);
         self.started = Some(Instant::now());
+        crate::state::stamp("opened");
         Ok(self.slots.len())
+    }
+
+    /// Claim the next frame revision, one-based and never repeated.
+    ///
+    /// Split out of `open` because the rest of `open` needs Qt (the screen list and
+    /// the frame store), while this is the part whose mistake is invisible: with a
+    /// constant revision a re-capture publishes the same provider key as the capture
+    /// before it, the `Image`'s URL does not change, and the overlay keeps showing
+    /// the old freeze while reporting a new one.
+    fn take_revision(&mut self) -> u32 {
+        let revision = self.next_revision.max(1);
+        self.next_revision = revision + 1;
+        revision
+    }
+
+    /// The provider key for one screen's frame at one revision.
+    fn frame_key(name: &str, revision: u32) -> String {
+        format!("{name}-{revision}")
     }
 
     /// The selection a mask opens with: the middle half of the primary monitor,
@@ -468,6 +494,10 @@ impl MaskState {
             slot.swaps += 1;
             if slot.first_swap_ms.is_none() {
                 slot.first_swap_ms = elapsed;
+                // The process's very first presented frame, whenever it lands. With two
+                // screens this is the earlier of the two, which is what a user sees; the
+                // per-slot `first_swap_ms` beside it stays exact per window.
+                crate::state::stamp("swap");
             }
         }
     }
@@ -961,5 +991,25 @@ mod tests {
         // what keeps the cursor a crosshair instead of an arrow on a fresh mask.
         m.set_hole(PhysRect::default());
         assert_eq!(m.hit_test(0, 700.0, 400.0), 1);
+    }
+
+    /// Two captures in one process must not share a frame key.
+    ///
+    /// The failure this guards is invisible on screen: `Image.cache: false` only
+    /// re-requests when the URL changes, so a repeated key means the second freeze
+    /// is stored under a name Qt has already cached a picture for, and the overlay
+    /// reports a new frame while showing the old one.
+    #[test]
+    fn a_second_capture_asks_for_a_key_nobody_has_used() {
+        let mut m = MaskState::default();
+        let first = m.take_revision();
+        let second = m.take_revision();
+        assert_eq!(first, 1, "revisions are one-based, 0 is no frame at all");
+        assert_ne!(first, second, "and never repeated");
+        assert_ne!(
+            MaskState::frame_key("m0-display1", first),
+            MaskState::frame_key("m0-display1", second),
+            "so the provider URL changes with the capture"
+        );
     }
 }

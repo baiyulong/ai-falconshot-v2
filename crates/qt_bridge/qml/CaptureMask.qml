@@ -194,6 +194,25 @@ Window {
         Component.onCompleted: win.view.noteShaderStatus(status)
     }
 
+    // A new frame key means Rust made a *new* slot, whose `shader_status` starts at
+    // none, while this window's `ShaderEffect` was never destroyed and therefore has
+    // no `statusChanged` left to offer. The two sides then disagree about which dim
+    // path is on screen, and the gauge grades that disagreement: measured on the round
+    // after a warm reopen as `dim path - rectangles (fallback)` and
+    // `shader ... FAIL None`, with the readback itself right at `dim=0.406`.
+    //
+    // Re-asserting on the key change, rather than only from `onStatusChanged`, is what
+    // keeps Rust's copy of the fact as live as QML's drawing of it. `Connections` is
+    // the only form this takes: a `key` change is a signal of `view`, not of the
+    // window, and `onKeyChanged` at the root is a document error measured this run
+    // ("Cannot assign to non-existent property").
+    Connections {
+        target: win.view
+        function onKeyChanged() {
+            win.view.noteShaderStatus(effect.status)
+        }
+    }
+
     // §5.2.3's selection edge. 2 device-independent pixels, which is 4 at 200% -
     // the number the user sees as "the box around what I picked".
     Rectangle {
