@@ -58,6 +58,10 @@ pub mod qobject {
         #[qproperty(i32, index)]
         #[qproperty(bool, live)]
         #[qproperty(bool, shown)]
+        /// A selection exists, which is what makes the eight handles appear. Read
+        /// off `hole.is_empty()` rather than from a drag flag, so a hole the harness
+        /// set without any pointer at all gets the same treatment.
+        #[qproperty(bool, selected)]
         #[qproperty(i32, win_x)]
         #[qproperty(i32, win_y)]
         #[qproperty(i32, win_w)]
@@ -104,6 +108,48 @@ pub mod qobject {
         #[cxx_name = "setHole"]
         fn set_hole(self: Pin<&mut Self>, x: i32, y: i32, w: i32, h: i32);
 
+        /// The pointer went down, in this window's own device-independent pixels.
+        /// Returns the grip code (`0` none, `1` a new rectangle, `2..9` an edge or
+        /// corner in `Handle::all()` order, `10` the whole rectangle), which QML uses
+        /// for the cursor - the hit test lives in Rust, so the pointer and the
+        /// picture cannot disagree about what is being held.
+        #[qinvokable]
+        #[cxx_name = "pressAt"]
+        fn press(self: Pin<&mut Self>, x: f64, y: f64) -> i32;
+
+        /// The same grip code for a point the pointer is only *over*. Hover cannot
+        /// go through `pressAt`, which would take the grip; the two share one hit
+        /// test in Rust so the cursor never promises a resize the press then does
+        /// not perform.
+        #[qinvokable]
+        #[cxx_name = "hitTestAt"]
+        fn hit_test(self: &Self, x: f64, y: f64) -> i32;
+
+        /// The pointer moved while held.
+        #[qinvokable]
+        #[cxx_name = "dragTo"]
+        fn drag(self: Pin<&mut Self>, x: f64, y: f64);
+        /// The pointer let go.
+        #[qinvokable]
+        #[cxx_name = "releaseAt"]
+        fn release(self: Pin<&mut Self>);
+
+        /// Enter or a double-click: `true` when there was a selection to confirm.
+        #[qinvokable]
+        #[cxx_name = "commitHole"]
+        fn commit(self: Pin<&mut Self>) -> bool;
+
+        /// Esc: `true` when it cleared a selection, `false` when the caller should
+        /// cancel the capture. One keystroke must not both clear and cancel.
+        #[qinvokable]
+        #[cxx_name = "stepBack"]
+        fn step_back(self: Pin<&mut Self>) -> bool;
+
+        /// Arrow keys (§5.3.9): `edge` resizes the bottom-right instead of moving.
+        #[qinvokable]
+        #[cxx_name = "nudgeHole"]
+        fn nudge(self: Pin<&mut Self>, dx: i32, dy: i32, edge: bool);
+
         /// Which of the two dim paths draws: one `ShaderEffect` pass, or four
         /// rectangles. The second is what `QT_QUICK_BACKEND=software` has to fall
         /// back to, which is why it is a switch rather than a deleted branch.
@@ -129,6 +175,7 @@ pub struct MaskViewRust {
     index: i32,
     live: bool,
     shown: bool,
+    selected: bool,
     win_x: i32,
     win_y: i32,
     win_w: i32,
@@ -158,17 +205,19 @@ impl qobject::MaskView {
     /// previous flow.
     pub fn reload(mut self: Pin<&mut Self>) {
         let index = *self.index();
-        let (view, shader, label) = mask::with(|m| {
+        let (view, shader, label, selected) = mask::with(|m| {
             (
                 m.view_data(index.max(0) as usize),
                 m.shader,
                 m.slot(index.max(0) as usize)
                     .map(|s| (s.key.clone(), s.name.clone())),
+                m.has_selection(),
             )
         });
 
         self.as_mut().set_live(view.live);
         self.as_mut().set_shown(view.shown);
+        self.as_mut().set_selected(selected);
         self.as_mut().set_win_x(view.geom.x);
         self.as_mut().set_win_y(view.geom.y);
         self.as_mut().set_win_w(view.geom.w as i32);
@@ -208,6 +257,52 @@ impl qobject::MaskView {
     pub fn set_hole(mut self: Pin<&mut Self>, x: i32, y: i32, w: i32, h: i32) {
         let rect = PhysRect::new(x, y, w.max(0) as u32, h.max(0) as u32);
         mask::with(|m| m.set_hole(rect));
+        self.as_mut().reload();
+    }
+
+    /// The three pointer calls all end in `reload`, because the hole this window
+    /// draws is a function of the *global* hole: a drag has to move the dim on the
+    /// screen it is on before the button is let go.
+    pub fn press(mut self: Pin<&mut Self>, x: f64, y: f64) -> i32 {
+        let index = *self.index();
+        let grip = mask::with(|m| {
+            m.press(index.max(0) as usize, x, y);
+            m.grip_code()
+        });
+        self.as_mut().reload();
+        grip
+    }
+
+    pub fn hit_test(&self, x: f64, y: f64) -> i32 {
+        let index = *self.index();
+        mask::with(|m| m.hit_test(index.max(0) as usize, x, y))
+    }
+
+    pub fn drag(mut self: Pin<&mut Self>, x: f64, y: f64) {
+        let index = *self.index();
+        mask::with(|m| m.drag(index.max(0) as usize, x, y));
+        self.as_mut().reload();
+    }
+
+    pub fn release(mut self: Pin<&mut Self>) {
+        mask::with(|m| m.release());
+        self.as_mut().reload();
+    }
+
+    pub fn commit(mut self: Pin<&mut Self>) -> bool {
+        let hole = mask::with(|m| m.commit());
+        self.as_mut().reload();
+        hole.is_some()
+    }
+
+    pub fn step_back(mut self: Pin<&mut Self>) -> bool {
+        let cleared = mask::with(|m| m.escape());
+        self.as_mut().reload();
+        cleared
+    }
+
+    pub fn nudge(mut self: Pin<&mut Self>, dx: i32, dy: i32, edge: bool) {
+        mask::with(|m| m.nudge_by(dx, dy, edge));
         self.as_mut().reload();
     }
 

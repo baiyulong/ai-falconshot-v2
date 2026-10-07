@@ -90,11 +90,18 @@ pub mod qobject {
         fn refresh(self: Pin<&mut Self>);
 
         /// Re-read the mask state, for the same reason [`Self::refresh`] re-reads
-        /// the pins. The mask has no per-window gestures yet, so this is the only
-        /// way its count moves; the selection flow makes that false soon.
+        /// the pins. Every mask gesture mutates the shared state, so this is how the
+        /// *count* catches up with it - the windows themselves are refreshed by the
+        /// `grabbed` signal in `main.qml`.
         #[qinvokable]
         #[cxx_name = "refreshMasks"]
         fn refresh_masks(self: Pin<&mut Self>);
+
+        /// §5.2.1's way out: the overlay is gone, the frozen desktop with it. Esc
+        /// reaches this once it has nothing left to un-select.
+        #[qinvokable]
+        #[cxx_name = "endMask"]
+        fn end_mask(self: Pin<&mut Self>);
 
         /// Called by `main.qml` once its root is built. See [`crate::state::qml_loaded`].
         #[qinvokable]
@@ -159,6 +166,14 @@ impl qobject::Session {
     pub fn refresh_masks(mut self: Pin<&mut Self>) {
         let n = mask::with(|m| m.slots.len());
         self.as_mut().set_mask_count(n as i32);
+    }
+
+    pub fn end_mask(mut self: Pin<&mut Self>) {
+        // `close` is the only path that hands the frozen frames back: a 4K desktop
+        // is 24 MB per screen, and an overlay that ends without it leaks per
+        // capture, not per process.
+        mask::with(|m| m.close());
+        self.as_mut().set_mask_count(0);
     }
 
     pub fn pin_id(self: Pin<&mut Self>, index: i32) -> i64 {

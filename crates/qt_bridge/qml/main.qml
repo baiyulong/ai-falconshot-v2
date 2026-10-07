@@ -12,6 +12,13 @@ Item {
     property PinShim shim: PinShim {}
     property Session session: Session {}
 
+    /// The mask windows, indexed by Qt screen index. Kept by the two signals rather
+    /// than read back: this Qt's `Instantiator` has `count`, `object` (singular) and
+    /// `delegateModelAccess`, and no `objects` list - measured against 6.10.1's own
+    /// `qml/QtQml/Models/plugins.qmltypes`, because a wrong property name inside a
+    /// function body is a JS `TypeError` that on Windows never reaches stdout (§8-R14).
+    property var maskWindows: []
+
     Component.onCompleted: {
         app.session.markLoaded()
         app.session.refresh()
@@ -55,8 +62,34 @@ Item {
 
         delegate: CaptureMask {
             shim: app.shim
+            session: app.session
+            onGrabbed: app.refreshOtherMasks(this)
         }
 
-        onObjectAdded: (index, object) => object.assign(index)
+        onObjectAdded: (index, object) => {
+            object.assign(index)
+            app.maskWindows[index] = object
+        }
+
+        // `endMask` comes through here: the model is the slot count, so closing the
+        // overlay is what retires the windows.
+        onObjectRemoved: (index) => { app.maskWindows[index] = null }
+    }
+
+    /// One selection, in desktop pixels; N windows, each drawing its own clipped
+    /// piece of it. The window that took the pointer event has already reloaded
+    /// itself, so this is the other one - told by the signal rather than by a timer,
+    /// because a dim that catches up a frame late is a dim the user watches lag the
+    /// mouse across the seam.
+    ///
+    /// Reload-only: it never re-emits `grabbed`, which is what stops two windows
+    /// from refreshing each other forever.
+    function refreshOtherMasks(from) {
+        for (let i = 0; i < maskWindows.length; ++i) {
+            const m = maskWindows[i]
+            if (m && m !== from) {
+                m.view.reload()
+            }
+        }
     }
 }

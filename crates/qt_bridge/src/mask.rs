@@ -26,7 +26,9 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
 use falcon_core::capture::ScreenSnapshot;
-use falcon_core::geometry::{PhysRect, Scale};
+use falcon_core::geometry::{
+    handle_at, nudge, nudge_edge, resize, Handle, PhysPoint, PhysRect, Scale, DEFAULT_HIT_SLOP,
+};
 
 use crate::capture;
 use crate::mask_view::shim;
@@ -80,11 +82,30 @@ pub struct MaskViewData {
     pub shader_status: Option<i32>,
 }
 
+/// What the pointer took hold of, in physical desktop pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct Grab {
+    /// `None` is not "nothing held" - it is "a rectangle starts here", which is the
+    /// only grip that can create a selection. `Some(Body)` moves the whole rect,
+    /// and the other eight resize it (§5.3.1's "拖动边缘或角点调整选区").
+    pub handle: Option<Handle>,
+    /// The press point: the fixed corner of a new rectangle, and the reference for
+    /// a move.
+    pub anchor: PhysPoint,
+    /// The rect the grab began from. Resizing from `start` rather than from the
+    /// current hole is what stops a long drag from accumulating rounding.
+    pub start: PhysRect,
+}
+
 #[derive(Default)]
 pub struct MaskState {
     pub slots: Vec<Slot>,
     /// The selection in physical desktop pixels.
     pub hole: PhysRect,
+    /// The pointer's grip since the last `press`, or `None` when it is not held.
+    /// Kept here rather than in QML because the arithmetic it feeds - which edge
+    /// moved, and how far - is the part that can be tested without a window.
+    pub grab: Option<Grab>,
     /// True = one ShaderEffect pass; false = four dim `Rectangle`s, which is also
     /// what the `QT_QUICK_BACKEND=software` fallback has to be able to draw.
     pub shader: bool,
@@ -225,6 +246,7 @@ impl MaskState {
             shim::drop_frame(&slot.key);
         }
         self.slots.clear();
+        self.grab = None;
         self.shown = false;
     }
 
@@ -237,6 +259,170 @@ impl MaskState {
 
     pub fn set_shader(&mut self, shader: bool) {
         self.shader = shader;
+    }
+
+    // ------------------------------------------------------------ selection
+    //
+    // The pointer arrives in window-local device-independent pixels because that is
+    // what Qt Quick reports, and every answer here is in physical desktop pixels
+    // because that is the space the crop happens in. One conversion, in
+    // [`MaskState::desk_point`], is the whole boundary.
+
+    /// A press inside an existing selection moves it rather than starting a new
+    /// one; a press outside draws. PRD §5.3.1 only says a drag makes a rectangle
+    /// and the edges adjust it, so this is this project's decision, and the reason
+    /// is that a mis-drawn selection is cheaper to move than to re-draw.
+    pub fn press(&mut self, index: usize, x: f64, y: f64) -> Option<Handle> {
+        let p = self.desk_point(index, x, y)?;
+        let slop = self.hit_slop(index);
+        let hit = if self.hole.is_empty() {
+            None
+        } else {
+            handle_at(&self.hole, p, slop)
+        };
+        self.grab = Some(match hit {
+            Some(h) => Grab {
+                handle: Some(h),
+                anchor: p,
+                start: self.hole,
+            },
+            None => Grab {
+                handle: None,
+                anchor: p,
+                start: PhysRect::default(),
+            },
+        });
+        if hit.is_none() {
+            // Nothing is drawn yet: a hole of zero size at the anchor reads as "no
+            // selection" to the dim, so the desktop stays fully dark until the
+            // pointer actually moves.
+            self.hole = PhysRect::new(p.x, p.y, 0, 0);
+        }
+        hit
+    }
+
+    /// The pointer moved while held. A new rectangle is normalised from the anchor,
+    /// so dragging up-and-left works as well as down-and-right.
+    pub fn drag(&mut self, index: usize, x: f64, y: f64) {
+        let Some(g) = self.grab else { return };
+        let Some(p) = self.desk_point(index, x, y) else {
+            return;
+        };
+        let bounds = self.desktop();
+        self.hole = match g.handle {
+            None => PhysRect::from_points(g.anchor, p),
+            // Not `resize`'s `Body` branch: that puts the rectangle's origin under
+            // the pointer, which is right for a tool you click to place and wrong
+            // for a selection you grabbed in the middle - the rect would jump by
+            // half its size on the first pixel of the drag.
+            Some(Handle::Body) => g
+                .start
+                .offset(p.x - g.anchor.x, p.y - g.anchor.y)
+                .fitted_into(&bounds),
+            Some(h) => resize(&g.start, h, p, &bounds),
+        };
+    }
+
+    pub fn release(&mut self) {
+        self.grab = None;
+    }
+
+    /// A point clamped into the desktop, in physical pixels.
+    fn desk_point(&self, index: usize, x: f64, y: f64) -> Option<PhysPoint> {
+        let slot = self.slot(index)?;
+        let r = slot.scale.ratio();
+        let p = PhysPoint::new(
+            slot.bounds.x + (x * r).round() as i32,
+            slot.bounds.y + (y * r).round() as i32,
+        );
+        let d = self.desktop();
+        Some(PhysPoint::new(
+            p.x.clamp(d.x, d.right()),
+            p.y.clamp(d.y, d.bottom()),
+        ))
+    }
+
+    /// The grab radius is a distance a finger travels, so it is stated in
+    /// device-independent pixels and this screen's scale turns it into physical
+    /// ones. Five DIP is `falcon_core`'s `DEFAULT_HIT_SLOP`, the same number the
+    /// annotation handles use.
+    fn hit_slop(&self, index: usize) -> u32 {
+        self.slot(index)
+            .map(|s| s.scale.dip_to_phys_i(DEFAULT_HIT_SLOP as i32).max(1) as u32)
+            .unwrap_or(DEFAULT_HIT_SLOP)
+    }
+
+    /// Arrow keys (§5.3.9). The step is this project's: one physical pixel, ten with
+    /// a modifier, and `resize_edge` moves the bottom-right edge instead of the
+    /// whole rect. Both helpers clamp to the desktop, which is the rule the PRD
+    /// does fix - "不允许选区超出有效截图区域".
+    pub fn nudge_by(&mut self, dx: i32, dy: i32, resize_edge: bool) {
+        if self.hole.is_empty() {
+            return;
+        }
+        let bounds = self.desktop();
+        self.hole = if resize_edge {
+            nudge_edge(&self.hole, Handle::Se, dx, dy, &bounds)
+        } else {
+            nudge(&self.hole, dx, dy, &bounds)
+        };
+    }
+
+    /// Esc. `true` means this press consumed itself by clearing the selection;
+    /// `false` means there was nothing to clear, so the caller cancels the capture.
+    /// Two windows both receiving one Esc press would then clear-and-cancel in a
+    /// single keystroke, which is why the ladder is a return value and not a
+    /// property QML reads.
+    pub fn escape(&mut self) -> bool {
+        if self.hole.is_empty() {
+            return false;
+        }
+        self.grab = None;
+        self.hole = PhysRect::default();
+        true
+    }
+
+    /// Enter or a double-click. `None` when there is no selection to confirm - the
+    /// mask stays up rather than inventing a crop the user never drew.
+    pub fn commit(&mut self) -> Option<PhysRect> {
+        self.grab = None;
+        (!self.hole.is_empty()).then_some(self.hole)
+    }
+
+    pub fn has_selection(&self) -> bool {
+        !self.hole.is_empty()
+    }
+
+    /// The live grip as a stable number, so the cursor shape and the hit test cannot
+    /// drift apart: 0 = nothing held, 1 = drawing a new rectangle, 2..9 in
+    /// `Handle::all()` order (Nw, N, Ne, E, Se, S, Sw, W), 10 = the whole rectangle.
+    pub fn grip_code(&self) -> i32 {
+        let Some(g) = self.grab.as_ref() else {
+            return 0;
+        };
+        Self::code_of(g.handle)
+    }
+
+    /// Which grip a point *would* take, without taking it. QML asks this on hover,
+    /// for the cursor shape, and it has to be the same arithmetic `press` runs -
+    /// a pointer that lies about what it is about to grab is how a resize quietly
+    /// becomes a re-draw.
+    pub fn hit_test(&self, index: usize, x: f64, y: f64) -> i32 {
+        let Some(p) = self.desk_point(index, x, y) else {
+            return 0;
+        };
+        if self.hole.is_empty() {
+            return Self::code_of(None);
+        }
+        Self::code_of(handle_at(&self.hole, p, self.hit_slop(index)))
+    }
+
+    fn code_of(handle: Option<Handle>) -> i32 {
+        match handle {
+            None => 1,
+            Some(Handle::Body) => 10,
+            Some(h) => 2 + Handle::all().iter().position(|x| *x == h).unwrap_or(0) as i32,
+        }
     }
 
     pub fn slot(&self, index: usize) -> Option<&Slot> {
@@ -540,5 +726,240 @@ mod tests {
             dpr: 1.0,
         };
         assert_eq!(MaskState::match_monitor(&snap, &alien, &mut used, 2), None);
+    }
+
+    // ------------------------------------------------------------ selection
+
+    /// The same state a drag runs against, with the one field `state_with` leaves
+    /// empty: `desktop()` reads `virtual_bounds`, and an empty desktop would clamp
+    /// every point to the origin and make each of these tests pass for the wrong
+    /// reason.
+    fn selectable(slots: Vec<Slot>, hole: PhysRect, desktop: PhysRect) -> MaskState {
+        MaskState {
+            slots,
+            hole,
+            virtual_bounds: desktop,
+            ..Default::default()
+        }
+    }
+
+    /// One 3072x1920 screen at 200%, which is the machine this runs on: a press at
+    /// DIP `(100, 50)` is physical `(200, 100)`, so every expectation below states
+    /// the scale conversion once instead of trusting a helper to hide it.
+    fn one_screen() -> (Vec<Slot>, PhysRect) {
+        let bounds = PhysRect::new(0, 0, 3072, 1920);
+        (vec![slot(0, bounds, 2.0)], bounds)
+    }
+
+    /// §5.3.1 steps 2-3: hold, move, release, and the rectangle is there - in
+    /// physical pixels, which is the space the crop is taken in afterwards.
+    #[test]
+    fn a_drag_from_nothing_draws_a_selection() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert_eq!(m.press(0, 100.0, 50.0), None);
+        assert_eq!(m.grip_code(), 1, "the grip is a new rectangle");
+        assert_eq!(m.hole, PhysRect::new(200, 100, 0, 0));
+        m.drag(0, 300.0, 200.0);
+        assert_eq!(m.hole, PhysRect::new(200, 100, 400, 300));
+        m.release();
+        assert!(m.has_selection());
+        assert_eq!(m.grip_code(), 0, "nothing is held after the release");
+    }
+
+    /// The same drag in the other direction, because "from the anchor" is only
+    /// honest if up-and-left works without producing a negative size.
+    #[test]
+    fn a_drag_up_and_left_normalises_instead_of_going_negative() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        m.press(0, 300.0, 200.0);
+        m.drag(0, 100.0, 50.0);
+        assert_eq!(m.hole, PhysRect::new(200, 100, 400, 300));
+    }
+
+    /// §5.3.1 step 4: a corner drags the two edges it owns and leaves the opposite
+    /// corner exactly where it was.
+    #[test]
+    fn a_corner_drag_resizes_and_keeps_the_opposite_corner() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
+        // The bottom-right corner is physical (1200, 1000) = DIP (600, 500).
+        assert!(matches!(m.press(0, 600.0, 500.0), Some(Handle::Se)));
+        m.drag(0, 700.0, 600.0);
+        assert_eq!(m.hole, PhysRect::new(400, 400, 1000, 800));
+        assert_eq!(m.hole.top_left(), PhysPoint::new(400, 400));
+    }
+
+    /// The same corner pushed past the edge of the screen. §5.3.9's rule is that a
+    /// selection may not leave the valid area, and the crop would otherwise ask the
+    /// frozen frame for pixels that do not exist.
+    #[test]
+    fn a_drag_off_the_screen_stops_at_its_edge() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
+        m.press(0, 600.0, 500.0);
+        m.drag(0, 2000.0, 1200.0);
+        assert_eq!(m.hole, PhysRect::new(400, 400, 2672, 1520));
+        assert_eq!(m.hole.right(), 3072);
+        assert_eq!(m.hole.bottom(), 1920);
+    }
+
+    /// Grabbing the middle moves the selection by the pointer's travel. It must not
+    /// put the rectangle's origin under the cursor: that jump is what `resize`'s own
+    /// `Body` branch does, and it is right for a tool you place with a click and
+    /// wrong for something you already have hold of.
+    #[test]
+    fn a_drag_inside_moves_without_jumping() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
+        assert!(matches!(m.press(0, 300.0, 300.0), Some(Handle::Body)));
+        m.drag(0, 350.0, 320.0);
+        assert_eq!(m.hole, PhysRect::new(500, 440, 800, 600));
+    }
+
+    /// The grab radius is a distance a finger travels, so it is stated in DIP and
+    /// this screen's scale turns it into pixels: at 200% a press 8 physical pixels
+    /// off the edge is 4 DIP off it, inside `DEFAULT_HIT_SLOP`, and grabs the edge
+    /// instead of starting a new rectangle on top of the one already there.
+    #[test]
+    fn the_hit_test_reaches_five_dip_in_whatever_units_the_screen_uses() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(200, 100, 800, 600), desk);
+        assert!(matches!(m.press(0, 96.0, 100.0), Some(Handle::W)));
+    }
+
+    /// §5.3.10: a drag that leaves its own monitor keeps extending the selection,
+    /// so the clamp is against the desktop rather than the window. Two screens at
+    /// 100%, so the arithmetic is the seam itself and not a scale factor.
+    #[test]
+    fn a_drag_can_cross_the_seam_between_two_screens() {
+        let left = slot(0, PhysRect::new(0, 0, 1920, 1080), 1.0);
+        let right = slot(1, PhysRect::new(1920, 0, 1920, 1080), 1.0);
+        let mut m = selectable(
+            vec![left, right],
+            PhysRect::default(),
+            PhysRect::new(0, 0, 3840, 1080),
+        );
+        m.press(0, 1900.0, 100.0);
+        m.drag(0, 2100.0, 300.0);
+        assert_eq!(m.hole, PhysRect::new(1900, 100, 200, 200));
+        // And each window still sees only its own half of it.
+        assert_eq!(m.view_data(0).hole, PhysRect::new(1900, 100, 20, 200));
+        assert_eq!(m.view_data(1).hole, PhysRect::new(0, 100, 180, 200));
+    }
+
+    /// The Esc ladder, as a return value rather than a property: two mask windows
+    /// can both receive one keystroke, and if each read "is there a selection"
+    /// instead of being told, the first would clear it and the second would cancel
+    /// the capture in the same press.
+    #[test]
+    fn escape_clears_the_selection_before_it_asks_to_cancel() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(200, 100, 800, 600), desk);
+        assert!(m.escape());
+        assert!(!m.has_selection());
+        assert!(!m.escape(), "the second Esc is the one that ends the flow");
+    }
+
+    /// Enter with nothing drawn is not a crop the user never drew.
+    #[test]
+    fn commit_only_returns_a_rect_that_exists() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert_eq!(m.commit(), None);
+        m.set_hole(PhysRect::new(10, 20, 30, 40));
+        assert_eq!(m.commit(), Some(PhysRect::new(10, 20, 30, 40)));
+    }
+
+    /// §5.3.9: arrows, with the step and the modifier this project chose (the PRD
+    /// fixes only "finer or larger steps" and "never leave the valid area").
+    #[test]
+    fn arrows_move_and_a_modifier_resizes() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
+        m.nudge_by(1, 0, false);
+        assert_eq!(m.hole, PhysRect::new(401, 400, 800, 600));
+        m.nudge_by(0, -10, true);
+        assert_eq!(m.hole, PhysRect::new(401, 400, 800, 590));
+        // Pinned to the right edge, a further push right cannot take it out.
+        m.set_hole(PhysRect::new(2272, 100, 800, 600));
+        m.nudge_by(50, 0, false);
+        assert_eq!(m.hole.right(), 3072);
+    }
+
+    /// A grip code is what QML turns into a cursor, so the numbering is an
+    /// interface: eight edges and corners, the body, a new rectangle, nothing.
+    #[test]
+    fn the_grip_codes_name_every_handle_once() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
+        assert_eq!(m.grip_code(), 0);
+        // The selection is physical `(400,400,800,600)`; at 200% the pointer lives
+        // in `(200,200)-(600,500)`, so every coordinate below is the rect's edge
+        // divided by the scale, not the rect's edge.
+        let mut codes = Vec::new();
+        for (x, y) in [
+            (200.0, 200.0), // Nw
+            (400.0, 200.0), // N
+            (600.0, 200.0), // Ne
+            (600.0, 350.0), // E
+            (600.0, 500.0), // Se
+            (400.0, 500.0), // S
+            (200.0, 500.0), // Sw
+            (200.0, 350.0), // W
+        ] {
+            m.press(0, x, y);
+            codes.push(m.grip_code());
+            m.release();
+        }
+        assert_eq!(codes, vec![2, 3, 4, 5, 6, 7, 8, 9]);
+        assert!(!codes.contains(&0) && !codes.contains(&1));
+        m.press(0, 400.0, 350.0);
+        assert_eq!(m.grip_code(), 10, "the body");
+        m.release();
+        m.press(0, 1400.0, 900.0);
+        assert_eq!(m.grip_code(), 1, "a new rectangle");
+    }
+
+    /// The cursor is drawn from a hover, so the hover answer has to be the press
+    /// answer - and it must reach that conclusion without moving anything.
+    #[test]
+    fn the_pointer_is_asked_before_it_presses() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
+        let before = m.hole;
+        assert_eq!(m.hit_test(0, 200.0, 200.0), 2, "the top-left corner");
+        assert_eq!(m.hit_test(0, 400.0, 350.0), 10, "the body");
+        assert_eq!(m.hit_test(0, 1400.0, 900.0), 1, "a fresh rectangle");
+        assert_eq!(
+            m.hit_test(0, 200.0, 205.0),
+            2,
+            "still the corner, 5 DIP down"
+        );
+        assert_eq!(m.hole, before, "and nothing moved");
+
+        // With the grip named, the hover and the press must agree everywhere.
+        for (x, y) in [
+            (200.0, 200.0),
+            (400.0, 200.0),
+            (600.0, 200.0),
+            (600.0, 350.0),
+            (600.0, 500.0),
+            (400.0, 500.0),
+            (200.0, 500.0),
+            (200.0, 350.0),
+            (1400.0, 900.0),
+        ] {
+            let hover = m.hit_test(0, x, y);
+            m.press(0, x, y);
+            assert_eq!(m.grip_code(), hover, "hover and press at ({x}, {y})");
+            m.release();
+        }
+
+        // No selection yet: every point of the screen is "start drawing", which is
+        // what keeps the cursor a crosshair instead of an arrow on a fresh mask.
+        m.set_hole(PhysRect::default());
+        assert_eq!(m.hit_test(0, 700.0, 400.0), 1);
     }
 }

@@ -17,10 +17,45 @@ Window {
     id: win
 
     required property PinShim shim
+    required property Session session
 
     // Created by the Instantiator before it knows which screen it is: index -1
     // reads as not-live, which is the same reason a pin window starts at id -1.
     readonly property MaskView view: MaskView { index: -1 }
+
+    /// The grip the pointer is over - or holding. The numbers are Rust's
+    /// (`MaskState::grip_code`): `0` nothing, `1` a new rectangle, `2..9` the eight
+    /// handles in `Handle::all()` order (Nw, N, Ne, E, Se, S, Sw, W), `10` the whole
+    /// selection. A number is what crosses the bridge, because the alternative is
+    /// QML matching on an enum it does not own.
+    property int grip: 0
+
+    /// The hole changed under *this* window's pointer. `main.qml` reloads the other
+    /// mask windows on it: the selection is one desktop-space rectangle and every
+    /// window draws its own clipped piece of it, so a drag on screen 0 has to move
+    /// the dim on screen 1 before the button is let go.
+    signal grabbed()
+
+    function cursorFor(g) {
+        switch (g) {
+        case 2:  case 6:  return Qt.SizeFDiagCursor
+        case 3:  case 7:  return Qt.SizeVerCursor
+        case 4:  case 8:  return Qt.SizeBDiagCursor
+        case 5:  case 9:  return Qt.SizeHorCursor
+        case 10:          return Qt.SizeAllCursor
+        case 1:           return Qt.CrossCursor
+        default:          return Qt.ArrowCursor
+        }
+    }
+
+    // §5.3.9's "配合修饰键进行更细或更大步长调整": one device pixel a keystroke,
+    // ten with Shift, and Alt moves the bottom-right edge instead of the rectangle.
+    // The step is a *device* pixel because that is the unit the PRD's title names -
+    // 像素级控制 - not the unit the pointer arrives in.
+    function step(dx, dy, mods) {
+        const n = (mods & Qt.ShiftModifier) ? 10 : 1
+        view.nudgeHole(dx * n, dy * n, (mods & Qt.AltModifier) !== 0)
+    }
 
     // The `Instantiator` says which screen this is after the object exists, and
     // `MaskView` holds the answer - so this window forwards rather than letting
@@ -56,11 +91,19 @@ Window {
 
     onFrameSwapped: view.noteSwap()
 
+    // The keyboard half of the interaction (§5.3.9) only reaches a window that has
+    // the focus, and a mask made from a background process has no reason to be
+    // given it. Asking once it is actually on screen is also why this is not in
+    // `Component.onCompleted`: the first window may be built while `shown` is still
+    // false, and activating a hidden window is a request the platform drops.
+    onVisibleChanged: if (visible) win.requestActivate()
+
     Component.onCompleted: {
         // The provider has to be on the engine this window renders with, and the
         // mask may be the first window the process ever makes.
         shim.install(win)
         view.reload()
+        surface.forceActiveFocus()
     }
 
     // The frozen desktop, stretched into the window it belongs to.
@@ -161,5 +204,102 @@ Window {
         color: "transparent"
         border.color: "white"
         border.width: 2
+    }
+
+    // Where the eight grips sit, as fractions of the hole, in `Handle::all()`'s
+    // order - so `index + 2` is the grip code the pointer takes there.
+    readonly property var gripFx: [0, 0.5, 1, 1, 1, 0.5, 0, 0]
+    readonly property var gripFy: [0, 0, 0, 0.5, 1, 1, 1, 0.5]
+
+    // §5.3.1's eight adjustment points. Drawn, never clicked: the hit test that
+    // decides what a press means is Rust's (`view.hitTestAt`), and a second copy of
+    // it here - one MouseArea per handle - is how a cursor and a drag start
+    // disagreeing about which edge the user took.
+    Item {
+        anchors.fill: parent
+        visible: win.view.selected
+
+        Repeater {
+            model: 8
+
+            delegate: Rectangle {
+                required property int index
+
+                x: win.view.hole_x + win.gripFx[index] * win.view.hole_w - 4
+                y: win.view.hole_y + win.gripFy[index] * win.view.hole_h - 4
+                width: 8
+                height: 8
+                radius: 1
+                color: "white"
+                border.color: "black"
+                border.width: 1
+            }
+        }
+    }
+
+    // The whole pointer surface. One MouseArea for the entire screen is the shape
+    // the state machine expects: a press anywhere is either a grip on the existing
+    // rectangle or the start of a new one, and Rust decides which - so there is no
+    // dead zone between the handles to explain.
+    MouseArea {
+        id: surface
+        anchors.fill: parent
+        acceptedButtons: Qt.LeftButton
+        hoverEnabled: true
+        focus: true
+        cursorShape: win.cursorFor(win.grip)
+
+        onPressed: (mouse) => {
+            win.grip = view.pressAt(mouse.x, mouse.y)
+            win.grabbed()
+        }
+
+        onPositionChanged: (mouse) => {
+            if (mouse.pressed) {
+                view.dragTo(mouse.x, mouse.y)
+            } else {
+                win.grip = view.hitTestAt(mouse.x, mouse.y)
+            }
+            win.grabbed()
+        }
+
+        onReleased: (mouse) => {
+            view.releaseAt()
+            win.grip = view.hitTestAt(mouse.x, mouse.y)
+            win.grabbed()
+        }
+
+        // The drag can be ended by something other than a release inside this
+        // window. Leaving the grab in place would leave Rust moving a rectangle for
+        // a button nobody is holding.
+        onCanceled: view.releaseAt()
+
+        onDoubleClicked: if (view.commitHole()) win.grabbed()
+
+        Keys.onEscapePressed: (event) => {
+            event.accept()
+            // The ladder, not a property: the first Esc un-selects, the second one
+            // cancels. `endMask` destroys these windows from the model, and doing
+            // that while one of them is inside a key handler is a use-after-free
+            // QML will not warn about - so it goes through the event loop.
+            if (!view.stepBack()) {
+                Qt.callLater(() => win.session.endMask())
+            }
+        }
+
+        Keys.onReturnPressed: (event) => {
+            event.accept()
+            if (view.commitHole()) win.grabbed()
+        }
+
+        Keys.onEnterPressed: (event) => {
+            event.accept()
+            if (view.commitHole()) win.grabbed()
+        }
+
+        Keys.onLeftPressed: (event) => win.step(-1, 0, event.modifiers)
+        Keys.onRightPressed: (event) => win.step(1, 0, event.modifiers)
+        Keys.onUpPressed: (event) => win.step(0, -1, event.modifiers)
+        Keys.onDownPressed: (event) => win.step(0, 1, event.modifiers)
     }
 }
