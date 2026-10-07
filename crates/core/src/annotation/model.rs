@@ -81,6 +81,37 @@ impl Kind {
             Kind::Mosaic | Kind::Blur | Kind::Zoom | Kind::Text | Kind::Number
         )
     }
+
+    /// The id this kind is stored under. §5.7.1's per-tool style memory has to key a
+    /// config table by tool, and the tool set only exists here - so this is the one
+    /// place that decides the spelling, rather than a second list somewhere that can
+    /// drift out of step with the enum.
+    pub fn key(self) -> &'static str {
+        match self {
+            Kind::Rect => "rect",
+            Kind::RoundedRect => "rounded_rect",
+            Kind::Ellipse => "ellipse",
+            Kind::Line => "line",
+            Kind::Polyline => "polyline",
+            Kind::Arrow => "arrow",
+            Kind::DoubleArrow => "double_arrow",
+            Kind::Pencil => "pencil",
+            Kind::Marker => "marker",
+            Kind::Mosaic => "mosaic",
+            Kind::Blur => "blur",
+            Kind::Text => "text",
+            Kind::Number => "number",
+            Kind::Zoom => "zoom",
+            Kind::Eraser => "eraser",
+        }
+    }
+
+    /// [`Kind::key`] backwards. Unknown spellings are `None`, not a default: a config
+    /// file naming a tool that does not exist has to be reported, not drawn as
+    /// something else.
+    pub fn from_key(key: &str) -> Option<Kind> {
+        KINDS.iter().copied().find(|k| k.key() == key)
+    }
 }
 
 /// Where the element sits. Four shapes cover every tool: a box, a two-point
@@ -927,6 +958,21 @@ mod tests {
         assert!(Kind::Mosaic.interior_is_target());
         assert!(!Kind::Arrow.interior_is_target());
         assert!(Transform::default().is_identity());
+    }
+
+    #[test]
+    fn every_tool_has_one_spelling_that_survives_a_round_trip() {
+        // `[tool_style]` keys config by this string, so a duplicate would silently
+        // give two tools the same remembered colour.
+        let mut seen = std::collections::HashSet::new();
+        for kind in KINDS {
+            assert!(seen.insert(kind.key()), "{} shares a key", kind.key());
+            assert_eq!(Kind::from_key(kind.key()), Some(*kind));
+        }
+        assert_eq!(seen.len(), KINDS.len(), "KINDS itself repeats");
+        assert_eq!(Kind::from_key("Rect"), None, "spellings are exact");
+        assert_eq!(Kind::from_key(""), None);
+        assert_eq!(Kind::from_key("no_such_tool"), None);
     }
 
     #[test]

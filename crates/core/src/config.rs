@@ -7,6 +7,7 @@
 //!   the QML settings page binds to — one code path for a hundred widgets
 //!   instead of a property per setting.
 
+use crate::annotation::Kind;
 use crate::encode::Format;
 use crate::naming::Collision;
 use serde::{Deserialize, Serialize};
@@ -198,6 +199,20 @@ impl Default for Capture {
     }
 }
 
+/// One tool's remembered pen (§5.7.1). Both fields are optional because a hand-edit
+/// may speak about only one of them: `[annotation.tool_style.rect] width = 5` is a
+/// user who changed the rect's line width, not one who also reset its colour. A tool
+/// with no entry was never taught and takes `[annotation]`'s values.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ToolStyle {
+    /// Anything [`crate::colors::parse`] reads. The layer writes `#RRGGBBAA`, because
+    /// the alpha is part of the pen and a six-digit hex cannot carry it.
+    pub color: Option<String>,
+    /// Line width in physical pixels, the same 1..=64 the pen takes (§5.7.20).
+    pub width: Option<u32>,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Annotation {
@@ -219,6 +234,10 @@ pub struct Annotation {
     pub undo_merge_ms: u32,
     /// §5.7.1 keep the toolbar visible while hovering the selection.
     pub show_toolbar_on_hover: bool,
+    /// §5.7.1 记忆该工具最近一次使用的样式 / §9.2 样式记忆重启有效. One entry per
+    /// tool the user has actually taught, keyed by the tool's own spelling
+    /// ([`crate::annotation::model::Kind::key`]).
+    pub tool_style: BTreeMap<String, ToolStyle>,
 }
 
 impl Default for Annotation {
@@ -236,6 +255,7 @@ impl Default for Annotation {
             undo_limit: 200,
             undo_merge_ms: 400,
             show_toolbar_on_hover: true,
+            tool_style: BTreeMap::new(),
         }
     }
 }
@@ -976,6 +996,42 @@ impl Config {
             ));
             self.annotation.default_tool.clear();
         }
+        // §5.7.1's memory is keyed by the tool's own spelling, so a key that names no
+        // tool is reported and dropped: guessing at a typo would hand one tool another
+        // tool's colour. An unreadable value loses that one field, not the entry — a
+        // bad colour says nothing about the line width written beside it.
+        let remembered: Vec<(String, ToolStyle)> = std::mem::take(&mut self.annotation.tool_style)
+            .into_iter()
+            .collect();
+        for (key, style) in remembered {
+            if Kind::from_key(&key).is_none() {
+                w.push(format!(
+                    "annotation.tool_style.{key}: no such tool, dropped"
+                ));
+                continue;
+            }
+            let mut kept = style;
+            if let Some(color) = &kept.color {
+                if crate::colors::parse(color).is_none() {
+                    w.push(format!(
+                        "annotation.tool_style.{key}.color: {color} is not a colour, forgotten"
+                    ));
+                    kept.color = None;
+                }
+            }
+            if let Some(width) = kept.width {
+                let mut width = width;
+                clamp(
+                    &mut w,
+                    &format!("annotation.tool_style.{key}.width"),
+                    &mut width,
+                    1,
+                    64,
+                );
+                kept.width = Some(width);
+            }
+            self.annotation.tool_style.insert(key, kept);
+        }
         if !matches!(
             self.annotation.arrow_style.as_str(),
             "straight" | "elbow" | "curve"
@@ -1439,6 +1495,7 @@ mod tests {
             "[general]",
             "[capture]",
             "[annotation]",
+            "[annotation.tool_style]",
             "[pin]",
             "[output]",
             "[hotkey]",
@@ -1503,6 +1560,108 @@ mod tests {
         assert!(c.has_key("history.max_items"));
         assert!(!c.has_key("history.nope"));
         assert!(!c.has_key("history"));
+    }
+
+    #[test]
+    fn a_tools_pen_survives_the_file_it_was_written_to() {
+        // §9.2 样式记忆在重启后仍然有效, and this is the round trip a restart takes:
+        // the layer writes `#RRGGBBAA` because the alpha is part of the pen, the file
+        // carries it, and the layer reads it back.
+        let mut c = Config::default();
+        for (tool, color, width) in [
+            ("rect", "#123456EF", 9u32),
+            ("arrow", "#FFB900FF", 2),
+            ("mosaic", "#00000000", 64),
+        ] {
+            c.annotation.tool_style.insert(
+                tool.into(),
+                ToolStyle {
+                    color: Some(color.into()),
+                    width: Some(width),
+                },
+            );
+        }
+        let text = c.export_text().unwrap();
+        let (back, warnings) = Config::parse_import(&text).unwrap();
+        assert_eq!(back, c);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(
+            text.contains("[annotation.tool_style.rect]"),
+            "one header per tool\n{text}"
+        );
+        assert_eq!(
+            back.get_str("annotation.tool_style.rect.width").as_deref(),
+            Some("9")
+        );
+        assert_eq!(
+            back.get_str("annotation.tool_style.mosaic.color")
+                .as_deref(),
+            Some("#00000000")
+        );
+    }
+
+    #[test]
+    fn a_remembered_style_naming_no_tool_is_dropped_not_renamed() {
+        // `rec` is one keystroke from `rect`, and guessing would give the rect another
+        // tool's pen. The layer has no way to name a tool either, so the config is the
+        // place that says so.
+        let mut c = Config::default();
+        c.annotation.tool_style.insert(
+            "rec".into(),
+            ToolStyle {
+                color: Some("#E81123FF".into()),
+                width: Some(4),
+            },
+        );
+        c.annotation.tool_style.insert(
+            "rect".into(),
+            ToolStyle {
+                color: Some("#0078D7FF".into()),
+                width: Some(5),
+            },
+        );
+        assert_eq!(
+            c.validate(),
+            vec!["annotation.tool_style.rec: no such tool, dropped".to_string()]
+        );
+        assert_eq!(c.annotation.tool_style.len(), 1);
+        assert_eq!(c.annotation.tool_style["rect"].width, Some(5));
+    }
+
+    #[test]
+    fn half_a_bad_style_does_not_spill_on_the_other_half() {
+        let mut c = Config::default();
+        c.annotation.tool_style.insert(
+            "ellipse".into(),
+            ToolStyle {
+                color: Some("crimson-ish".into()),
+                width: Some(200),
+            },
+        );
+        let warnings = c.validate();
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(warnings[0].contains("ellipse.color"), "{warnings:?}");
+        assert!(warnings[1].contains("ellipse.width"), "{warnings:?}");
+        let kept = &c.annotation.tool_style["ellipse"];
+        assert_eq!(kept.color, None, "the unreadable colour is gone");
+        assert_eq!(kept.width, Some(64), "the width was clamped, not dropped");
+    }
+
+    #[test]
+    fn a_hand_written_entry_with_one_field_keeps_it() {
+        // The file is something a person edits, so half an entry is a legal thing to
+        // write: the tool's width changes, its colour is left to `[annotation]`.
+        let mut c: Config = toml_edit::de::from_str(
+            r#"
+[annotation.tool_style.rect]
+width = 5
+"#,
+        )
+        .unwrap();
+        assert_eq!(c.annotation.tool_style.len(), 1);
+        assert_eq!(c.annotation.tool_style["rect"].width, Some(5));
+        assert_eq!(c.annotation.tool_style["rect"].color, None);
+        assert!(c.validate().is_empty());
     }
 
     #[test]

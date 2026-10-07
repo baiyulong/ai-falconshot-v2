@@ -28,6 +28,7 @@
 //! Qt, and it is deliberately separate from the painting so the state machine - and
 //! the byte-for-byte comparisons the gauge and the tests make - can run headless.
 
+use std::collections::BTreeMap;
 use std::time::Instant;
 
 use falcon_core::annotation::model::{Dash, Document, Element, Geom, Kind, Style};
@@ -35,6 +36,8 @@ use falcon_core::annotation::raster::NoGlyphs;
 use falcon_core::annotation::undo::UndoStack;
 use falcon_core::annotation::{raster, Command, Dirty};
 use falcon_core::capture::ScreenSnapshot;
+use falcon_core::colors::{format as format_color, ColorFormat};
+use falcon_core::config::ToolStyle;
 use falcon_core::frame::Frame;
 use falcon_core::geometry::{PhysPoint, PhysRect};
 
@@ -233,11 +236,20 @@ fn view_of(elements: &[Element], canvas: &Canvas, dx: i32, dy: i32) -> Document 
 }
 
 impl Layer {
+    /// Start a flow from nothing but keep what the user taught us: `styles` is
+    /// §5.7.1's per-tool memory, and a second capture in the same process is not a
+    /// reason to forget it. Everything else in a `Layer` belongs to the flow.
+    fn clear_flow(&mut self) {
+        let styles = std::mem::take(&mut self.styles);
+        *self = Layer::default();
+        self.styles = styles;
+    }
+
     /// A new flow: each slot's frozen frame becomes a base, and the document starts
     /// empty. Called from [`crate::mask::MaskState::open`], so the ink and the
     /// picture it sits on are always the same capture.
     pub fn begin(&mut self, snap: &ScreenSnapshot, slots: &[Slot]) {
-        *self = Layer::default();
+        self.clear_flow();
         self.origin = PhysPoint::new(snap.virtual_bounds.x, snap.virtual_bounds.y);
         self.doc = Document::new(snap.virtual_bounds.w, snap.virtual_bounds.h);
         for slot in slots {
@@ -279,7 +291,7 @@ impl Layer {
                 shim::drop_frame(&c.published);
             }
         }
-        *self = Layer::default();
+        self.clear_flow();
     }
 
     /// The selection moved. The clip moved with it, so everything between the old
@@ -321,8 +333,8 @@ impl Layer {
     pub fn select_tool(&mut self, code: i32) {
         let kind = tool_at(code);
         if let Some(k) = kind {
-            if let Some((_, s)) = self.styles.iter().find(|(tk, _)| *tk == k) {
-                self.style = s.clone();
+            if let Some(s) = self.remembered(k) {
+                self.style = s;
             }
         }
         self.tool = kind;
@@ -362,9 +374,8 @@ impl Layer {
     /// number the user sets, and a 2 px pencil whose brush is still 16 px wide is a
     /// tool that ignores the knob.
     pub fn set_width(&mut self, width: u32) {
-        let w = width.clamp(1, 64);
-        self.style.width = w;
-        self.style.brush.size = w.saturating_mul(4).clamp(3, 96);
+        self.style.width = width.clamp(1, 64);
+        Self::link_brush(&mut self.style);
         self.remember_style();
     }
 
@@ -390,10 +401,91 @@ impl Layer {
 
     fn remember_style(&mut self) {
         let Some(k) = self.tool else { return };
-        match self.styles.iter_mut().find(|(tk, _)| *tk == k) {
-            Some(slot) => slot.1 = self.style.clone(),
-            None => self.styles.push((k, self.style.clone())),
+        self.store(k, self.style.clone());
+    }
+
+    /// The pen this tool was last left with, if the user ever taught it one.
+    fn remembered(&self, kind: Kind) -> Option<Style> {
+        self.styles
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, s)| s.clone())
+    }
+
+    fn store(&mut self, kind: Kind, style: Style) {
+        match self.styles.iter_mut().find(|(k, _)| *k == kind) {
+            Some(slot) => slot.1 = style,
+            None => self.styles.push((kind, style)),
         }
+    }
+
+    /// §5.7.20's one粗细 knob: the brush follows the pen wherever the width is set, so
+    /// that a remembered width and a typed one cannot leave a tool with a 2 px pen and
+    /// a 16 px brush.
+    fn link_brush(style: &mut Style) {
+        style.brush.size = style.width.saturating_mul(4).clamp(3, 96);
+    }
+
+    /// The restart half of §5.7.1's memory (PRD §9.2 样式记忆重启后仍然有效): the
+    /// `[annotation.tool_style]` table goes back into the layer. The layer parses no
+    /// file - this is the seam the config hands its readings over.
+    ///
+    /// A tool the table says nothing about is left alone, and a field it leaves out is
+    /// left alone rather than zeroed: `width = 5` with no `color` is a user who changed
+    /// the rect's line width, not one who also reset its colour.
+    // The caller is M5's config owner, which does not exist yet: `Config::load` has no
+    // product call site anywhere in the workspace (measured this round). Nothing here is
+    // wired to a file, and the tests below are not allowed to count as a consumer.
+    #[allow(dead_code)]
+    pub fn apply_tool_styles(&mut self, remembered: &BTreeMap<String, ToolStyle>) {
+        for (key, saved) in remembered {
+            let Some(kind) = Kind::from_key(key) else {
+                self.problems.push(format!(
+                    "tool style for {key:?}: no such tool, the config has to be edited by hand"
+                ));
+                continue;
+            };
+            let mut style = self.remembered(kind).unwrap_or_else(|| self.style.clone());
+            if let Some(text) = &saved.color {
+                match falcon_core::colors::parse(text) {
+                    Some(rgba) => style.color = rgba,
+                    None => self
+                        .problems
+                        .push(format!("tool style for {key:?}: {text} is not a colour")),
+                }
+            }
+            if let Some(width) = saved.width {
+                style.width = width.clamp(1, 64);
+                Self::link_brush(&mut style);
+            }
+            self.store(kind, style);
+        }
+        // The selected tool shows its pen in the toolbar, so an apply that moved it has
+        // to move the readback with it - the same rule `select_tool` follows.
+        if let Some(k) = self.tool {
+            if let Some(s) = self.remembered(k) {
+                self.style = s;
+            }
+        }
+    }
+
+    /// Everything the layer has learned, in the spelling the config stores it under.
+    /// Colours leave as `#RRGGBBAA`, because the alpha is part of the pen and a
+    /// six-digit hex cannot carry it.
+    #[allow(dead_code)] // same seam, same missing caller
+    pub fn tool_styles(&self) -> BTreeMap<String, ToolStyle> {
+        self.styles
+            .iter()
+            .map(|(kind, style)| {
+                (
+                    kind.key().to_string(),
+                    ToolStyle {
+                        color: Some(format_color(style.color, ColorFormat::HexRgba)),
+                        width: Some(style.width),
+                    },
+                )
+            })
+            .collect()
     }
 
     /// The selection in document space.
@@ -722,6 +814,7 @@ impl Layer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use falcon_core::config::Config;
 
     /// A layer over fake screens, with no freeze and no Qt: [`Layer::flush`] is the
     /// only method in this module that touches the image provider, and nothing here
@@ -988,5 +1081,142 @@ mod tests {
         l.drag(PhysPoint::new(30, 30));
         assert!(l.release());
         assert!(!l.dragging());
+    }
+
+    #[test]
+    fn a_second_flow_still_remembers_the_tool_styles() {
+        // §5.7.1's memory is per tool, and §9.2 asks it to survive a restart. The
+        // restart half is the config's job; this is the half that is not: a second
+        // capture *inside one process* must not forget what the first one learned.
+        // `begin` and `end` both did `*self = Layer::default()`, which threw `styles`
+        // away together with the canvases - so the second flow of a session opened
+        // with the factory colour and the factory 3 px line.
+        //
+        // Driven through `end` because `begin` needs a `ScreenSnapshot`, which needs a
+        // real capture; the two shared one reset, so this is the same line of code.
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        let rect = code_of(Some(Kind::Rect));
+        let ellipse = code_of(Some(Kind::Ellipse));
+        l.select_tool(rect);
+        l.set_color([1, 2, 3, 255]);
+        l.set_width(7);
+        l.select_tool(ellipse);
+        l.set_color([9, 8, 7, 255]);
+
+        l.end();
+        assert!(l.canvases.is_empty(), "the flow did not end");
+        assert_eq!(l.objects(), 0);
+
+        l.select_tool(rect);
+        assert_eq!(l.color(), [1, 2, 3, 255], "the rect forgot its colour");
+        assert_eq!(l.width(), 7, "the rect forgot its width");
+        l.select_tool(ellipse);
+        assert_eq!(l.color(), [9, 8, 7, 255], "the ellipse forgot its colour");
+    }
+
+    #[test]
+    fn a_restarted_layer_reads_the_pens_the_file_remembered() {
+        // PRD §9.2's restart is the config's job; this is the seam it hands the readings
+        // over. A row of the table that cannot be honoured is said out loud rather than
+        // quietly ignored, because the user has no other way to find out.
+        let mut remembered = BTreeMap::new();
+        remembered.insert(
+            "rect".into(),
+            ToolStyle {
+                color: Some("#123456EF".into()),
+                width: Some(9),
+            },
+        );
+        remembered.insert(
+            "arrow".into(),
+            ToolStyle {
+                color: None,
+                width: Some(21),
+            },
+        );
+        remembered.insert(
+            "ellipse".into(),
+            ToolStyle {
+                color: Some("crimson".into()),
+                width: None,
+            },
+        );
+        remembered.insert(
+            "rec".into(),
+            ToolStyle {
+                color: Some("#FFB900FF".into()),
+                width: Some(4),
+            },
+        );
+
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        l.select_tool(code_of(Some(Kind::Rect)));
+        l.apply_tool_styles(&remembered);
+
+        assert_eq!(
+            l.color(),
+            [0x12, 0x34, 0x56, 0xEF],
+            "the tool on screen reads the pen the file gave it"
+        );
+        assert_eq!(l.width(), 9);
+        l.select_tool(code_of(Some(Kind::Arrow)));
+        assert_eq!(l.width(), 21);
+        assert_eq!(
+            l.color(),
+            [232, 17, 35, 255],
+            "a width alone is not a colour reset"
+        );
+        l.select_tool(code_of(Some(Kind::Ellipse)));
+        assert_eq!(
+            l.color(),
+            [232, 17, 35, 255],
+            "an unreadable colour teaches the tool nothing"
+        );
+
+        assert_eq!(l.problems.len(), 2, "{:?}", l.problems);
+        assert!(
+            l.problems.iter().any(|p| p.contains("\"rec\"")),
+            "{:?}",
+            l.problems
+        );
+        assert!(
+            l.problems.iter().any(|p| p.contains("crimson")),
+            "{:?}",
+            l.problems
+        );
+    }
+
+    #[test]
+    fn what_the_layer_learns_comes_back_out_of_the_config() {
+        // Both halves of §9.2 in one line: teach the layer, put its table through the
+        // config's own validation, and read it into a layer that has never seen these
+        // tools. No file is involved - the disk half waits for M5's config owner.
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        l.select_tool(code_of(Some(Kind::Rect)));
+        l.set_color([1, 2, 3, 240]);
+        l.set_width(7);
+        l.select_tool(code_of(Some(Kind::Marker)));
+        l.set_color([9, 8, 7, 255]);
+        l.set_width(40);
+
+        let table = l.tool_styles();
+        assert_eq!(table.len(), 2);
+        assert_eq!(table["rect"].color.as_deref(), Some("#010203F0"));
+        assert_eq!(table["rect"].width, Some(7));
+        assert_eq!(table["marker"].color.as_deref(), Some("#090807FF"));
+
+        let mut cfg = Config::default();
+        cfg.annotation.tool_style = table;
+        assert!(cfg.validate().is_empty(), "{:?}", cfg.annotation.tool_style);
+
+        let mut fresh = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        fresh.apply_tool_styles(&cfg.annotation.tool_style);
+        assert!(fresh.problems.is_empty(), "{:?}", fresh.problems);
+        fresh.select_tool(code_of(Some(Kind::Rect)));
+        assert_eq!(fresh.color(), [1, 2, 3, 240]);
+        assert_eq!(fresh.width(), 7);
+        fresh.select_tool(code_of(Some(Kind::Marker)));
+        assert_eq!(fresh.color(), [9, 8, 7, 255]);
+        assert_eq!(fresh.width(), 40);
     }
 }
