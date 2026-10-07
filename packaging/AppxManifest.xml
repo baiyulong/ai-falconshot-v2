@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The package manifest for the MSIX (plan 8-R17, decision D4).
+
+  Syntax authority is not memory: it is the 34 full-trust desktop packages already
+  installed on this machine, read through `Get-AppxPackageManifest`. The two shapes
+  copied from there are `EntryPoint="Windows.FullTrustApplication"` and
+  `<rescap:Capability Name="runFullTrust"/>` - the second one is what a Win32 app
+  declares, and the name the plan previously guessed ("runFullAccess") is wrong: no
+  installed package uses it.
+
+  Publisher is a self-signed subject for local testing. The Store rewrites both
+  Publisher and PublisherDisplayName at submission, so neither value is a claim
+  about the published identity (R17 item 3, not verifiable on this machine).
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity
+    Name="baiyulong.Falconshot"
+    Publisher="CN=baiyulong"
+    Version="0.1.0.0"
+    ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Falconshot</DisplayName>
+    <PublisherDisplayName>baiyulong</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26200.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="zh-CN" />
+    <Resource Language="en-US" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Falconshot" Executable="falconshot.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Falconshot"
+        Description="截图、标注、贴图"
+        BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png" />
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
