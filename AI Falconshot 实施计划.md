@@ -1297,6 +1297,8 @@ powershell -NoProfile -Command "Get-Command New-SelfSignedCertificate | Select N
 | 凭据从哪来 | `credential.helper=manager` **来自系统级 `C:/Program Files/Git/etc/gitconfig`**（Git for Windows 默认），本机 local 与 global 都没设过（各自返回码 1）⇒ **切到 HTTPS 这条路线没有写入任何配置，只是换了 remote 的 URL** | `git config --show-origin --get-all credential.helper` |
 | 账号上的公钥 | **无法枚举**：`gh ssh-key list` 需要 `admin:public_key` scope，本机 token 没有（HTTP 404）。所以"本机没有公钥注册到该账号"这句只成立于实测的两把钥匙（`id_rsa_github` 文件不存在、`id_ed25519` 被拒），不是账号级结论 | `gh auth status` 看 scopes；要枚举得先 `gh auth refresh -s admin:public_key` |
 
+**⚠️ 那条 `[ahead N]` 假象到 P16 又复现了一次，读法要更新**：`git push https://…` 走显式 URL ⇒ **`refs/remotes/origin/main` 不更新**，`git rev-list --left-right --count origin/main...HEAD` 于是报 `0 1`（本地已推上去的提交被读成"领先一个"）。`origin` 早已是 HTTPS，但**决定因素是推送命令里带不带 URL，不是 `origin` 长什么样**。修法不是改配置，是推完 `git fetch origin main` 一次（P16 实测：fetch 后 `0 0`，`status -sb` 回到 `## main...origin/main` 无标记）。⇒ **引用 `[ahead N]` 前先说清上一次推送带没带 URL**；§10 第 12 项那句"切换 HTTPS 后不再有假象"只成立于"后续都用裸 `git push`"那条路径。
+
 **克隆复核（同日，用 `gh`）**：把仓库重新克隆到临时目录，与本机工作树**逐文件比 md5 ⇒ 230 个跟踪文件，不一致 0、缺失 0**。这是第 45 条那句"证据文件按字节存、克隆副本上可复现"的现场检验，而不是假定。**并且在克隆里独立重算了 `ad3ce51`**：`git ls-tree -r -l -z` 直接给出 **229 个 blob / 8,969,193 B**，与正文一致（同法在 `HEAD` 上是 230 个 / 9,000,536 B）。这一项**第一次跑是 FAIL**，根因在复核脚本自己身上：`git ls-tree --name-only` 不给 `-z` 时，四个中文文件名的路径被 git 加引号并八进制转义，拼成 `rev:path` 后 `cat-file` 4/4 失败，脚本把失败当 0 B ⇒ 算出 8,569,900 B，**少 399,293 B 而不报任何错**（详见 §B.3 第 48 条）。命令：
 
 ```bash
