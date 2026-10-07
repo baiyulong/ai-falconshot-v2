@@ -38,21 +38,21 @@ use crate::{capture, session};
 /// harness can tell a mask from a pin: both are `QQuickWindow`, and the mask is the
 /// one whose name this process chose. No space in it, because the shim's window
 /// line splits its fields on whitespace.
-const TITLE: &str = "falconshot-mask-";
+pub(crate) const TITLE: &str = "falconshot-mask-";
 
 /// Per-channel floor below which a source pixel cannot carry a ratio. Black times
 /// anything is black, so a dim measured over a black desktop is 0/0 and not 0.400.
-const MIN_SOURCE: u32 = 32;
+pub(crate) const MIN_SOURCE: u32 = 32;
 
 /// How far from the selection edge a sample has to be to count, in
 /// device-independent pixels. The border is 2 DIP wide, and a sample on it is a
 /// white pixel rather than a measurement; the slack is doubled so a half-pixel
 /// rounding at the edge is not read as a dim of 1.0.
-const BORDER_DIP: f64 = 4.0;
+pub(crate) const BORDER_DIP: f64 = 4.0;
 
 /// The tolerance on both ratio rows. Composition is allowed a rounding or two; a
 /// dim layer that is 5% off is a different alpha, and 0.05 is far below that.
-const RATIO_TOL: f64 = 0.05;
+pub(crate) const RATIO_TOL: f64 = 0.05;
 
 /// How long a *warm* mask may take to show its first frame: the same ceiling the
 /// freeze is held to in [`crate::state::capture_selftest`], because both are inside
@@ -118,7 +118,7 @@ pub fn warm_round(shader: bool) -> String {
 /// Summing the three channels instead of comparing them one by one makes the
 /// number one division rather than three, so the median of a set of them is the
 /// median of one quantity.
-fn ratio(src: [u8; 4], got: [u8; 4]) -> f64 {
+pub(crate) fn ratio(src: [u8; 4], got: [u8; 4]) -> f64 {
     let a = src[0] as u32 + src[1] as u32 + src[2] as u32;
     let b = got[0] as u32 + got[1] as u32 + got[2] as u32;
     if a == 0 {
@@ -127,7 +127,7 @@ fn ratio(src: [u8; 4], got: [u8; 4]) -> f64 {
     b as f64 / a as f64
 }
 
-fn median(v: &[f64]) -> Option<f64> {
+pub(crate) fn median(v: &[f64]) -> Option<f64> {
     if v.is_empty() {
         return None;
     }
@@ -139,12 +139,12 @@ fn median(v: &[f64]) -> Option<f64> {
 /// What one window offered: the ratios either side of the hole, and how many grid
 /// points were thrown away. The counts are part of the result because a `SKIP`
 /// with no numbers beside it is not an explanation.
-struct Sides {
-    inside: Vec<f64>,
-    outside: Vec<f64>,
-    dark: usize,
-    off_desktop: usize,
-    on_border: usize,
+pub(crate) struct Sides {
+    pub(crate) inside: Vec<f64>,
+    pub(crate) outside: Vec<f64>,
+    pub(crate) dark: usize,
+    pub(crate) off_desktop: usize,
+    pub(crate) on_border: usize,
 }
 
 /// Every usable sample one bitmap offers, split by which side of the hole it is on.
@@ -159,7 +159,7 @@ struct Sides {
 /// this machine, but "usually" is not a thing a measurement may assume. Nothing here
 /// divides by the display scale: both bitmaps are already at device resolution, and
 /// saying so is what makes the two paths' numbers comparable.
-fn samples(
+pub(crate) fn samples(
     cover: PhysRect,
     got: &Frame,
     snap: &ScreenSnapshot,
@@ -233,7 +233,7 @@ fn samples(
 /// §10 item 13 ③ column without a second harness. `ctrl` has no meaning here (a
 /// mask contains no control colour) and `flat` is the reading that matters: a flag
 /// that paints nothing answers `flat=1.000`.
-fn flag_column(rep: &mut Report, win: &Top) {
+pub(crate) fn flag_column(rep: &mut Report, win: &Top) {
     for flag in [2u32, 0, 4] {
         let detail =
             match platform_windows::print::print_window(win.hwnd, win.phys.w, win.phys.h, flag) {
@@ -298,7 +298,12 @@ fn grab_note(snap: &ScreenSnapshot, hole: &PhysRect) -> String {
 
 /// A ratio row's verdict: a median within tolerance, or a `SKIP` that says which
 /// of the three reasons it has (no light, no samples on that side, no freeze).
-fn ratio_row(count: usize, value: Option<f64>, want: f64, sides: &Sides) -> (Check, String) {
+pub(crate) fn ratio_row(
+    count: usize,
+    value: Option<f64>,
+    want: f64,
+    sides: &Sides,
+) -> (Check, String) {
     let why = match value {
         None => format!(
             "measured=- want {want:.3} ±{RATIO_TOL} ({} usable; dark={} off-desktop={} border={})",
@@ -317,6 +322,35 @@ fn ratio_row(count: usize, value: Option<f64>, want: f64, sides: &Sides) -> (Che
 }
 
 /// The check itself, after the event loop has painted.
+/// The QML engine's own voice, as a row of either mask gauge.
+///
+/// Every other row there is a measurement of Rust's state machine and the pixels it
+/// published. A document that does not build changes none of them: a handler naming
+/// a signal the type does not declare, or a member the event object has no name for,
+/// leaves the dim, the hole and the ink reading exactly as they should, because the
+/// answer they measure never went through the thing that failed to load.
+///
+/// `.qml` is the filter. A complaint about a document names the file that could not
+/// be built - the shim prefixes the log context onto the text for exactly that
+/// reason - while Qt's own exit chatter (`QDxgiVSyncService not destroyed in time`)
+/// names nothing.
+pub(crate) fn qml_row(rep: &mut Report) {
+    let bad: Vec<String> = crate::state::messages()
+        .lines()
+        .filter(|line| {
+            !line.starts_with("debug:")
+                && !line.starts_with("info:")
+                && (line.contains(".qml") || line.contains("qml/"))
+        })
+        .map(str::to_string)
+        .collect();
+    rep.row(
+        "no qml complaints",
+        Check::from(bad.is_empty()),
+        bad.join(" | "),
+    );
+}
+
 pub fn measure() -> (Check, String) {
     let mut rep = Report::new();
     let snap = capture::current();
@@ -500,6 +534,7 @@ pub fn measure() -> (Check, String) {
         Check::from(problems.is_empty()),
         problems.join(" | "),
     );
+    qml_row(&mut rep);
     rep.note("mask state", mask::with(|m| m.line()));
 
     // Ending the flow, and checking it ended: a screen-sized texture is ~24 MB per

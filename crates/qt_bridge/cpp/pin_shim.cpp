@@ -31,7 +31,16 @@ QStringList g_messages;
 
 void captureMessage(QtMsgType type, const QMessageLogContext &context, const QString &msg)
 {
-    Q_UNUSED(context);
+    // The location travels with the text: a message that says `TypeError: Cannot
+    // read property 'pressed'` without the file and line it came from is not
+    // something a run can be pointed at.
+    QString text;
+    if (context.file != nullptr) {
+        text = QString::fromUtf8(context.file) + QLatin1Char(':')
+             + QString::number(context.line) + QLatin1String(": ") + msg;
+    } else {
+        text = msg;
+    }
     const char *level = "info";
     switch (type) {
     case QtDebugMsg:
@@ -52,13 +61,13 @@ void captureMessage(QtMsgType type, const QMessageLogContext &context, const QSt
     {
         QMutexLocker lock(&g_msgMutex);
         if (g_messages.size() < 64) {
-            g_messages.append(QString::fromLatin1(level) + QLatin1String(": ") + msg);
+            g_messages.append(QString::fromLatin1(level) + QLatin1String(": ") + text);
         }
     }
     // Straight to stderr, flushed: a GUI probe run has no console of its own, and
     // a buffered message that dies with the process is the failure this exists to
     // avoid.
-    fprintf(stderr, "%s: %s\n", level, qPrintable(msg));
+    fprintf(stderr, "%s: %s\n", level, qPrintable(text));
     fflush(stderr);
 }
 }

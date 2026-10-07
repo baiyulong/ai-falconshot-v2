@@ -213,6 +213,27 @@ Window {
         }
     }
 
+    // §5.7's ink, and a *second* texture rather than a second drawing of the desktop:
+    // Rust composites the frozen frame and every object into one layer, transparent
+    // outside the selection, and this item puts it over the dim. That is what keeps
+    // the two dim paths above it untouched - and it is why `--ink` measures the dim
+    // again after the strokes: if the transparency were wrong, an un-dimmed copy of
+    // the desktop would replace the dim the user has not selected.
+    //
+    // The key changes with every repaint, for the same reason the frozen frame's does
+    // (§3.6 constraint 8): `cache: false` only re-requests when the URL changes, so a
+    // stroke published under the previous stroke's key would be in the document, in
+    // the canvas and nowhere on screen.
+    Image {
+        anchors.fill: parent
+        cache: false
+        asynchronous: false
+        fillMode: Image.Stretch
+        source: win.view.overlay_key !== ""
+                ? "image://falconshot/" + win.view.overlay_key
+                : ""
+    }
+
     // §5.2.3's selection edge. 2 device-independent pixels, which is 4 at 200% -
     // the number the user sees as "the box around what I picked".
     Rectangle {
@@ -274,7 +295,11 @@ Window {
         }
 
         onPositionChanged: (mouse) => {
-            if (mouse.pressed) {
+            // The MouseArea's own state, not the event's: this event type's members
+            // are x, y, button, buttons, modifiers, source, isClick, wasHeld,
+            // accepted, flags - there is no `pressed`, so the test below was false on
+            // every move and a drag never reached Rust as a drag.
+            if (surface.pressed) {
                 view.dragTo(mouse.x, mouse.y)
             } else {
                 win.grip = view.hitTestAt(mouse.x, mouse.y)
@@ -296,7 +321,12 @@ Window {
         onDoubleClicked: if (view.commitHole()) win.grabbed()
 
         Keys.onEscapePressed: (event) => {
-            event.accept()
+            // `accepted`, not `accept()`: this event type's members are key, text,
+            // modifiers, isAutoRepeat, count, nativeScanCode, accepted, and the one
+            // method `matches()`. `accept()` is the C++-side name - qmllint said so,
+            // `Member "accept" not found on type "QQuickKeyEvent"`, in the batch of
+            // warnings that was read as noise and left.
+            event.accepted = true
             // The ladder, not a property: the first Esc un-selects, the second one
             // cancels. `endMask` destroys these windows from the model, and doing
             // that while one of them is inside a key handler is a use-after-free
@@ -307,12 +337,12 @@ Window {
         }
 
         Keys.onReturnPressed: (event) => {
-            event.accept()
+            event.accepted = true
             if (view.commitHole()) win.grabbed()
         }
 
         Keys.onEnterPressed: (event) => {
-            event.accept()
+            event.accepted = true
             if (view.commitHole()) win.grabbed()
         }
 
@@ -320,5 +350,48 @@ Window {
         Keys.onRightPressed: (event) => win.step(1, 0, event.modifiers)
         Keys.onUpPressed: (event) => win.step(0, -1, event.modifiers)
         Keys.onDownPressed: (event) => win.step(0, 1, event.modifiers)
+
+        // §5.7.19's 撤销 / 重做.
+        //
+        // Tested against `event.key` in the generic `pressed` rather than with
+        // `Keys.onZPressed`: this type's per-key signals are the ones its metadata
+        // declares - the arrows, Escape, Return, Enter, the digits, the media keys -
+        // and the letters are not among them, so an `onZPressed` handler is a name the
+        // linter could not resolve and nothing was willing to guess about.
+        //
+        // Ctrl is tested here because the arrow rows above fire with any modifier,
+        // and `Ctrl+Shift+Z` is accepted alongside `Ctrl+Y` because that is what
+        // people who came from another program type.
+        Keys.onPressed: (event) => {
+            if ((event.modifiers & Qt.ControlModifier) === 0) {
+                return
+            }
+            const shifted = (event.modifiers & Qt.ShiftModifier) !== 0
+            const undo = event.key === Qt.Key_Z && !shifted
+            const redo = event.key === Qt.Key_Y || (event.key === Qt.Key_Z && shifted)
+            if (!undo && !redo) {
+                return
+            }
+            event.accepted = true
+            if (redo ? view.redoStep() : view.undoStep()) {
+                win.grabbed()
+            }
+        }
+    }
+
+    // §5.7's toolbar, last so it is on top of the pointer surface: a button has to
+    // win the click it is under, and the only way to make that true without a
+    // `z` on every item is to be the sibling that comes after.
+    //
+    // `view` and `session` are handed over rather than reached through `win`, so
+    // this file stays the only one that knows a mask window has a `MaskView` on it.
+    AnnotationToolbar {
+        id: inkBar
+        view: win.view
+        session: win.session
+
+        // The same propagation the pointer does: undo, redo and 全清 change a
+        // desktop-space picture that both windows draw.
+        onGrabbed: win.grabbed()
     }
 }

@@ -116,10 +116,20 @@ Window {
         property real startY
         property bool bandOn: false
 
+        // `globalX`/`globalY` were the Qt 5 names and are not on this type - qmllint:
+        // `Member "globalX" not found on type "QQuickMouseEvent"`. Its members are x,
+        // y, button, buttons, modifiers, source, isClick, wasHeld, accepted, flags, so
+        // the global point comes from `Item.mapToGlobal(x, y)`, which answers in the
+        // same global device-independent units the two `last*` properties hold.
+        function globalAt(event) {
+            return dragArea.mapToGlobal(event.x, event.y)
+        }
+
         onPressed: (event) => {
             win.view.reload()
-            dragArea.lastX = event.globalX
-            dragArea.lastY = event.globalY
+            const g = globalAt(event)
+            dragArea.lastX = g.x
+            dragArea.lastY = g.y
             dragArea.startX = event.x
             dragArea.startY = event.y
             dragArea.bandOn = event.button === Qt.RightButton
@@ -140,8 +150,9 @@ Window {
             if (event.buttons & Qt.LeftButton) {
                 // §5.9.1 - the floor that keeps a pin findable is the state
                 // machine's, so a drag towards off-screen comes back clamped.
-                var dx = Math.round((event.globalX - dragArea.lastX) * win.dpr)
-                var dy = Math.round((event.globalY - dragArea.lastY) * win.dpr)
+                const g = globalAt(event)
+                var dx = Math.round((g.x - dragArea.lastX) * win.dpr)
+                var dy = Math.round((g.y - dragArea.lastY) * win.dpr)
                 if (dx !== 0 || dy !== 0) {
                     win.view.dragMove(dx, dy)
                     dragArea.lastX += dx / win.dpr

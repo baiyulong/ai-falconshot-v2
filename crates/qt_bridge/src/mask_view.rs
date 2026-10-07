@@ -76,6 +76,28 @@ pub mod qobject {
         #[qproperty(i32, revision)]
         #[qproperty(QString, key)]
         #[qproperty(QString, name)]
+        /// The ink texture for this screen, empty while the layer has nothing to
+        /// show. Its own key for the same reason `key` has one: a stroke that reused
+        /// the previous stroke's URL would never be re-requested, so the second
+        /// object would be in the document and nowhere on screen (§3.6 constraint 8).
+        #[qproperty(QString, overlay_key)]
+        /// The active tool's index into [`crate::annotate::TOOLS`]: 0 is the arrow,
+        /// which is what gives the pointer back to the selection's eight grips.
+        #[qproperty(i32, tool)]
+        #[qproperty(i32, objects)]
+        #[qproperty(bool, can_undo)]
+        #[qproperty(bool, can_redo)]
+        /// The active pen, read back rather than kept in the toolbar: §5.7.1's
+        /// per-tool memory means a tool can come back with a width and a colour the
+        /// buttons never set, and a toolbar that showed its own last click would then
+        /// be lying about what draws the next stroke.
+        #[qproperty(i32, pen_width)]
+        /// `0xRRGGBB`. Packed because QML only needs it to light the matching chip and
+        /// to seed the wheel's start, and three separate properties would be three
+        /// more chances for a binding to read half a colour.
+        #[qproperty(i32, pen_rgb)]
+        #[qproperty(bool, dashed)]
+        #[qproperty(bool, filled)]
         type MaskView = super::MaskViewRust;
 
         /// Which screen this window is. Called by the `Instantiator` after creation,
@@ -160,6 +182,57 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "applyShader"]
         fn apply_shader(self: Pin<&mut Self>, on: bool);
+
+        /// §5.7.2's tool picker: the index into [`crate::annotate::TOOLS`]. Switching
+        /// takes the pointer away from the selection's handles (or gives it back),
+        /// so every window has to re-read the state - which is what the `grabbed`
+        /// signal `main.qml` raises on this does.
+        #[qinvokable]
+        #[cxx_name = "selectTool"]
+        fn select_tool(self: Pin<&mut Self>, code: i32);
+
+        /// §5.7.2 step 2's pen colour, as three 0..255 channels. Opaque only, for
+        /// now: the alpha the model carries is §5.7.16's job.
+        #[qinvokable]
+        #[cxx_name = "setColor"]
+        fn set_color(self: Pin<&mut Self>, r: i32, g: i32, b: i32);
+
+        /// §5.7.20's 多级画笔粗细, in device pixels. The brush diameter follows it.
+        #[qinvokable]
+        #[cxx_name = "setWidth"]
+        fn set_width(self: Pin<&mut Self>, width: i32);
+
+        /// §5.7.2 step 3's 虚线 and step 4's 填充.
+        ///
+        /// `apply_` for the same reason `apply_shader` needs it: `dashed` and
+        /// `filled` are qproperties now, so `set_dashed`/`set_filled` already exist as
+        /// their setters and cxx-qt refuses the bridge on a duplicate.
+        #[qinvokable]
+        #[cxx_name = "applyDashed"]
+        fn apply_dashed(self: Pin<&mut Self>, on: bool);
+        #[qinvokable]
+        #[cxx_name = "applyFilled"]
+        fn apply_filled(self: Pin<&mut Self>, on: bool);
+
+        /// §5.7.14's 撤销 / 重做 and §5.7.15's 全部清除. `true` is "there was something
+        /// to do": the toolbar greys itself off from `can_undo`/`can_redo`, and a
+        /// keystroke that hit an empty stack has to be able to say so.
+        #[qinvokable]
+        #[cxx_name = "undoStep"]
+        fn undo_step(self: Pin<&mut Self>) -> bool;
+        #[qinvokable]
+        #[cxx_name = "redoStep"]
+        fn redo_step(self: Pin<&mut Self>) -> bool;
+        #[qinvokable]
+        #[cxx_name = "clearInk"]
+        fn clear_ink(self: Pin<&mut Self>) -> bool;
+
+        /// The tool buttons' labels, in [`crate::annotate::TOOLS`]' order. Read once
+        /// by the toolbar's `Component.onCompleted`: the list is Rust's, so a tool
+        /// renamed in one place cannot be a different tool in the other.
+        #[qinvokable]
+        #[cxx_name = "toolNames"]
+        fn tool_names(self: &Self) -> QString;
     }
 }
 
@@ -168,6 +241,7 @@ use cxx_qt_lib::QString;
 
 use falcon_core::geometry::PhysRect;
 
+use crate::annotate;
 use crate::mask;
 
 #[derive(Default)]
@@ -190,6 +264,15 @@ pub struct MaskViewRust {
     revision: i32,
     key: QString,
     name: QString,
+    overlay_key: QString,
+    tool: i32,
+    objects: i32,
+    can_undo: bool,
+    can_redo: bool,
+    pen_width: i32,
+    pen_rgb: i32,
+    dashed: bool,
+    filled: bool,
 }
 
 impl qobject::MaskView {
@@ -203,15 +286,41 @@ impl qobject::MaskView {
     /// One lock, one read: the window rect, its hole and its texture key come from
     /// the same moment, so a hole can never be drawn against a frame from the
     /// previous flow.
+    ///
+    /// This is also the one place the ink is *published*. `flush` hands repainted
+    /// canvases to Qt under a new key, and doing it here rather than inside the
+    /// mutating call means the GUI thread is always the thread whose store QML is
+    /// about to read from - and a window that reloads twice in a row gets the same
+    /// key both times, because the second flush has nothing new to say.
     pub fn reload(mut self: Pin<&mut Self>) {
         let index = *self.index();
-        let (view, shader, label, selected) = mask::with(|m| {
+        let (view, shader, label, selected, ink) = mask::with(|m| {
+            m.ink.flush();
+            let label = m
+                .slot(index.max(0) as usize)
+                .map(|s| (s.key.clone(), s.name.clone()));
+            let overlay = label
+                .as_ref()
+                .map(|(_, name)| m.ink.overlay_key(name))
+                .unwrap_or_default();
             (
                 m.view_data(index.max(0) as usize),
                 m.shader,
-                m.slot(index.max(0) as usize)
-                    .map(|s| (s.key.clone(), s.name.clone())),
+                label,
                 m.has_selection(),
+                (
+                    overlay,
+                    m.ink.tool_code(),
+                    m.ink.objects() as i32,
+                    m.ink.can_undo(),
+                    m.ink.can_redo(),
+                    m.ink.width() as i32,
+                    (i32::from(m.ink.color()[0]) << 16)
+                        | (i32::from(m.ink.color()[1]) << 8)
+                        | i32::from(m.ink.color()[2]),
+                    m.ink.dashed(),
+                    m.ink.filled(),
+                ),
             )
         });
 
@@ -242,6 +351,16 @@ impl qobject::MaskView {
                 self.as_mut().set_name(QString::default());
             }
         }
+        let (overlay, tool, objects, can_undo, can_redo, width, rgb, dashed, filled) = ink;
+        self.as_mut().set_overlay_key(QString::from(&*overlay));
+        self.as_mut().set_tool(tool);
+        self.as_mut().set_objects(objects);
+        self.as_mut().set_can_undo(can_undo);
+        self.as_mut().set_can_redo(can_redo);
+        self.as_mut().set_pen_width(width);
+        self.as_mut().set_pen_rgb(rgb);
+        self.as_mut().set_dashed(dashed);
+        self.as_mut().set_filled(filled);
     }
 
     pub fn note_shader_status(self: Pin<&mut Self>, status: i32) {
@@ -309,6 +428,62 @@ impl qobject::MaskView {
     pub fn apply_shader(mut self: Pin<&mut Self>, on: bool) {
         mask::with(|m| m.set_shader(on));
         self.as_mut().reload();
+    }
+
+    /// The tool and style calls all end in `reload` for one reason beyond the counts:
+    /// `reload` is what flushes the layer, so a repaint done by Rust reaches Qt's
+    /// texture store on the GUI thread, in the same step the URL changes.
+    pub fn select_tool(mut self: Pin<&mut Self>, code: i32) {
+        mask::with(|m| m.ink.select_tool(code));
+        self.as_mut().reload();
+    }
+
+    pub fn set_color(mut self: Pin<&mut Self>, r: i32, g: i32, b: i32) {
+        let rgba = [
+            r.clamp(0, 255) as u8,
+            g.clamp(0, 255) as u8,
+            b.clamp(0, 255) as u8,
+            255,
+        ];
+        mask::with(|m| m.ink.set_color(rgba));
+        self.as_mut().reload();
+    }
+
+    pub fn set_width(mut self: Pin<&mut Self>, width: i32) {
+        mask::with(|m| m.ink.set_width(width.max(1) as u32));
+        self.as_mut().reload();
+    }
+
+    pub fn apply_dashed(mut self: Pin<&mut Self>, on: bool) {
+        mask::with(|m| m.ink.set_dashed(on));
+        self.as_mut().reload();
+    }
+
+    pub fn apply_filled(mut self: Pin<&mut Self>, on: bool) {
+        mask::with(|m| m.ink.set_filled(on));
+        self.as_mut().reload();
+    }
+
+    pub fn undo_step(mut self: Pin<&mut Self>) -> bool {
+        let done = mask::with(|m| m.ink.undo_step());
+        self.as_mut().reload();
+        done
+    }
+
+    pub fn redo_step(mut self: Pin<&mut Self>) -> bool {
+        let done = mask::with(|m| m.ink.redo_step());
+        self.as_mut().reload();
+        done
+    }
+
+    pub fn clear_ink(mut self: Pin<&mut Self>) -> bool {
+        let done = mask::with(|m| m.ink.clear_ink());
+        self.as_mut().reload();
+        done
+    }
+
+    pub fn tool_names(&self) -> QString {
+        QString::from(&*annotate::tool_names())
     }
 }
 

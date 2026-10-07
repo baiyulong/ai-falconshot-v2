@@ -1,6 +1,6 @@
 //! AI Falconshot - the process that owns the pin windows.
 //!
-//! Six modes, because "does it work" has six different answers:
+//! Seven modes, because "does it work" has seven different answers:
 //! * `--selftest` drives the state machine and the pixel pipeline and prints
 //!   PASS/FAIL per step, without ever creating a window. `--clipboard` and
 //!   `--capture` add the two checks that take over something real - the user's
@@ -16,8 +16,14 @@
 //! * `--mask <ms>` freezes the desktop, covers every screen with its own dimmed
 //!   copy for ms, and reads the dim and the hole back off those windows.
 //!   `--mask-soft` takes the four-rectangle path instead of the shader.
+//! * `--ink <ms>` opens that same mask and then *draws on it* - three scripted
+//!   strokes and one undo, through the same pointer calls a real drag makes - and
+//!   reads the ink back off the window, pixel by pixel, alongside the dim it must
+//!   not have disturbed.
 //! * no flags: the app.
 
+mod annotate;
+mod annotate_check;
 mod capture;
 mod mask;
 mod mask_check;
@@ -73,6 +79,26 @@ fn main() {
             .and_then(|i| args.get(i + 1))
             .and_then(|v| v.parse().ok())
     };
+
+    // Three flags tune a mode instead of being one, and `after` matches whole
+    // tokens, so `--mask-soft 1500` alone names nothing: it fell through into the
+    // interactive app and ran until the process was killed - with an empty log,
+    // because the app prints no report of its own. A mis-invocation is a measurement
+    // that cannot be taken, which is the third verdict, not a crash and not a pass.
+    let mut orphans = Vec::new();
+    if flag("--mask-soft") && !flag("--mask") && !flag("--ink") {
+        orphans.push("--mask-soft 需要和 --mask <ms>（或 --ink <ms>）一起用");
+    }
+    if (flag("--clipboard") || flag("--capture")) && !flag("--selftest") {
+        orphans.push("--clipboard / --capture 是 --selftest 的附加档");
+    }
+    if after("--warm-rounds").unwrap_or(0) > 0 && !flag("--mask") && !flag("--ink") {
+        orphans.push("--warm-rounds 需要和 --mask <ms> 一起用");
+    }
+    if !orphans.is_empty() {
+        println!("[falconshot] {}", orphans.join("；"));
+        std::process::exit(3);
+    }
 
     if flag("--selftest") {
         let (ok, report) = state::selftest();
@@ -191,11 +217,22 @@ fn main() {
     // painted it. The freeze and the textures have to be published before the QML
     // engine exists, because a mask window that captures the screen it is about to
     // cover would capture itself.
+    //
+    // `--ink` is this mode plus a script drawn on the same freeze, so it opens the
+    // mask through the same call and owns the flow from there: the two gauges both
+    // close it at the end, and running both would double-close.
     let mask_ms = after("--mask").map(|ms| ms.max(300));
+    let ink_ms = after("--ink").map(|ms| ms.max(300));
+    let shader_on = !flag("--mask-soft");
     if mask_ms.is_some() {
-        match mask_check::open(!flag("--mask-soft")) {
+        match mask_check::open(shader_on) {
             Ok(line) => println!("[mask] {line}"),
             Err(e) => println!("[mask] 开不起来：{e}"),
+        }
+    } else if ink_ms.is_some() {
+        match annotate_check::plant(shader_on) {
+            Ok(line) => println!("[ink planted] {line}"),
+            Err(e) => println!("[ink] 画不下去：{e}"),
         }
     }
 
@@ -229,7 +266,7 @@ fn main() {
     if let Some(ms) = r13_ms {
         state::quit_after(ms);
     }
-    if let Some(ms) = mask_ms {
+    if let Some(ms) = mask_ms.or(ink_ms) {
         // A warm round needs the loop to still be running when its timer fires, and
         // one more step after the last round before the read-back: the frame it
         // published is what `--mask` measures.
@@ -300,7 +337,7 @@ fn main() {
         code = verdict_code(code, verdict);
     }
 
-    if let Some(ms) = mask_ms {
+    if let Some(ms) = mask_ms.or(ink_ms) {
         // The last round's first frames, read while its windows are still up -
         // `measure()` closes the flow and the slots go with it.
         let warm_swaps = if warm_rounds > 0 {
@@ -308,7 +345,12 @@ fn main() {
         } else {
             String::new()
         };
-        let (verdict, report) = mask_check::measure();
+        let ink = ink_ms.is_some();
+        let (verdict, report) = if ink {
+            annotate_check::measure()
+        } else {
+            mask_check::measure()
+        };
         println!("{report}");
         // One cold path, split into the parts a resident process has already paid
         // before any hot key (Qt start-up, the QML engine, the document compile) and
@@ -343,7 +385,8 @@ fn main() {
             println!("[mask warm {warm_rounds} round(s)] last: {warm_swaps}, window+frame vs ceiling {} ms (add each round's freeze ms for the hot-key total)", mask_check::FIRST_FRAME_MS);
         }
         println!(
-            "[mask after {ms} ms] qml_loaded={} {}",
+            "[{} after {ms} ms] qml_loaded={} {}",
+            if ink { "ink" } else { "mask" },
             state::qml_loaded(),
             state::desktop_summary()
         );

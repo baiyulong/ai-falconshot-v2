@@ -30,6 +30,7 @@ use falcon_core::geometry::{
     handle_at, nudge, nudge_edge, resize, Handle, PhysPoint, PhysRect, Scale, DEFAULT_HIT_SLOP,
 };
 
+use crate::annotate;
 use crate::capture;
 use crate::mask_view::shim;
 
@@ -102,6 +103,10 @@ pub struct MaskState {
     pub slots: Vec<Slot>,
     /// The selection in physical desktop pixels.
     pub hole: PhysRect,
+    /// §5.7's annotations, drawn on top of this flow's frozen frames. Its base is
+    /// the same snapshot the slots' textures came from, so ink and picture cannot
+    /// be describing two different captures.
+    pub ink: annotate::Layer,
     /// The pointer's grip since the last `press`, or `None` when it is not held.
     /// Kept here rather than in QML because the arithmetic it feeds - which edge
     /// moved, and how far - is the part that can be tested without a window.
@@ -187,6 +192,10 @@ impl MaskState {
         }
 
         self.slots = slots;
+        // The annotation layer takes its base from the same snapshot, after the
+        // slots exist: one flow, one freeze, and the ink's clip is this flow's hole.
+        self.ink.begin(snap, &self.slots);
+        self.ink.set_hole(self.hole);
         self.virtual_bounds = snap.virtual_bounds;
         self.shown = true;
         self.pixels_ms = Some(started.elapsed().as_millis() as u64);
@@ -274,13 +283,20 @@ impl MaskState {
         self.slots.clear();
         self.grab = None;
         self.shown = false;
+        // The ink's canvases are the same size as the frames they sit on, so a flow
+        // that ended without this leaked two 24 MB textures per screen, not one.
+        self.ink.end();
     }
 
     /// The selection, in physical desktop pixels. Each slot re-reads its part of
     /// it on the next `reload`; making every window redraw without waiting for its
     /// own reload is the M3 selection flow's, not this one's.
+    ///
+    /// The annotation layer is told as well: its clip is this rect, and an ink pixel
+    /// the user has just dragged out of the selection must stop being on screen.
     pub fn set_hole(&mut self, hole: PhysRect) {
         self.hole = hole;
+        self.ink.set_hole(hole);
     }
 
     pub fn set_shader(&mut self, shader: bool) {
@@ -298,8 +314,19 @@ impl MaskState {
     /// one; a press outside draws. PRD §5.3.1 only says a drag makes a rectangle
     /// and the edges adjust it, so this is this project's decision, and the reason
     /// is that a mis-drawn selection is cheaper to move than to re-draw.
+    ///
+    /// A *drawing* tool takes the press first, though - §5.7.1 step 4's 在选区内绘制
+    /// is about the pen, not the selection - and then nothing of the selection is
+    /// held: `grab` stays `None` so a later `drag` cannot move the hole out from
+    /// under the stroke. Getting the selection's handles back is the arrow tool's
+    /// (code 0 in [`crate::annotate::TOOLS`]), which is the same reason a real
+    /// screenshot toolbar has one.
     pub fn press(&mut self, index: usize, x: f64, y: f64) -> Option<Handle> {
         let p = self.desk_point(index, x, y)?;
+        if self.ink.press(p) {
+            self.grab = None;
+            return None;
+        }
         let slop = self.hit_slop(index);
         let hit = if self.hole.is_empty() {
             None
@@ -322,20 +349,27 @@ impl MaskState {
             // Nothing is drawn yet: a hole of zero size at the anchor reads as "no
             // selection" to the dim, so the desktop stays fully dark until the
             // pointer actually moves.
-            self.hole = PhysRect::new(p.x, p.y, 0, 0);
+            self.set_hole(PhysRect::new(p.x, p.y, 0, 0));
         }
         hit
     }
 
     /// The pointer moved while held. A new rectangle is normalised from the anchor,
     /// so dragging up-and-left works as well as down-and-right.
+    ///
+    /// A stroke mid-drag is not a selection drag: the drawing tool already took the
+    /// press, so the point goes to the ink and the hole is left alone.
     pub fn drag(&mut self, index: usize, x: f64, y: f64) {
-        let Some(g) = self.grab else { return };
         let Some(p) = self.desk_point(index, x, y) else {
             return;
         };
+        if self.ink.dragging() {
+            self.ink.drag(p);
+            return;
+        }
+        let Some(g) = self.grab else { return };
         let bounds = self.desktop();
-        self.hole = match g.handle {
+        self.set_hole(match g.handle {
             None => PhysRect::from_points(g.anchor, p),
             // Not `resize`'s `Body` branch: that puts the rectangle's origin under
             // the pointer, which is right for a tool you click to place and wrong
@@ -346,11 +380,16 @@ impl MaskState {
                 .offset(p.x - g.anchor.x, p.y - g.anchor.y)
                 .fitted_into(&bounds),
             Some(h) => resize(&g.start, h, p, &bounds),
-        };
+        });
     }
 
+    /// The pointer let go: the selection's grab is dropped, and a half-drawn stroke
+    /// becomes an object (or is discarded) in the layer.
     pub fn release(&mut self) {
         self.grab = None;
+        if self.ink.dragging() {
+            self.ink.release();
+        }
     }
 
     /// A point clamped into the desktop, in physical pixels.
@@ -387,11 +426,11 @@ impl MaskState {
             return;
         }
         let bounds = self.desktop();
-        self.hole = if resize_edge {
+        self.set_hole(if resize_edge {
             nudge_edge(&self.hole, Handle::Se, dx, dy, &bounds)
         } else {
             nudge(&self.hole, dx, dy, &bounds)
-        };
+        });
     }
 
     /// Esc. `true` means this press consumed itself by clearing the selection;
@@ -404,7 +443,7 @@ impl MaskState {
             return false;
         }
         self.grab = None;
-        self.hole = PhysRect::default();
+        self.set_hole(PhysRect::default());
         true
     }
 
@@ -422,7 +461,14 @@ impl MaskState {
     /// The live grip as a stable number, so the cursor shape and the hit test cannot
     /// drift apart: 0 = nothing held, 1 = drawing a new rectangle, 2..9 in
     /// `Handle::all()` order (Nw, N, Ne, E, Se, S, Sw, W), 10 = the whole rectangle.
+    ///
+    /// A stroke being dragged answers `1` as well, because that is the number QML
+    /// turns into a crosshair - and a pen *is* drawing at the pointer, whatever the
+    /// selection is doing underneath.
     pub fn grip_code(&self) -> i32 {
+        if self.ink.dragging() {
+            return 1;
+        }
         let Some(g) = self.grab.as_ref() else {
             return 0;
         };
@@ -434,6 +480,9 @@ impl MaskState {
     /// a pointer that lies about what it is about to grab is how a resize quietly
     /// becomes a re-draw.
     pub fn hit_test(&self, index: usize, x: f64, y: f64) -> i32 {
+        if self.ink.tool().is_some() {
+            return 1;
+        }
         let Some(p) = self.desk_point(index, x, y) else {
             return 0;
         };
@@ -539,6 +588,19 @@ impl MaskState {
             })
             .collect();
         parts.join(" | ")
+    }
+
+    /// The annotation layer's own line, for `--ink` and for the toolbar's tooltip:
+    /// which tool holds the pointer, how many objects are in the document, and what
+    /// the last repaint cost in pixels and milliseconds. "增量栅格" is only a claim
+    /// once the number of pixels it moved is next to it.
+    pub fn ink_line(&self) -> String {
+        format!(
+            "tool={:?} hole={:?} {}",
+            self.ink.tool(),
+            self.hole,
+            self.ink.paint_line()
+        )
     }
 }
 

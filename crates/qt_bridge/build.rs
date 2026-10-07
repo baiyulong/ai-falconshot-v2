@@ -3,17 +3,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn main() {
+    force_utf8_sources();
+
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let shader_qrc = bake_shaders(Path::new(&out_dir));
 
-    // The recipe M0 proved, applied for real: one QML module holding the three
+    // The recipe M0 proved, applied for real: one QML module holding the four
     // documents, the three cxx-qt bridges, and the thin C++ shim nothing else can
     // be (QQuickImageProvider, QWindow::winId, the Win32 extended styles).
     CxxQtBuilder::new_qml_module(
         QmlModule::new("dev.falconshot")
             .qml_file("qml/main.qml")
             .qml_file("qml/PinWindow.qml")
-            .qml_file("qml/CaptureMask.qml"),
+            .qml_file("qml/CaptureMask.qml")
+            .qml_file("qml/AnnotationToolbar.qml"),
     )
     .files(["src/session.rs", "src/pin_view.rs", "src/mask_view.rs"])
     .include_dir("cpp")
@@ -27,6 +30,32 @@ fn main() {
     // A .cpp_file shim that calls Win32 gets no import lib for free under a
     // Cargo-led build (CMake's target_link_libraries would have handled it).
     println!("cargo:rustc-link-lib=user32");
+}
+
+/// Compile every generated C++ as UTF-8, whatever the machine's code page says.
+///
+/// `qmlcachegen` writes each QML string literal into the C++ verbatim, and cc-rs
+/// (unlike Qt's own CMake) passes no charset flag, so `cl.exe` reads the file in the
+/// system code page. On this machine - 936, measured 2026-10-07 - a Chinese literal
+/// whose UTF-8 byte count is *odd* ends on a lead byte, and MSVC takes the following
+/// `"` as its trail byte: `QStringLiteral("细")` becomes an unterminated constant and
+/// the build dies with `C2001: newline in constant` inside `target\...\AnnotationToolbar.qml.cpp`.
+///
+/// It has nothing to do with that file. 复制图片 in `PinWindow.qml` is four characters
+/// = twelve bytes = six complete GBK pairs, so it happens to survive; 细/中/粗 are one
+/// character each and do not. A UI whose labels compile or not depending on how many
+/// characters they contain is the bug being closed here, which is why the fix is the
+/// flag rather than choosing safe words. It also silences the `C4819` warning Qt's own
+/// headers currently raise on every build.
+fn force_utf8_sources() {
+    let mut flags = std::env::var("CXXFLAGS").unwrap_or_default();
+    if !flags.contains("/utf-8") {
+        if !flags.is_empty() {
+            flags.push(' ');
+        }
+        flags.push_str("/utf-8");
+        std::env::set_var("CXXFLAGS", &flags);
+    }
 }
 
 /// Bakes the GLSL into `.qsb` and hands back a `.qrc` that puts the results next
