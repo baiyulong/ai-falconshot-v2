@@ -63,6 +63,10 @@ const MARGIN: i32 = 60;
 /// allowed a rounding or two; 8 is well below a visible difference and well above one.
 const SAME_TOL: i32 = 8;
 
+/// How far inside the selection 放大's copy is travelled to, in device pixels. A pen's
+/// width plus antialiasing, so the samples below never sit on the copy's own frame.
+const PAD: i32 = PEN as i32 + 4;
+
 /// How far apart the samples of a stroke's band sit, in device pixels.
 const BAND_STEP: i32 = 8;
 
@@ -89,6 +93,9 @@ struct Plan {
     poly: Vec<PhysPoint>,
     /// The arrow's two ends - the stroke that gets undone.
     arrow: [PhysPoint; 2],
+    /// 放大 (§5.7.13) as Rust placed it: the source region and the copy. `None` is a
+    /// gesture that never got that far, which the row says out loud rather than skipping.
+    zoom: Option<(PhysRect, PhysRect)>,
     /// The keys each publish produced, oldest first: four strokes and one undo.
     keys: Vec<Vec<String>>,
     /// The layer's own line at planting time, and the selection it was drawn in.
@@ -120,16 +127,24 @@ fn local(slots: &[mask::Slot], at: PhysPoint) -> Option<(usize, f64, f64)> {
 /// `press`/`drag`/`release` rather than building elements is the point: this then
 /// measures the *routing* - does a drawing tool take the press, does the hole stay
 /// put under it - and not only the rasteriser, which has its own tests.
-fn stroke(
+///
+/// [`grab`] is the same motion with the button still held.
+/// Press and move through every point, and *hold* the button: everything [`stroke`]
+/// does before the release. 放大 needs the split, because its copy is only pending
+/// until the button comes up - and the row has to grade the rectangle Rust actually
+/// placed, not the one the script meant to ask for at this scale factor.
+fn grab(
     m: &mut mask::MaskState,
     slots: &[mask::Slot],
     at: &[PhysPoint],
     notes: &mut Vec<String>,
-) {
-    let Some(first) = at.first() else { return };
+) -> bool {
+    let Some(first) = at.first() else {
+        return false;
+    };
     let Some((index, x, y)) = local(slots, *first) else {
         notes.push(format!("no screen under {:?}", first));
-        return;
+        return false;
     };
     m.press(index, x, y);
     for p in &at[1..] {
@@ -140,7 +155,18 @@ fn stroke(
             m.drag(index, x, y);
         }
     }
-    m.release();
+    true
+}
+
+fn stroke(
+    m: &mut mask::MaskState,
+    slots: &[mask::Slot],
+    at: &[PhysPoint],
+    notes: &mut Vec<String>,
+) {
+    if grab(m, slots, at, notes) {
+        m.release();
+    }
 }
 
 /// The corners of a box, in the order a drag visits them: press at the top-left,
@@ -234,8 +260,9 @@ pub fn plant(shader: bool) -> Result<String, String> {
     // (y 0.48..0.60) is between the box and the arrow on purpose: the three rows that
     // look for green must not be able to satisfy each other, and the arrow's band -
     // the one graded for absence - has to stay clear of ink that is still meant to be
-    // there.
-    let (rect, zig, poly, arrow) = mask::with(|m| {
+    // there. The 放大 source patch is the one band *below* the arrow for the same
+    // reason: its copy paints over anything inside it.
+    let (rect, zig, poly, arrow, zsrc) = mask::with(|m| {
         let h = m.hole;
         let f = |fx: f64, fy: f64| {
             PhysPoint::new(
@@ -254,10 +281,12 @@ pub fn plant(shader: bool) -> Result<String, String> {
                 f(0.88, 0.50),
             ],
             [f(0.15, 0.62), f(0.85, 0.76)],
+            PhysRect::from_points(f(0.12, 0.84), f(0.37, 0.94)),
         )
     });
 
     let mut keys = Vec::new();
+    let mut zoom: Option<(PhysRect, PhysRect)> = None;
     mask::with(|m| {
         m.ink.select_tool(annotate::code_of(Some(Kind::Rect)));
         m.ink.set_color(GREEN);
@@ -299,6 +328,40 @@ pub fn plant(shader: bool) -> Result<String, String> {
         }
         flush(m, &mut keys);
 
+        // §5.7.13's two drags, in the order a hand makes them: the box that says *what*
+        // to magnify, then a press-move that travels the copy the first one generated.
+        // The copy goes to the selection's bottom-right rather than staying where
+        // `place` put it, because a magnifier paints over whatever is inside it - and an
+        // arrow it covers is an arrow the ghost row then reports as ink.
+        m.ink.select_tool(annotate::code_of(Some(Kind::Zoom)));
+        stroke(m, &slots, &box_points(zsrc), &mut notes);
+        let h = m.hole;
+        if let Some((src, copy)) = m.ink.zoom_pending() {
+            let target = PhysPoint::new(
+                (h.right() - copy.w as i32 - PAD).max(h.x + PAD),
+                (h.bottom() - copy.h as i32 - PAD).max(h.y + PAD),
+            );
+            let a = PhysPoint::new(src.x + 4, src.y + 4);
+            let b = PhysPoint::new(a.x + (target.x - copy.x), a.y + (target.y - copy.y));
+            let before = m.ink.objects();
+            if grab(m, &slots, &along(a, b), &mut notes) {
+                // Read it *before* the release: from that moment the placement is a
+                // document object, and the row grades the rectangle Rust actually put
+                // there at this scale factor rather than the one the script asked for.
+                zoom = m.ink.zoom_pending();
+                m.release();
+                if m.ink.objects() != before + 1 {
+                    notes.push(format!(
+                        "放大's second drag committed {} object(s)",
+                        m.ink.objects().saturating_sub(before)
+                    ));
+                }
+            }
+        } else {
+            notes.push("放大's first drag left no copy to place".to_string());
+        }
+        flush(m, &mut keys);
+
         // The stroke that is about to be undone, in the other ink.
         m.ink.select_tool(annotate::code_of(Some(Kind::Arrow)));
         m.ink.set_color(BLUE);
@@ -321,13 +384,14 @@ pub fn plant(shader: bool) -> Result<String, String> {
         zig,
         poly,
         arrow,
+        zoom,
         keys: keys.clone(),
         line: line.clone(),
         hole,
         notes,
     });
     Ok(format!(
-        "4 strokes + 1 undo, {} publish(es) with {} distinct key(s), hole={hole}, {line}{}",
+        "5 strokes + 1 undo, {} publish(es) with {} distinct key(s), hole={hole}, {line}{}",
         keys.len(),
         distinct.len(),
         if problems.is_empty() {
@@ -474,6 +538,110 @@ fn band(
     h
 }
 
+/// Per-channel agreement for the 放大 row, which is deliberately looser than
+/// [`SAME_TOL`]: this is not two photographs of one picture but a copy of one part of it
+/// resampled into another, and interpolation across a hard edge is off by up to the
+/// whole difference of the two source pixels. What the row claims is *this picture is
+/// here*, not these bytes match - and the samples it grades are the ones whose two
+/// candidates differ by more than this number, so the claim cannot be satisfied by
+/// tolerance alone.
+const ENLARGE_TOL: i32 = 24;
+
+/// 放大 (§5.7.13) graded against the desktop rather than a colour.
+///
+/// Its frames are one device pixel wide - `raster`'s own comment on step 5 - so a colour
+/// row over them measures antialiasing, and a copy that never landed leaves the desktop
+/// behind, which no colour row can see at all. So each sample asks which of two desktop
+/// points the read-back matches: the point it stands on, or the point of the source
+/// region the copy is supposed to show at this scale.
+///
+/// A sample whose two candidates are the same colour cannot answer that - a flat
+/// wallpaper magnifies to itself - and is dropped from `want` before it can be counted
+/// either way, rather than landing in a bucket that would make an untestable desktop
+/// read as a pass. `Hits` therefore sees only samples that can distinguish, which is how
+/// [`Hits::usable`]'s 口径 stays exactly as §9.4 records it for the rows above. The
+/// second value is how many were dropped, which the row prints.
+fn enlarged(
+    cover: PhysRect,
+    got: &Frame,
+    snap: &ScreenSnapshot,
+    from: PhysRect,
+    to: PhysRect,
+    hole: PhysRect,
+) -> (Hits, usize) {
+    let mut h = Hits {
+        want: 0,
+        ok: 0,
+        other_ink: 0,
+        plain: 0,
+        dark: 0,
+        off: 0,
+    };
+    let close =
+        |a: [u8; 4], b: [u8; 4]| (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= ENLARGE_TOL);
+    // Outside the selection the mask shows the dim, not the ink: the copy is clipped
+    // there by §9.1's ③, and a sample past the edge would grade the wallpaper.
+    let Some(area) = to.intersection(&hole) else {
+        return (h, 0);
+    };
+    let inset = PEN / 2 + 2;
+    let inner = PhysRect::new(
+        area.x + inset as i32,
+        area.y + inset as i32,
+        area.w.saturating_sub(inset * 2),
+        area.h.saturating_sub(inset * 2),
+    );
+    if inner.is_empty() {
+        return (h, 0);
+    }
+    let scale_x = cover.w.max(1) as f64 / got.width.max(1) as f64;
+    let scale_y = cover.h.max(1) as f64 / got.height.max(1) as f64;
+    let mut blind = 0usize;
+    for y in (inner.y..inner.bottom()).step_by(BAND_STEP as usize) {
+        for x in (inner.x..inner.right()).step_by(BAND_STEP as usize) {
+            let here = PhysPoint::new(x, y);
+            h.want += 1;
+            let Some(plain) = snap.color_at(here) else {
+                h.off += 1;
+                continue;
+            };
+            // The pixel the user should be looking at, this far into the source.
+            let src = PhysPoint::new(
+                from.x + ((x - to.x) as f64 * from.w as f64 / to.w.max(1) as f64).floor() as i32,
+                from.y + ((y - to.y) as f64 * from.h as f64 / to.h.max(1) as f64).floor() as i32,
+            );
+            let Some(want) = snap.color_at(src) else {
+                h.off += 1;
+                continue;
+            };
+            if (want[0].max(want[1]).max(want[2]) as u32) < mask_check::MIN_SOURCE {
+                h.dark += 1;
+                continue;
+            }
+            if close(want, plain) {
+                h.want -= 1;
+                blind += 1;
+                continue;
+            }
+            let px = ((x - cover.x) as f64 / scale_x).round() as i32;
+            let py = ((y - cover.y) as f64 / scale_y).round() as i32;
+            if px < 0 || py < 0 || px >= got.width as i32 || py >= got.height as i32 {
+                h.off += 1;
+                continue;
+            }
+            let c = got.get(px as u32, py as u32);
+            if close(c, want) {
+                h.ok += 1;
+            } else if close(c, plain) {
+                h.plain += 1;
+            } else if coloured(c, GREEN) || coloured(c, BLUE) {
+                h.other_ink += 1;
+            }
+        }
+    }
+    (h, blind)
+}
+
 /// The check itself, after the event loop has painted.
 pub fn measure() -> (Check, String) {
     let mut rep = Report::new();
@@ -538,6 +706,7 @@ pub fn measure() -> (Check, String) {
                 "ink box",
                 "ink stroke",
                 "ink polyline",
+                "zoom copy",
                 "no ghost",
                 "dim",
                 "hole",
@@ -640,6 +809,31 @@ pub fn measure() -> (Check, String) {
                 hits.verdict(tenths),
                 hits.line(),
             );
+        }
+
+        // 放大 (§5.7.13), graded against the picture rather than the pen: see
+        // [`enlarged`]. A copy that never landed shows the desktop, and the only other
+        // thing that can leave the desktop showing is an overlay key that was stored
+        // under a name Qt had already asked for - so this row is the second reading of
+        // §3.6 constraint 8, on the stroke nobody can grade by colour.
+        match p.zoom {
+            Some((src, copy)) => {
+                let (hits, blind) = enlarged(win.phys, &got, frozen, src, copy, p.hole);
+                rep.row(
+                    &format!("zoom copy of {tag}"),
+                    hits.verdict(INK_PASS),
+                    format!(
+                        "{}, {} sample(s) could not tell the copy from the desktop",
+                        hits.line(),
+                        blind
+                    ),
+                );
+            }
+            None => rep.row(
+                &format!("zoom copy of {tag}"),
+                Check::Fail,
+                "放大 left no copy in the document; see the planted notes".to_string(),
+            ),
         }
 
         // The undone stroke: its pixels have to be the frozen desktop again. `other_ink`

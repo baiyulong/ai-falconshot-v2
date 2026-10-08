@@ -50,8 +50,7 @@ use crate::mask_view::shim;
 ///
 /// Deliberately absent, each for a missing capability rather than a missing button:
 /// 文本/编号 need the font bridge (§5.7.11/§5.7.12 - [`NoGlyphs`] would draw a
-/// background box and call it text), 局部放大 needs two drags, and 自由选择/旋转 are
-/// M4b/M4c.
+/// background box and call it text), and 自由选择/旋转 are M4b/M4c.
 pub const TOOLS: &[Option<Kind>] = &[
     None,
     Some(Kind::Rect),
@@ -65,6 +64,7 @@ pub const TOOLS: &[Option<Kind>] = &[
     Some(Kind::Marker),
     Some(Kind::Mosaic),
     Some(Kind::Blur),
+    Some(Kind::Zoom),
     Some(Kind::Eraser),
 ];
 
@@ -117,6 +117,24 @@ pub fn tool_names() -> String {
         .join("|")
 }
 
+/// 局部放大 (§5.7.13) is the one tool whose gesture is *two* drags, so the first
+/// drag's answer has to survive the release between them. That makes it 折线's shape
+/// rather than every other tool's: like `poly`, this state is neither an `Element` nor
+/// a draft the undo stack can see, and every path that lets the gesture go has to
+/// reclaim it (§9.1's ⑦).
+#[derive(Clone, Copy, Debug)]
+struct Placement {
+    /// The source region, as the first drag left it.
+    from: PhysRect,
+    /// The enlarged copy: generated from `from` at [`Layer::place`], then moved by the
+    /// second drag.
+    to: PhysRect,
+    /// `Some` while the second drag is held - where the button went down and what `to`
+    /// was then. The copy follows the pointer's *travel*: putting its origin under the
+    /// cursor is §9.1's `resize`-`Body` mistake, on a much bigger object.
+    held: Option<(PhysPoint, PhysRect)>,
+}
+
 /// One screen's share of the layer: its frozen pixels, the canvas on top of them,
 /// and the key that canvas was last published under.
 #[derive(Clone, Debug)]
@@ -167,6 +185,8 @@ pub struct Layer {
     /// currently runs to - which only becomes a node when the button comes up there.
     poly: Vec<PhysPoint>,
     poly_cursor: Option<PhysPoint>,
+    /// 局部放大 (§5.7.13) in progress: the source region and the copy generated from it.
+    zoom: Option<Placement>,
     /// The stroke being dragged: painted, but not in the document until release.
     draft: Vec<Element>,
     /// Bumped by every repaint, and the number every published key carries.
@@ -203,6 +223,7 @@ impl Default for Layer {
             path: Vec::new(),
             poly: Vec::new(),
             poly_cursor: None,
+            zoom: None,
             draft: Vec::new(),
             rev: 0,
             next_id: 1,
@@ -317,11 +338,14 @@ impl Layer {
             return;
         }
         self.hole = hole;
-        // A selection that went away takes its half-drawn polyline with it: the nodes
-        // live in document space, so leaving them pending means the *next* selection
-        // inherits a line nobody is drawing any more.
+        // A selection that went away takes the unfinished gestures with it: a
+        // polyline's nodes and a 放大's source region both live in document space, so
+        // leaving either pending means the *next* selection inherits a line - or a
+        // magnifier - nobody is drawing any more.
         let dropped = if hole.is_empty() {
-            self.abandon_polyline()
+            let line = self.abandon_polyline();
+            let zoom = self.abandon_zoom();
+            line || zoom
         } else {
             false
         };
@@ -358,7 +382,13 @@ impl Layer {
         self.tool = kind;
         self.anchor = None;
         self.path.clear();
-        if self.abandon_polyline() {
+        // Both unfinished gestures are dropped, and both are painted back. Written as
+        // two statements rather than `a() || b()` because `||` short-circuits, and a
+        // switch that cleared one preview and left the other's state in place is the
+        // half-reset §9.1's ⑤ was about.
+        let mut dropped = self.abandon_polyline();
+        dropped |= self.abandon_zoom();
+        if dropped {
             self.paint_last();
         }
     }
@@ -548,6 +578,18 @@ impl Layer {
             self.draft_polyline();
             return true;
         }
+        if kind == Kind::Zoom {
+            // The second drag of §5.7.13 holds the copy the first one generated, and
+            // only `held` changes: `draft` still carries the preview, and clearing it
+            // here would take pixels off the screen that nothing repaints until the
+            // pointer moves. With no placement yet this is the first drag, whose rect is
+            // built by [`Layer::drag`] from this anchor.
+            if let Some(z) = self.zoom.as_mut() {
+                let start = z.to;
+                z.held = Some((p, start));
+            }
+            return true;
+        }
         self.path = if kind.is_stroke() {
             vec![p]
         } else {
@@ -565,6 +607,10 @@ impl Layer {
         if kind == Kind::Polyline {
             self.poly_cursor = Some(p);
             self.draft_polyline();
+            return;
+        }
+        if kind == Kind::Zoom {
+            self.zoom_drag(anchor, p);
             return;
         }
         let geom = if kind.is_stroke() {
@@ -601,6 +647,20 @@ impl Layer {
             }
             self.draft_polyline();
             return false;
+        }
+        if self.tool == Some(Kind::Zoom) {
+            // §5.7.13's two drags end differently. The first release *places* the copy
+            // - step 3 is generated, not typed - and puts nothing in the document; the
+            // second one ends the gesture, and the two rectangles become the one object
+            // a single Ctrl+Z takes back.
+            let Some(z) = self.zoom else {
+                return false;
+            };
+            return if z.held.is_none() {
+                false
+            } else {
+                self.commit_zoom()
+            };
         }
         self.path.clear();
         let mut draft = std::mem::take(&mut self.draft);
@@ -649,6 +709,197 @@ impl Layer {
     /// second ladder nobody has to agree with the first.
     pub fn polyline_nodes(&self) -> usize {
         self.poly.len()
+    }
+
+    // ------------------------------------------------------------ 局部放大
+
+    /// Which of §5.7.13's two drags the pointer is in, decided by whether a placement
+    /// already exists - the difference being that the first drag *draws* the source
+    /// region and the second one *moves* the copy generated from it.
+    fn zoom_drag(&mut self, anchor: PhysPoint, p: PhysPoint) {
+        // Read out first: matching on `self.zoom` would hold it borrowed through the arm
+        // that assigns to it.
+        let pending = self.zoom;
+        let next = match pending {
+            Some(Placement {
+                from,
+                held: Some((a, start)),
+                ..
+            }) => Placement {
+                from,
+                // Travel, not a jump: the source region keeps its place, and so does
+                // the copy's own size - only its corner moves.
+                to: start.offset(p.x - a.x, p.y - a.y),
+                held: Some((a, start)),
+            },
+            _ => {
+                let from = PhysRect::from_points(anchor, p);
+                if from.is_empty() {
+                    // Nothing to magnify yet, so nothing to show: taking the preview back
+                    // rather than framing a 1x1 copy of the desktop is also what makes a
+                    // click with this tool a click that drew nothing.
+                    self.zoom = None;
+                    self.draft_zoom();
+                    return;
+                }
+                let to = self.place(from);
+                Placement {
+                    from,
+                    to,
+                    held: None,
+                }
+            }
+        };
+        self.zoom = Some(next);
+        self.draft_zoom();
+    }
+
+    /// Where the copy goes when the user has not said otherwise (§5.7.13 step 3):
+    /// `zoom_percent` of the source's own size, its corner a pen's width beyond the
+    /// source's bottom-right so the copy does not sit glued on top of what it magnifies.
+    ///
+    /// Each side is capped at the selection's own length. Anything wider is clipped away
+    /// by the ink rule §9.1's ③ states for every tool, and without the cap an 8x of a 4K
+    /// source is a 1.5 GB allocation inside the rasteriser's `resized` - a number this
+    /// program should not discover on a user's machine.
+    fn place(&self, from: PhysRect) -> PhysRect {
+        let pct = self.style.zoom_percent.clamp(100, 800) as u64;
+        let hole = self.hole_doc();
+        let side = |src: u32, cap: u32| {
+            (src as u64 * pct / 100)
+                .clamp(1, cap.max(1) as u64)
+                .try_into()
+                .unwrap_or(1)
+        };
+        let gap = self.style.width.max(4) as i32;
+        PhysRect::new(
+            from.right() + gap,
+            from.bottom() + gap,
+            side(from.w, hole.w),
+            side(from.h, hole.h),
+        )
+    }
+
+    /// The pending 放大 as a draft: the source region, the copy and the connectors
+    /// between them are one element, because step 4 drags *the copy* and a gesture that
+    /// moved two objects would leave the two of them disagreeing about the same magnifier.
+    /// The same no-op rule as [`Layer::draft_polyline`] applies - an unchanged preview
+    /// must not buy a new key, or the gauge charges the flow for a stroke that changed
+    /// nothing.
+    fn draft_zoom(&mut self) {
+        let wanted = self.zoom.map(|z| Geom::Zoom {
+            from: z.from,
+            to: z.to,
+        });
+        if self
+            .draft
+            .first()
+            .is_some_and(|e| Some(&e.geom) == wanted.as_ref())
+        {
+            return;
+        }
+        let was = self.draft.first().map(|e| e.bounds());
+        self.draft = match wanted {
+            Some(geom) => {
+                let mut e = Element::new(self.next_id, Kind::Zoom, geom, self.style.clone());
+                e.z = self.doc.elements.iter().map(|x| x.z).max().unwrap_or(0) + 1;
+                vec![e]
+            }
+            None => Vec::new(),
+        };
+        let now = self.draft.first().map(|e| e.bounds());
+        let area = match (was, now) {
+            (Some(a), Some(b)) => Some(a.union(&b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        if let Some(area) = area {
+            self.paint(Some(&area));
+        }
+    }
+
+    /// The gesture is over: the copy joins the document as one [`Command::Add`], so undo
+    /// takes both rectangles back with it.
+    fn commit_zoom(&mut self) -> bool {
+        let Some(z) = self.zoom.take() else {
+            return false;
+        };
+        if z.from.is_empty() || z.to.is_empty() {
+            self.draft_zoom();
+            return false;
+        }
+        let mut e = Element::new(
+            self.next_id,
+            Kind::Zoom,
+            Geom::Zoom {
+                from: z.from,
+                to: z.to,
+            },
+            self.style.clone(),
+        );
+        e.z = self.doc.elements.iter().map(|x| x.z).max().unwrap_or(0) + 1;
+        self.next_id += 1;
+        self.draft.clear();
+        self.apply(Command::Add(vec![e]));
+        true
+    }
+
+    /// `Enter` and the double-click accept the copy where it stands, for a user who drew
+    /// the source region and wants the default placement rather than a second drag. The
+    /// order against 折线 is [`crate::mask::MaskState::finish_ink`]'s, not this module's
+    /// and not QML's, so the ladder stays in one place.
+    pub fn finish_zoom(&mut self) -> bool {
+        if self.tool != Some(Kind::Zoom) || self.zoom.is_none() {
+            return false;
+        }
+        self.commit_zoom()
+    }
+
+    /// The placement the first drag left behind, as the two rectangles it is made of -
+    /// for the gauge and the tests to say *which* drag they are reporting, the same role
+    /// [`Layer::polyline_nodes`] plays for 折线, and deliberately not a `bool` any second
+    /// ladder could disagree with the first about.
+    ///
+    /// Returned in *desktop* pixels: the internals of this layer are document space, but
+    /// both callers compare against [`crate::mask::MaskState::hole`], which is the
+    /// desktop because that is what a window is positioned in.
+    pub fn zoom_pending(&self) -> Option<(PhysRect, PhysRect)> {
+        self.zoom.map(|z| {
+            (
+                z.from.offset(self.origin.x, self.origin.y),
+                z.to.offset(self.origin.x, self.origin.y),
+            )
+        })
+    }
+
+    /// [`Layer::zoom_pending`] in the shape `ink_line` prints, with the held flag the
+    /// second drag sets - so the one line says both which gesture is in progress and
+    /// whether the copy has moved yet.
+    pub fn zoom_line(&self) -> String {
+        let Some(z) = self.zoom else {
+            return "-".to_string();
+        };
+        let (dx, dy) = (self.origin.x, self.origin.y);
+        format!(
+            "{:?}=>{:?}{}",
+            z.from.offset(dx, dy),
+            z.to.offset(dx, dy),
+            if z.held.is_some() { " held" } else { "" }
+        )
+    }
+
+    /// Drop a pending 放大, preview and all. `true` is "pixels of it were on screen", so
+    /// each caller knows it owes a repaint: the same debt [`Layer::abandon_polyline`]
+    /// answers for, for the same reason - the copy never entered the document, so neither
+    /// the undo stack nor `Command::Remove` can see the pixels it drew.
+    fn abandon_zoom(&mut self) -> bool {
+        let had = self.draft.first().is_some_and(|e| e.kind == Kind::Zoom);
+        self.zoom = None;
+        if had {
+            self.draft.clear();
+        }
+        had
     }
 
     /// The pending polyline plus the point the pointer is at: one element, painted as
@@ -700,11 +951,18 @@ impl Layer {
     /// Drop a half-drawn polyline, preview and all. `true` is "pixels of it were on
     /// screen", so the caller knows it owes a repaint: the preview is in the layer but
     /// in nobody's document, and nothing else can take those pixels back.
+    ///
+    /// Only a draft that *is* a polyline. 放大 joins the same single `draft` slot, and an
+    /// abandon that cleared the other gesture's pixels as a side effect would repaint them
+    /// away while leaving its state in place - which is the half-reset shape again, one
+    /// field further along.
     fn abandon_polyline(&mut self) -> bool {
-        let had = !self.draft.is_empty();
+        let had = self.draft.first().is_some_and(|e| e.kind == Kind::Polyline);
         self.poly.clear();
         self.poly_cursor = None;
-        self.draft.clear();
+        if had {
+            self.draft.clear();
+        }
         had
     }
 
@@ -740,11 +998,13 @@ impl Layer {
     }
 
     /// 全清: every object out, through one command so it is undoable as one step, and
-    /// the half-drawn polyline out with them - it is on the screen, and a 全清 that
-    /// left one line of it behind would be the one gesture that fails to clear.
+    /// the half-drawn gestures out with them - a polyline's preview and a 放大's pending
+    /// copy are both on the screen, and a 全清 that left either behind would be the one
+    /// gesture that fails to clear.
     pub fn clear_ink(&mut self) -> bool {
         let all: Vec<Element> = self.doc.elements.clone();
-        let dropped = self.abandon_polyline();
+        let mut dropped = self.abandon_polyline();
+        dropped |= self.abandon_zoom();
         if all.is_empty() {
             if dropped {
                 self.paint_last();
@@ -752,6 +1012,14 @@ impl Layer {
             return false;
         }
         self.apply(Command::Remove(all));
+        // The previews are not in `all`, so none of the removal's dirty rects cover the
+        // pixels they drew. An abandon that happens alongside a real removal therefore
+        // has to be paid for with a full repaint rather than trusted to the command's
+        // own rects - the case P19's ⑦ named but did not have a test reach, because its
+        // 全清 runs had an empty document.
+        if dropped {
+            self.paint_last();
+        }
         true
     }
 
@@ -1508,5 +1776,301 @@ mod tests {
             "a click that drew nothing became an undo step"
         );
         assert_eq!(inked(&l, "m0"), 0, "a single node drew a something");
+    }
+
+    // ------------------------------------------------------------ 局部放大 §5.7.13
+
+    /// A layer with 放大 in hand on a screen big enough for a 2x copy to have somewhere
+    /// to go. The base is one flat grey on purpose: over a desktop of a single colour the
+    /// *only* pixels a magnifier adds are its frames and its connectors, so a non-zero
+    /// [`inked`] here is the ink and never the copy's contents - and a non-zero count in
+    /// the gauge, where the freeze is a real wallpaper, is the copy landing.
+    fn zoom_layer() -> Layer {
+        let one = PhysRect::new(0, 0, 400, 300);
+        let mut l = screens(&[("m0", one)], [70, 70, 70, 255]);
+        l.set_hole(one);
+        l.set_color([0, 200, 0, 255]);
+        l.set_width(6);
+        l.select_tool(code_of(Some(Kind::Zoom)));
+        l
+    }
+
+    /// §5.7.13's first drag. Its `false` return is part of the assertion: the source
+    /// region is not the finished object, and the copy generated from it is still waiting
+    /// to be placed - the shape 折线 established, not an exception invented for one tool.
+    fn magnify(l: &mut Layer, a: (i32, i32), b: (i32, i32)) {
+        let a = PhysPoint::new(a.0, a.1);
+        let b = PhysPoint::new(b.0, b.1);
+        assert!(l.press(a), "放大 would not take the drag");
+        l.drag(b);
+        assert!(!l.release(), "the first drag committed the magnifier");
+    }
+
+    #[test]
+    fn two_drags_make_one_magnifier() {
+        let mut l = zoom_layer();
+        magnify(&mut l, (20, 20), (60, 60));
+        let (from, placed) = l
+            .zoom_pending()
+            .expect("the first drag left no copy to place");
+        assert_eq!(from, PhysRect::new(20, 20, 40, 40));
+        assert_eq!(
+            l.objects(),
+            0,
+            "the copy was committed before it was placed"
+        );
+        assert!(inked(&l, "m0") > 0, "the preview never reached the screen");
+
+        // The second drag holds the copy from anywhere, and moves it by exactly the
+        // pointer's travel. Re-anchoring the copy's corner to the press point is §9.1's
+        // `resize`-`Body` mistake, on an object forty times the size of a grip.
+        assert!(
+            l.press(PhysPoint::new(10, 10)),
+            "放大 let go of the second drag"
+        );
+        l.drag(PhysPoint::new(30, 45));
+        let (still_from, moved) = l.zoom_pending().expect("the second drag lost the copy");
+        assert_eq!(
+            moved,
+            placed.offset(20, 35),
+            "the copy jumped instead of travelling"
+        );
+        assert_eq!(still_from, from, "the source region moved with the copy");
+
+        assert!(l.release(), "the second drag did not finish the object");
+        assert_eq!(l.objects(), 1, "two drags made more than one object");
+        assert!(l.zoom_pending().is_none(), "the gesture stayed in hand");
+        let Geom::Zoom {
+            from: committed_from,
+            to: committed_to,
+        } = l.doc.elements[0].geom
+        else {
+            panic!("放大 committed a {:?}", l.doc.elements[0].kind);
+        };
+        assert_eq!(
+            (committed_from, committed_to),
+            (from, moved),
+            "what joined the document is not what was on the screen"
+        );
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "the layer is not the document"
+        );
+
+        // One Ctrl+Z takes both rectangles back. An undo that removed the copy and left
+        // the source frame would leave a magnifier with nothing magnified in it.
+        assert!(l.undo_step());
+        assert_eq!(l.objects(), 0);
+        assert_eq!(inked(&l, "m0"), 0, "undo left the frame behind");
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "the undo did not repaint"
+        );
+    }
+
+    #[test]
+    fn the_copy_is_generated_not_typed_but_capped_by_the_selection() {
+        // §5.7.13 step 3 has no control on the toolbar yet, which is exactly why it has
+        // to be arithmetic the user can predict: `zoom_percent` of the source's own size,
+        // its corner a pen's width beyond the source's bottom-right so the copy does not
+        // sit glued on top of what it magnifies.
+        let mut l = zoom_layer();
+        magnify(&mut l, (20, 20), (60, 60));
+        let (from, to) = l.zoom_pending().unwrap();
+        assert_eq!((to.w, to.h), (80, 80), "200% of a 40x40 source");
+        assert_eq!(
+            (to.x - from.right(), to.y - from.bottom()),
+            (6, 6),
+            "the copy sits a pen's width beyond its source, not on top of it"
+        );
+
+        // The percent is clamped, and each side is then capped by the selection it is
+        // clipped to: without the cap, an 8x of a 4K source is a 1.5 GB allocation inside
+        // the rasteriser's `resized`, which is not a number this program should discover
+        // on a user's machine.
+        let mut l = zoom_layer();
+        l.style.zoom_percent = 2000;
+        magnify(&mut l, (20, 20), (60, 60));
+        let (_, to) = l.zoom_pending().unwrap();
+        assert_eq!(to.w, 320, "800% of 40, not 2000% of it");
+        assert_eq!(
+            to.h, 300,
+            "the copy outgrew the selection it cannot draw outside"
+        );
+    }
+
+    #[test]
+    fn a_drag_that_magnified_nothing_is_not_undoable() {
+        let mut l = zoom_layer();
+        let p = PhysPoint::new(30, 30);
+        assert!(l.press(p), "放大 would not take the click");
+        l.drag(p);
+        assert!(!l.release(), "a click with 放大 became an undo step");
+        assert!(l.zoom_pending().is_none(), "a 0x0 source is a placement");
+        assert!(!l.can_undo(), "nothing became undoable");
+        assert_eq!(l.objects(), 0);
+        assert_eq!(inked(&l, "m0"), 0, "an empty magnifier drew a something");
+
+        // And the tool is not wedged: the next real drag works after the dead click.
+        magnify(&mut l, (20, 20), (60, 60));
+        assert!(
+            l.zoom_pending().is_some(),
+            "the click left 放大 unable to start again"
+        );
+    }
+
+    #[test]
+    fn every_way_out_of_a_pending_copy_takes_its_pixels_back() {
+        // §9.1's ⑦ is a rule about *every* release path, and 放大 is the second tool with
+        // a preview that lives on the screen between gestures. The judgement is
+        // `inked() == 0`, not "the placement is gone": a preview Rust has forgotten but
+        // never repainted away is still what the user is looking at.
+        let mut l = zoom_layer();
+        magnify(&mut l, (20, 20), (120, 100));
+        assert!(
+            inked(&l, "m0") > 0,
+            "the tool switch has nothing to take back"
+        );
+        l.select_tool(code_of(Some(Kind::Rect)));
+        assert!(
+            l.zoom_pending().is_none(),
+            "the switch kept the copy in hand"
+        );
+        assert_eq!(
+            inked(&l, "m0"),
+            0,
+            "the tool switch left the magnifier on screen"
+        );
+
+        // 全清 with a document *and* a pending copy, planted where the committed object
+        // cannot reach: the removal's dirty rects cover the object's own bounds only, so
+        // the preview's pixels survive it unless the abandon is paid for with a repaint.
+        // This is the run that fails without [`Layer::clear_ink`]'s `paint_last`, and it
+        // is why the two are kept apart rather than one drawn over the other - P19 named
+        // the rule, and its 全清 runs had an empty document, so nothing reached it.
+        l.select_tool(code_of(Some(Kind::Zoom)));
+        magnify(&mut l, (20, 20), (60, 40));
+        assert!(
+            l.press(PhysPoint::new(30, 30)),
+            "放大 let go of the second drag"
+        );
+        l.drag(PhysPoint::new(40, 40));
+        assert!(l.release(), "the first magnifier never committed");
+        magnify(&mut l, (250, 150), (320, 200));
+        assert_eq!(l.objects(), 1);
+        assert!(
+            inked(&l, "m0") > 0,
+            "the pending copy never reached the screen"
+        );
+        assert!(l.clear_ink(), "全清 found nothing to remove");
+        assert_eq!(l.objects(), 0);
+        assert!(l.zoom_pending().is_none(), "全清 kept the copy in hand");
+        assert_eq!(inked(&l, "m0"), 0, "全清 left the pending copy on screen");
+
+        // Un-selecting, then selecting again: the new box must not inherit the old copy.
+        magnify(&mut l, (20, 20), (100, 80));
+        assert!(inked(&l, "m0") > 0);
+        l.set_hole(PhysRect::default());
+        assert!(
+            l.zoom_pending().is_none(),
+            "un-selecting kept the copy in hand"
+        );
+        l.set_hole(PhysRect::new(0, 0, 400, 300));
+        assert_eq!(
+            inked(&l, "m0"),
+            0,
+            "the next selection inherited the copy nobody was placing"
+        );
+    }
+
+    #[test]
+    fn enter_accepts_the_copy_where_the_default_put_it() {
+        // A user who drew the source region and wants nothing to do with step 4 still has
+        // to be able to get the magnifier: 双击 and `Enter` take the copy as placed.
+        let mut l = zoom_layer();
+        magnify(&mut l, (20, 20), (60, 60));
+
+        // The ladder's other rung must not steal the keystroke it has nothing for, and
+        // must not clear a preview it does not own: 折线's abandon used to wipe whatever
+        // sat in `draft`, which was a second tool's pixels.
+        assert!(
+            !l.finish_polyline(),
+            "折线 finished a line that was never clicked"
+        );
+        assert!(
+            l.zoom_pending().is_some(),
+            "an unrelated keystroke lost the copy"
+        );
+        assert!(
+            inked(&l, "m0") > 0,
+            "the keystroke took the preview off the screen"
+        );
+
+        assert!(l.finish_zoom(), "Enter declined a copy that was here");
+        assert_eq!(l.objects(), 1);
+        assert!(l.zoom_pending().is_none());
+        assert!(
+            !l.finish_zoom(),
+            "an empty gesture became a second undo step"
+        );
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "the layer is not the document"
+        );
+
+        // With another tool in hand the copy is not here to finish, whatever `Enter` is
+        // otherwise asked to do - which is how the keystroke falls through to 完成选区.
+        let mut l = zoom_layer();
+        magnify(&mut l, (20, 20), (60, 60));
+        l.select_tool(code_of(Some(Kind::Rect)));
+        assert!(
+            !l.finish_zoom(),
+            "a tool that is not 放大 owns a pending copy"
+        );
+        let mut l = zoom_layer();
+        assert!(!l.finish_zoom(), "a copy that was never drawn finished");
+    }
+
+    #[test]
+    fn every_tool_button_names_the_tool_at_its_index() {
+        // 放大 joins [`TOOLS`] *before* 橡皮, so every code from its index up shifts by
+        // one. The toolbar draws its labels from Rust in this order and sends the index
+        // back as the code, so a list that is out of step with the enum is a button that
+        // picks up the eraser where the user pointed at the magnifier.
+        let names = tool_names();
+        let labels: Vec<&str> = names.split('|').collect();
+        assert_eq!(
+            labels.len(),
+            TOOLS.len(),
+            "a button with no tool behind it, or a tool with no button"
+        );
+        assert!(
+            labels.iter().all(|s| !s.is_empty()),
+            "an unnamed button: {labels:?}"
+        );
+        let mut seen: Vec<Option<Kind>> = Vec::new();
+        for (i, kind) in TOOLS.iter().copied().enumerate() {
+            assert!(!seen.contains(&kind), "{kind:?} has two buttons");
+            seen.push(kind);
+            assert_eq!(
+                code_of(kind),
+                i as i32,
+                "{kind:?} does not point back at {i}"
+            );
+        }
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 40, 40))], [70, 70, 70, 255]);
+        for (i, kind) in TOOLS.iter().copied().enumerate() {
+            l.select_tool(i as i32);
+            assert_eq!(
+                l.tool(),
+                kind,
+                "button {i} ({}) chose {:?}",
+                labels[i],
+                l.tool()
+            );
+        }
     }
 }

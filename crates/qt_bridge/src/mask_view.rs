@@ -161,13 +161,14 @@ pub mod qobject {
         #[cxx_name = "commitHole"]
         fn commit(self: Pin<&mut Self>) -> bool;
 
-        /// §5.7.5's 折线 finisher, which the double-click and `Enter` reach *before*
-        /// `commitHole`: both keys mean two things to this mask, and `true` - "the
-        /// keystroke closed a line" - is what tells the caller the other one is not
-        /// this press's.
+        /// The ink finishers (§5.7.5's 折线, §5.7.13's 放大), which 双击 and `Enter`
+        /// reach *before* `commitHole`: the same keystroke means three things to this
+        /// mask, and `true` - "the press closed something of the layer's" - is what
+        /// tells the caller the crop is not this one's. Which of the two was closed is
+        /// [`crate::mask::MaskState::finish_ink`]'s answer, not this binding's.
         #[qinvokable]
-        #[cxx_name = "finishPolyline"]
-        fn finish_polyline(self: Pin<&mut Self>) -> bool;
+        #[cxx_name = "finishInk"]
+        fn finish_ink(self: Pin<&mut Self>) -> bool;
 
         /// Esc: `true` when it cleared a selection, `false` when the caller should
         /// cancel the capture. One keystroke must not both clear and cancel.
@@ -422,8 +423,8 @@ impl qobject::MaskView {
         hole.is_some()
     }
 
-    pub fn finish_polyline(mut self: Pin<&mut Self>) -> bool {
-        let closed = mask::with(|m| m.finish_polyline());
+    pub fn finish_ink(mut self: Pin<&mut Self>) -> bool {
+        let closed = mask::with(|m| m.finish_ink());
         self.as_mut().reload();
         closed
     }

@@ -469,13 +469,16 @@ impl MaskState {
         !self.hole.is_empty()
     }
 
-    /// §5.7.5's 折线 finisher: the double-click and `Enter` reach this before
-    /// [`MaskState::commit`], because both keys mean two things to this mask and only
-    /// the layer knows which one is actually pending. `true` is "the keystroke drew a
-    /// line", so the caller must not also crop the picture with it; `false` means no
-    /// polyline was in progress and this press is the selection's.
-    pub fn finish_polyline(&mut self) -> bool {
-        self.ink.finish_polyline()
+    /// §5.7.5's 折线 and §5.7.13's 放大 finishers, in that order, in this one place:
+    /// 双击 and `Enter` mean three things to this mask (close a line, place a copy, crop
+    /// the picture) and only the layer knows which is pending. `true` is "the keystroke
+    /// closed something of mine", which is what tells the caller the crop is not this
+    /// press's - and a ladder spelled in QML is two ladders that can disagree.
+    pub fn finish_ink(&mut self) -> bool {
+        if self.ink.finish_polyline() {
+            return true;
+        }
+        self.ink.finish_zoom()
     }
 
     /// The live grip as a stable number, so the cursor shape and the hit test cannot
@@ -612,15 +615,17 @@ impl MaskState {
 
     /// The annotation layer's own line, for `--ink` and for the toolbar's tooltip:
     /// which tool holds the pointer, how many objects are in the document, how many
-    /// nodes a polyline has been clicked but not finished with, and what the last
-    /// repaint cost in pixels and milliseconds. "增量栅格" is only a claim
-    /// once the number of pixels it moved is next to it.
+    /// nodes a polyline has been clicked but not finished with, what copy 放大 is
+    /// holding before its second drag commits it, and what the last repaint cost in
+    /// pixels and milliseconds. "增量栅格" is only a claim once the number of pixels
+    /// it moved is next to it.
     pub fn ink_line(&self) -> String {
         format!(
-            "tool={:?} hole={:?} poly={} {}",
+            "tool={:?} hole={:?} poly={} zoom={} {}",
             self.ink.tool(),
             self.hole,
             self.ink.polyline_nodes(),
+            self.ink.zoom_line(),
             self.ink.paint_line()
         )
     }

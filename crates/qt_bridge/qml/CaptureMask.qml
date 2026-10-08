@@ -57,13 +57,13 @@ Window {
         view.nudgeHole(dx * n, dy * n, (mods & Qt.AltModifier) !== 0)
     }
 
-    // §5.7.5's 完成折线 and §5.3's 完成选区 are the same two events - a double-click
-    // and `Enter` - so the ladder is stated once here instead of in three handlers that
-    // could each forget half of it. A pending polyline owns the keystroke; with none
-    // pending the press belongs to the selection, which is the behaviour that was here
-    // before the tool existed.
+    // §5.7.5's 完成折线, §5.7.13's 放大落位 and §5.3's 完成选区 are the same two
+    // events - a double-click and `Enter` - so the ladder is stated once here instead
+    // of in three handlers that could each forget half of it. *Which* of the two ink
+    // finishers is pending is Rust's answer (`finishInk`), not this function's; what
+    // this level knows is that a keystroke the layer claims is not the crop's.
     function finishInkOrHole() {
-        if (view.finishPolyline()) {
+        if (view.finishInk()) {
             return true
         }
         return view.commitHole()
