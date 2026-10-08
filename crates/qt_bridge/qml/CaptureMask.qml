@@ -391,6 +391,82 @@ Window {
         }
     }
 
+    // §5.7.11 steps 2-3: the field the user types into, sitting on the box Rust
+    // measured for it. Declared after the MouseArea so it is the item under the
+    // pointer inside that box - which is what makes step 5 work the way the PRD
+    // writes it: a click anywhere else reaches `surface`, and `pressAt` there means
+    // "done", because the layer only ever sees a press that the field did not take.
+    //
+    // The field holds the letters while they are being typed and the layer holds them
+    // afterwards, so exactly one of the two draws a given string. Both drawing it is a
+    // doubled glyph, and that is why the layer keeps no preview of a text box.
+    TextInput {
+        id: field
+        visible: win.view.text_editing
+        x: win.view.text_x
+        y: win.view.text_y
+        // At least a pixel, or a box the font could not measure is a field nobody can
+        // see, click or type into.
+        width: Math.max(1, win.view.text_w)
+        height: Math.max(1, win.view.text_h)
+        clip: true
+        text: ""
+        color: Qt.rgba(((win.view.pen_rgb >> 16) & 255) / 255,
+                       ((win.view.pen_rgb >> 8) & 255) / 255,
+                       (win.view.pen_rgb & 255) / 255, 1.0)
+        // Device-independent, and Rust divided: the pen's 字号 is a count of device
+        // pixels, and a field sized in the window's own units would be a third of the
+        // height of the text it stands in for on a 300% screen.
+        font.pixelSize: win.view.text_font
+        // No wrap: the box is measured as one line per paragraph, so a field that
+        // wrapped would show the line in more rows than the committed object has.
+        wrapMode: TextInput.NoWrap
+        selectByMouse: true
+        persistentSelection: false
+        // No border: qmllint answers `Type border is used but it is not resolved` for
+        // this group on TextInput, and a name nothing can resolve is a name that cannot
+        // be shown to draw - the caret and the letters are what marks the box.
+
+        onVisibleChanged: {
+            // A reopened box is a new one: Rust starts its string empty, so the field
+            // has to say so too - and the old string would not fire `onTextChanged` on
+            // its own, which is how the two copies would go on disagreeing silently.
+            if (visible) {
+                field.text = ""
+                field.forceActiveFocus()
+            } else {
+                surface.forceActiveFocus()
+            }
+        }
+
+        // The whole current string, on every change. Rust keeps the string and nothing
+        // else - no caret, no selection, no IME preedit - because the field owns those.
+        onTextChanged: win.view.setText(text)
+
+        // `Keys` rather than `onAccepted`, and `accepted` rather than a fall-through:
+        // `Enter` means "this text is finished" here, and if the event went on up the
+        // chain the window's own handler would read it as 完成选区 and close the mask
+        // on a crop the user has not looked at.
+        Keys.onReturnPressed: (event) => {
+            event.accepted = true
+            if (win.view.finishInk()) win.grabbed()
+        }
+
+        Keys.onEnterPressed: (event) => {
+            event.accepted = true
+            if (win.view.finishInk()) win.grabbed()
+        }
+
+        // The same ladder `surface` runs, from the item that has the keys while a box
+        // is open: the first Esc drops the half-typed text, the next un-selects.
+        Keys.onEscapePressed: (event) => {
+            event.accepted = true
+            if (!win.view.stepBack()) {
+                Qt.callLater(() => win.session.endMask())
+            }
+        }
+    }
+
     // §5.7's toolbar, last so it is on top of the pointer surface: a button has to
     // win the click it is under, and the only way to make that true without a
     // `z` on every item is to be the sibling that comes after.

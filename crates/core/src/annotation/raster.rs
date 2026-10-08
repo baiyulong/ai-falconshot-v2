@@ -87,6 +87,33 @@ impl Glyphs for NoGlyphs {
     }
 }
 
+/// The box `text` needs at `style`: the widest of its lines, and all of their height.
+///
+/// §5.7.11 step 2 places a text box from *one click*, so whoever holds that click has
+/// to know how big the box will be before anything is laid out - and the only answer
+/// that cannot disagree with the pixels is the one from the same leg that draws them.
+/// A box measured somewhere else is a box the letters either overflow or float inside.
+///
+/// This is the no-wrap measure: [`layout`] wraps a paragraph down to the box, and the
+/// box this returns is exactly as wide as the widest paragraph, so `wrap` can find no
+/// split in it - re-joining a paragraph's words can only shorten what it measures, never
+/// lengthen it. A caller that wants a *narrower* box - the edge of the selection, a
+/// fixed column - has to lay the text out and measure what came back, which is a
+/// different question and not answered here.
+///
+/// `None` when any line cannot be measured. Half a box is worse than none: it clips the
+/// lines it did measure, and a caller that cannot ask the font has to guess its own.
+pub fn text_extent(text: &str, style: &Style, glyphs: &dyn Glyphs) -> Option<(u32, u32)> {
+    let mut width = 0u32;
+    let mut height = 0u32;
+    for line in text.split('\n') {
+        let ink = glyphs.ink(line, style)?;
+        width = width.max(ink.width);
+        height = height.saturating_add(ink.height);
+    }
+    Some((width.max(1), height.max(1)))
+}
+
 /// Flatten the whole picture: the base, then every visible element in painting
 /// order. Export and the history thumbnail call this.
 pub fn render(base: &Frame, doc: &Document, glyphs: &dyn Glyphs) -> Result<Frame, FrameError> {
@@ -1575,6 +1602,55 @@ mod tests {
             BASE,
             "the box is no bigger than the geometry"
         );
+    }
+
+    #[test]
+    fn the_extent_is_the_widest_line_and_all_of_their_height() {
+        // `Blocks` measures a character as a square of the font size, so the expected
+        // numbers come from the test's own font rather than from a second copy of the
+        // arithmetic in `text_extent`.
+        let style = Style {
+            font_size: 18,
+            ..Style::default()
+        };
+        assert_eq!(
+            text_extent("ab", &style, &Blocks::default()),
+            Some((36, 18)),
+            "one line"
+        );
+        assert_eq!(
+            text_extent("a\nbcd", &style, &Blocks::default()),
+            Some((54, 36)),
+            "the widest of the two lines (three blocks) and both of them tall"
+        );
+        assert_eq!(
+            text_extent("", &style, &Blocks::default()),
+            Some((1, 18)),
+            "an empty box still has a side, or it is not a box"
+        );
+        assert_eq!(
+            text_extent("ab", &style, &NoGlyphs),
+            None,
+            "a font that cannot answer is not reported as zero"
+        );
+    }
+
+    #[test]
+    fn a_box_measured_from_the_extent_needs_no_wrap() {
+        // The claim in `text_extent`'s own comment: give `layout` the box it returns and
+        // every paragraph stays one line. If `wrap` ever split one, the text would be
+        // taller than the box measured for it, and the lines below would be clipped by
+        // the very paint call that laid them out.
+        let style = Style {
+            font_size: 18,
+            ..Style::default()
+        };
+        let text = "ab\ncd ef\nghi";
+        let (w, h) = text_extent(text, &style, &Blocks::default()).unwrap();
+        let lines = layout(&PhysRect::new(0, 0, w, h), text, &style, &Blocks::default());
+        assert_eq!(lines.len(), 3, "one line per paragraph, none wrapped");
+        let tall: i64 = lines.iter().map(|(ink, _, _)| ink.height as i64).sum();
+        assert_eq!(tall, h as i64, "the box is exactly as tall as its lines");
     }
 
     #[test]

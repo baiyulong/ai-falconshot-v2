@@ -107,6 +107,16 @@ pub mod qobject {
         #[qproperty(i32, zoom_percent)]
         #[qproperty(bool, zoom_border)]
         #[qproperty(bool, connection_line)]
+        /// §5.7.11's text field: whether one is open, and where. Rust sizes the box from
+        /// the font leg and divides it into this window's DIP, so the field QML makes is
+        /// the box the letters will be drawn in rather than a guess at it.
+        #[qproperty(bool, text_editing)]
+        #[qproperty(i32, text_x)]
+        #[qproperty(i32, text_y)]
+        #[qproperty(i32, text_w)]
+        #[qproperty(i32, text_h)]
+        /// 字号 in DIP, by the same division and for the same reason.
+        #[qproperty(i32, text_font)]
         type MaskView = super::MaskViewRust;
 
         /// Which screen this window is. Called by the `Instantiator` after creation,
@@ -244,6 +254,14 @@ pub mod qobject {
         #[cxx_name = "applyConnectionLine"]
         fn apply_connection_line(self: Pin<&mut Self>, on: bool);
 
+        /// §5.7.11 step 3: the field's whole current string, on every change. The layer
+        /// keeps the string and nothing else - no caret, no selection, no IME preedit -
+        /// because the field owns those and a second copy in Rust would be a copy of an
+        /// edit it never saw.
+        #[qinvokable]
+        #[cxx_name = "setText"]
+        fn set_text(self: Pin<&mut Self>, text: &QString);
+
         /// §5.7.14's 撤销 / 重做 and §5.7.15's 全部清除. `true` is "there was something
         /// to do": the toolbar greys itself off from `can_undo`/`can_redo`, and a
         /// keystroke that hit an empty stack has to be able to say so.
@@ -307,6 +325,12 @@ pub struct MaskViewRust {
     zoom_percent: i32,
     zoom_border: bool,
     connection_line: bool,
+    text_editing: bool,
+    text_x: i32,
+    text_y: i32,
+    text_w: i32,
+    text_h: i32,
+    text_font: i32,
 }
 
 impl qobject::MaskView {
@@ -417,6 +441,12 @@ impl qobject::MaskView {
         self.as_mut().set_zoom_percent(zoom_percent);
         self.as_mut().set_zoom_border(zoom_border);
         self.as_mut().set_connection_line(connection_line);
+        self.as_mut().set_text_editing(view.typing_live);
+        self.as_mut().set_text_x(view.typing.x);
+        self.as_mut().set_text_y(view.typing.y);
+        self.as_mut().set_text_w(view.typing.w as i32);
+        self.as_mut().set_text_h(view.typing.h as i32);
+        self.as_mut().set_text_font(view.font_dip as i32);
     }
 
     pub fn note_shader_status(self: Pin<&mut Self>, status: i32) {
@@ -542,6 +572,15 @@ impl qobject::MaskView {
 
     pub fn apply_connection_line(mut self: Pin<&mut Self>, on: bool) {
         mask::with(|m| m.ink.set_connection_line(on));
+        self.as_mut().reload();
+    }
+
+    /// §5.7.11 step 3. The reload is not decoration: the box is measured from the
+    /// string, so every keystroke changes its width, and a field that kept the width it
+    /// was opened with would clip the line it is being typed into.
+    pub fn set_text(mut self: Pin<&mut Self>, text: &QString) {
+        let text = text.to_string();
+        mask::with(|m| m.ink.type_text(&text));
         self.as_mut().reload();
     }
 

@@ -77,6 +77,15 @@ pub struct MaskViewData {
     /// screen, which is how a two-monitor mask draws nothing rather than a band.
     pub hole: PhysRect,
     pub scale: Scale,
+    /// §5.7.11's 文本 field: the box the layer is holding a string in, in window-local
+    /// DIP, and whether there is one at all. QML owns the field and Rust owns the box,
+    /// because the number that sizes it comes from the font leg - and a field whose
+    /// width is QML's guess about somebody else's text is how a typed line lands outside
+    /// the box it was measured in.
+    pub typing: PhysRect,
+    pub typing_live: bool,
+    /// The pen's 字号 in DIP, for the same reason and by the same division.
+    pub font_dip: u32,
     pub revision: u32,
     pub swaps: u32,
     pub first_swap_ms: Option<u64>,
@@ -444,12 +453,20 @@ impl MaskState {
         });
     }
 
-    /// Esc. `true` means this press consumed itself by clearing the selection;
+    /// Esc. `true` means this press consumed itself - on a half-typed 文本 box or on the
+    /// selection;
     /// `false` means there was nothing to clear, so the caller cancels the capture.
     /// Two windows both receiving one Esc press would then clear-and-cancel in a
     /// single keystroke, which is why the ladder is a return value and not a
     /// property QML reads.
     pub fn escape(&mut self) -> bool {
+        // §5.7.11's box is the first rung, because it is the only thing in this ladder
+        // that is not in any history yet: the typed string is not an object, so a rung
+        // that un-selected instead would take the letters with it - and the selection
+        // one rung down clears the box anyway, through `Layer::set_hole`.
+        if self.ink.abandon_typing() {
+            return true;
+        }
         if self.hole.is_empty() {
             return false;
         }
@@ -469,12 +486,20 @@ impl MaskState {
         !self.hole.is_empty()
     }
 
-    /// §5.7.5's 折线 and §5.7.13's 放大 finishers, in that order, in this one place:
-    /// 双击 and `Enter` mean three things to this mask (close a line, place a copy, crop
-    /// the picture) and only the layer knows which is pending. `true` is "the keystroke
-    /// closed something of mine", which is what tells the caller the crop is not this
-    /// press's - and a ladder spelled in QML is two ladders that can disagree.
+    /// §5.7.11's 文本, §5.7.5's 折线 and §5.7.13's 放大 finishers, in that order, in
+    /// this one place: 双击 and `Enter` mean four things to this mask (close a box, close
+    /// a line, place a copy, crop the picture) and only the layer knows which is pending.
+    /// `true` is "the keystroke closed something of mine", which is what tells the caller
+    /// the crop is not this press's - and a ladder spelled in QML is two ladders.
+    ///
+    /// 文本 goes first because it is the one holding the keyboard: while a box is open
+    /// `Enter` is *its* key, and a ladder that asked 折线 first would still be right (the
+    /// two gestures cannot both be pending, `select_tool` clears them) but would be a
+    /// ladder whose order nobody could defend.
     pub fn finish_ink(&mut self) -> bool {
+        if self.ink.finish_typing() {
+            return true;
+        }
         if self.ink.finish_polyline() {
             return true;
         }
@@ -527,10 +552,20 @@ impl MaskState {
         self.slots.iter().find(|s| s.index == index)
     }
 
-    /// The hole as this window sees it: clipped to the screen, moved to the
-    /// screen's origin, divided by its scale.
+    /// The hole as this window sees it.
     fn hole_for(&self, slot: &Slot) -> PhysRect {
-        let Some(local) = self.hole.intersection(&slot.bounds) else {
+        self.local_dip(slot, &self.hole)
+    }
+
+    /// A desktop rect as one window sees it: clipped to the screen, moved to the
+    /// screen's origin, divided by its scale.
+    ///
+    /// The one place that turns a desktop number into a number a mask window can place
+    /// an item at. The selection goes through it and so does §5.7.11's text box, because
+    /// a second copy of those three steps is a second answer, and the two of them
+    /// rounding differently is a field that sits beside its own box.
+    fn local_dip(&self, slot: &Slot, desk: &PhysRect) -> PhysRect {
+        let Some(local) = desk.intersection(&slot.bounds) else {
             return PhysRect::default();
         };
         PhysRect::new(
@@ -545,12 +580,24 @@ impl MaskState {
         let Some(slot) = self.slot(index) else {
             return MaskViewData::default();
         };
+        let typing = self
+            .ink
+            .typing_rect()
+            // The field belongs to the window whose click opened it, and only one window
+            // can hold a focus: a box that straddles a screen seam shows its clipped
+            // piece on both screens, but the caret goes to the one that was clicked.
+            .filter(|r| slot.bounds.contains(PhysPoint::new(r.x, r.y)))
+            .map(|r| self.local_dip(slot, &r));
+        let typing_live = typing.is_some();
         MaskViewData {
             live: true,
             shown: self.shown,
             geom: slot.geom,
             hole: self.hole_for(slot),
             scale: slot.scale,
+            typing: typing.unwrap_or_default(),
+            typing_live,
+            font_dip: slot.scale.phys_to_dip_i(self.ink.font_px() as i32).max(1) as u32,
             revision: slot.revision,
             swaps: slot.swaps,
             first_swap_ms: slot.first_swap_ms,
@@ -616,15 +663,16 @@ impl MaskState {
     /// The annotation layer's own line, for `--ink` and for the toolbar's tooltip:
     /// which tool holds the pointer, how many objects are in the document, how many
     /// nodes a polyline has been clicked but not finished with, what copy 放大 is
-    /// holding before its second drag commits it, and what the last repaint cost in
-    /// pixels and milliseconds. "增量栅格" is only a claim once the number of pixels
-    /// it moved is next to it.
+    /// holding before its second drag commits it, what 文本 box is waiting for its
+    /// click-away, and what the last repaint cost in pixels and milliseconds. "增量栅格"
+    /// is only a claim once the number of pixels it moved is next to it.
     pub fn ink_line(&self) -> String {
         format!(
-            "tool={:?} hole={:?} poly={} zoom={} {}",
+            "tool={:?} hole={:?} poly={} text={} zoom={} {}",
             self.ink.tool(),
             self.hole,
             self.ink.polyline_nodes(),
+            self.ink.typing_line(),
             self.ink.zoom_line(),
             self.ink.paint_line()
         )
@@ -979,6 +1027,108 @@ mod tests {
         assert!(m.escape());
         assert!(!m.has_selection());
         assert!(!m.escape(), "the second Esc is the one that ends the flow");
+    }
+
+    /// §5.7.11's box as two windows see it. The judgement is `typing_live` and not
+    /// `typing`: a clipped rect on both screens is two text fields, and two fields
+    /// competing for the keyboard is a caret that moves when the other one is typed
+    /// into. The selection already splits at the seam; the field is the one thing in
+    /// this picture that must not.
+    #[test]
+    fn a_text_box_belongs_to_the_window_that_was_clicked() {
+        use falcon_core::annotation::model::Kind;
+
+        let left = slot(0, PhysRect::new(0, 0, 1920, 1080), 1.0);
+        let right = slot(1, PhysRect::new(1920, 0, 1920, 1080), 1.0);
+        let mut m = selectable(
+            vec![left, right],
+            PhysRect::default(),
+            PhysRect::new(0, 0, 3840, 1080),
+        );
+        // Through `set_hole`, not the struct literal: the layer keeps its own copy of
+        // the selection to clamp gestures into, and this harness has to keep them
+        // together the way `open` does.
+        m.set_hole(PhysRect::new(1900, 10, 40, 100));
+        m.ink.select_tool(annotate::code_of(Some(Kind::Text)));
+        assert!(
+            m.press(0, 1910.0, 20.0).is_none(),
+            "the pen did not take the press"
+        );
+        m.release();
+        m.ink.type_text("a string long enough to run over the seam");
+
+        let desk = m.ink.typing_rect().expect("the click opened no box");
+        assert!(desk.right() > 1920, "the box does not straddle: {desk:?}");
+        let on_left = m.view_data(0);
+        let on_right = m.view_data(1);
+        assert!(on_left.typing_live, "the clicked window has no field");
+        assert!(!on_right.typing_live, "the other window was handed one too");
+        // The clicked window still shows only its own piece of the box, because the
+        // field is a window's child and cannot reach past its edge.
+        assert_eq!((on_left.typing.x, on_left.typing.y), (1910, 20));
+        assert_eq!(
+            on_left.typing.w, 10,
+            "the box was not clipped to the screen"
+        );
+        assert_eq!(
+            on_right.typing,
+            PhysRect::default(),
+            "the other window drew a box"
+        );
+    }
+
+    /// The same box on the 200% screen this runs on: the field QML places lives in
+    /// device-independent pixels, and so does the 字号 it has to match. `--mask`
+    /// measures the conversion for the selection; this is the same three steps for the
+    /// one item that arrives at a *click* rather than from a drag.
+    #[test]
+    fn a_text_box_is_placed_and_sized_in_the_windows_own_units() {
+        use falcon_core::annotation::model::Kind;
+
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        m.set_hole(PhysRect::new(200, 100, 800, 600));
+        m.ink.select_tool(annotate::code_of(Some(Kind::Text)));
+        // DIP (150,70) is physical (300,140) on this screen.
+        m.press(0, 150.0, 70.0);
+        m.release();
+        m.ink.type_text("hi");
+        let box_ = m.ink.typing_rect().unwrap();
+        assert_eq!(
+            (box_.x, box_.y),
+            (300, 140),
+            "the box is not in device pixels"
+        );
+
+        let v = m.view_data(0);
+        assert!(v.typing_live);
+        assert_eq!(
+            (v.typing.x, v.typing.y),
+            (150, 70),
+            "the field is not at the click"
+        );
+        assert_eq!(v.font_dip, 9, "the 字号 did not divide by the scale");
+        // `phys_to_dip_i` rounds, so the doubled number can be one off the measure.
+        assert!(
+            (v.typing.w as i32 * 2 - box_.w as i32).abs() <= 1,
+            "the field is {} DIP wide for a {} px box",
+            v.typing.w,
+            box_.w
+        );
+
+        // And the box is the ladder's first rung: the typed string is in no history, so
+        // a first Esc that un-selected instead would take the letters with it and leave
+        // the selection standing.
+        assert!(m.escape(), "the first Esc did not close the box");
+        assert!(!m.view_data(0).typing_live, "the box survived Esc");
+        assert_eq!(
+            m.hole,
+            PhysRect::new(200, 100, 800, 600),
+            "the first Esc moved the selection"
+        );
+        assert!(m.escape(), "the second Esc did not clear the selection");
+        assert!(!m.has_selection());
+        assert!(!m.escape(), "the third Esc is the one that ends the flow");
     }
 
     /// Enter with nothing drawn is not a crop the user never drew.

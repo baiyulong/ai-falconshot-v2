@@ -49,11 +49,15 @@ use crate::mask_view::shim;
 /// §5.7.16/§5.7.17 will hang the object-editing gestures on.
 ///
 /// Deliberately absent, each for a missing capability rather than a missing button:
-/// 文本/编号 have their letters — the paint paths below ask [`DirectWrite`] for
-/// glyph coverage, so a document that carries a 文本 object draws it — but not the
-/// interaction: §5.7.11 steps 2-5 (click, type, click away) and §5.7.12's
-/// click-to-place and renumber have no QML surface and no setter on [`Layer`].
-/// 自由选择/旋转 are M4b/M4c.
+/// 编号 has its digits — [`Kind::Number`] lays out through the same paint path 文本
+/// uses, and the counter is in [`Document`] — but not the interaction: §5.7.12's
+/// click-to-place and 起始编号 renumbering have no QML surface and no setter on
+/// [`Layer`]. 自由选择/旋转 are M4b/M4c.
+///
+/// 文本 (§5.7.11) is in the list, and so is its gesture: a click places the box, the
+/// field that appears takes the typing, and the next click anywhere else commits it.
+/// What is still missing is step 4's 字体、字号、对齐 row — the model carries all three
+/// and the layer has no control that moves them.
 pub const TOOLS: &[Option<Kind>] = &[
     None,
     Some(Kind::Rect),
@@ -67,6 +71,7 @@ pub const TOOLS: &[Option<Kind>] = &[
     Some(Kind::Marker),
     Some(Kind::Mosaic),
     Some(Kind::Blur),
+    Some(Kind::Text),
     Some(Kind::Zoom),
     Some(Kind::Eraser),
 ];
@@ -144,6 +149,27 @@ struct Placement {
     held: Option<(PhysPoint, PhysRect)>,
 }
 
+/// §5.7.11's 文本 in progress: the click that placed the box, and what has been typed
+/// into it since.
+///
+/// Like [`Placement`] this is state the undo stack cannot see, so every path that lets
+/// the gesture go has to reclaim it (§9.1's ⑦). Unlike it, and unlike 折线's nodes, the
+/// box owns **no pixels**: while it is in hand the letters are drawn by QML's own text
+/// field, not by this layer, because both of them painting the same string at the same
+/// time is a doubled glyph on the screen. That is why [`Layer::abandon_typing`] answers
+/// "was there a box" where the other two answer "were pixels of it on screen", and why
+/// none of the reclaiming callers fold it into their `dropped` repaint decision.
+#[derive(Clone, Debug)]
+struct Typing {
+    /// The box's top-left, in document space: §5.7.11 step 2's click, clamped into the
+    /// selection by [`Layer::doc_point`] like every other gesture's start.
+    at: PhysPoint,
+    /// Step 3's answer, as the field last had it. The whole string each time, not a
+    /// delta: the field owns the caret, the selection and the IME, and a layer that
+    /// tried to keep its own copy of an edit it did not see would disagree with it.
+    text: String,
+}
+
 /// One screen's share of the layer: its frozen pixels, the canvas on top of them,
 /// and the key that canvas was last published under.
 #[derive(Clone, Debug)]
@@ -196,6 +222,9 @@ pub struct Layer {
     poly_cursor: Option<PhysPoint>,
     /// 局部放大 (§5.7.13) in progress: the source region and the copy generated from it.
     zoom: Option<Placement>,
+    /// 文本 (§5.7.11) in progress: the box the last click placed and the string typed
+    /// into it, which QML's field is showing.
+    typing: Option<Typing>,
     /// The stroke being dragged: painted, but not in the document until release.
     draft: Vec<Element>,
     /// Bumped by every repaint, and the number every published key carries.
@@ -233,6 +262,7 @@ impl Default for Layer {
             poly: Vec::new(),
             poly_cursor: None,
             zoom: None,
+            typing: None,
             draft: Vec::new(),
             rev: 0,
             next_id: 1,
@@ -350,10 +380,15 @@ impl Layer {
         // A selection that went away takes the unfinished gestures with it: a
         // polyline's nodes and a 放大's source region both live in document space, so
         // leaving either pending means the *next* selection inherits a line - or a
-        // magnifier - nobody is drawing any more.
+        // magnifier - nobody is drawing any more. A half-typed 文本 box would be the
+        // third of those, and the field would go on showing text measured against a
+        // selection that no longer exists.
         let dropped = if hole.is_empty() {
             let line = self.abandon_polyline();
             let zoom = self.abandon_zoom();
+            // Not folded into `dropped`: the box drew no pixels of its own, so there is
+            // nothing here that a repaint is being asked to take back.
+            self.abandon_typing();
             line || zoom
         } else {
             false
@@ -397,6 +432,11 @@ impl Layer {
         // half-reset §9.1's ⑤ was about.
         let mut dropped = self.abandon_polyline();
         dropped |= self.abandon_zoom();
+        // And the box a click placed: switching tools while it is open is the user
+        // saying they did not mean to be typing. Not part of `dropped`, for the reason
+        // in [`Typing`] - the field had the pixels, and this call already reloads every
+        // window, which is what takes the field off the screen.
+        self.abandon_typing();
         if dropped {
             self.paint_last();
         }
@@ -674,6 +714,27 @@ impl Layer {
             self.draft_polyline();
             return true;
         }
+        if kind == Kind::Text {
+            // §5.7.11 steps 2 and 5 are both this one event: the press that opens a box
+            // and the press that closes the one already open. A press *inside* an open
+            // box does not reach here at all - the field is the item under the pointer,
+            // and it takes that click to move its own caret - so anything that does
+            // reach this arm is step 5's "点击空白区域".
+            //
+            // The press that commits does not also place the next box. It could, and it
+            // would save a click for someone writing a list, but it would also leave an
+            // empty field under the pointer after every finish, and dismissing that
+            // costs a click nobody meant to spend.
+            if self.typing.is_some() {
+                self.commit_typing();
+            } else {
+                self.typing = Some(Typing {
+                    at: p,
+                    text: String::new(),
+                });
+            }
+            return true;
+        }
         if kind == Kind::Zoom {
             // The second drag of §5.7.13 holds the copy the first one generated, and
             // only `held` changes: `draft` still carries the preview, and clearing it
@@ -703,6 +764,13 @@ impl Layer {
         if kind == Kind::Polyline {
             self.poly_cursor = Some(p);
             self.draft_polyline();
+            return;
+        }
+        if kind == Kind::Text {
+            // A box is *placed*, not drawn: §5.7.11 step 2 is one click. Without this
+            // early return the code below builds a `Geom::Rect` from the anchor to the
+            // pointer, which for a tool that never previews anything is a drag that
+            // moves nothing and a release that has to decide whether to keep it.
             return;
         }
         if kind == Kind::Zoom {
@@ -742,6 +810,15 @@ impl Layer {
                 }
             }
             self.draft_polyline();
+            return false;
+        }
+        if self.tool == Some(Kind::Text) {
+            // The box is finished by the *next* press, by `Enter` or by 双击, never by
+            // this release: the click that opened it is the same click whose button is
+            // coming up now, and committing here would end the gesture before step 3
+            // has had a single keystroke. Falling through is worse still - the code
+            // below takes whatever is in `draft` and offers it to the document, and a
+            // text box has no business in a slot that belongs to the previews.
             return false;
         }
         if self.tool == Some(Kind::Zoom) {
@@ -995,6 +1072,120 @@ impl Layer {
         had
     }
 
+    /// The open box, in *desktop* pixels - the same space [`Layer::zoom_pending`]
+    /// answers in, for the same reason: the caller is [`crate::mask`], and a window is
+    /// positioned in the desktop. `None` when nothing is being typed.
+    pub fn typing_rect(&self) -> Option<PhysRect> {
+        self.typing.as_ref().map(|t| {
+            self.box_at(t.at, &t.text, &DirectWrite)
+                .offset(self.origin.x, self.origin.y)
+        })
+    }
+
+    /// §5.7.11 step 4's 字号, in device pixels. The field needs it in its own units, and
+    /// the conversion is the screen's - so this hands over the raw number and
+    /// [`crate::mask::MaskState::view_data`] divides it, the way it divides the box.
+    pub fn font_px(&self) -> u32 {
+        self.style.font_size
+    }
+
+    /// The box a string lands in at a click, in document space: the point for a corner,
+    /// the font for the two sides.
+    ///
+    /// The measure comes from [`raster::text_extent`], which asks the same leg that will
+    /// draw the letters, so the box cannot disagree with them. When the leg cannot
+    /// answer there is nothing to draw either - the number only has to be *stable*, one
+    /// em tall per line and half an em per character, because a box that resized on
+    /// every keystroke would move the field under the user's caret for no reason. The
+    /// leg arrives as an argument so a test can stand in the second case; every call
+    /// site in this module hands over the real one.
+    fn box_at(&self, at: PhysPoint, text: &str, glyphs: &dyn raster::Glyphs) -> PhysRect {
+        let size = raster::text_extent(text, &self.style, glyphs).unwrap_or_else(|| {
+            let em = self.style.font_size.max(1);
+            // The *widest line*, not the whole string: a newline must not grow the box
+            // sideways. `text_extent` gets this right by construction and this branch is
+            // the one place that could get it wrong without anyone seeing it, because
+            // the box is drawn by the field rather than by the layer.
+            let mut lines = 0u32;
+            let mut chars = 0u32;
+            for line in text.split('\n') {
+                lines += 1;
+                chars = chars.max(line.chars().count() as u32);
+            }
+            (
+                chars.saturating_mul(em / 2).max(1),
+                lines.saturating_mul(em),
+            )
+        });
+        PhysRect::new(at.x, at.y, size.0, size.1)
+    }
+
+    /// §5.7.11 step 3: the field's whole current string, pushed on every change.
+    ///
+    /// A call with no box in hand is a silent no-op rather than an error: the bridge
+    /// cannot tell which window's field is the live one, and a stale signal from a field
+    /// that a reload just took off the screen must not invent a box at the last click.
+    pub fn type_text(&mut self, text: &str) {
+        let Some(t) = self.typing.as_mut() else {
+            return;
+        };
+        t.text = text.to_string();
+    }
+
+    /// Take the box out of hand and put its text in the document as one
+    /// [`Command::Add`], so one Ctrl+Z takes the whole line back. `false` is a box with
+    /// nothing in it: [`Layer::release`] refuses to make an undoable nothing out of a
+    /// click that drew a dot, and a keystroke history with a blank entry in it is the
+    /// same mistake wearing a different hat.
+    fn commit_typing(&mut self) -> bool {
+        let Some(t) = self.typing.take() else {
+            return false;
+        };
+        if t.text.trim().is_empty() {
+            return false;
+        }
+        let geom = Geom::Rect(self.box_at(t.at, &t.text, &DirectWrite));
+        let mut e = Element::new(self.next_id, Kind::Text, geom, self.style.clone());
+        e.text = t.text;
+        e.z = self.doc.elements.iter().map(|x| x.z).max().unwrap_or(0) + 1;
+        self.next_id += 1;
+        self.apply(Command::Add(vec![e]));
+        true
+    }
+
+    /// `Enter` and 双击 accept the box where it stands (§5.7.11 has no third finisher,
+    /// and step 5's click-away is in [`Layer::press`]). `false` means "there was no text
+    /// here", which is what lets the mask's `Enter` fall through to 完成选区 instead of
+    /// eating the keystroke. The order against 折线 and 放大 is
+    /// [`crate::mask::MaskState::finish_ink`]'s, not this module's and not QML's.
+    pub fn finish_typing(&mut self) -> bool {
+        if self.tool != Some(Kind::Text) || self.typing.is_none() {
+            return false;
+        }
+        self.commit_typing()
+    }
+
+    /// Drop a half-typed box, text and all. `true` is "there was a box", which is what
+    /// tells the Esc handler the keystroke was spent - and deliberately not the
+    /// "pixels of it were on screen" that [`Layer::abandon_polyline`] answers, because
+    /// the field had those pixels and this layer never had them to give back.
+    pub fn abandon_typing(&mut self) -> bool {
+        self.typing.take().is_some()
+    }
+
+    /// [`Layer::typing_rect`] in the shape `ink_line` prints, with the string quoted so
+    /// a space or a pipe in what the user typed cannot break the line into fields it
+    /// does not have. `-` for no box, the same spelling 放大's half of the line uses.
+    pub fn typing_line(&self) -> String {
+        let Some(t) = &self.typing else {
+            return "-".to_string();
+        };
+        let box_ = self
+            .box_at(t.at, &t.text, &DirectWrite)
+            .offset(self.origin.x, self.origin.y);
+        format!("{box_:?} {:?}", t.text)
+    }
+
     /// The pending polyline plus the point the pointer is at: one element, painted as
     /// a draft and never in the document. The two halves are drawn together because a
     /// polyline that shows only its committed nodes hides the segment being aimed.
@@ -1094,6 +1285,7 @@ impl Layer {
         let all: Vec<Element> = self.doc.elements.clone();
         let mut dropped = self.abandon_polyline();
         dropped |= self.abandon_zoom();
+        self.abandon_typing();
         if all.is_empty() {
             if dropped {
                 self.paint_last();
@@ -2491,6 +2683,300 @@ mod tests {
             inked(&bare),
             0,
             "the leg that answers no glyphs drew letters anyway"
+        );
+    }
+
+    // ------------------------------------------------------------ 文本 (§5.7.11)
+
+    /// A layer with the 文本 tool in its hand. Its screen is deliberately *not* at the
+    /// desktop's corner: the box QML positions lives in desktop pixels and the box the
+    /// document files lives in document space, and on a screen at (0,0) those are the
+    /// same numbers, so a lost origin would pass every test below.
+    fn text_layer() -> Layer {
+        let one = PhysRect::new(100, 50, 200, 120);
+        let mut l = screens(&[("m0", one)], [70, 70, 70, 255]);
+        l.set_hole(one);
+        l.set_color([0, 200, 0, 255]);
+        l.select_tool(code_of(Some(Kind::Text)));
+        l
+    }
+
+    /// Pixels the incremental layer has an opinion about - any of them, not just this
+    /// pen's green. While a box is open the answer has to be none of them: the field is
+    /// what shows the letters, and a layer that drew them too would put a second glyph
+    /// under the first.
+    fn touched(l: &Layer, name: &str) -> usize {
+        let f = l.layer_of(name).unwrap();
+        (0..f.height)
+            .flat_map(|y| (0..f.width).map(move |x| f.get(x, y)))
+            .filter(|p| p[3] != 0)
+            .count()
+    }
+
+    #[test]
+    fn a_click_places_a_box_and_a_click_away_files_it() {
+        let mut l = text_layer();
+
+        // Steps 2 and 3, in the order the PRD gives them. Desktop (130,80) is document
+        // (30,30) on this screen.
+        assert!(
+            l.press(PhysPoint::new(130, 80)),
+            "文本 did not take the click"
+        );
+        let live = l.typing_rect().expect("the placing click opened no box");
+        assert_eq!(
+            (live.x, live.y),
+            (130, 80),
+            "the box is not under the pointer"
+        );
+        assert_eq!(l.objects(), 0, "the placing click also committed an object");
+        assert_eq!(
+            touched(&l, "m0"),
+            0,
+            "the layer drew the box that belongs to the field"
+        );
+
+        // The button coming up is not step 5: it is the same click that opened the box,
+        // and committing here would end the gesture before one keystroke.
+        l.drag(PhysPoint::new(160, 110));
+        assert!(
+            !l.release(),
+            "the release filed a box nobody has typed into"
+        );
+        assert_eq!(
+            l.typing_rect(),
+            Some(live),
+            "the drag or the release moved the box"
+        );
+
+        l.type_text("hi");
+        let typed = l.typing_rect().expect("typing closed the box");
+        assert!(typed.w > live.w, "the box did not grow with the text");
+        assert_eq!((typed.x, typed.y), (130, 80), "typing moved the box");
+
+        // Step 5: a press anywhere else. It files the box and does not place the next one.
+        assert!(
+            l.press(PhysPoint::new(260, 150)),
+            "the finishing click was not taken"
+        );
+        assert!(!l.release());
+        assert!(
+            l.typing_rect().is_none(),
+            "the finishing click placed another box"
+        );
+        assert_eq!(l.objects(), 1, "the click away did not file the text");
+
+        let e = &l.doc.elements[0];
+        assert_eq!(e.kind, Kind::Text);
+        assert_eq!(e.text, "hi");
+        let Geom::Rect(filed) = e.geom else {
+            panic!("文本 filed {:?}, not a rect", e.geom);
+        };
+        // The one number the two paths share: what the field was positioned by is what
+        // the document kept, minus the origin - so a measure taken twice, or a box
+        // re-derived at commit, cannot quietly disagree with the caret the user was at.
+        assert_eq!(
+            filed,
+            PhysRect::new(30, 30, typed.w, typed.h),
+            "the document filed a different box than the field sat in"
+        );
+
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "the layer is not the document"
+        );
+        assert!(inked(&l, "m0") > 0, "the committed text drew no pixels");
+        assert!(
+            l.last_paint_px < l.full_px,
+            "one 文本 commit repainted the whole desktop: {} of {}",
+            l.last_paint_px,
+            l.full_px
+        );
+
+        // One screen at the desktop's corner, so `shift` is (0,0) and document
+        // coordinates are this canvas's own. Three pixels of slack: two is the reach the
+        // pen adds to the geometry (`bounds()` inflates by it, and the whole inflated
+        // area comes back opaque base), and one more covers the fringe of an
+        // antialiased edge.
+        let grown = PhysRect::new(filed.x - 3, filed.y - 3, filed.w + 6, filed.h + 6);
+        let f = l.layer_of("m0").unwrap();
+        let stray = (0..f.height)
+            .flat_map(|y| (0..f.width).map(move |x| (x, y)))
+            .filter(|(x, y)| {
+                f.get(*x, *y)[3] != 0 && !grown.contains(PhysPoint::new(*x as i32, *y as i32))
+            })
+            .count();
+        assert_eq!(
+            stray, 0,
+            "letters landed outside the box they were measured for"
+        );
+
+        assert!(l.can_undo());
+        assert!(l.undo_step(), "Ctrl+Z did not take the text back");
+        assert_eq!(l.objects(), 0);
+        assert_eq!(
+            inked(&l, "m0"),
+            0,
+            "the undo left the letters on the screen"
+        );
+    }
+
+    #[test]
+    fn a_box_with_nothing_in_it_is_not_an_undoable_nothing() {
+        let mut l = text_layer();
+
+        // Step 5 on a box no one has typed into: the box goes, and nothing else happens.
+        assert!(l.press(PhysPoint::new(130, 80)));
+        assert!(l.press(PhysPoint::new(150, 90)));
+        assert_eq!(l.objects(), 0, "an empty click-away filed a text object");
+        assert!(!l.can_undo(), "the empty box is in the keystroke history");
+        assert!(l.typing_rect().is_none(), "the empty box stayed open");
+        assert_eq!(touched(&l, "m0"), 0);
+
+        // Whitespace is the same nothing, seen by `trim` rather than by length.
+        assert!(l.press(PhysPoint::new(130, 80)));
+        l.type_text("   ");
+        assert!(!l.finish_typing(), "Enter accepted three spaces");
+        assert_eq!(l.objects(), 0);
+
+        // And each discard leaves the layer ready for the next box, which is the only
+        // way out of the state the two blocks above just entered.
+        assert!(l.press(PhysPoint::new(130, 80)));
+        assert_eq!(
+            l.typing_rect().map(|r| (r.x, r.y)),
+            Some((130, 80)),
+            "a box after a discard did not open where it was clicked"
+        );
+        l.type_text("go");
+        assert!(l.press(PhysPoint::new(150, 90)));
+        assert_eq!(l.objects(), 1, "a box after two discards was never filed");
+    }
+
+    #[test]
+    fn every_way_out_of_an_open_box_takes_the_field_back() {
+        // §9.1's ⑦ again, for the third gesture with state the undo stack cannot see.
+        // The judgement is "the box is gone and nothing was filed" rather than the
+        // `inked() == 0` the other two reclaims are judged by, because the box owns no
+        // pixels to take back - the difference [`Layer::abandon_typing`] documents.
+        for way in 0..5 {
+            let mut l = text_layer();
+            assert!(l.press(PhysPoint::new(130, 80)));
+            l.type_text("hi");
+            match way {
+                0 => l.select_tool(code_of(None)),
+                1 => l.select_tool(code_of(Some(Kind::Rect))),
+                2 => l.set_hole(PhysRect::default()),
+                3 => {
+                    l.clear_ink();
+                }
+                _ => {
+                    l.abandon_typing();
+                }
+            }
+            assert!(l.typing_rect().is_none(), "path {way} kept the box in hand");
+            assert_eq!(l.objects(), 0, "path {way} filed a box the user abandoned");
+            assert_eq!(
+                touched(&l, "m0"),
+                0,
+                "path {way} painted a box that owns no pixels"
+            );
+        }
+    }
+
+    #[test]
+    fn the_box_is_the_size_the_letters_were_measured_for() {
+        use falcon_core::annotation::raster::NoGlyphs;
+
+        let l = text_layer();
+        let at = PhysPoint::new(30, 30);
+
+        // What the click fixes: one corner is the click, whatever the measure says.
+        let one = l.box_at(at, "ab", &DirectWrite);
+        assert_eq!((one.x, one.y), (30, 30));
+        assert!(one.w >= 1 && one.h >= 1, "the box collapsed to nothing");
+
+        let more = l.box_at(at, "ab cd ef", &DirectWrite);
+        assert!(more.w > one.w, "the box did not grow with the string");
+        assert_eq!(more.h, one.h, "a longer line changed the line height");
+
+        let two = l.box_at(at, "ab\nab", &DirectWrite);
+        assert!(two.h > one.h, "a second line did not make the box taller");
+        assert_eq!(two.w, one.w, "the box is not the widest of its lines");
+
+        // With no leg to answer, the box must be *stable* instead: the same size for the
+        // same character count, so the field never jumps under the caret because a period
+        // happens to be narrower than an m.
+        let dots = l.box_at(at, "....", &NoGlyphs);
+        assert!(dots.w >= 1 && dots.h >= 1, "the fallback box collapsed");
+        assert_eq!(
+            dots,
+            l.box_at(at, "aaaa", &NoGlyphs),
+            "the fallback measured the glyphs it cannot see"
+        );
+        let twice = l.box_at(at, "....\n....", &NoGlyphs);
+        assert_eq!(twice.w, dots.w, "the fallback grew sideways on a newline");
+        assert_eq!(twice.h, dots.h * 2, "the fallback is not one em per line");
+
+        // The other branch, proven rather than assumed: a real measure cannot give these
+        // two the same width, so if the estimate were still answering this would fail.
+        #[cfg(windows)]
+        {
+            let wide = l.box_at(at, "MMMM", &DirectWrite);
+            let thin = l.box_at(at, "iiii", &DirectWrite);
+            assert_ne!(
+                wide.w, thin.w,
+                "the box is the fixed half-em estimate, not the font's own measure"
+            );
+        }
+    }
+
+    #[test]
+    fn enter_accepts_the_box_where_the_click_left_it() {
+        let mut l = text_layer();
+        assert!(
+            !l.finish_typing(),
+            "Enter with no box open has to reach 完成选区"
+        );
+
+        assert!(l.press(PhysPoint::new(130, 80)));
+        let live = l.typing_rect().unwrap();
+        assert!(
+            !l.finish_typing(),
+            "Enter accepted a box with nothing typed into it"
+        );
+        assert_eq!(l.objects(), 0);
+
+        assert!(
+            l.press(PhysPoint::new(130, 80)),
+            "the discard closed the flow"
+        );
+        l.type_text("ok");
+        let typed = l.typing_rect().unwrap();
+        assert!(l.finish_typing(), "Enter did not accept the open box");
+        assert_eq!(l.objects(), 1);
+        assert!(l.typing_rect().is_none(), "Enter left the field open");
+        assert!(
+            !l.finish_typing(),
+            "a second Enter committed the same box twice"
+        );
+
+        let Geom::Rect(filed) = l.doc.elements[0].geom else {
+            panic!("文本 filed {:?}, not a rect", l.doc.elements[0].geom)
+        };
+        assert_eq!(
+            filed,
+            PhysRect::new(live.x - l.origin.x, live.y - l.origin.y, typed.w, typed.h),
+            "Enter filed a box the field was not sitting in"
+        );
+        assert!(
+            inked(&l, "m0") > 0,
+            "the layer never drew the text it filed"
+        );
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "the layer is not the document"
         );
     }
 }
