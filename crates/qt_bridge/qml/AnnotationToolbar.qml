@@ -9,10 +9,10 @@ import dev.falconshot 1.0
 // showing one colour while Rust drew with another. So the buttons only ever *call*,
 // and the picture they show afterwards comes back through `view.reload()`.
 //
-// Plain `Rectangle`/`Text` items rather than `Controls.Button`: twelve tool buttons
-// in a row, and the width of each one has to be its own label. A styled Button adds
-// padding, an implicit size and a background that differs with the platform style,
-// none of which is asked for here.
+// Plain `Rectangle`/`Text` items rather than `Controls.Button`: a row of tool buttons
+// whose count grows with `TOOLS`, and the width of each one has to be its own label.
+// A styled Button adds padding, an implicit size and a background that differs with
+// the platform style, none of which is asked for here.
 Rectangle {
     id: bar
 

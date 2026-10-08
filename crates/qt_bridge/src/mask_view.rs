@@ -161,6 +161,14 @@ pub mod qobject {
         #[cxx_name = "commitHole"]
         fn commit(self: Pin<&mut Self>) -> bool;
 
+        /// §5.7.5's 折线 finisher, which the double-click and `Enter` reach *before*
+        /// `commitHole`: both keys mean two things to this mask, and `true` - "the
+        /// keystroke closed a line" - is what tells the caller the other one is not
+        /// this press's.
+        #[qinvokable]
+        #[cxx_name = "finishPolyline"]
+        fn finish_polyline(self: Pin<&mut Self>) -> bool;
+
         /// Esc: `true` when it cleared a selection, `false` when the caller should
         /// cancel the capture. One keystroke must not both clear and cancel.
         #[qinvokable]
@@ -412,6 +420,12 @@ impl qobject::MaskView {
         let hole = mask::with(|m| m.commit());
         self.as_mut().reload();
         hole.is_some()
+    }
+
+    pub fn finish_polyline(mut self: Pin<&mut Self>) -> bool {
+        let closed = mask::with(|m| m.finish_polyline());
+        self.as_mut().reload();
+        closed
     }
 
     pub fn step_back(mut self: Pin<&mut Self>) -> bool {

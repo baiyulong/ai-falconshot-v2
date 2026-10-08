@@ -469,6 +469,15 @@ impl MaskState {
         !self.hole.is_empty()
     }
 
+    /// §5.7.5's 折线 finisher: the double-click and `Enter` reach this before
+    /// [`MaskState::commit`], because both keys mean two things to this mask and only
+    /// the layer knows which one is actually pending. `true` is "the keystroke drew a
+    /// line", so the caller must not also crop the picture with it; `false` means no
+    /// polyline was in progress and this press is the selection's.
+    pub fn finish_polyline(&mut self) -> bool {
+        self.ink.finish_polyline()
+    }
+
     /// The live grip as a stable number, so the cursor shape and the hit test cannot
     /// drift apart: 0 = nothing held, 1 = drawing a new rectangle, 2..9 in
     /// `Handle::all()` order (Nw, N, Ne, E, Se, S, Sw, W), 10 = the whole rectangle.
@@ -602,14 +611,16 @@ impl MaskState {
     }
 
     /// The annotation layer's own line, for `--ink` and for the toolbar's tooltip:
-    /// which tool holds the pointer, how many objects are in the document, and what
-    /// the last repaint cost in pixels and milliseconds. "增量栅格" is only a claim
+    /// which tool holds the pointer, how many objects are in the document, how many
+    /// nodes a polyline has been clicked but not finished with, and what the last
+    /// repaint cost in pixels and milliseconds. "增量栅格" is only a claim
     /// once the number of pixels it moved is next to it.
     pub fn ink_line(&self) -> String {
         format!(
-            "tool={:?} hole={:?} {}",
+            "tool={:?} hole={:?} poly={} {}",
             self.ink.tool(),
             self.hole,
+            self.ink.polyline_nodes(),
             self.ink.paint_line()
         )
     }

@@ -1,7 +1,7 @@
 //! The ink, checked against the pixels it is supposed to be covering.
 //!
 //! `--ink <ms>` is `--mask` plus a script: the mask opens on a real freeze, this
-//! module drives *the same entry points a pointer uses* through three strokes and an
+//! module drives *the same entry points a pointer uses* through four strokes and an
 //! undo, and the run ends with one `PrintWindow` read-back of each mask window. That
 //! single read-back is why the script is arranged the way it is:
 //!
@@ -78,9 +78,11 @@ struct Plan {
     rect: PhysRect,
     /// The freehand stroke's corner points.
     zig: Vec<PhysPoint>,
+    /// 折线's nodes, in the order they were clicked (§5.7.5).
+    poly: Vec<PhysPoint>,
     /// The arrow's two ends - the stroke that gets undone.
     arrow: [PhysPoint; 2],
-    /// The keys each publish produced, oldest first: three strokes and one undo.
+    /// The keys each publish produced, oldest first: four strokes and one undo.
     keys: Vec<Vec<String>>,
     /// The layer's own line at planting time, and the selection it was drawn in.
     line: String,
@@ -142,6 +144,26 @@ fn box_points(rect: PhysRect) -> Vec<PhysPoint> {
     vec![c, PhysPoint::new(c.x, br.y), PhysPoint::new(br.x, c.y), br]
 }
 
+/// 折线 (§5.7.5) the way a hand does it: the first click places the first node, then
+/// every later leg is a press-move-release that ends on *its* node - which is the
+/// whole difference between this tool and the others, since none of them commits
+/// anything on the release. The finisher is deliberately not here: the script calls it
+/// itself, so the row can say whether the line closed or was left pending.
+fn clicks(
+    m: &mut mask::MaskState,
+    slots: &[mask::Slot],
+    nodes: &[PhysPoint],
+    notes: &mut Vec<String>,
+) {
+    let Some(first) = nodes.first() else {
+        return;
+    };
+    stroke(m, slots, std::slice::from_ref(first), notes);
+    for w in nodes.windows(2) {
+        stroke(m, slots, &along(w[0], w[1]), notes);
+    }
+}
+
 /// Points along a straight run, about `BAND_STEP` device pixels apart.
 fn along(a: PhysPoint, b: PhysPoint) -> Vec<PhysPoint> {
     let dx = b.x - a.x;
@@ -201,8 +223,12 @@ pub fn plant(shader: bool) -> Result<String, String> {
     let mut notes = Vec::new();
 
     // Every region is a fraction of the selection, so the script needs no knowledge
-    // of the monitor's size or of the default hole's arithmetic.
-    let (rect, zig, arrow) = mask::with(|m| {
+    // of the monitor's size or of the default hole's arithmetic. The polyline's strip
+    // (y 0.48..0.60) is between the box and the arrow on purpose: the three rows that
+    // look for green must not be able to satisfy each other, and the arrow's band -
+    // the one graded for absence - has to stay clear of ink that is still meant to be
+    // there.
+    let (rect, zig, poly, arrow) = mask::with(|m| {
         let h = m.hole;
         let f = |fx: f64, fy: f64| {
             PhysPoint::new(
@@ -213,6 +239,13 @@ pub fn plant(shader: bool) -> Result<String, String> {
         (
             PhysRect::from_points(f(0.15, 0.12), f(0.40, 0.42)),
             vec![f(0.55, 0.12), f(0.85, 0.26), f(0.55, 0.40)],
+            vec![
+                f(0.12, 0.50),
+                f(0.32, 0.58),
+                f(0.52, 0.50),
+                f(0.72, 0.58),
+                f(0.88, 0.50),
+            ],
             [f(0.15, 0.62), f(0.85, 0.76)],
         )
     });
@@ -237,6 +270,28 @@ pub fn plant(shader: bool) -> Result<String, String> {
         stroke(m, &slots, &path, &mut notes);
         flush(m, &mut keys);
 
+        // 折线, clicked node by node and then closed by the finisher rather than by a
+        // release - which is the point of the row: a polyline the script forgot to
+        // finish would still paint green pixels, and only the object count says it is
+        // not in the document.
+        m.ink.select_tool(annotate::code_of(Some(Kind::Polyline)));
+        let before = m.ink.objects();
+        clicks(m, &slots, &poly, &mut notes);
+        let pending = m.ink.polyline_nodes();
+        if pending != poly.len() {
+            notes.push(format!("clicks left {pending} node(s), not {}", poly.len()));
+        }
+        if !m.ink.finish_polyline() {
+            notes.push("the polyline had nothing to finish".to_string());
+        } else if m.ink.objects() != before + 1 {
+            notes.push(format!(
+                "finishing made {} object(s), not {}",
+                m.ink.objects(),
+                before + 1
+            ));
+        }
+        flush(m, &mut keys);
+
         // The stroke that is about to be undone, in the other ink.
         m.ink.select_tool(annotate::code_of(Some(Kind::Arrow)));
         m.ink.set_color(BLUE);
@@ -257,6 +312,7 @@ pub fn plant(shader: bool) -> Result<String, String> {
     *plan().lock().unwrap_or_else(PoisonError::into_inner) = Some(Plan {
         rect,
         zig,
+        poly,
         arrow,
         keys: keys.clone(),
         line: line.clone(),
@@ -264,7 +320,7 @@ pub fn plant(shader: bool) -> Result<String, String> {
         notes,
     });
     Ok(format!(
-        "3 strokes + 1 undo, {} publish(es) with {} distinct key(s), hole={hole}, {line}{}",
+        "4 strokes + 1 undo, {} publish(es) with {} distinct key(s), hole={hole}, {line}{}",
         keys.len(),
         distinct.len(),
         if problems.is_empty() {
@@ -450,7 +506,14 @@ pub fn measure() -> (Check, String) {
         };
         let Some(got) = platform_windows::print::print_window(win.hwnd, win.phys.w, win.phys.h, 2)
         else {
-            for row in ["ink box", "ink stroke", "no ghost", "dim", "hole"] {
+            for row in [
+                "ink box",
+                "ink stroke",
+                "ink polyline",
+                "no ghost",
+                "dim",
+                "hole",
+            ] {
                 rep.row(
                     &format!("{row} of {tag}"),
                     Check::Blocked,
@@ -541,6 +604,7 @@ pub fn measure() -> (Check, String) {
         for (label, points, want, tenths) in [
             ("ink box", rect_band(p.rect), GREEN, INK_PASS),
             ("ink stroke", path_band(&p.zig), GREEN, INK_PASS),
+            ("ink polyline", path_band(&p.poly), GREEN, INK_PASS),
         ] {
             let hits = band(win.phys, &got, frozen, &points, want, true);
             rep.row(

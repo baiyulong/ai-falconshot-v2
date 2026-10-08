@@ -50,14 +50,15 @@ use crate::mask_view::shim;
 ///
 /// Deliberately absent, each for a missing capability rather than a missing button:
 /// 文本/编号 need the font bridge (§5.7.11/§5.7.12 - [`NoGlyphs`] would draw a
-/// background box and call it text), 折线 needs multi-click geometry, 局部放大 needs
-/// two drags, and 自由选择/旋转 are M4b/M4c.
+/// background box and call it text), 局部放大 needs two drags, and 自由选择/旋转 are
+/// M4b/M4c.
 pub const TOOLS: &[Option<Kind>] = &[
     None,
     Some(Kind::Rect),
     Some(Kind::RoundedRect),
     Some(Kind::Ellipse),
     Some(Kind::Line),
+    Some(Kind::Polyline),
     Some(Kind::Arrow),
     Some(Kind::DoubleArrow),
     Some(Kind::Pencil),
@@ -160,6 +161,12 @@ pub struct Layer {
     anchor: Option<PhysPoint>,
     /// The freehand points so far.
     path: Vec<PhysPoint>,
+    /// 折线 (§5.7.5) does not live in `path`: its nodes are added by *successive
+    /// clicks*, so they have to survive the release between two of them. `poly` is
+    /// the nodes committed that way, and `poly_cursor` the point the rubber segment
+    /// currently runs to - which only becomes a node when the button comes up there.
+    poly: Vec<PhysPoint>,
+    poly_cursor: Option<PhysPoint>,
     /// The stroke being dragged: painted, but not in the document until release.
     draft: Vec<Element>,
     /// Bumped by every repaint, and the number every published key carries.
@@ -194,6 +201,8 @@ impl Default for Layer {
             hole: PhysRect::default(),
             anchor: None,
             path: Vec::new(),
+            poly: Vec::new(),
+            poly_cursor: None,
             draft: Vec::new(),
             rev: 0,
             next_id: 1,
@@ -308,7 +317,15 @@ impl Layer {
             return;
         }
         self.hole = hole;
-        if self.doc.is_empty() && self.draft.is_empty() {
+        // A selection that went away takes its half-drawn polyline with it: the nodes
+        // live in document space, so leaving them pending means the *next* selection
+        // inherits a line nobody is drawing any more.
+        let dropped = if hole.is_empty() {
+            self.abandon_polyline()
+        } else {
+            false
+        };
+        if self.doc.is_empty() && self.draft.is_empty() && !dropped {
             return;
         }
         self.paint(None);
@@ -329,7 +346,8 @@ impl Layer {
     }
 
     /// Switching tools restores the style that tool was last left with (§5.7.1), and
-    /// abandons whatever stroke was half-dragged.
+    /// abandons whatever stroke was half-dragged - including a polyline whose nodes
+    /// were clicked one at a time and never finished.
     pub fn select_tool(&mut self, code: i32) {
         let kind = tool_at(code);
         if let Some(k) = kind {
@@ -340,8 +358,7 @@ impl Layer {
         self.tool = kind;
         self.anchor = None;
         self.path.clear();
-        if !self.draft.is_empty() {
-            self.draft.clear();
+        if self.abandon_polyline() {
             self.paint_last();
         }
     }
@@ -522,6 +539,15 @@ impl Layer {
         }
         let p = self.doc_point(device);
         self.anchor = Some(p);
+        if kind == Kind::Polyline {
+            // The press only *starts* a node. §5.7.5 adds them one click at a time,
+            // and a click that was dragged steers the segment, so the point that
+            // becomes a node is the one the button comes up at - not the one it went
+            // down at, which is already a node or the tail of the previous segment.
+            self.poly_cursor = Some(p);
+            self.draft_polyline();
+            return true;
+        }
         self.path = if kind.is_stroke() {
             vec![p]
         } else {
@@ -536,6 +562,11 @@ impl Layer {
             return;
         };
         let p = self.doc_point(device);
+        if kind == Kind::Polyline {
+            self.poly_cursor = Some(p);
+            self.draft_polyline();
+            return;
+        }
         let geom = if kind.is_stroke() {
             if self.path.last().is_some_and(|last| *last == p) {
                 return;
@@ -560,6 +591,17 @@ impl Layer {
     /// undoable nothing.
     pub fn release(&mut self) -> bool {
         self.anchor = None;
+        if self.tool == Some(Kind::Polyline) {
+            // Not the end of the object, only of this node: the point came up here,
+            // so it joins the polyline, and the rubber segment goes with the button.
+            if let Some(c) = self.poly_cursor.take() {
+                if self.poly.last() != Some(&c) {
+                    self.poly.push(c);
+                }
+            }
+            self.draft_polyline();
+            return false;
+        }
         self.path.clear();
         let mut draft = std::mem::take(&mut self.draft);
         let Some(e) = draft.pop() else { return false };
@@ -570,6 +612,100 @@ impl Layer {
         self.next_id += 1;
         self.apply(Command::Add(vec![e]));
         true
+    }
+
+    /// §5.7.5's two finishers - 双击 and `Enter` - which are the same event as far as
+    /// the layer is concerned. The nodes become one object through [`Command::Add`],
+    /// so a single Ctrl+Z takes the whole polyline rather than its last leg.
+    ///
+    /// `false` means "there was no line here", which is what lets the mask's `Enter`
+    /// fall through to 完成选区 instead of eating the keystroke mid-drawing.
+    pub fn finish_polyline(&mut self) -> bool {
+        self.poly_cursor = None;
+        let nodes = std::mem::take(&mut self.poly);
+        if nodes.len() < 2 {
+            if self.abandon_polyline() {
+                self.paint_last();
+            }
+            return false;
+        }
+        let mut e = Element::new(
+            self.next_id,
+            Kind::Polyline,
+            Geom::Path(nodes),
+            self.style.clone(),
+        );
+        e.z = self.doc.elements.iter().map(|x| x.z).max().unwrap_or(0) + 1;
+        self.next_id += 1;
+        self.draft.clear();
+        self.apply(Command::Add(vec![e]));
+        true
+    }
+
+    /// How many nodes the user has clicked so far, and how many the finisher is
+    /// holding: the mask's `Enter` routes to [`Layer::finish_polyline`] first, and
+    /// that call's own `false` is the answer to "was there a line here?" - so this is
+    /// for the gauge and the tests to say *which* click they are reporting, not for a
+    /// second ladder nobody has to agree with the first.
+    pub fn polyline_nodes(&self) -> usize {
+        self.poly.len()
+    }
+
+    /// The pending polyline plus the point the pointer is at: one element, painted as
+    /// a draft and never in the document. The two halves are drawn together because a
+    /// polyline that shows only its committed nodes hides the segment being aimed.
+    fn draft_polyline(&mut self) {
+        let mut pts = self.poly.clone();
+        if let Some(c) = self.poly_cursor {
+            if pts.last() != Some(&c) {
+                pts.push(c);
+            }
+        }
+        let wanted = if pts.len() >= 2 {
+            Some(Geom::Path(pts))
+        } else {
+            None
+        };
+        if self
+            .draft
+            .first()
+            .is_some_and(|e| Some(&e.geom) == wanted.as_ref())
+        {
+            // The release after a click that was not dragged asks for exactly the
+            // preview the press already painted, and repainting the same pixels under a
+            // new key would charge the flow for a stroke that changed nothing.
+            return;
+        }
+        let was = self.draft.first().map(|e| e.bounds());
+        self.draft = match wanted {
+            Some(geom) => {
+                let mut e = Element::new(self.next_id, Kind::Polyline, geom, self.style.clone());
+                e.z = self.doc.elements.iter().map(|x| x.z).max().unwrap_or(0) + 1;
+                vec![e]
+            }
+            None => Vec::new(),
+        };
+        let now = self.draft.first().map(|e| e.bounds());
+        let area = match (was, now) {
+            (Some(a), Some(b)) => Some(a.union(&b)),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+        if let Some(area) = area {
+            self.paint(Some(&area));
+        }
+    }
+
+    /// Drop a half-drawn polyline, preview and all. `true` is "pixels of it were on
+    /// screen", so the caller knows it owes a repaint: the preview is in the layer but
+    /// in nobody's document, and nothing else can take those pixels back.
+    fn abandon_polyline(&mut self) -> bool {
+        let had = !self.draft.is_empty();
+        self.poly.clear();
+        self.poly_cursor = None;
+        self.draft.clear();
+        had
     }
 
     pub fn can_undo(&self) -> bool {
@@ -603,10 +739,16 @@ impl Layer {
         }
     }
 
-    /// 全清: every object out, through one command so it is undoable as one step.
+    /// 全清: every object out, through one command so it is undoable as one step, and
+    /// the half-drawn polyline out with them - it is on the screen, and a 全清 that
+    /// left one line of it behind would be the one gesture that fails to clear.
     pub fn clear_ink(&mut self) -> bool {
         let all: Vec<Element> = self.doc.elements.clone();
+        let dropped = self.abandon_polyline();
         if all.is_empty() {
+            if dropped {
+                self.paint_last();
+            }
             return false;
         }
         self.apply(Command::Remove(all));
@@ -1215,5 +1357,156 @@ mod tests {
         fresh.select_tool(code_of(Some(Kind::Marker)));
         assert_eq!(fresh.color(), [9, 8, 7, 255]);
         assert_eq!(fresh.width(), 40);
+    }
+
+    /// One 折线 node, clicked rather than dragged: press, move to the same point, let
+    /// go. §5.7.5's "依次点击添加节点" is a press and a release with nothing in between,
+    /// and that is exactly the sequence no other tool in this module survives - the
+    /// others commit on the release, this one must not.
+    fn click(l: &mut Layer, at: (i32, i32)) {
+        let p = PhysPoint::new(at.0, at.1);
+        assert!(l.press(p), "the polyline tool did not take the click");
+        l.drag(p);
+        assert!(!l.release(), "a node is not a finished object");
+    }
+
+    /// A layer with the polyline tool in its hand and a grey screen to draw on.
+    fn poly_layer() -> Layer {
+        let one = PhysRect::new(0, 0, 200, 120);
+        let mut l = screens(&[("m0", one)], [70, 70, 70, 255]);
+        l.set_hole(one);
+        l.set_color([0, 200, 0, 255]);
+        l.set_width(6);
+        l.select_tool(code_of(Some(Kind::Polyline)));
+        l
+    }
+
+    /// How many pixels of one canvas are this layer's green. Stated as a count rather
+    /// than as "the pixel at x,y is grey again", because a canvas nobody ever painted
+    /// is transparent - which is the overlay saying "show the frame underneath", not a
+    /// leftover stroke, and a point test cannot tell the two apart.
+    fn inked(l: &Layer, name: &str) -> usize {
+        let f = l.layer_of(name).unwrap();
+        (0..f.height)
+            .flat_map(|y| (0..f.width).map(move |x| f.get(x, y)))
+            .filter(|p| p[3] != 0 && p[1] as i32 - p[0].max(p[2]) as i32 > 40)
+            .count()
+    }
+
+    #[test]
+    fn a_polyline_is_one_object_whatever_the_click_count() {
+        let mut l = poly_layer();
+
+        click(&mut l, (20, 20));
+        assert_eq!(l.polyline_nodes(), 1);
+        assert_eq!(l.objects(), 0, "the first click committed a line");
+
+        click(&mut l, (100, 90));
+        assert_eq!(l.polyline_nodes(), 2);
+        // (60,55) is the midpoint of the only segment so far: a click that put nothing
+        // on the canvas is a tool the user is aiming blind.
+        let mid = l.layer_of("m0").unwrap().get(60, 55);
+        assert_eq!(mid[3], 255, "the segment never reached the canvas: {mid:?}");
+        assert!(
+            mid[1] as i32 - mid[0].max(mid[2]) as i32 > 40,
+            "the wrong ink drew: {mid:?}"
+        );
+
+        click(&mut l, (180, 20));
+        assert_eq!(l.objects(), 0, "the finisher had not been called yet");
+        assert!(l.finish_polyline(), "two clicks had nothing to finish");
+        assert_eq!(l.objects(), 1);
+        assert_eq!(l.polyline_nodes(), 0);
+        assert!(!l.finish_polyline(), "an empty line is a second undo step");
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "the layer is not the document"
+        );
+
+        // One Ctrl+Z takes the whole polyline. Undoing only its last leg would leave a
+        // line on screen that no keystroke can account for.
+        assert!(l.undo_step());
+        assert_eq!(l.objects(), 0);
+        assert_eq!(
+            l.layer_of("m0").unwrap().get(60, 55),
+            [70, 70, 70, 255],
+            "undo left a segment behind"
+        );
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "the undo did not repaint"
+        );
+    }
+
+    #[test]
+    fn switching_tools_takes_an_unfinished_line_back_off_the_screen() {
+        // The tool switch already abandoned half-dragged strokes; 折线 is the first tool
+        // whose preview sits on the screen *between* strokes, so the pixels have to be
+        // taken back with the nodes or the rect the user picks up next is drawn over a
+        // line they let go of two clicks ago.
+        let mut l = poly_layer();
+        click(&mut l, (20, 20));
+        click(&mut l, (100, 90));
+        assert!(l.polyline_nodes() >= 2, "the clicks left no line waiting");
+
+        l.select_tool(code_of(Some(Kind::Rect)));
+        assert_eq!(l.polyline_nodes(), 0, "the switch kept the line in hand");
+        assert_eq!(l.objects(), 0);
+        assert_eq!(
+            l.layer_of("m0").unwrap().get(60, 55),
+            [70, 70, 70, 255],
+            "the abandoned preview stayed on the canvas"
+        );
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "an empty document drew pixels"
+        );
+    }
+
+    #[test]
+    fn a_cleared_selection_does_not_inherit_the_abandoned_line() {
+        // 全清 and the first Esc both mean "nothing of mine is on this screen". The
+        // preview is not in the document, so neither gesture can see it through
+        // `Command::Remove` - and a pending polyline that survives an un-select comes
+        // back the moment the user drags a new box.
+        let mut l = poly_layer();
+        click(&mut l, (20, 20));
+        click(&mut l, (100, 90));
+        assert!(
+            !l.clear_ink(),
+            "an empty document is not something 全清 removed"
+        );
+        assert_eq!(l.polyline_nodes(), 0, "全清 kept the line in hand");
+        assert_eq!(l.layer_of("m0").unwrap().get(60, 55), [70, 70, 70, 255]);
+
+        click(&mut l, (20, 20));
+        click(&mut l, (100, 90));
+        l.set_hole(PhysRect::default());
+        assert_eq!(l.polyline_nodes(), 0, "un-selecting kept the line in hand");
+        assert_eq!(l.layer_of("m0").unwrap().get(60, 55), [0, 0, 0, 0]);
+        l.set_hole(PhysRect::new(0, 0, 200, 120));
+        assert_eq!(
+            inked(&l, "m0"),
+            0,
+            "the next selection inherited the line nobody was drawing"
+        );
+    }
+
+    #[test]
+    fn one_click_is_not_a_line() {
+        let mut l = poly_layer();
+        click(&mut l, (20, 20));
+        click(&mut l, (20, 20));
+        assert_eq!(l.polyline_nodes(), 1, "the same point clicked twice");
+        assert!(!l.finish_polyline());
+        assert_eq!(l.objects(), 0);
+        assert!(
+            !l.can_undo(),
+            "a click that drew nothing became an undo step"
+        );
+        assert_eq!(inked(&l, "m0"), 0, "a single node drew a something");
     }
 }
