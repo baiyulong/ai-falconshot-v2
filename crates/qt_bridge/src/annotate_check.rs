@@ -453,6 +453,7 @@ fn nearer(c: [u8; 4], a: [u8; 4], b: [u8; 4]) -> bool {
 /// wonder (the P22 run, recorded in 计划 §10 第 24 项). `unexplained` is now a number
 /// the row prints, and [`Hits::examples`] prints the pixels behind the first few of
 /// them, so the count is a thing the next round can go and look at.
+#[derive(Default)]
 struct Hits {
     want: usize,
     ok: usize,
@@ -630,21 +631,60 @@ fn band(
 }
 
 /// Per-channel agreement for the 放大 row, which is deliberately looser than
-/// [`SAME_TOL`]: this is not two photographs of one picture but a copy of one part of it
-/// resampled into another, and interpolation across a hard edge is off by up to the
-/// whole difference of the two source pixels. What the row claims is *this picture is
-/// here*, not these bytes match - and the samples it grades are the ones whose two
-/// candidates differ by more than this number, so the claim cannot be satisfied by
-/// tolerance alone.
+/// [`SAME_TOL`]. Before P24 the looseness bought the difference between a nearest
+/// expectation and a resampled copy; it now buys something narrower - the copy is
+/// graded against the resampling itself, so what is left to forgive is the read-back
+/// path (composition, the window's own device scale) rounding a pixel. What the row
+/// claims is *this picture is here*, not these bytes match, and the samples it grades
+/// are the ones whose two candidates differ by more than this number, so the claim
+/// cannot be satisfied by tolerance alone.
 const ENLARGE_TOL: i32 = 24;
 
-/// 放大 (§5.7.13) graded against the desktop rather than a colour.
+/// The magnifier's own output for a source rectangle, built the way `raster` builds the
+/// copy it lays down: take the source out of the monitor's frozen frame, clipping it to
+/// that frame first, and `resized(to.w, to.h, smooth)`.
+///
+/// This is what [`enlarged`] grades against now. The row used to expect the *source
+/// pixel* rounded onto the destination grid, and the product does not produce that:
+/// `Kind::Zoom` resamples with a filter that rings at hard edges, so the two answers
+/// differ at every edge in the copied picture. On a flat wallpaper they are the same
+/// colour and nobody could tell - which is exactly why the P23 run read `98.3%` of the
+/// usable samples on one desktop and `73.1%` on a textured one, with the same script,
+/// the same 2,185 lattice points and the same buckets.
+///
+/// What the row stops testing is the *choice of filter*: PRD §5.7.13 has no rules block,
+/// so nothing in the requirement lets this gauge call one resampling wrong. What it
+/// still tests is *which picture reached the screen*, and that keeps its teeth - a copy
+/// made from the wrong rectangle, or laid down at the wrong offset, moves this frame
+/// away from the pixels and reads as a miss
+/// (`the_row_is_sensitive_to_which_rectangle_the_copy_was_made_from`).
+fn magnified(snap: &ScreenSnapshot, from: &PhysRect, w: u32, h: u32) -> Option<Frame> {
+    let m = snap
+        .monitors
+        .iter()
+        .find(|m| m.info.contains(from.top_left()))?;
+    let local = PhysRect::new(
+        from.x - m.info.bounds.x,
+        from.y - m.info.bounds.y,
+        from.w,
+        from.h,
+    );
+    let src = local.intersection(&m.frame.bounds())?;
+    m.frame.crop(&src).ok()?.resized(w, h, true).ok()
+}
+
+/// 放大 (§5.7.13) graded against the magnifier's picture rather than a colour.
 ///
 /// Its frames are one device pixel wide - `raster`'s own comment on step 5 - so a colour
 /// row over them measures antialiasing, and a copy that never landed leaves the desktop
 /// behind, which no colour row can see at all. So each sample asks which of two desktop
 /// points the read-back matches: the point it stands on, or the point of the source
-/// region the copy is supposed to show at this scale.
+/// region as the magnifier renders it at this scale.
+///
+/// The second return value is how many of the graded samples the *old* nearest
+/// expectation would also have called the copy: it is how much of the row's arithmetic
+/// the filter actually moves, and it is printed beside the row rather than folded into
+/// it - the buckets, their identities and the threshold are unchanged.
 ///
 /// A sample whose two candidates are the same colour cannot answer that - a flat
 /// wallpaper magnifies to itself. It goes into [`Hits::flat`] and out of the
@@ -654,14 +694,20 @@ const ENLARGE_TOL: i32 = 24;
 /// unchanged script, because the number printed as "planted" was really a property of
 /// the wallpaper. A refusal therefore lands in a named bucket exactly like the two
 /// refusals above, and an untestable desktop still cannot read as a pass.
+///
+/// The refusals are keyed to the magnified value, not the source pixel, for the same
+/// reason the verdict is: the question this row asks is about the picture that reaches
+/// the screen, so "too dark to tell" and "magnifies to itself" have to be properties of
+/// that picture.
 fn enlarged(
     cover: PhysRect,
     got: &Frame,
     snap: &ScreenSnapshot,
+    mag: &Frame,
     from: PhysRect,
     to: PhysRect,
     hole: PhysRect,
-) -> Hits {
+) -> (Hits, usize) {
     let mut h = Hits {
         want: 0,
         ok: 0,
@@ -674,12 +720,13 @@ fn enlarged(
         unexplained: 0,
         examples: Vec::new(),
     };
+    let mut nearest_ok = 0usize;
     let close =
         |a: [u8; 4], b: [u8; 4]| (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= ENLARGE_TOL);
     // Outside the selection the mask shows the dim, not the ink: the copy is clipped
     // there by §9.1's ③, and a sample past the edge would grade the wallpaper.
     let Some(area) = to.intersection(&hole) else {
-        return h;
+        return (h, nearest_ok);
     };
     let inset = PEN / 2 + 2;
     let inner = PhysRect::new(
@@ -689,7 +736,7 @@ fn enlarged(
         area.h.saturating_sub(inset * 2),
     );
     if inner.is_empty() {
-        return h;
+        return (h, nearest_ok);
     }
     let scale_x = cover.w.max(1) as f64 / got.width.max(1) as f64;
     let scale_y = cover.h.max(1) as f64 / got.height.max(1) as f64;
@@ -701,15 +748,14 @@ fn enlarged(
                 h.off += 1;
                 continue;
             };
-            // The pixel the user should be looking at, this far into the source.
-            let src = PhysPoint::new(
-                from.x + ((x - to.x) as f64 * from.w as f64 / to.w.max(1) as f64).floor() as i32,
-                from.y + ((y - to.y) as f64 * from.h as f64 / to.h.max(1) as f64).floor() as i32,
-            );
-            let Some(want) = snap.color_at(src) else {
+            // The pixel the user should be looking at: the copy's own grid, which is
+            // `to`'s top-left plus this sample's offset into it.
+            let (mx, my) = ((x - to.x) as u32, (y - to.y) as u32);
+            if mx >= mag.width || my >= mag.height {
                 h.off += 1;
                 continue;
-            };
+            }
+            let want = mag.get(mx, my);
             if (want[0].max(want[1]).max(want[2]) as u32) < mask_check::MIN_SOURCE {
                 h.dark += 1;
                 continue;
@@ -725,6 +771,16 @@ fn enlarged(
                 continue;
             }
             let c = got.get(px as u32, py as u32);
+            // The old expectation, kept as a printed number rather than as a bucket:
+            // how often nearest and the filter disagree here is the size of the thing
+            // P24 found, and it must not become a second way of passing.
+            let near = PhysPoint::new(
+                from.x + ((x - to.x) as f64 * from.w as f64 / to.w.max(1) as f64).floor() as i32,
+                from.y + ((y - to.y) as f64 * from.h as f64 / to.h.max(1) as f64).floor() as i32,
+            );
+            if snap.color_at(near).is_some_and(|n| close(c, n)) {
+                nearest_ok += 1;
+            }
             if close(c, want) {
                 h.ok += 1;
             } else if close(c, plain) {
@@ -736,7 +792,7 @@ fn enlarged(
             }
         }
     }
-    h
+    (h, nearest_ok)
 }
 
 /// The check itself, after the event loop has painted.
@@ -936,11 +992,36 @@ pub fn measure() -> (Check, String) {
         // §3.6 constraint 8, on the stroke nobody can grade by colour.
         match p.zoom {
             Some((src, copy)) => {
-                let hits = enlarged(win.phys, &got, frozen, src, copy, p.hole);
-                rep.row(
-                    &format!("zoom copy of {tag}"),
-                    hits.verdict(INK_PASS),
-                    hits.line(),
+                let built = magnified(frozen, &src, copy.w, copy.h);
+                let (hits, nearest_ok) = match &built {
+                    Some(mag) => enlarged(win.phys, &got, frozen, mag, src, copy, p.hole),
+                    // The expectation is the one thing this row cannot do without: if
+                    // no captured monitor covers the source rectangle, there is no
+                    // magnifier output to compare against, and that is a script problem
+                    // rather than the desktop declining to answer.
+                    None => (Hits::default(), 0),
+                };
+                let verdict = if built.is_some() {
+                    hits.verdict(INK_PASS)
+                } else {
+                    Check::Fail
+                };
+                let detail = if built.is_some() {
+                    hits.line()
+                } else {
+                    format!(
+                        "the source rect {src:?} is on no captured monitor, so there is no \
+                         magnifier output to grade the copy against"
+                    )
+                };
+                rep.row(&format!("zoom copy of {tag}"), verdict, detail);
+                rep.note(
+                    &format!("zoom expectation of {tag}"),
+                    format!(
+                        "the magnifier's own resampled frame; nearest would have graded {} \
+                         of the graded samples the same way",
+                        nearest_ok
+                    ),
                 );
             }
             None => rep.row(
@@ -1249,6 +1330,155 @@ mod tests {
         got
     }
 
+    /// The row's own entry point: the expectation is the magnifier's output built from
+    /// the same frozen desktop the product reads, so a test that means "the copy was
+    /// made from somewhere else" says so by passing a different `from`.
+    fn zoom_row(snap: &ScreenSnapshot, got: &Frame, from: PhysRect, to: PhysRect) -> (Hits, usize) {
+        let mag = magnified(snap, &from, to.w, to.h).expect("magnifier output");
+        enlarged(
+            PhysRect::new(0, 0, 200, 200),
+            got,
+            snap,
+            &mag,
+            from,
+            to,
+            PhysRect::new(0, 0, 200, 200),
+        )
+    }
+
+    /// A desktop whose copied region is **textured per pixel**, which is the only shape
+    /// that exercises what P24 is about. The first fixture for these rows was one flat
+    /// colour with a single hard edge, and it measured nothing: at every one of the 81
+    /// lattice points the filter's answer and nearest's answer came out within
+    /// [`ENLARGE_TOL`] of each other (`nearest_ok=81`), and a copy shifted four device
+    /// pixels still passed 72 of 81. Structure at the scale of a pixel is what makes a
+    /// resampling observable - which is also why the real run read 98.3% on a flat
+    /// wallpaper and 73.1% on a textured one.
+    fn textured_desk() -> ScreenSnapshot {
+        let mut snap = desk(GREY);
+        for y in 0..40u32 {
+            for x in 0..40u32 {
+                let i = (x * 7 + y * 13) % 4;
+                let c = [
+                    60 + (i * 55) as u8,
+                    60 + ((3 - i) * 55) as u8,
+                    60 + (((x + y) % 3) * 60) as u8,
+                    255,
+                ];
+                snap.monitors[0].frame.set(x, y, c);
+            }
+        }
+        snap
+    }
+
+    /// The read-back the product would produce for `mag` laid down at `to`: the window
+    /// showing the desktop everywhere except the copy, and the copy's own pixels there.
+    fn laid_down(mag: &Frame, to: PhysRect) -> Frame {
+        let mut got = Frame::filled(200, 200, GREY).expect("frame");
+        for y in 0..mag.height {
+            for x in 0..mag.width {
+                let (dx, dy) = (to.x + x as i32, to.y + y as i32);
+                if dx >= 0 && dy >= 0 && (dx as u32) < got.width && (dy as u32) < got.height {
+                    got.set(dx as u32, dy as u32, mag.get(x, y));
+                }
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn the_row_grades_the_copy_against_the_magnifier_and_not_against_nearest() {
+        // The claim P24 makes, in both directions at once. The copy is laid down exactly
+        // as `raster` lays it - the source cropped out of the frozen frame and resampled
+        // with the filter - and the row calls every one of its samples the expected
+        // reading. And the pass is load-bearing: nearest disagrees with the filter at
+        // most of these points, so the row is not passing because the two answers match.
+        let snap = textured_desk();
+        let mag = magnified(&snap, &FROM, COPY.w, COPY.h).expect("magnifier output");
+        let got = laid_down(&mag, COPY);
+        let (h, nearest_ok) = zoom_row(&snap, &got, FROM, COPY);
+        assert_eq!(h.ok, h.usable());
+        assert_eq!(h.verdict(INK_PASS), Check::Pass);
+        assert!(
+            nearest_ok * 2 < h.usable(),
+            "the fixture has no texture in it: nearest_ok={nearest_ok} usable={}",
+            h.usable()
+        );
+    }
+
+    #[test]
+    fn a_copy_made_with_the_other_filter_is_not_called_the_copy() {
+        // The teeth the row keeps, and the reason grading against the magnifier's own
+        // frame is not just agreeing with the implementation: a copy made by nearest
+        // neighbour - the same pixels, the same rectangle, the same place - is a
+        // different picture at this scale, and this row says so. Changing the filter is
+        // therefore a decision the plan has to take on purpose, not one that goes by
+        // unnoticed.
+        let snap = textured_desk();
+        let nearest = snap.monitors[0]
+            .frame
+            .crop(&FROM)
+            .expect("crop")
+            .nearest_resized(COPY.w, COPY.h);
+        let got = laid_down(&nearest, COPY);
+        let (h, _) = zoom_row(&snap, &got, FROM, COPY);
+        assert_eq!(h.usable(), 81);
+        assert!(
+            h.ok * 2 < h.usable(),
+            "a nearest-neighbour copy read as the magnifier's own: {}/{}",
+            h.ok,
+            h.usable()
+        );
+        assert_eq!(h.verdict(INK_PASS), Check::Fail);
+    }
+
+    #[test]
+    fn the_row_is_sensitive_to_which_rectangle_the_copy_was_made_from() {
+        // Sensitivity is the other half that must survive the change. Same desktop, same
+        // pixels on screen, but the expectation is built from a source rectangle one
+        // device pixel away: at this texture that is a different picture, and the row
+        // cannot grade its way through it.
+        let snap = textured_desk();
+        let mag = magnified(&snap, &FROM, COPY.w, COPY.h).expect("magnifier output");
+        let got = laid_down(&mag, COPY);
+        let (h, _) = zoom_row(&snap, &got, FROM.offset(1, 0), COPY);
+        assert_eq!(h.want, 81);
+        assert!(
+            h.ok * 2 < h.usable(),
+            "a copy made from the wrong rectangle still reads as a clean pass: {}/{}",
+            h.ok,
+            h.usable()
+        );
+        assert_eq!(h.verdict(INK_PASS), Check::Fail);
+    }
+
+    #[test]
+    fn a_copy_laid_down_where_the_document_does_not_put_it_is_not_the_copy() {
+        // The last axis: the picture is right, the place is wrong. The row asks about the
+        // rectangle the document claims, so it reads the copy's neighbours there and
+        // finds neither the magnifier's picture nor the desktop.
+        let snap = textured_desk();
+        let mag = magnified(&snap, &FROM, COPY.w, COPY.h).expect("magnifier output");
+        let got = laid_down(&mag, COPY);
+        let (h, _) = zoom_row(&snap, &got, FROM, COPY.offset(4, 0));
+        assert_eq!(h.want, 81);
+        assert!(
+            h.ok * 2 < h.usable(),
+            "a copy four device pixels off the document's rectangle still passed: {}/{}",
+            h.ok,
+            h.usable()
+        );
+        assert_eq!(h.verdict(INK_PASS), Check::Fail);
+    }
+
+    #[test]
+    fn a_source_on_no_captured_monitor_gives_the_row_no_expectation() {
+        // Not a refusal the desktop hands back and not a pass: there is no magnifier
+        // output at all, so the row cannot ask its question and the caller says so.
+        let snap = desk(GREY);
+        assert!(magnified(&snap, &PhysRect::new(300, 300, 40, 40), COPY.w, COPY.h).is_none());
+    }
+
     #[test]
     fn planted_is_what_the_script_planted_not_what_the_wallpaper_shows() {
         // 9 x 9 = 81 lattice points inside the copy either way. On a desktop that cannot
@@ -1258,14 +1488,7 @@ mod tests {
         // script. The refusals move out of `planted` and into a named bucket; `planted`
         // stops moving at all.
         let flat = desk(GREY);
-        let h = enlarged(
-            PhysRect::new(0, 0, 200, 200),
-            &zoom_read(GREY),
-            &flat,
-            FROM,
-            COPY,
-            PhysRect::new(0, 0, 200, 200),
-        );
+        let (h, _) = zoom_row(&flat, &zoom_read(GREY), FROM, COPY);
         assert_eq!((h.want, h.flat, h.usable()), (81, 81, 0));
         assert_eq!(h.verdict(INK_PASS), Check::Blocked);
     }
@@ -1274,17 +1497,14 @@ mod tests {
     fn a_copy_that_never_landed_still_fails_on_the_same_sample_count() {
         // The other half of the same change: a distinguishable desktop gives the row the
         // identical denominator, and a copy showing the desktop instead of the source is
-        // a FAIL with every one of its samples named as the bare desktop.
+        // a FAIL with every one of its samples named as the bare desktop. The source here
+        // is one flat colour, which is also why these four readings say the same thing
+        // under either expectation - the filter has no edge to ring at. See
+        // `the_row_grades_the_copy_against_the_magnifier_and_not_against_nearest` for the
+        // fixture where the two answers part company.
         let mut snap = desk(GREY);
         snap.monitors[0].frame.fill_rect(&FROM, [250, 20, 20, 255]);
-        let h = enlarged(
-            PhysRect::new(0, 0, 200, 200),
-            &zoom_read(GREY),
-            &snap,
-            FROM,
-            COPY,
-            PhysRect::new(0, 0, 200, 200),
-        );
+        let (h, _) = zoom_row(&snap, &zoom_read(GREY), FROM, COPY);
         assert_eq!(
             (h.want, h.flat, h.usable(), h.ok, h.plain),
             (81, 0, 81, 0, 81)
@@ -1293,14 +1513,7 @@ mod tests {
 
         // And the same row with the copy actually there reads as expected, so the
         // buckets above are not this row's way of always declining.
-        let shown = enlarged(
-            PhysRect::new(0, 0, 200, 200),
-            &zoom_read([250, 20, 20, 255]),
-            &snap,
-            FROM,
-            COPY,
-            PhysRect::new(0, 0, 200, 200),
-        );
+        let (shown, _) = zoom_row(&snap, &zoom_read([250, 20, 20, 255]), FROM, COPY);
         assert_eq!((shown.ok, shown.usable()), (81, 81));
         assert_eq!(shown.verdict(INK_PASS), Check::Pass);
 
@@ -1310,15 +1523,7 @@ mod tests {
         // at. ORPHAN is the measured shape of those 56 - the read-back leans toward the
         // copy, at about three quarters coverage - so the row calls it *partway*, which
         // is a different question from the fourth reading below.
-        let odd = zoom_read(ORPHAN);
-        let h = enlarged(
-            PhysRect::new(0, 0, 200, 200),
-            &odd,
-            &snap,
-            FROM,
-            COPY,
-            PhysRect::new(0, 0, 200, 200),
-        );
+        let (h, _) = zoom_row(&snap, &zoom_read(ORPHAN), FROM, COPY);
         assert_eq!(
             (h.ok, h.plain, h.blended, h.unexplained, h.examples.len()),
             (0, 0, 81, 0, NAMED)
@@ -1328,15 +1533,7 @@ mod tests {
 
         // And a pixel that leans toward neither candidate stays in `unexplained`: the
         // two buckets are the difference P23 exists to make, so both have to be reachable.
-        let none = zoom_read(ODD);
-        let h = enlarged(
-            PhysRect::new(0, 0, 200, 200),
-            &none,
-            &snap,
-            FROM,
-            COPY,
-            PhysRect::new(0, 0, 200, 200),
-        );
+        let (h, _) = zoom_row(&snap, &zoom_read(ODD), FROM, COPY);
         assert_eq!((h.blended, h.unexplained, h.usable()), (0, 81, 81));
         assert_eq!(h.verdict(INK_PASS), Check::Fail);
     }
