@@ -652,6 +652,37 @@ impl Layer {
         }
     }
 
+    /// Is the tool in hand 橡皮? The row that offers §5.7.14's mode collapses off this
+    /// one bool, for the reason [`Layer::zoom_tool`] gives: the index of 橡皮 in
+    /// [`TOOLS`] is Rust's number, and a second copy of it in QML is a second ladder.
+    pub fn eraser_tool(&self) -> bool {
+        self.tool == Some(Kind::Eraser)
+    }
+
+    /// §5.7.14's 擦除到透明, read back rather than kept in the toolbar for the same
+    /// reason [`Layer::dashed`] is: §5.7.1's per-tool memory can hand the eraser back a
+    /// mode no button has ever touched.
+    pub fn erase_transparent(&self) -> bool {
+        self.style.erase_to_transparent
+    }
+
+    /// §5.7.14's second rule. One bool of the pen, but what it moves is the *exported*
+    /// picture: with it off the eraser's plane carries the frozen screenshot back over
+    /// the ink, so the annotation goes and the pixels under it stay; with it on the
+    /// pixels leave the picture altogether.
+    ///
+    /// The live preview cannot show that difference, and the toolbar's 提示 is not
+    /// decoration because of it: QML draws the same frozen frame *under* the ink layer,
+    /// so a cleared pixel and a restored pixel both read as the desktop on screen. What
+    /// leaves the mask is the frame with the hole in it, and the encoder's own answer
+    /// covers both halves - a PNG keeps it, an alpha-less format fills it with white
+    /// ([`falcon_core::encode`]'s `flatten_on_lossy`, on by default).
+    pub fn set_erase_transparent(&mut self, on: bool) {
+        self.style.erase_to_transparent = on;
+        self.remember_style();
+        self.refresh_preview();
+    }
+
     /// Catch a pending preview up with the pen. Only the two node-style gestures have a
     /// life of their own between style calls: a stroke mid-drag cannot meet a toolbar
     /// click, because the pointer that draws it is the pointer the toolbar would need.
@@ -3201,6 +3232,145 @@ mod tests {
             l.select_tool(code);
             assert_eq!(l.text_tool(), want, "the row moved with button {code}");
         }
+    }
+
+    #[test]
+    fn the_erase_mode_is_offered_to_the_eraser_only() {
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 40, 40))], PLATE_BASE);
+        for (code, want) in [
+            (code_of(None), false),
+            (code_of(Some(Kind::Rect)), false),
+            (code_of(Some(Kind::Pencil)), false),
+            (code_of(Some(Kind::Eraser)), true),
+        ] {
+            l.select_tool(code);
+            assert_eq!(l.eraser_tool(), want, "the row moved with button {code}");
+        }
+    }
+
+    #[test]
+    fn the_default_eraser_puts_the_picture_back_and_the_transparent_one_takes_it() {
+        // One red band down the middle of a flat grey desktop, then the same 橡皮 path
+        // over it twice - once as the pen comes by default, once with §5.7.14's mode on.
+        // The readings are the fixture's own numbers: [90,90,90,255] is what the frozen
+        // frame was filled with, and `0` is the alpha a pixel that no longer contributes
+        // has. Neither is read back out of the code being graded.
+        const GREY: [u8; 4] = [90, 90, 90, 255];
+        const RED: [u8; 4] = [232, 17, 35, 255];
+        let one = PhysRect::new(0, 0, 320, 120);
+        let mut export = [GREY; 2];
+
+        for (leg, transparent) in [false, true].into_iter().enumerate() {
+            let mut l = screens(&[("m0", one)], GREY);
+            l.set_hole(one);
+            l.select_tool(code_of(Some(Kind::Pencil)));
+            l.set_color(RED);
+            l.set_width(12);
+            band(&mut l);
+            let inked = l.layer_of("m0").unwrap().get(160, 60);
+            assert!(
+                inked[0] as i32 - inked[1].max(inked[2]) as i32 > 40,
+                "the ink never arrived (transparent={transparent}): {inked:?}"
+            );
+
+            l.select_tool(code_of(Some(Kind::Eraser)));
+            assert!(
+                !l.erase_transparent(),
+                "the mode is off until someone asks for it"
+            );
+            l.set_erase_transparent(transparent);
+            assert_eq!(l.erase_transparent(), transparent);
+            band(&mut l);
+
+            let erased = l.layer_of("m0").unwrap().get(160, 60);
+            export[leg] = l.flatten("m0").unwrap().get(160, 60);
+            if transparent {
+                assert_eq!(
+                    erased[3], 0,
+                    "the overlay kept pixels it was told to clear: {erased:?}"
+                );
+                // The rgb is the ink that was there - invisible at alpha 0, and left as
+                // it is because clearing a pixel is not a colour operation.
+                assert_eq!(
+                    export[leg][3], 0,
+                    "the exported picture is not transparent: {:?}",
+                    export[leg]
+                );
+                // Through the encoder's no-alpha branch, which is what a JPG save of the
+                // same frame takes: the hole becomes the colour `encode` flattens on and
+                // the ink that was cleared does not come back. Measured, because a reader
+                // cannot check that sentence on the screen - it is in a file's bytes.
+                let jpg = falcon_core::encode::encode(
+                    &l.flatten("m0").unwrap(),
+                    &falcon_core::encode::EncodeOptions {
+                        format: falcon_core::encode::Format::Jpg,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let back = falcon_core::encode::decode(&jpg).unwrap().get(160, 60);
+                assert!(
+                    back[0] >= 200 && back[1] >= 200 && back[2] >= 200,
+                    "the JPG leg is not the fill colour: {back:?}"
+                );
+                assert!(
+                    back[0] as i32 - back[1].max(back[2]) as i32 <= 40,
+                    "the JPG leg came back as the erased ink: {back:?}"
+                );
+            } else {
+                assert_eq!(erased, GREY, "默认 erased the screenshot too: {erased:?}");
+                assert_eq!(export[leg], GREY, "the export lost the screenshot");
+            }
+            // And the incremental canvas still agrees with a whole-canvas render, which
+            // is the claim a mode that *subtracts* is exactly the shape to break.
+            assert_eq!(
+                mismatched(&l, "m0").unwrap(),
+                Vec::<String>::new(),
+                "transparent={transparent}"
+            );
+        }
+
+        // One geometry, one bool, and the two exported pixels that came out of it: the
+        // difference between these two *is* §5.7.14's rule, and on the live mask it is
+        // invisible either way - which is why the toolbar says it in words.
+        assert_ne!(export[0], export[1], "both modes exported the same pixel");
+    }
+
+    #[test]
+    fn the_eraser_keeps_its_own_answer_when_another_tool_moves_the_same_field() {
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 40, 40))], [90, 90, 90, 255]);
+        l.select_tool(code_of(Some(Kind::Eraser)));
+        assert!(!l.erase_transparent(), "§5.7.14's 默认 is 只擦标注");
+
+        l.set_erase_transparent(true);
+        l.select_tool(code_of(Some(Kind::Rect)));
+        // The rect's pen is the eraser's, because `select_tool` deliberately has no else
+        // branch (§5.7.1 only requires remembering what a tool was last left with) - so
+        // this reads true even though the row is hidden for the rect. The field is one
+        // bool of the pen, and nothing else in the product reads it for a rect.
+        assert!(
+            l.erase_transparent(),
+            "an untaught tool inherits the pen in hand"
+        );
+        assert!(!l.eraser_tool(), "the row is not the rect's");
+        l.set_erase_transparent(false);
+
+        l.select_tool(code_of(Some(Kind::Eraser)));
+        assert!(
+            l.erase_transparent(),
+            "the eraser came back with what it was left with, not the rect's answer"
+        );
+    }
+
+    /// The middle band both legs of the two-mode test draw: 40 to 280 along y = 60, in
+    /// one grab. The same geometry is the whole point - the only thing that may differ
+    /// between the two readings is the pen's mode.
+    fn band(l: &mut Layer) {
+        assert!(l.press(PhysPoint::new(40, 60)));
+        for x in 40..=280 {
+            l.drag(PhysPoint::new(x, 60));
+        }
+        assert!(l.release());
     }
 
     #[test]

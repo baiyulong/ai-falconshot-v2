@@ -131,6 +131,13 @@ pub mod qobject {
         /// config file's row, and a row that reaches the pen without reaching the toolbar
         /// is a setting the user can only check by drawing something.
         #[qproperty(QString, pen_family)]
+        /// §5.7.14's 擦除到透明, and the flag that says whether the tool in hand is the
+        /// eraser it belongs to - the third row of the shape `zoom_tool` and `text_tool`
+        /// give the two before it. The flag is Rust's because the mode is a pen field
+        /// like any other, and §5.7.1's per-tool memory can hand the eraser back a mode
+        /// the buttons have never clicked.
+        #[qproperty(bool, eraser_tool)]
+        #[qproperty(bool, erase_transparent)]
         type MaskView = super::MaskViewRust;
 
         /// Which screen this window is. Called by the `Instantiator` after creation,
@@ -284,6 +291,13 @@ pub mod qobject {
         #[cxx_name = "applyTextOutline"]
         fn apply_text_outline(self: Pin<&mut Self>, on: bool);
 
+        /// §5.7.14's 擦除到透明. `apply_` on this one for the duplicate-name reason
+        /// `apply_text_bg` gives: `erase_transparent` is a qproperty now, so
+        /// `set_erase_transparent` is already its setter's name.
+        #[qinvokable]
+        #[cxx_name = "applyEraseTransparent"]
+        fn apply_erase_transparent(self: Pin<&mut Self>, on: bool);
+
         /// §5.7.11 step 3: the field's whole current string, on every change. The layer
         /// keeps the string and nothing else - no caret, no selection, no IME preedit -
         /// because the field owns those and a second copy in Rust would be a copy of an
@@ -292,9 +306,11 @@ pub mod qobject {
         #[cxx_name = "setText"]
         fn set_text(self: Pin<&mut Self>, text: &QString);
 
-        /// §5.7.14's 撤销 / 重做 and §5.7.15's 全部清除. `true` is "there was something
-        /// to do": the toolbar greys itself off from `can_undo`/`can_redo`, and a
-        /// keystroke that hit an empty stack has to be able to say so.
+        /// §5.7.19's 撤销 / 重做, and 全清 - the toolbar's own name for dropping the whole
+        /// document, which no §5.7 section owns: §5.7.1 step 5's 删除 is per object, and
+        /// that is §5.7.17's selection. `true` is "there was something to do": the toolbar
+        /// greys itself off from `can_undo`/`can_redo`, and a keystroke that hit an empty
+        /// stack has to be able to say so.
         #[qinvokable]
         #[cxx_name = "undoStep"]
         fn undo_step(self: Pin<&mut Self>) -> bool;
@@ -367,6 +383,8 @@ pub struct MaskViewRust {
     text_bg: bool,
     text_outline: bool,
     pen_family: QString,
+    eraser_tool: bool,
+    erase_transparent: bool,
 }
 
 impl qobject::MaskView {
@@ -424,6 +442,8 @@ impl qobject::MaskView {
                     m.ink.text_bg_on(),
                     m.ink.text_outline_on(),
                     m.ink.font_family().to_string(),
+                    m.ink.eraser_tool(),
+                    m.ink.erase_transparent(),
                 ),
             )
         });
@@ -475,6 +495,8 @@ impl qobject::MaskView {
             text_bg,
             text_outline,
             pen_family,
+            eraser_tool,
+            erase_transparent,
         ) = ink;
         self.as_mut().set_overlay_key(QString::from(&*overlay));
         self.as_mut().set_tool(tool);
@@ -495,6 +517,8 @@ impl qobject::MaskView {
         self.as_mut().set_text_bg(text_bg);
         self.as_mut().set_text_outline(text_outline);
         self.as_mut().set_pen_family(QString::from(&*pen_family));
+        self.as_mut().set_eraser_tool(eraser_tool);
+        self.as_mut().set_erase_transparent(erase_transparent);
         self.as_mut().set_text_editing(view.typing_live);
         self.as_mut().set_text_x(view.typing.x);
         self.as_mut().set_text_y(view.typing.y);
@@ -651,6 +675,14 @@ impl qobject::MaskView {
 
     pub fn apply_text_outline(mut self: Pin<&mut Self>, on: bool) {
         mask::with(|m| m.ink.set_text_outline(on));
+        self.as_mut().reload();
+    }
+
+    /// §5.7.14's 擦除到透明. The reload is the whole of it on this side: the mode moves
+    /// the pen, and the row the user just clicked reads both the switch and whose tool it
+    /// is off the readback rather than off the click.
+    pub fn apply_erase_transparent(mut self: Pin<&mut Self>, on: bool) {
+        mask::with(|m| m.ink.set_erase_transparent(on));
         self.as_mut().reload();
     }
 

@@ -464,6 +464,47 @@ Rectangle {
             }
         }
 
+        // §5.7.14's 擦除到透明, and only for the tool it belongs to - the third row of
+        // the shape 放大 and 文本 already give.
+        //
+        // The words beside the switch are the rule, not decoration: PRD §5.7.14 lets the
+        // mode exist *only* if its effect is stated, and nothing on this screen can show
+        // it. QML draws the frozen desktop *under* the ink layer, so a pixel the eraser
+        // refilled with the screenshot and a pixel the eraser cleared both read as the
+        // desktop. The difference is in the picture that leaves the mask.
+        Row {
+            spacing: 6
+            visible: bar.view.eraser_tool
+            height: visible ? implicitHeight : 0
+
+            Caption {
+                label: "橡皮"
+            }
+
+            Cell {
+                label: "擦除到透明"
+                active: bar.view.erase_transparent
+                onTapped: {
+                    bar.view.applyEraseTransparent(!bar.view.erase_transparent)
+                    bar.grabbed()
+                }
+            }
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                // One line for each state, because the switch off is the state the rule
+                // calls 默认 and a user who turned it on once has to be able to see that
+                // they are back in it. The effect is stated as the picture rather than as
+                // a file: what the hole becomes on disk is the encoder's answer (a PNG
+                // keeps it, a format without alpha fills it with white).
+                text: bar.view.erase_transparent
+                      ? "会连原始截图的像素一起擦掉"
+                      : "只擦标注，原始截图的像素保留"
+                font.pixelSize: 12
+                color: bar.view.erase_transparent ? "#ff9f0a" : "#8e8e96"
+            }
+        }
+
         // Edits, then the two ways out. 确认选区 is the same thing Enter already
         // does; the crop-and-new-pin that §5.7 asks for after it is M4b, which is why
         // this says 选区 and not 完成.
