@@ -272,6 +272,21 @@ impl Default for Brush {
     }
 }
 
+/// §5.7.11 step 4's 字号 range, in device pixels: below the floor the letters are
+/// antialiasing mush rather than text, above the ceiling one line is taller than the
+/// hole it was placed in.
+///
+/// These live here rather than in the layer because **two** callers have to agree on
+/// them: the toolbar's knob clamps what a click can set, and
+/// [`crate::config::Annotation::font_size`]'s validator clamps what a hand-written
+/// file can say. Before they were shared those two disagreed - the file allowed 6 and
+/// 200, the pen allowed 10 and 96 - so a config that said `font_size = 6` reached a
+/// pen of 10, a toolbar with no lit cell and a file that no longer described the tool
+/// in hand. The numbers stay one pair because the reason a size is unreadable does not
+/// change depending on who typed it.
+pub const FONT_MIN: u32 = 10;
+pub const FONT_MAX: u32 = 96;
+
 /// Everything a tool can be set to. One flat struct rather than a per-kind
 /// style enum, because §5.7.16 lets one edit change several fields at once and
 /// [`crate::annotation::Command::Style`] has to snapshot the whole thing to be

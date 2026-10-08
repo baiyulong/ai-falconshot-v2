@@ -33,10 +33,10 @@ use std::time::Instant;
 
 use falcon_core::annotation::model::{Align, Dash, Document, Element, Geom, Kind, Style};
 use falcon_core::annotation::undo::UndoStack;
-use falcon_core::annotation::{raster, Command, Dirty};
+use falcon_core::annotation::{raster, Command, Dirty, FONT_MAX, FONT_MIN};
 use falcon_core::capture::ScreenSnapshot;
 use falcon_core::colors::{format as format_color, ColorFormat};
-use falcon_core::config::ToolStyle;
+use falcon_core::config::{Annotation, ToolStyle};
 use falcon_core::frame::Frame;
 use falcon_core::geometry::{PhysPoint, PhysRect};
 use platform_windows::glyphs::DirectWrite;
@@ -82,13 +82,6 @@ pub const TOOLS: &[Option<Kind>] = &[
 /// toolbar cell for a size the copy is not drawn at.
 const ZOOM_MIN: u32 = 100;
 const ZOOM_MAX: u32 = 800;
-
-/// §5.7.11 step 4's 字号 range, in device pixels: below the floor the letters are
-/// antialiasing mush rather than text, above the ceiling one line is taller than the
-/// hole it was placed in. The three cells on the toolbar are numbers inside this pair,
-/// which is what makes the readback and the clamp agree the way [`ZOOM_MIN`] does.
-const FONT_MIN: u32 = 10;
-const FONT_MAX: u32 = 96;
 
 /// §5.7.11's second rule asks the 描边 for a colour *and* a width. The control this
 /// round is one switch, so both of those are this module's number rather than the
@@ -712,6 +705,43 @@ impl Layer {
         style.brush.size = style.width.saturating_mul(4).clamp(3, 96);
     }
 
+    /// §5.20's `[annotation]` scalars, into the pen a tool starts with. This is the key
+    /// the file has always been able to carry and nothing has ever read: until this call
+    /// existed, the only `[annotation]` field any product module touched was `tool_style`,
+    /// so a hand-edited `stroke_color`/`stroke_width`/`font_size`/`font_family` parsed,
+    /// validated, survived a round trip through the file and changed nothing on screen.
+    ///
+    /// It moves the *base* pen only, and [`Layer::apply_tool_styles`] runs after it,
+    /// which is the order §5.7.1's fallback needs: a tool the user has taught keeps its
+    /// own colour, and a tool the table says nothing about inherits this one. Both halves
+    /// are the same sentence - the file's `[annotation]` row is the default *per tool*, not
+    /// a global that overwrites what was learned.
+    ///
+    /// Unlike every other setter here this one does not call [`Layer::remember_style`]:
+    /// reading a file is not the user teaching a tool, and a config that seeded the pen
+    /// would otherwise write its own defaults straight back into `tool_style`, inventing
+    /// an entry for whichever tool happened to be selected at the first save.
+    ///
+    /// There is no refusal path here for the same reason there is none in [`Layer`]'s
+    /// callers: `crate::config` validates on load with this very parser
+    /// ([`falcon_core::colors::parse`]) and rewrites what it cannot read, so a colour that
+    /// reaches this function is a colour it can read. The two `clamps` here are the pen's
+    /// own floors, not repairs.
+    pub fn apply_annotation_defaults(&mut self, ann: &Annotation) {
+        if let Some(rgba) = falcon_core::colors::parse(&ann.stroke_color) {
+            self.style.color = rgba;
+        }
+        self.style.width = ann.stroke_width.clamp(1, 64);
+        Self::link_brush(&mut self.style);
+        self.style.font_size = ann.font_size.clamp(FONT_MIN, FONT_MAX);
+        // An empty family is the file saying nothing, and `default_tool` already uses
+        // that spelling. Writing it into the pen would hand DirectWrite an empty
+        // family name, which is a different question from an unknown one.
+        if !ann.font_family.trim().is_empty() {
+            self.style.font_family = ann.font_family.clone();
+        }
+    }
+
     /// The restart half of §5.7.1's memory (PRD §9.2 样式记忆重启后仍然有效): the
     /// `[annotation.tool_style]` table goes back into the layer. The layer parses no
     /// file - this is the seam the config hands its readings over.
@@ -1190,6 +1220,14 @@ impl Layer {
     /// [`crate::mask::MaskState::view_data`] divides it, the way it divides the box.
     pub fn font_px(&self) -> u32 {
         self.style.font_size
+    }
+
+    /// §5.7.11 step 4's 字体. Read out as well as in, because the pen is the only place
+    /// the answer exists: a config key that sets a family nothing can report back is a
+    /// setting whose effect can only be guessed at, which is the shape this round was
+    /// written to close.
+    pub fn font_family(&self) -> &str {
+        &self.style.font_family
     }
 
     /// The box a string lands in at a click, in document space: the point for a corner,
@@ -3383,5 +3421,196 @@ mod tests {
             Some([0, 0, 0, 255]),
             "a light pen got a light ring"
         );
+    }
+
+    /// A config as a user would leave it: typed by hand, then put through the file's own
+    /// validation, because `[annotation]` values only ever reach a layer along that road.
+    fn annotated(edit: impl FnOnce(&mut Annotation)) -> Annotation {
+        let mut cfg = Config::default();
+        edit(&mut cfg.annotation);
+        let warnings = cfg.validate();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        cfg.annotation
+    }
+
+    #[test]
+    fn a_stroke_colour_written_by_hand_reaches_the_pen() {
+        let ann = annotated(|a| a.stroke_color = "#00FF00FF".into());
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        l.apply_annotation_defaults(&ann);
+        assert_eq!(
+            l.color(),
+            [0, 255, 0, 255],
+            "the file's colour never arrived"
+        );
+        assert!(l.problems.is_empty(), "{:?}", l.problems);
+    }
+
+    #[test]
+    fn a_stroke_width_written_by_hand_moves_the_brush_with_it() {
+        // The brush half is the point of the test rather than a detail: §5.7.20's rule is
+        // that one number sets both, so a file that moved the pen and left the pencil's
+        // brush at the model's 16 would be the tool-that-ignores-the-knob shape, arriving
+        // through the config instead of through the toolbar.
+        let ann = annotated(|a| a.stroke_width = 9);
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        l.apply_annotation_defaults(&ann);
+        assert_eq!(l.width(), 9);
+        assert_eq!(
+            l.style.brush.size, 36,
+            "the pen took the file's width, the brush did not"
+        );
+    }
+
+    #[test]
+    fn a_font_size_and_family_written_by_hand_reach_the_letters() {
+        let ann = annotated(|a| {
+            a.font_size = 28;
+            a.font_family = "Consolas".into();
+        });
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        l.set_hole(PhysRect::new(0, 0, 100, 100));
+        l.apply_annotation_defaults(&ann);
+        assert_eq!(l.font_px(), 28);
+        assert_eq!(l.font_family(), "Consolas");
+
+        // A pen that reaches the field but not the object would show the right size in the
+        // toolbar and export another, so the committed element is read as well as the layer.
+        l.select_tool(code_of(Some(Kind::Text)));
+        assert!(l.press(PhysPoint::new(10, 10)), "the click placed nothing");
+        l.type_text("Falcon");
+        assert!(l.finish_typing());
+        let s = &l.doc.elements[0].style;
+        assert_eq!(s.font_size, 28, "the object kept the model's size");
+        assert_eq!(
+            s.font_family, "Consolas",
+            "the object kept the model's family"
+        );
+    }
+
+    #[test]
+    fn the_files_font_range_is_the_pens_font_range() {
+        // The defect this round found on the way in: the validator let the file say 6 and
+        // 200 while the pen only ever allowed 10 and 96, and both numbers were in the tree
+        // at once. So the row below compares the two halves to *each other* rather than to
+        // a literal - a test that pinned the pen to 10 alone would still have passed with
+        // the file reading 6, and the file is the thing the user re-opens.
+        for (written, wanted, said) in [(6, FONT_MIN, true), (200, FONT_MAX, true), (12, 12, false)]
+        {
+            let mut cfg = Config::default();
+            cfg.annotation.font_size = written;
+            let warnings = cfg.validate();
+            assert_eq!(
+                warnings.iter().any(|w| w.contains("annotation.font_size")),
+                said,
+                "font_size = {written}: {:?}",
+                warnings
+            );
+            let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+            l.apply_annotation_defaults(&cfg.annotation);
+            assert_eq!(
+                (cfg.annotation.font_size, l.font_px()),
+                (wanted, wanted),
+                "font_size = {written}: the file and the pen do not agree"
+            );
+        }
+    }
+
+    #[test]
+    fn defaults_that_were_never_edited_leave_the_pen_where_it_was() {
+        // The control for the whole round: wiring a key means a config *default* becomes a
+        // product behaviour, so an untouched file must hand over the pen the model was
+        // already using. Anything else would have moved every user's default without a
+        // single test in the tree turning red - the §9.1 第九条 shape, in the other direction.
+        let ann = annotated(|_| {});
+        let d = Style::default();
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        l.apply_annotation_defaults(&ann);
+        assert_eq!(l.color(), d.color, "the default row reset the pen colour");
+        assert_eq!(l.width(), d.width, "the default row reset the pen width");
+        assert_eq!(l.font_px(), d.font_size, "the default row reset the size");
+        assert_eq!(
+            l.font_family(),
+            d.font_family,
+            "the default row reset the family - [annotation] font_family has to name the
+             same word the model does, or the wired key changes the 中文 default"
+        );
+        assert!(l.problems.is_empty(), "{:?}", l.problems);
+        // The one field that does move, and it moves on purpose: width 3 was already a
+        // number the toolbar could set, and setting it there links the brush to 12. Leaving
+        // the file at 16 would mean the same pen through two doors.
+        assert_eq!(
+            l.style.brush.size,
+            3u32.saturating_mul(4),
+            "the brush is the model's 16 while the pen is the file's 3"
+        );
+    }
+
+    #[test]
+    fn a_tool_the_user_taught_outranks_the_default_row() {
+        // §5.7.1's sentence is "a tool with no entry takes [annotation]'s values", which is
+        // only true in this order. Reversed - tool styles first, defaults second - the
+        // default row overwrites every taught pen at each start and the memory does not
+        // survive one restart, with all of P18's tests still green because none of them
+        // ever reads the `[annotation]` scalars.
+        let mut cfg = Config::default();
+        cfg.annotation.stroke_color = "#00FF00FF".into();
+        cfg.annotation.stroke_width = 5;
+        cfg.annotation.tool_style = BTreeMap::from([(
+            "rect".into(),
+            ToolStyle {
+                color: Some("#0000FFFF".into()),
+                width: Some(2),
+            },
+        )]);
+        assert!(cfg.validate().is_empty(), "{:?}", cfg.validate());
+
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        l.apply_annotation_defaults(&cfg.annotation);
+        l.apply_tool_styles(&cfg.annotation.tool_style);
+
+        // Untaught first, so the base is the row the file wrote rather than a pen some
+        // other tool left behind - which is the case §5.7.1's fallback is about.
+        l.select_tool(code_of(Some(Kind::Arrow)));
+        assert_eq!(l.color(), [0, 255, 0, 255], "an untaught tool took nothing");
+        assert_eq!(l.width(), 5);
+        l.select_tool(code_of(Some(Kind::Rect)));
+        assert_eq!(
+            l.color(),
+            [0, 0, 255, 255],
+            "the default row overwrote the lesson"
+        );
+        assert_eq!(l.width(), 2);
+    }
+
+    #[test]
+    fn reading_the_file_is_not_the_user_teaching_a_tool() {
+        // The defaults setter must not call `remember_style`, and the cost of doing it
+        // anyway is invisible in one direction only: the layer would hand `write_back` a
+        // table with one invented entry for whichever tool happened to be selected, so the
+        // first screenshot after a config edit rewrites the file with a pen nobody set.
+        let ann = annotated(|a| a.stroke_color = "#00FF00FF".into());
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        l.apply_annotation_defaults(&ann);
+        l.select_tool(code_of(Some(Kind::Rect)));
+        assert!(l.tool_styles().is_empty(), "{:?}", l.tool_styles());
+
+        l.set_width(4);
+        let table = l.tool_styles();
+        assert_eq!(table.len(), 1, "the pen the user set was not remembered");
+        assert_eq!(table["rect"].width, Some(4));
+    }
+
+    #[test]
+    fn an_empty_family_is_the_file_saying_nothing() {
+        // `default_tool` already spells "unset" as an empty string, and the same spelling
+        // has to hold here or the pen ends up asking DirectWrite for the empty family -
+        // which is not the same question as an unknown one, and nothing in the tree would
+        // have noticed the difference.
+        let ann = annotated(|a| a.font_family = "   ".into());
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [0, 0, 0, 255]);
+        l.apply_annotation_defaults(&ann);
+        assert_eq!(l.font_family(), Style::default().font_family);
+        assert!(l.problems.is_empty(), "{:?}", l.problems);
     }
 }

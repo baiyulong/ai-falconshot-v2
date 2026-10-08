@@ -127,6 +127,10 @@ pub mod qobject {
         #[qproperty(i32, text_align)]
         #[qproperty(bool, text_bg)]
         #[qproperty(bool, text_outline)]
+        /// §5.7.11 step 4's 字体, read back rather than set: this round's control is the
+        /// config file's row, and a row that reaches the pen without reaching the toolbar
+        /// is a setting the user can only check by drawing something.
+        #[qproperty(QString, pen_family)]
         type MaskView = super::MaskViewRust;
 
         /// Which screen this window is. Called by the `Instantiator` after creation,
@@ -362,6 +366,7 @@ pub struct MaskViewRust {
     text_align: i32,
     text_bg: bool,
     text_outline: bool,
+    pen_family: QString,
 }
 
 impl qobject::MaskView {
@@ -418,6 +423,7 @@ impl qobject::MaskView {
                     m.ink.align_code(),
                     m.ink.text_bg_on(),
                     m.ink.text_outline_on(),
+                    m.ink.font_family().to_string(),
                 ),
             )
         });
@@ -468,6 +474,7 @@ impl qobject::MaskView {
             text_align,
             text_bg,
             text_outline,
+            pen_family,
         ) = ink;
         self.as_mut().set_overlay_key(QString::from(&*overlay));
         self.as_mut().set_tool(tool);
@@ -487,6 +494,7 @@ impl qobject::MaskView {
         self.as_mut().set_text_align(text_align);
         self.as_mut().set_text_bg(text_bg);
         self.as_mut().set_text_outline(text_outline);
+        self.as_mut().set_pen_family(QString::from(&*pen_family));
         self.as_mut().set_text_editing(view.typing_live);
         self.as_mut().set_text_x(view.typing.x);
         self.as_mut().set_text_y(view.typing.y);

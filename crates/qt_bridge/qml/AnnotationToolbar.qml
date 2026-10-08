@@ -408,10 +408,14 @@ Rectangle {
             }
 
             // The number the cells and the wheel agree on, because between two named
-            // sizes no cell is lit and the user is left aiming blind.
+            // sizes no cell is lit and the user is left aiming blind. The family rides on
+            // the same readout rather than getting a knob of its own: it has no cell to
+            // light, and the row that does have one is §5.7.11's 字体 control, which is
+            // not this round's - but a size with no family beside it would leave the file's
+            // `font_family` row arriving somewhere nothing can look at.
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: bar.view.pen_font + "px"
+                text: bar.view.pen_font + "px · " + bar.view.pen_family
                 font.pixelSize: 12
                 color: "#f2f2f2"
             }

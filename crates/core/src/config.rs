@@ -7,7 +7,7 @@
 //!   the QML settings page binds to — one code path for a hundred widgets
 //!   instead of a property per setting.
 
-use crate::annotation::Kind;
+use crate::annotation::{Kind, FONT_MAX, FONT_MIN};
 use crate::encode::Format;
 use crate::naming::Collision;
 use serde::{Deserialize, Serialize};
@@ -202,7 +202,9 @@ impl Default for Capture {
 /// One tool's remembered pen (§5.7.1). Both fields are optional because a hand-edit
 /// may speak about only one of them: `[annotation.tool_style.rect] width = 5` is a
 /// user who changed the rect's line width, not one who also reset its colour. A tool
-/// with no entry was never taught and takes `[annotation]`'s values.
+/// with no entry was never taught, so the pen it starts on is `[annotation]`'s own
+/// scalars - which is what [`crate::annotation::model::Style`]'s defaults and the
+/// defaults below have to agree with, or the row and the pen are two sources of truth.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolStyle {
@@ -247,7 +249,13 @@ impl Default for Annotation {
             stroke_width: 3,
             stroke_color: "#E81123".into(),
             fill_color: "#00000000".into(),
-            font_family: "Segoe UI".into(),
+            // The family §5.7.11's 中文 annotations are laid out in, which is
+            // [`crate::annotation::model::Style`]'s default as well. The two have to be
+            // the same word from the moment this key is read by anything: while nothing
+            // read it, `"Segoe UI"` here was a comment about a font the product never
+            // asked for, and wiring the key without changing it would have moved every
+            // default pen to a family chosen for Latin text.
+            font_family: "Microsoft YaHei UI".into(),
             font_size: 18,
             arrow_style: "straight".into(),
             blur_radius: 12,
@@ -887,8 +895,8 @@ impl Config {
             &mut w,
             "annotation.font_size",
             &mut self.annotation.font_size,
-            6,
-            200,
+            FONT_MIN,
+            FONT_MAX,
         );
         clamp(
             &mut w,

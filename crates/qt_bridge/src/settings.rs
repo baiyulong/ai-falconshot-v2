@@ -101,9 +101,15 @@ impl Settings {
     /// The pens the file remembered, into the layer about to draw with them. Returns
     /// how many tools the file spoke about: `0` is a first run, and a restart test
     /// that reads back `0` proved nothing.
+    ///
+    /// `[annotation]` goes in first and `[annotation.tool_style]` after it, which is the
+    /// order §5.7.1's fallback is written in: the scalars are the pen a tool starts with
+    /// and a taught tool overrides them. Reversed, a per-tool entry would be overwritten
+    /// by the default row on every start and the memory would not survive one restart.
     pub fn apply_to(&mut self, layer: &mut Layer) -> usize {
         let started = Instant::now();
         let pens = self.config.annotation.tool_style.clone();
+        layer.apply_annotation_defaults(&self.config.annotation);
         layer.apply_tool_styles(&pens);
         let ms = started.elapsed().as_millis() as u64;
         self.applies += 1;
@@ -299,6 +305,44 @@ mod tests {
         after.select_tool(code_of(Kind::Rect));
         assert_eq!(after.color(), [1, 2, 3, 240], "the pen did not come back");
         assert_eq!(after.width(), 7);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_row_written_by_hand_reaches_the_pen_across_a_real_file() {
+        // The `[annotation]` scalars, through bytes on a disk rather than through a
+        // `Config` built in a test - which is the only form of this row a user can
+        // actually produce. Until this round the file accepted all four keys, kept them
+        // through a save, and handed `apply_to` a table that read none of them, so every
+        // test in the tree that touched a pen went through `tool_style` instead and the
+        // row stayed unmeasured.
+        let dir = sandbox("annotation-row");
+        let path = file_in(&dir);
+        std::fs::write(
+            &path,
+            "[annotation]\nstroke_color = \"#00FF00FF\"\nstroke_width = 5\n\
+             font_size = 32\nfont_family = \"Consolas\"\n",
+        )
+        .expect("write the hand-made file");
+
+        let mut s = pinned(&dir);
+        assert!(matches!(s.source, LoadSource::File));
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let mut layer = Layer::default();
+        assert_eq!(
+            s.apply_to(&mut layer),
+            0,
+            "the row is not a tool_style table"
+        );
+        assert_eq!(layer.color(), [0, 255, 0, 255], "the file's colour lost");
+        assert_eq!(layer.width(), 5);
+        assert_eq!(layer.font_px(), 32);
+        assert_eq!(layer.font_family(), "Consolas");
+        assert!(layer.problems.is_empty(), "{:?}", layer.problems);
+        // And the row that says nothing about a tool still must not invent one: a save
+        // here would rewrite the user's file with a pen they never set.
+        assert_eq!(layer.tool_styles().len(), 0);
+        assert_eq!(s.write_back(&layer), None);
         std::fs::remove_dir_all(&dir).ok();
     }
 

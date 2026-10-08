@@ -19,7 +19,7 @@ pub use command::{
 };
 pub use model::{
     head_reach, Align, ArrowHead, Brush, Dash, Document, Element, Geom, Kind, Style, Transform,
-    KINDS,
+    FONT_MAX, FONT_MIN, KINDS,
 };
 pub use raster::{paint, render, Glyphs, Ink, NoGlyphs};
 pub use undo::UndoStack;
