@@ -423,10 +423,36 @@ fn same(a: [u8; 4], b: [u8; 4]) -> bool {
     (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= SAME_TOL)
 }
 
+/// Is this pixel nearer to `a` than to `b`, over the three channels? The row's own
+/// tolerances are absolute, so a read-back that is *partway* between the two candidates
+/// (a copy whose coverage is not quite one, a seam, an antialiased edge) matches neither
+/// and used to join the samples nobody could name. Distance says which way it is leaning
+/// without deciding it is a hit: that is the next row's question, asked of the same
+/// pixels.
+fn nearer(c: [u8; 4], a: [u8; 4], b: [u8; 4]) -> bool {
+    (0..3)
+        .map(|i| (c[i] as i32 - a[i] as i32).abs())
+        .sum::<i32>()
+        < (0..3)
+            .map(|i| (c[i] as i32 - b[i] as i32).abs())
+            .sum::<i32>()
+}
+
 /// One stroke's band, as it read. The counters are kept apart rather than collapsed
 /// into a percentage, because "the stroke is not there" and "the stroke is in the
 /// other box's place" and "the desktop is too dark to divide" are three different
 /// findings that a single number would hide.
+///
+/// The buckets are a *partition*: every planted sample increments `want` and then lands
+/// in exactly one of the other eight counters, which is what makes the row's arithmetic
+/// checkable by whoever reads it. It was not one before - a readable, in-bounds pixel
+/// that matched no bucket incremented nothing at all, and the row still divided it in
+/// `usable` without ever naming it. On a dark two-display desktop that unnamed bucket
+/// collected 56 of a zoom copy's 211 samples, and the line as printed could not say so:
+/// `144/211 … 11 the other ink … 0 bare desktop` leaves the reader to subtract and
+/// wonder (the P22 run, recorded in 计划 §10 第 24 项). `unexplained` is now a number
+/// the row prints, and [`Hits::examples`] prints the pixels behind the first few of
+/// them, so the count is a thing the next round can go and look at.
 struct Hits {
     want: usize,
     ok: usize,
@@ -434,25 +460,50 @@ struct Hits {
     plain: usize,
     dark: usize,
     off: usize,
+    /// Readable, in this bitmap, and neither candidate - see [`enlarged`]. The other
+    /// kind of refusal the screen can hand back, and counted here rather than dropped
+    /// from `want` so that `want` means the same word in every row: what the script
+    /// planted, which is a property of the script and never of the wallpaper.
+    flat: usize,
+    /// Neither candidate within its own tolerance, but nearer the expected reading than
+    /// the desktop under it: the ink is *partway there*. A miss, and stays one - the
+    /// point of counting it separately is that "why is it only partway" and "what is that
+    /// pixel doing there" are different questions for whoever reads the row.
+    blended: usize,
+    /// The sample the gauge cannot account for at all. Not a refusal: it is a miss whose
+    /// cause the row does not know, and the difference between those two is the whole
+    /// finding.
+    unexplained: usize,
+    /// Up to [`NAMED`] of the samples in the two buckets above, with the three colours
+    /// the row compared.
+    examples: Vec<String>,
 }
+
+/// How many of the samples nobody can name the row keeps the pixels of. Three is what
+/// it takes to tell a dim antialiased edge from a band drawn in the wrong place, and a
+/// count without the pixels it came from is not actionable by anyone reading the log.
+const NAMED: usize = 3;
 
 impl Hits {
     /// The samples the screen actually offered: what was planted, minus the pixels too
-    /// dark to divide and the pixels that fell off this screen. This is the denominator
-    /// of the grade. Grading against `want` instead asks the ink to account for the
-    /// wallpaper - a dark desktop put 148 of a polyline's 150 samples in `dark`, and the
-    /// row read `0/150 FAIL` over a stroke that had not been drawn wrong once (R20).
+    /// dark to divide, the pixels that fell off this screen and the pixels whose two
+    /// candidates were the same colour. This is the denominator of the grade. Grading
+    /// against `want` instead asks the ink to account for the wallpaper - a dark desktop
+    /// put 148 of a polyline's 150 samples in `dark`, and the row read `0/150 FAIL` over
+    /// a stroke that had not been drawn wrong once (R20).
     /// A pixel that is readable and matches none of the buckets stays in here, which is
-    /// the point: an unexplained pixel is a miss, an unreadable one is not.
+    /// the point: an unexplained pixel is a miss, an unreadable one is not. It is now
+    /// also counted in [`Hits::unexplained`], so the two ways of arriving at this number
+    /// (subtracting the refusals from `want`, or adding up the readings) are the same
+    /// arithmetic, and a row that says `211` also says which 211.
     fn usable(&self) -> usize {
-        self.want.saturating_sub(self.dark + self.off)
+        self.want.saturating_sub(self.dark + self.off + self.flat)
     }
 
-    /// `tenths` is the pass share of [`Hits::usable`], in tenths-of-a-whole, so the row
-    /// can be graded on a sample set whose size the screen decides. A band the screen
-    /// refused to show is `BLOCKED` rather than `FAIL`: "this desktop cannot be graded"
-    /// and "this stroke was drawn wrong" are not the same finding, and exit 3 is the
-    /// only way the run says which.
+    /// The verdict, on a denominator the screen decides. `tenths` is the pass share in
+    /// tenths-of-a-whole. A band the screen refused to show is `BLOCKED` rather than
+    /// `FAIL`: "this desktop cannot be graded" and "this stroke was drawn wrong" are not
+    /// the same finding, and exit 3 is the only way the run says which.
     fn verdict(&self, tenths: usize) -> Check {
         let usable = self.usable();
         if usable < MIN_USABLE {
@@ -462,16 +513,42 @@ impl Hits {
     }
 
     fn line(&self) -> String {
+        let named = if self.examples.is_empty() {
+            String::new()
+        } else {
+            format!("; first {}", self.examples.join(" | "))
+        };
         format!(
-            "{}/{} as expected of {} planted, {} the other ink, {} bare desktop, {} too dark, {} off this screen",
+            "{}/{} as expected of {} planted, {} the other ink, {} bare desktop, {} partway there, {} nobody can name, {} too dark, {} off this screen, {} the desktop cannot distinguish{}",
             self.ok,
             self.usable(),
             self.want,
             self.other_ink,
             self.plain,
+            self.blended,
+            self.unexplained,
             self.dark,
-            self.off
+            self.off,
+            self.flat,
+            named
         )
+    }
+
+    /// One more sample the row could not match, sorted by which candidate it leans
+    /// toward and recorded with the three colours that made it one. Both halves in one
+    /// call so a count and its witness cannot drift apart.
+    fn name_one(&mut self, at: PhysPoint, got: [u8; 4], want: [u8; 4], desk: [u8; 4]) {
+        if nearer(got, want, desk) {
+            self.blended += 1;
+        } else {
+            self.unexplained += 1;
+        }
+        if self.examples.len() < NAMED {
+            self.examples.push(format!(
+                "{},{} read={:?} not ink={:?} nor desktop={:?}",
+                at.x, at.y, got, want, desk
+            ));
+        }
     }
 }
 
@@ -499,6 +576,10 @@ fn band(
         plain: 0,
         dark: 0,
         off: 0,
+        flat: 0,
+        blended: 0,
+        unexplained: 0,
+        examples: Vec::new(),
     };
     let scale_x = cover.w.max(1) as f64 / got.width.max(1) as f64;
     let scale_y = cover.h.max(1) as f64 / got.height.max(1) as f64;
@@ -519,6 +600,9 @@ fn band(
             h.off += 1;
             continue;
         }
+        // Exactly one bucket per sample, including the last: a pixel the row cannot
+        // explain is a sample it read, and `usable` divides by it whether it is named
+        // or not. Naming it is what keeps the line honest.
         let c = got.get(px as u32, py as u32);
         if coloured(c, want) {
             if present {
@@ -529,10 +613,17 @@ fn band(
         } else if coloured(c, other) {
             h.other_ink += 1;
         } else if same(c, src) {
-            h.plain += 1;
-            if !present {
+            // The undone stroke's pixels have to be the frozen desktop again, so for
+            // that row *this is* the expected reading and it belongs to `ok` alone;
+            // counting it in `plain` as well made the buckets overlap and the line's
+            // numbers no longer added up to `usable`.
+            if present {
+                h.plain += 1;
+            } else {
                 h.ok += 1;
             }
+        } else {
+            h.name_one(*at, c, want, src);
         }
     }
     h
@@ -556,11 +647,13 @@ const ENLARGE_TOL: i32 = 24;
 /// region the copy is supposed to show at this scale.
 ///
 /// A sample whose two candidates are the same colour cannot answer that - a flat
-/// wallpaper magnifies to itself - and is dropped from `want` before it can be counted
-/// either way, rather than landing in a bucket that would make an untestable desktop
-/// read as a pass. `Hits` therefore sees only samples that can distinguish, which is how
-/// [`Hits::usable`]'s 口径 stays exactly as §9.4 records it for the rows above. The
-/// second value is how many were dropped, which the row prints.
+/// wallpaper magnifies to itself. It goes into [`Hits::flat`] and out of the
+/// denominator, which is the same arithmetic the row did when it subtracted these from
+/// `want`, but keeps `want` meaning *what the script planted*: the P22 run read
+/// `2172 planted` on a dark desktop against `485 planted` on a bright one for one
+/// unchanged script, because the number printed as "planted" was really a property of
+/// the wallpaper. A refusal therefore lands in a named bucket exactly like the two
+/// refusals above, and an untestable desktop still cannot read as a pass.
 fn enlarged(
     cover: PhysRect,
     got: &Frame,
@@ -568,7 +661,7 @@ fn enlarged(
     from: PhysRect,
     to: PhysRect,
     hole: PhysRect,
-) -> (Hits, usize) {
+) -> Hits {
     let mut h = Hits {
         want: 0,
         ok: 0,
@@ -576,13 +669,17 @@ fn enlarged(
         plain: 0,
         dark: 0,
         off: 0,
+        flat: 0,
+        blended: 0,
+        unexplained: 0,
+        examples: Vec::new(),
     };
     let close =
         |a: [u8; 4], b: [u8; 4]| (0..3).all(|i| (a[i] as i32 - b[i] as i32).abs() <= ENLARGE_TOL);
     // Outside the selection the mask shows the dim, not the ink: the copy is clipped
     // there by §9.1's ③, and a sample past the edge would grade the wallpaper.
     let Some(area) = to.intersection(&hole) else {
-        return (h, 0);
+        return h;
     };
     let inset = PEN / 2 + 2;
     let inner = PhysRect::new(
@@ -592,11 +689,10 @@ fn enlarged(
         area.h.saturating_sub(inset * 2),
     );
     if inner.is_empty() {
-        return (h, 0);
+        return h;
     }
     let scale_x = cover.w.max(1) as f64 / got.width.max(1) as f64;
     let scale_y = cover.h.max(1) as f64 / got.height.max(1) as f64;
-    let mut blind = 0usize;
     for y in (inner.y..inner.bottom()).step_by(BAND_STEP as usize) {
         for x in (inner.x..inner.right()).step_by(BAND_STEP as usize) {
             let here = PhysPoint::new(x, y);
@@ -619,8 +715,7 @@ fn enlarged(
                 continue;
             }
             if close(want, plain) {
-                h.want -= 1;
-                blind += 1;
+                h.flat += 1;
                 continue;
             }
             let px = ((x - cover.x) as f64 / scale_x).round() as i32;
@@ -636,10 +731,12 @@ fn enlarged(
                 h.plain += 1;
             } else if coloured(c, GREEN) || coloured(c, BLUE) {
                 h.other_ink += 1;
+            } else {
+                h.name_one(PhysPoint::new(x, y), c, want, plain);
             }
         }
     }
-    (h, blind)
+    h
 }
 
 /// The check itself, after the event loop has painted.
@@ -785,18 +882,39 @@ pub fn measure() -> (Check, String) {
             }
             (n, bare, bad)
         });
-        rep.row(
-            &format!("layer == export of {tag}"),
-            Check::from(checked > 0 && bad.is_empty()),
-            format!(
-                "{checked} opaque px compared, {bare} transparent (not the overlay's business), first mismatch: {}",
-                if bad.is_empty() {
-                    "none".to_string()
-                } else {
-                    bad.join(" | ")
-                }
-            ),
-        );
+        // Which way round this comparison applies is decided by the *geometry*, never by
+        // `checked`: a canvas the selection never enters legitimately has no opaque
+        // pixels, and grading its emptiness as a failure puts a second screen into every
+        // run for reasons of desktop layout. Keying the decline on `checked == 0` instead
+        // would have swallowed the defect P22 found here, where the hole *was* on this
+        // canvas and the clip was measured in the wrong space, leaving the whole layer
+        // transparent. A canvas with a hole and nothing painted is the finding; a canvas
+        // without a hole is not a canvas this row can speak about.
+        let painted_here = p.hole.intersection(&slot.bounds);
+        if let Some(part) = painted_here {
+            rep.row(
+                &format!("layer == export of {tag}"),
+                Check::from(checked > 0 && bad.is_empty()),
+                format!(
+                    "{checked} opaque px compared, {bare} transparent (not the overlay's business), {} of the hole on this canvas, first mismatch: {}",
+                    part.area(),
+                    if bad.is_empty() {
+                        "none".to_string()
+                    } else {
+                        bad.join(" | ")
+                    }
+                ),
+            );
+        } else {
+            rep.row(
+                &format!("layer == export of {tag}"),
+                Check::Blocked,
+                format!(
+                    "the hole reaches none of this canvas, so the overlay shows nothing here to compare ({} transparent)",
+                    bare
+                ),
+            );
+        }
 
         for (label, points, want, tenths) in [
             ("ink box", rect_band(p.rect), GREEN, INK_PASS),
@@ -818,15 +936,11 @@ pub fn measure() -> (Check, String) {
         // §3.6 constraint 8, on the stroke nobody can grade by colour.
         match p.zoom {
             Some((src, copy)) => {
-                let (hits, blind) = enlarged(win.phys, &got, frozen, src, copy, p.hole);
+                let hits = enlarged(win.phys, &got, frozen, src, copy, p.hole);
                 rep.row(
                     &format!("zoom copy of {tag}"),
                     hits.verdict(INK_PASS),
-                    format!(
-                        "{}, {} sample(s) could not tell the copy from the desktop",
-                        hits.line(),
-                        blind
-                    ),
+                    hits.line(),
                 );
             }
             None => rep.row(
@@ -901,6 +1015,8 @@ pub fn measure() -> (Check, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use falcon_core::capture::{FrozenMonitor, MonitorInfo};
+    use falcon_core::geometry::Scale;
 
     /// A band that read on the dark desktop of R20's third run: 16 of 165 samples
     /// visible, and every one of those was the expected ink.
@@ -912,6 +1028,10 @@ mod tests {
             plain: 0,
             dark: 149,
             off: 0,
+            flat: 0,
+            blended: 0,
+            unexplained: 0,
+            examples: Vec::new(),
         }
     }
 
@@ -945,6 +1065,10 @@ mod tests {
             plain: 125,
             dark: 40,
             off: 0,
+            flat: 0,
+            blended: 0,
+            unexplained: 0,
+            examples: Vec::new(),
         };
         assert_eq!(missing.usable(), 125);
         assert_eq!(missing.verdict(INK_PASS), Check::Fail);
@@ -953,10 +1077,267 @@ mod tests {
     #[test]
     fn the_row_names_the_sample_it_divided_by_and_the_one_it_was_planted() {
         // Both numbers, or the row cannot be read as a measurement of the ink rather
-        // than of the desktop.
+        // than of the desktop - and now every bucket between them is named too, so the
+        // reader can add the line up instead of subtracting from it.
         assert_eq!(
             r20().line(),
-            "16/16 as expected of 165 planted, 0 the other ink, 0 bare desktop, 149 too dark, 0 off this screen"
+            "16/16 as expected of 165 planted, 0 the other ink, 0 bare desktop, 0 partway there, 0 nobody can name, 149 too dark, 0 off this screen, 0 the desktop cannot distinguish"
         );
+    }
+
+    /// A one-monitor desktop of one colour, 200x200 device pixels at scale 1, so a
+    /// reading is a fact about the bitmaps handed to the gauge rather than about the
+    /// machine the test runs on. The monitor and its frame have to agree or
+    /// [`ScreenSnapshot::color_at`] answers `None` and every sample lands in `off`.
+    fn desk(rgba: [u8; 4]) -> ScreenSnapshot {
+        let mut snap = ScreenSnapshot {
+            monitors: vec![FrozenMonitor {
+                info: MonitorInfo {
+                    id: "m0".into(),
+                    name: "display1".into(),
+                    friendly: "display1".into(),
+                    bounds: PhysRect::new(0, 0, 200, 200),
+                    scale: Scale::ONE,
+                    primary: true,
+                    builtin: false,
+                },
+                frame: Frame::filled(200, 200, rgba).expect("frame"),
+            }],
+            virtual_bounds: PhysRect::new(0, 0, 200, 200),
+            ..Default::default()
+        };
+        // The patch the `dark` bucket needs: a source too dim to divide, in the corner
+        // rows of samples never visit.
+        snap.monitors[0]
+            .frame
+            .fill_rect(&PhysRect::new(0, 190, 200, 10), [4, 4, 4, 255]);
+        snap
+    }
+
+    /// A pixel bright enough to read and past both candidates' tolerances. Against the
+    /// green ink the colour rows expect it is nearer the grey desktop, so those rows call
+    /// it *unexplained*; against the red source the 放大 row compares it is nearer the
+    /// source, so that row calls it *partway*. One pixel, and the two readings are exactly
+    /// the difference these buckets exist to make.
+    const ORPHAN: [u8; 4] = [255, 0, 255, 255];
+    /// A pixel a little off the desktop and past its tolerance, leaning toward nothing:
+    /// unexplained for either row.
+    const ODD: [u8; 4] = [160, 200, 200, 255];
+    const GREY: [u8; 4] = [200, 200, 200, 255];
+
+    /// Read-back of `desk`'s own geometry, with the given pixels written at the points
+    /// the row will sample.
+    fn read_back(painted: &[(PhysPoint, [u8; 4])]) -> Frame {
+        let mut got = Frame::filled(200, 200, [0, 0, 0, 0]).expect("frame");
+        for (at, c) in painted {
+            got.set(at.x as u32, at.y as u32, *c);
+        }
+        got
+    }
+
+    #[test]
+    fn every_sample_the_row_reads_lands_in_exactly_one_bucket() {
+        // The partition is the claim, and it is now checkable instead of implied: 31
+        // hits, one of the other ink, one bare desktop, one nothing-can-name, one too
+        // dark and one off this screen - 36 planted, and the eight counters add to it.
+        // None of them is *partway*, and the term is still in the sum: an identity that
+        // leaves a bucket out is a claim about seven of the eight, not about the partition.
+        let snap = desk(GREY);
+        let cover = PhysRect::new(0, 0, 200, 200);
+        let mut points: Vec<PhysPoint> = (0..31).map(|i| PhysPoint::new(i, 0)).collect();
+        points.push(PhysPoint::new(31, 0));
+        points.push(PhysPoint::new(32, 0));
+        points.push(PhysPoint::new(33, 0));
+        points.push(PhysPoint::new(4, 195));
+        points.push(PhysPoint::new(300, 300));
+        let painted: Vec<(PhysPoint, [u8; 4])> = (0..31)
+            .map(|i| (PhysPoint::new(i, 0), GREEN))
+            .chain([
+                (PhysPoint::new(31, 0), BLUE),
+                (PhysPoint::new(32, 0), GREY),
+                (PhysPoint::new(33, 0), ORPHAN),
+                (PhysPoint::new(4, 195), GREY),
+            ])
+            .collect();
+        let got = read_back(&painted);
+        let h = band(cover, &got, &snap, &points, GREEN, true);
+        assert_eq!(
+            (
+                h.want,
+                h.ok,
+                h.other_ink,
+                h.plain,
+                h.blended,
+                h.unexplained,
+                h.dark,
+                h.off
+            ),
+            (36, 31, 1, 1, 0, 1, 1, 1)
+        );
+        assert_eq!(
+            h.ok + h.other_ink + h.plain + h.blended + h.unexplained + h.dark + h.off + h.flat,
+            h.want
+        );
+        // 36 planted, 2 refused, and the line's own numbers add up to the 34 it divides
+        // by - which is what the P22 row could not show.
+        assert_eq!(h.usable(), 34);
+        assert_eq!(
+            h.ok + h.other_ink + h.plain + h.blended + h.unexplained,
+            h.usable()
+        );
+    }
+
+    #[test]
+    fn the_undone_stroke_counts_a_pixel_once_not_twice() {
+        // The ghost row grades the *absence* of blue, so a pixel back to the desktop is
+        // the expected reading. It used to be counted as both `plain` and `ok`, which
+        // made the buckets overlap and the printed numbers add past the denominator.
+        // The fourth pixel is `ODD` rather than `ORPHAN` because the row it is graded
+        // against wants blue *absent*: ORPHAN leans toward the ink and would land in
+        // `blended`, and this row's claim is about `plain` and `ok` only.
+        let snap = desk(GREY);
+        let cover = PhysRect::new(0, 0, 200, 200);
+        let points = [
+            PhysPoint::new(0, 0),
+            PhysPoint::new(1, 0),
+            PhysPoint::new(2, 0),
+            PhysPoint::new(3, 0),
+        ];
+        let got = read_back(&[
+            (PhysPoint::new(0, 0), BLUE),
+            (PhysPoint::new(1, 0), GREEN),
+            (PhysPoint::new(2, 0), GREY),
+            (PhysPoint::new(3, 0), ODD),
+        ]);
+        let h = band(cover, &got, &snap, &points, BLUE, false);
+        assert_eq!(
+            (h.want, h.ok, h.other_ink, h.plain, h.blended, h.unexplained),
+            (4, 1, 2, 0, 0, 1)
+        );
+    }
+
+    #[test]
+    fn a_sample_nobody_can_name_is_still_counted_and_still_a_miss() {
+        // This is the 56. A whole band of them reads FAIL, exactly as it did when the
+        // row subtracted them silently - the difference is only that the row now says
+        // which 40, so a defect cannot hide in the arithmetic.
+        let snap = desk(GREY);
+        let cover = PhysRect::new(0, 0, 200, 200);
+        let points: Vec<PhysPoint> = (0..40).map(|i| PhysPoint::new(i, 5)).collect();
+        let painted: Vec<(PhysPoint, [u8; 4])> = points.iter().map(|p| (*p, ORPHAN)).collect();
+        let got = read_back(&painted);
+        let h = band(cover, &got, &snap, &points, GREEN, true);
+        assert_eq!((h.want, h.ok, h.blended, h.unexplained), (40, 0, 0, 40));
+        assert_eq!(h.usable(), 40);
+        assert_eq!(h.verdict(INK_PASS), Check::Fail);
+        assert!(h.line().contains("40 nobody can name"));
+        assert!(h.line().contains("0 partway there"));
+        // And the count comes with the pixels it counted: three of them is enough to
+        // tell where to look, and the row prints them.
+        assert_eq!(h.examples.len(), NAMED);
+        assert!(h.line().contains("; first "));
+    }
+
+    /// 放大's geometry for the two rows below: a 40x40 source magnified into an 80x80
+    /// copy, a hole that covers both, and a read-back the same size as the window.
+    const FROM: PhysRect = PhysRect::new(0, 0, 40, 40);
+    const COPY: PhysRect = PhysRect::new(60, 60, 80, 80);
+
+    fn zoom_read(inside_copy: [u8; 4]) -> Frame {
+        let mut got = Frame::filled(200, 200, GREY).expect("frame");
+        got.fill_rect(&COPY, inside_copy);
+        got
+    }
+
+    #[test]
+    fn planted_is_what_the_script_planted_not_what_the_wallpaper_shows() {
+        // 9 x 9 = 81 lattice points inside the copy either way. On a desktop that cannot
+        // distinguish them - source and destination the same colour - the old code
+        // subtracted them from `want` and printed `0 planted`, which is how the P22 run
+        // read 485 on a bright wallpaper and 2,172 on a dark one for an unchanged
+        // script. The refusals move out of `planted` and into a named bucket; `planted`
+        // stops moving at all.
+        let flat = desk(GREY);
+        let h = enlarged(
+            PhysRect::new(0, 0, 200, 200),
+            &zoom_read(GREY),
+            &flat,
+            FROM,
+            COPY,
+            PhysRect::new(0, 0, 200, 200),
+        );
+        assert_eq!((h.want, h.flat, h.usable()), (81, 81, 0));
+        assert_eq!(h.verdict(INK_PASS), Check::Blocked);
+    }
+
+    #[test]
+    fn a_copy_that_never_landed_still_fails_on_the_same_sample_count() {
+        // The other half of the same change: a distinguishable desktop gives the row the
+        // identical denominator, and a copy showing the desktop instead of the source is
+        // a FAIL with every one of its samples named as the bare desktop.
+        let mut snap = desk(GREY);
+        snap.monitors[0].frame.fill_rect(&FROM, [250, 20, 20, 255]);
+        let h = enlarged(
+            PhysRect::new(0, 0, 200, 200),
+            &zoom_read(GREY),
+            &snap,
+            FROM,
+            COPY,
+            PhysRect::new(0, 0, 200, 200),
+        );
+        assert_eq!(
+            (h.want, h.flat, h.usable(), h.ok, h.plain),
+            (81, 0, 81, 0, 81)
+        );
+        assert_eq!(h.verdict(INK_PASS), Check::Fail);
+
+        // And the same row with the copy actually there reads as expected, so the
+        // buckets above are not this row's way of always declining.
+        let shown = enlarged(
+            PhysRect::new(0, 0, 200, 200),
+            &zoom_read([250, 20, 20, 255]),
+            &snap,
+            FROM,
+            COPY,
+            PhysRect::new(0, 0, 200, 200),
+        );
+        assert_eq!((shown.ok, shown.usable()), (81, 81));
+        assert_eq!(shown.verdict(INK_PASS), Check::Pass);
+
+        // The third reading is the one the P22 run produced 56 of: a copy that is
+        // neither the source nor the desktop under it. It used to be arithmetic the
+        // reader had to do; now it is a count, with three pixels printed to go and look
+        // at. ORPHAN is the measured shape of those 56 - the read-back leans toward the
+        // copy, at about three quarters coverage - so the row calls it *partway*, which
+        // is a different question from the fourth reading below.
+        let odd = zoom_read(ORPHAN);
+        let h = enlarged(
+            PhysRect::new(0, 0, 200, 200),
+            &odd,
+            &snap,
+            FROM,
+            COPY,
+            PhysRect::new(0, 0, 200, 200),
+        );
+        assert_eq!(
+            (h.ok, h.plain, h.blended, h.unexplained, h.examples.len()),
+            (0, 0, 81, 0, NAMED)
+        );
+        assert_eq!(h.usable(), 81);
+        assert_eq!(h.verdict(INK_PASS), Check::Fail);
+
+        // And a pixel that leans toward neither candidate stays in `unexplained`: the
+        // two buckets are the difference P23 exists to make, so both have to be reachable.
+        let none = zoom_read(ODD);
+        let h = enlarged(
+            PhysRect::new(0, 0, 200, 200),
+            &none,
+            &snap,
+            FROM,
+            COPY,
+            PhysRect::new(0, 0, 200, 200),
+        );
+        assert_eq!((h.blended, h.unexplained, h.usable()), (0, 81, 81));
+        assert_eq!(h.verdict(INK_PASS), Check::Fail);
     }
 }
