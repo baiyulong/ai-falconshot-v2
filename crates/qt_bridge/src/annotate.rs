@@ -31,7 +31,7 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
-use falcon_core::annotation::model::{Dash, Document, Element, Geom, Kind, Style};
+use falcon_core::annotation::model::{Align, Dash, Document, Element, Geom, Kind, Style};
 use falcon_core::annotation::undo::UndoStack;
 use falcon_core::annotation::{raster, Command, Dirty};
 use falcon_core::capture::ScreenSnapshot;
@@ -56,8 +56,9 @@ use crate::mask_view::shim;
 ///
 /// 文本 (§5.7.11) is in the list, and so is its gesture: a click places the box, the
 /// field that appears takes the typing, and the next click anywhere else commits it.
-/// What is still missing is step 4's 字体、字号、对齐 row — the model carries all three
-/// and the layer has no control that moves them.
+/// Step 4 has its row now — 字号、对齐、背景、描边 next to the 颜色 every pen already had.
+/// 字体 is the one still without a control: a family name needs a string field rather
+/// than a cell, and it is the same leg whose 中文 readings §9.3 still owes.
 pub const TOOLS: &[Option<Kind>] = &[
     None,
     Some(Kind::Rect),
@@ -81,6 +82,18 @@ pub const TOOLS: &[Option<Kind>] = &[
 /// toolbar cell for a size the copy is not drawn at.
 const ZOOM_MIN: u32 = 100;
 const ZOOM_MAX: u32 = 800;
+
+/// §5.7.11 step 4's 字号 range, in device pixels: below the floor the letters are
+/// antialiasing mush rather than text, above the ceiling one line is taller than the
+/// hole it was placed in. The three cells on the toolbar are numbers inside this pair,
+/// which is what makes the readback and the clamp agree the way [`ZOOM_MIN`] does.
+const FONT_MIN: u32 = 10;
+const FONT_MAX: u32 = 96;
+
+/// §5.7.11's second rule asks the 描边 for a colour *and* a width. The control this
+/// round is one switch, so both of those are this module's number rather than the
+/// user's: the width is here, and the colour is [`Layer::outline_colour`].
+const TEXT_OUTLINE_PX: u32 = 2;
 
 /// The tool a code from QML names. Anything out of range is the arrow tool rather
 /// than an error: a stale number from a reloaded document must not disable input.
@@ -554,6 +567,96 @@ impl Layer {
         self.style.connection_line = on;
         self.remember_style();
         self.refresh_preview();
+    }
+
+    /// Is the tool in hand 文本? The toolbar collapses step 4's row off this one bool
+    /// rather than comparing against a tool index it would have to keep in step with
+    /// [`TOOLS`] by itself, for the reason [`Layer::zoom_tool`] gives.
+    pub fn text_tool(&self) -> bool {
+        self.tool == Some(Kind::Text)
+    }
+
+    /// §5.7.11 step 4's 对齐 as the number QML carries: `0` 左, `1` 中, `2` 右. The
+    /// ladder is Rust's, the same argument [`Layer::tool_code`] makes for the tools.
+    pub fn align_code(&self) -> i32 {
+        match self.style.align {
+            Align::Left => 0,
+            Align::Center => 1,
+            Align::Right => 2,
+        }
+    }
+
+    pub fn text_bg_on(&self) -> bool {
+        self.style.text_bg.is_some()
+    }
+
+    pub fn text_outline_on(&self) -> bool {
+        self.style.text_outline.is_some()
+    }
+
+    /// §5.7.11 step 4's 字号. The one pen field with a life *during* the gesture:
+    /// [`Layer::typing_rect`] measures through [`Layer::box_at`] against the live style,
+    /// so a box already open takes the new size with it instead of keeping whatever the
+    /// placing click happened to start with. Every other knob can wait for the next
+    /// object; a field the user is looking at cannot.
+    pub fn set_font_size(&mut self, size: u32) {
+        self.style.font_size = size.clamp(FONT_MIN, FONT_MAX);
+        self.remember_style();
+        self.refresh_preview();
+    }
+
+    /// §5.7.11 step 4's 对齐. A code off the end of the ladder leaves the pen alone
+    /// rather than guessing which cell the caller meant: three is [`Layer::align_code`]'s
+    /// number as well as the toolbar's, and a fourth that silently became 左 would be a
+    /// knob that lies about what it set.
+    pub fn set_align(&mut self, code: i32) {
+        self.style.align = match code {
+            0 => Align::Left,
+            1 => Align::Center,
+            2 => Align::Right,
+            _ => return,
+        };
+        self.remember_style();
+        self.refresh_preview();
+    }
+
+    /// §5.7.11's first rule: 无背景或填充色. The plate is the pen at a third of its alpha,
+    /// the same translucent fill [`Layer::set_filled`] puts inside a box - so the letters
+    /// stay the densest thing inside their own background.
+    pub fn set_text_bg(&mut self, on: bool) {
+        self.style.text_bg = on.then(|| {
+            let mut c = self.style.color;
+            c[3] = (c[3] as u32 * 3 / 10) as u8;
+            c
+        });
+        self.remember_style();
+        self.refresh_preview();
+    }
+
+    /// §5.7.11's second rule, one switch for a rule that asks for a colour *and* a
+    /// width. Both are this module's numbers: [`TEXT_OUTLINE_PX`] and
+    /// [`Layer::outline_colour`].
+    pub fn set_text_outline(&mut self, on: bool) {
+        self.style.text_outline = on.then(|| (self.outline_colour(), TEXT_OUTLINE_PX));
+        self.remember_style();
+        self.refresh_preview();
+    }
+
+    /// The ring's colour: whichever end of the lightness scale the pen is *not* on. A
+    /// 描边 drawn in the pen's own colour would ring letters that are already that
+    /// colour, which is the one thing a ring cannot do. The weights are Rec. 601's; the
+    /// pen can be any of `AnnotationToolbar.qml`'s six chips or anything the wheel of
+    /// §5.7.22 reaches, so the two answers are the two values no chip is - and a 深色
+    /// pen like the palette's `0x1c1c1e` still gets the white ring, which is the point
+    /// of testing the threshold against the pen rather than against a named colour.
+    fn outline_colour(&self) -> [u8; 4] {
+        let [r, g, b, _] = self.style.color;
+        let light = (r as u32 * 299 + g as u32 * 587 + b as u32 * 114) / 1000;
+        if light > 127 {
+            [0, 0, 0, 255]
+        } else {
+            [255, 255, 255, 255]
+        }
     }
 
     /// Catch a pending preview up with the pen. Only the two node-style gestures have a
@@ -2977,6 +3080,308 @@ mod tests {
             mismatched(&l, "m0").unwrap(),
             Vec::<String>::new(),
             "the layer is not the document"
+        );
+    }
+
+    // ------------------------------------------------------ 文本样式 (§5.7.11 step 4)
+
+    /// The desktop `Layer`-level 文本样式 tests paint on. Dark enough that a white 描边
+    /// and a translucent plate are each separable from it, and from each other.
+    const PLATE_BASE: [u8; 4] = [70, 70, 70, 255];
+
+    /// The pen these tests write with: green, so a pixel's `g - max(r, b)` says how much
+    /// of it is this pen and how much is only its own antialiasing.
+    const PLATE_PEN: [u8; 4] = [0, 200, 0, 255];
+
+    /// Count the pixels of the whole canvas that `area` cannot hold: `f` is read over the
+    /// canvas, which is what [`Layer::flush`] would hand to Qt, so a plate that grew past
+    /// its own box is counted rather than missed.
+    #[cfg(windows)]
+    fn pixels(l: &Layer, name: &str, mut keep: impl FnMut([u8; 4]) -> bool) -> usize {
+        let f = l.layer_of(name).unwrap();
+        (0..f.height)
+            .flat_map(|y| (0..f.width).map(move |x| f.get(x, y)))
+            .filter(|p| *p != PLATE_BASE && keep(*p))
+            .count()
+    }
+
+    /// Pixels that are *exactly* the pen. A letter pixel at full coverage is the pen
+    /// whatever sits under it ([`raster`]'s over-composite lands on the source colour at
+    /// `v = 255`), so this is the measure that can say "the plate is under the letters" and
+    /// mean it as an equality rather than as a tolerance.
+    #[cfg(windows)]
+    fn letters(l: &Layer) -> usize {
+        pixels(l, "m0", |p| p == PLATE_PEN)
+    }
+
+    /// Pixels carrying the pen's hue but not its density - the plate, and the fringe every
+    /// glyph edge already has with 背景 off. Which is why the test below compares two runs
+    /// instead of naming a number.
+    #[cfg(windows)]
+    fn faint(l: &Layer) -> usize {
+        pixels(l, "m0", |p| {
+            let green = p[1] as i32 - p[0].max(p[2]) as i32;
+            green > 20 && green <= 150
+        })
+    }
+
+    /// Pixels that are neither the pen nor the desktop: the 描边, whose colour
+    /// [`Layer::outline_colour`] picks off the lightness scale the pen is not on.
+    #[cfg(windows)]
+    fn ring(l: &Layer) -> usize {
+        pixels(l, "m0", |p| {
+            let lo = p[0].min(p[1]).min(p[2]);
+            let hi = p[0].max(p[1]).max(p[2]);
+            lo > 140 && hi - lo < 30
+        })
+    }
+
+    /// Type a word through the product's own gesture - click, keystrokes, the four knobs,
+    /// Enter - and hand back the layer that has filed it.
+    #[cfg(windows)]
+    fn typed(text: &str) -> Layer {
+        let mut l = text_layer();
+        assert!(
+            l.press(PhysPoint::new(130, 80)),
+            "文本 did not take the click"
+        );
+        l.type_text(text);
+        assert!(l.finish_typing(), "Enter filed nothing");
+        l
+    }
+
+    #[test]
+    fn the_text_knobs_are_offered_to_the_text_tool_only() {
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 40, 40))], PLATE_BASE);
+        for (code, want) in [
+            (code_of(None), false),
+            (code_of(Some(Kind::Rect)), false),
+            (code_of(Some(Kind::Zoom)), false),
+            (code_of(Some(Kind::Text)), true),
+            (code_of(Some(Kind::Eraser)), false),
+        ] {
+            l.select_tool(code);
+            assert_eq!(l.text_tool(), want, "the row moved with button {code}");
+        }
+    }
+
+    #[test]
+    fn a_font_size_moves_the_field_the_user_is_typing_into() {
+        // The one knob of the four that has to bite *before* the object exists: the box
+        // open on the screen is measured off the live style, so a field that kept the size
+        // it was clicked at is a control that only works on the next one.
+        let mut l = text_layer();
+        assert!(l.press(PhysPoint::new(130, 80)));
+        l.type_text("Falcon");
+        let small = l.typing_rect().expect("typing closed the box");
+
+        l.set_font_size(60);
+        assert_eq!(l.font_px(), 60);
+        let big = l.typing_rect().expect("the size change closed the box");
+        assert_eq!(
+            (big.x, big.y),
+            (small.x, small.y),
+            "a bigger font moved the box instead of growing it"
+        );
+        assert!(big.h > small.h && big.w > small.w, "{small:?} => {big:?}");
+
+        // The ends of the ladder are Rust's, not the toolbar's: 0 would divide nothing and
+        // 4,000 would draw one line taller than the hole.
+        l.set_font_size(0);
+        assert_eq!(l.font_px(), FONT_MIN, "the floor is not a clamp");
+        l.set_font_size(4000);
+        assert_eq!(l.font_px(), FONT_MAX, "the ceiling is not a clamp");
+    }
+
+    #[test]
+    fn an_align_code_off_the_ladder_leaves_the_pen_alone() {
+        let mut l = text_layer();
+        l.set_align(1);
+        assert_eq!(l.align_code(), 1, "居中 did not land");
+        l.set_align(7);
+        assert_eq!(
+            l.align_code(),
+            1,
+            "a code past the ladder overwrote the pen the user had set"
+        );
+        l.set_align(-1);
+        assert_eq!(l.align_code(), 1, "a negative code overwrote it too");
+    }
+
+    #[test]
+    fn the_four_knobs_travel_with_the_tool_that_learned_them() {
+        let mut l = text_layer();
+        l.set_font_size(40);
+        l.set_align(2);
+        l.set_text_bg(true);
+        l.set_text_outline(true);
+
+        l.select_tool(code_of(Some(Kind::Rect)));
+        l.set_color([0, 0, 255, 255]);
+
+        l.select_tool(code_of(Some(Kind::Text)));
+        assert_eq!(l.font_px(), 40, "文本 came back without its 字号");
+        assert_eq!(l.align_code(), 2, "文本 came back without its 对齐");
+        assert!(l.text_bg_on(), "文本 came back with its 背景 off");
+        assert!(l.text_outline_on(), "文本 came back with its 描边 off");
+        assert_eq!(
+            l.color(),
+            PLATE_PEN,
+            "the text pen came back with the rectangle's colour"
+        );
+    }
+
+    /// 对齐 through the document rather than the gesture: [`Layer::box_at`] sizes the box
+    /// to the line, so a box the user typed into has nothing to align *inside* until
+    /// §5.7.11's rule 3 (缩放) gives something a wider box. The rect here is that box, and
+    /// every step after it - [`Layer::apply`], the incremental layer, the same glyph leg -
+    /// is the product's.
+    #[cfg(windows)]
+    #[test]
+    fn alignment_moves_the_line_within_a_box_wider_than_the_line() {
+        let area = PhysRect::new(10, 10, 300, 60);
+        let edge = |align: Align| -> (u32, u32) {
+            let style = Style {
+                color: PLATE_PEN,
+                font_size: 24,
+                align,
+                ..Default::default()
+            };
+            let mut l = screens(&[("m0", PhysRect::new(0, 0, 400, 200))], PLATE_BASE);
+            l.set_hole(PhysRect::new(0, 0, 400, 200));
+            let mut e = Element::new(1, Kind::Text, Geom::Rect(area), style);
+            e.text = "Falcon".into();
+            l.apply(Command::Add(vec![e]));
+            let f = l.layer_of("m0").unwrap();
+            let cols: Vec<u32> = (0..f.width)
+                .filter(|x| {
+                    (0..f.height).any(|y| {
+                        let p = f.get(*x, y);
+                        p[1] as i32 - p[0].max(p[2]) as i32 > 150
+                    })
+                })
+                .collect();
+            assert!(!cols.is_empty(), "{align:?} drew no letters at all");
+            (*cols.first().unwrap(), *cols.last().unwrap())
+        };
+
+        let (left, centre, right) = (edge(Align::Left), edge(Align::Center), edge(Align::Right));
+        assert!(
+            left.0 < centre.0 && centre.0 < right.0,
+            "the three cells did not move the line: left {left:?}, centre {centre:?}, right {right:?}"
+        );
+        assert!(
+            left.1 < centre.1 && centre.1 < right.1,
+            "the line's far edge did not follow: left {left:?}, centre {centre:?}, right {right:?}"
+        );
+        // The control the ordering needs: the middle is not merely *different*, it is the
+        // same picture every time, so a measure that could not tell 左 from 右 would have
+        // failed the two assertions above instead of passing them.
+        assert_eq!(
+            edge(Align::Left),
+            left,
+            "the same cell painted twice, twice"
+        );
+        assert_eq!(
+            edge(Align::default()),
+            left,
+            "the model's own default is not the row's first cell"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_background_lays_a_plate_and_leaves_the_letters_alone() {
+        let off = typed("Falcon 2026");
+        let mut l = text_layer();
+        assert!(l.press(PhysPoint::new(130, 80)));
+        l.type_text("Falcon 2026");
+        l.set_text_bg(true);
+        assert!(l.finish_typing());
+        let on = &l;
+
+        assert!(letters(on) > 20, "the letters vanished behind the plate");
+        assert_eq!(
+            letters(on),
+            letters(&off),
+            "the plate moved a letter pixel off the pen's own colour"
+        );
+        let (plate_off, plate_on) = (faint(&off), faint(on));
+        assert!(
+            plate_on > plate_off + 40,
+            "no plate: {plate_off} faint pixels with 背景 off, {plate_on} with it on"
+        );
+
+        // And the plate is the translucent one §5.7.2's 填充 already uses, not the pen at
+        // full strength - the reading that says the letters are still the densest thing
+        // inside their own background.
+        let bg = l.doc.elements[0]
+            .style
+            .text_bg
+            .expect("the switch filed nothing");
+        assert_eq!(bg, [0, 200, 0, 76], "the plate is not the pen at 3/10");
+
+        let mut back = text_layer();
+        assert!(back.press(PhysPoint::new(130, 80)));
+        back.type_text("Falcon 2026");
+        back.set_text_bg(true);
+        back.set_text_bg(false);
+        assert!(back.finish_typing());
+        assert_eq!(
+            faint(&back),
+            plate_off,
+            "the switch's off leg left a plate behind"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn an_outline_rings_the_letters_it_does_not_cover() {
+        let off = typed("Falcon 2026");
+        let mut l = text_layer();
+        assert!(l.press(PhysPoint::new(130, 80)));
+        l.type_text("Falcon 2026");
+        l.set_text_outline(true);
+        assert!(l.finish_typing());
+
+        assert_eq!(
+            ring(&off),
+            0,
+            "the ring was in the picture before the switch"
+        );
+        let on = ring(&l);
+        assert!(
+            on > 20,
+            "the switch laid {on} ring pixels, which is nothing"
+        );
+        assert_eq!(
+            letters(&l),
+            letters(&off),
+            "the ring painted over the letters"
+        );
+
+        let (colour, width) = l.doc.elements[0]
+            .style
+            .text_outline
+            .expect("the switch filed no outline");
+        assert_eq!(width, TEXT_OUTLINE_PX, "the width is not the one set");
+        assert_ne!(colour, PLATE_PEN, "a ring in the pen's own colour");
+        assert_eq!(
+            colour,
+            [255, 255, 255, 255],
+            "the dark pen got the dark ring"
+        );
+
+        // The other side of the same rule, which is the whole reason the colour is derived
+        // rather than fixed: a light pen must not be ringed in the colour it is nearly
+        // already made of.
+        let mut bright = text_layer();
+        bright.set_color([255, 255, 128, 255]);
+        bright.set_text_outline(true);
+        assert_eq!(
+            bright.style.text_outline.map(|(c, _)| c),
+            Some([0, 0, 0, 255]),
+            "a light pen got a light ring"
         );
     }
 }

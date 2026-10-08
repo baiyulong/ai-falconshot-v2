@@ -117,6 +117,16 @@ pub mod qobject {
         #[qproperty(i32, text_h)]
         /// 字号 in DIP, by the same division and for the same reason.
         #[qproperty(i32, text_font)]
+        /// §5.7.11 step 4's four knobs, and the flag that says whether the tool in hand
+        /// is the one they belong to - the same shape `zoom_tool` gives 放大's row.
+        /// `pen_font` is the *pen's* size in device pixels and `text_font` above is the
+        /// open field's in DIP: the toolbar has to light the cell whose number the click
+        /// sends, and the field has to be sized in the units its window draws in.
+        #[qproperty(bool, text_tool)]
+        #[qproperty(i32, pen_font)]
+        #[qproperty(i32, text_align)]
+        #[qproperty(bool, text_bg)]
+        #[qproperty(bool, text_outline)]
         type MaskView = super::MaskViewRust;
 
         /// Which screen this window is. Called by the `Instantiator` after creation,
@@ -254,6 +264,22 @@ pub mod qobject {
         #[cxx_name = "applyConnectionLine"]
         fn apply_connection_line(self: Pin<&mut Self>, on: bool);
 
+        /// §5.7.11 step 4: 字号、对齐、背景 and 描边 - the four cells the row offers while
+        /// `text_tool` is lit. `apply_` on the last two for the duplicate-name reason
+        /// `apply_dashed` gives: `text_bg` and `text_outline` are qproperties now.
+        #[qinvokable]
+        #[cxx_name = "setFontSize"]
+        fn set_font_size(self: Pin<&mut Self>, size: i32);
+        #[qinvokable]
+        #[cxx_name = "setAlign"]
+        fn set_align(self: Pin<&mut Self>, code: i32);
+        #[qinvokable]
+        #[cxx_name = "applyTextBg"]
+        fn apply_text_bg(self: Pin<&mut Self>, on: bool);
+        #[qinvokable]
+        #[cxx_name = "applyTextOutline"]
+        fn apply_text_outline(self: Pin<&mut Self>, on: bool);
+
         /// §5.7.11 step 3: the field's whole current string, on every change. The layer
         /// keeps the string and nothing else - no caret, no selection, no IME preedit -
         /// because the field owns those and a second copy in Rust would be a copy of an
@@ -331,6 +357,11 @@ pub struct MaskViewRust {
     text_w: i32,
     text_h: i32,
     text_font: i32,
+    text_tool: bool,
+    pen_font: i32,
+    text_align: i32,
+    text_bg: bool,
+    text_outline: bool,
 }
 
 impl qobject::MaskView {
@@ -382,6 +413,11 @@ impl qobject::MaskView {
                     m.ink.zoom_percent(),
                     m.ink.zoom_border(),
                     m.ink.connection_line(),
+                    m.ink.text_tool(),
+                    m.ink.font_px() as i32,
+                    m.ink.align_code(),
+                    m.ink.text_bg_on(),
+                    m.ink.text_outline_on(),
                 ),
             )
         });
@@ -427,6 +463,11 @@ impl qobject::MaskView {
             zoom_percent,
             zoom_border,
             connection_line,
+            text_tool,
+            pen_font,
+            text_align,
+            text_bg,
+            text_outline,
         ) = ink;
         self.as_mut().set_overlay_key(QString::from(&*overlay));
         self.as_mut().set_tool(tool);
@@ -441,6 +482,11 @@ impl qobject::MaskView {
         self.as_mut().set_zoom_percent(zoom_percent);
         self.as_mut().set_zoom_border(zoom_border);
         self.as_mut().set_connection_line(connection_line);
+        self.as_mut().set_text_tool(text_tool);
+        self.as_mut().set_pen_font(pen_font);
+        self.as_mut().set_text_align(text_align);
+        self.as_mut().set_text_bg(text_bg);
+        self.as_mut().set_text_outline(text_outline);
         self.as_mut().set_text_editing(view.typing_live);
         self.as_mut().set_text_x(view.typing.x);
         self.as_mut().set_text_y(view.typing.y);
@@ -572,6 +618,31 @@ impl qobject::MaskView {
 
     pub fn apply_connection_line(mut self: Pin<&mut Self>, on: bool) {
         mask::with(|m| m.ink.set_connection_line(on));
+        self.as_mut().reload();
+    }
+
+    /// §5.7.11 step 4's four. `set_font_size` takes the same `max(0)` that
+    /// `apply_zoom_percent` needs, for the same reason: the range is [`crate::annotate`]'s
+    /// answer and a negative number must not become 96 by way of `as u32`. The reload is
+    /// what makes the knob bite *during* a gesture - the open field's size and box are
+    /// both read out of the style the call just moved.
+    pub fn set_font_size(mut self: Pin<&mut Self>, size: i32) {
+        mask::with(|m| m.ink.set_font_size(size.max(0) as u32));
+        self.as_mut().reload();
+    }
+
+    pub fn set_align(mut self: Pin<&mut Self>, code: i32) {
+        mask::with(|m| m.ink.set_align(code));
+        self.as_mut().reload();
+    }
+
+    pub fn apply_text_bg(mut self: Pin<&mut Self>, on: bool) {
+        mask::with(|m| m.ink.set_text_bg(on));
+        self.as_mut().reload();
+    }
+
+    pub fn apply_text_outline(mut self: Pin<&mut Self>, on: bool) {
+        mask::with(|m| m.ink.set_text_outline(on));
         self.as_mut().reload();
     }
 

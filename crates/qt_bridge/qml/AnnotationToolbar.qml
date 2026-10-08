@@ -39,6 +39,10 @@ Rectangle {
     /// reaches the rest of the range Rust clamps to.
     readonly property var magnifications: [100, 200, 400]
 
+    /// §5.7.11 step 4's 字号, in device pixels - the middle cell is the model's own
+    /// default, so the row says what the pen actually is the first time it appears.
+    readonly property var font_sizes: [12, 18, 28]
+
     color: "#f0232326"
     border.color: "#55555c"
     border.width: 1
@@ -123,6 +127,20 @@ Rectangle {
             // pointer that wanted to draw on the picture under the panel.
             onReleased: if (containsMouse) cell.tapped()
         }
+    }
+
+    // A row's own name, so a row of 小/中/大 cells does not have to guess which ladder it
+    // is lighting. Not a `Cell`: it takes no click, and a button that cannot be pressed is
+    // the shape that promises one.
+    component Caption: Text {
+        id: caption
+
+        property string label: ""
+
+        anchors.verticalCenter: parent.verticalCenter
+        text: caption.label
+        font.pixelSize: 12
+        color: "#8e8e96"
     }
 
     // One colour. A square would read as a second tool button; the thing users look
@@ -329,6 +347,114 @@ Rectangle {
                 active: bar.view.connection_line
                 onTapped: {
                     bar.view.applyConnectionLine(!bar.view.connection_line)
+                    bar.grabbed()
+                }
+            }
+        }
+
+        // §5.7.11 step 4's row, and only for the tool it belongs to. 颜色 is not here
+        // because every pen already has one two rows up; 字体 is not here because a family
+        // name wants a string field rather than a cell.
+        //
+        // What this row cannot preview is 背景 and 描边. Step 4 comes before step 5's
+        // click-away, and while the box is open its pixels belong to the `TextInput`, not
+        // to the ink layer - so the first sight of a plate or a ring is the committed
+        // object. 字号 is the exception, and the one that makes this row more than a
+        // promise about the next object: `text_font` is the same style number the cells
+        // light, so the field the user is typing into resizes on the click.
+        Row {
+            spacing: 6
+            visible: bar.view.text_tool
+            height: visible ? implicitHeight : 0
+
+            Caption {
+                label: "字号"
+            }
+
+            Row {
+                id: fonts
+                spacing: 2
+
+                Repeater {
+                    model: bar.font_sizes
+
+                    delegate: Cell {
+                        required property int index
+                        required property var modelData
+
+                        // 小 / 中 / 大 against the same list the click sends, the shape
+                        // `pens` gives 细 / 中 / 粗.
+                        label: ["小", "中", "大"][index]
+                        active: bar.view.pen_font === modelData
+                        onTapped: {
+                            bar.view.setFontSize(modelData)
+                            bar.grabbed()
+                        }
+                    }
+                }
+
+                // Owned by `fonts`, for the reason the pen row gives: the handler hears
+                // over its parent item, which is the three size cells and nothing else.
+                WheelHandler {
+                    onWheel: (event) => {
+                        const notch = event.angleDelta.y
+                        if (notch === 0) {
+                            return
+                        }
+                        bar.view.setFontSize(bar.view.pen_font + (notch > 0 ? 2 : -2))
+                        bar.grabbed()
+                    }
+                }
+            }
+
+            // The number the cells and the wheel agree on, because between two named
+            // sizes no cell is lit and the user is left aiming blind.
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: bar.view.pen_font + "px"
+                font.pixelSize: 12
+                color: "#f2f2f2"
+            }
+
+            Item { width: 1; height: 18 }
+
+            Caption {
+                label: "对齐"
+            }
+
+            Repeater {
+                model: ["左对齐", "居中", "右对齐"]
+
+                delegate: Cell {
+                    required property int index
+                    required property var modelData
+
+                    // `index` is the code Rust's ladder answers to: 0 左, 1 中, 2 右.
+                    label: modelData
+                    active: bar.view.text_align === index
+                    onTapped: {
+                        bar.view.setAlign(index)
+                        bar.grabbed()
+                    }
+                }
+            }
+
+            Item { width: 1; height: 18 }
+
+            Cell {
+                label: "背景"
+                active: bar.view.text_bg
+                onTapped: {
+                    bar.view.applyTextBg(!bar.view.text_bg)
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "描边"
+                active: bar.view.text_outline
+                onTapped: {
+                    bar.view.applyTextOutline(!bar.view.text_outline)
                     bar.grabbed()
                 }
             }
