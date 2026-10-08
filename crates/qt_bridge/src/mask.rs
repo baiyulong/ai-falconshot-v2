@@ -195,6 +195,11 @@ impl MaskState {
         // The annotation layer takes its base from the same snapshot, after the
         // slots exist: one flow, one freeze, and the ink's clip is this flow's hole.
         self.ink.begin(snap, &self.slots);
+        // §5.7.1's per-tool memory arrives from the settings file here, after the
+        // flow has been cleared: `begin` resets the layer, so pens handed over before
+        // it would be thrown away by the reset. This is the one place the hot key
+        // touches the file, and it costs what `[settings] apply=` reports.
+        crate::settings::apply_to(&mut self.ink);
         self.ink.set_hole(self.hole);
         self.virtual_bounds = snap.virtual_bounds;
         self.shown = true;
@@ -286,6 +291,12 @@ impl MaskState {
         // The ink's canvases are the same size as the frames they sit on, so a flow
         // that ended without this leaked two 24 MB textures per screen, not one.
         self.ink.end();
+        // What this flow taught the pens goes back to the settings file now, not at
+        // exit: a user who signs out without the process ever running its teardown
+        // still gets the pen they set last time. `end` keeps `styles` and drops
+        // everything else, so reading the layer here is reading the answer, not the
+        // draft.
+        crate::settings::write_back(&self.ink);
     }
 
     /// The selection, in physical desktop pixels. Each slot re-reads its part of

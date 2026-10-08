@@ -31,6 +31,7 @@ mod mask_view;
 mod pin_view;
 mod r13;
 mod session;
+mod settings;
 mod state;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
@@ -62,6 +63,12 @@ fn main() {
     // only through the message handler, and a headless run would otherwise see a
     // silent zero.
     state::install_message_capture();
+    // The settings file, read before Qt exists rather than at the first window: it is
+    // pure Rust, it may one day decide how that window looks, and putting it here
+    // keeps the read off the hot path §9.2 caps at 400 ms. `--mask` and `--ink` print
+    // what each touch point cost.
+    settings::start();
+    state::stamp("cfg");
 
     // Before the first window, or the pins come back with black corners.
     session::qobject::enable_alpha_buffer_by_default();
@@ -358,6 +365,15 @@ fn main() {
         // and presenting their first frame). §10-14 ② is only reducible against the
         // second group, so the two are printed apart rather than as one total.
         println!("[mask cold] {}", state::stamp_line());
+        // The settings file's own costs, split the way the plan asks for them: the
+        // read is paid at start-up, the hand-over is paid inside the hot key, and the
+        // write is paid after the user has already gone. `applies` and `saves` say how
+        // many times each ran, because one round of a gauge proves less than four.
+        println!("[settings] {}", settings::with(|s| s.line()));
+        let notes = settings::with(|s| s.notes());
+        if !notes.is_empty() {
+            println!("[settings notes] {}", notes.join(" | "));
+        }
         let part = |a: &str, b: &str| match state::between(a, b) {
             Some(ms) => format!("{ms} ms"),
             None => "-".to_string(),

@@ -433,10 +433,8 @@ impl Layer {
     /// A tool the table says nothing about is left alone, and a field it leaves out is
     /// left alone rather than zeroed: `width = 5` with no `color` is a user who changed
     /// the rect's line width, not one who also reset its colour.
-    // The caller is M5's config owner, which does not exist yet: `Config::load` has no
-    // product call site anywhere in the workspace (measured this round). Nothing here is
-    // wired to a file, and the tests below are not allowed to count as a consumer.
-    #[allow(dead_code)]
+    ///
+    /// [`crate::settings`] is the caller, and it is the only part that touches a file.
     pub fn apply_tool_styles(&mut self, remembered: &BTreeMap<String, ToolStyle>) {
         for (key, saved) in remembered {
             let Some(kind) = Kind::from_key(key) else {
@@ -472,7 +470,6 @@ impl Layer {
     /// Everything the layer has learned, in the spelling the config stores it under.
     /// Colours leave as `#RRGGBBAA`, because the alpha is part of the pen and a
     /// six-digit hex cannot carry it.
-    #[allow(dead_code)] // same seam, same missing caller
     pub fn tool_styles(&self) -> BTreeMap<String, ToolStyle> {
         self.styles
             .iter()
