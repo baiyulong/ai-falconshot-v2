@@ -881,14 +881,20 @@ fn draw(
             let copy = base.crop(&src)?.resized(to.w, to.h, true)?;
             plane.tint_with(&copy, &to);
             // §5.7.13 step 5: 设置放大倍数、边框和连接线. The frame is one pixel
-            // at the picture's own scale, not the pen width.
-            let mut segs = runs(&box_poly(&to, Kind::Rect, 0), true, Dash::Solid, 1.0);
-            segs.extend(runs(
-                &box_poly(&from, Kind::Rect, 0),
-                true,
-                Dash::Solid,
-                1.0,
-            ));
+            // at the picture's own scale, not the pen width, and 边框 decides whether
+            // it is drawn at all - around the copy and around the source, because the
+            // two boxes are one object and a frame on only one of them reads as a
+            // mistake about which rectangle is the magnifier.
+            let mut segs = Vec::new();
+            if e.style.zoom_border {
+                segs.extend(runs(&box_poly(&to, Kind::Rect, 0), true, Dash::Solid, 1.0));
+                segs.extend(runs(
+                    &box_poly(&from, Kind::Rect, 0),
+                    true,
+                    Dash::Solid,
+                    1.0,
+                ));
+            }
             if e.style.connection_line {
                 segs.extend(connectors(&from, &to));
             }
@@ -1675,6 +1681,10 @@ mod tests {
     }
 
     fn zoom_doc(connection_line: bool) -> Document {
+        zoom_doc_with(connection_line, true)
+    }
+
+    fn zoom_doc_with(connection_line: bool, zoom_border: bool) -> Document {
         doc1(
             Kind::Zoom,
             Geom::Zoom {
@@ -1684,6 +1694,7 @@ mod tests {
             Style {
                 color: RED,
                 connection_line,
+                zoom_border,
                 ..Style::default()
             },
         )
@@ -1712,6 +1723,39 @@ mod tests {
         // (11,11) sits between the two boxes, on the corner-to-corner line.
         assert_eq!(plain.get(11, 11), GREEN, "no connector, nothing drawn");
         assert_ne!(lined.get(11, 11), GREEN, "§5.7.13 step 5: 连接线");
+    }
+
+    #[test]
+    fn the_border_is_what_its_toggle_is_for() {
+        let framed = render(&marked(), &zoom_doc_with(false, true), &NoGlyphs).unwrap();
+        let bare = render(&marked(), &zoom_doc_with(false, false), &NoGlyphs).unwrap();
+        // (30,20) is the copy's own top edge and (2,2) the source's corner: the frame
+        // lies on both while it is on, and both are plain picture once it is off.
+        assert_ne!(framed.get(30, 20), BLUE, "§5.7.13 step 5: 边框");
+        assert_ne!(
+            framed.get(2, 2),
+            BLUE,
+            "and it frames the source, not only the copy"
+        );
+        assert_eq!(
+            bare.get(30, 20),
+            BLUE,
+            "off means the copy is all that is left"
+        );
+        assert_eq!(bare.get(2, 2), BLUE);
+        // The switch is a border and not the object it borders: read the middle of the
+        // copy too, or a version that erased the whole element would pass this test.
+        assert_eq!(
+            bare.get(30, 30),
+            BLUE,
+            "the enlarged picture is still the picture"
+        );
+        let lined = render(&marked(), &zoom_doc_with(true, false), &NoGlyphs).unwrap();
+        assert_ne!(
+            lined.get(11, 11),
+            GREEN,
+            "边框 off does not take the 连接线 with it"
+        );
     }
 
     #[test]
@@ -1853,7 +1897,10 @@ mod tests {
                     None
                 };
             }
-            Kind::Zoom => s.connection_line = v.is_multiple_of(2),
+            Kind::Zoom => {
+                s.connection_line = v.is_multiple_of(2);
+                s.zoom_border = !v.is_multiple_of(3);
+            }
             Kind::Eraser => {
                 s.erase_to_transparent = v.is_multiple_of(2);
                 s.brush = Brush {

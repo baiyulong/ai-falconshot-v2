@@ -35,6 +35,10 @@ Rectangle {
     /// is step 3's fine-tune, so this row is a shortcut and not the only way.
     readonly property var pens: [4, 8, 16]
 
+    /// §5.7.13 step 5's 放大倍数, same shape: three named values plus a wheel that
+    /// reaches the rest of the range Rust clamps to.
+    readonly property var magnifications: [100, 200, 400]
+
     color: "#f0232326"
     border.color: "#55555c"
     border.width: 1
@@ -255,6 +259,76 @@ Rectangle {
                 active: bar.view.filled
                 onTapped: {
                     bar.view.applyFilled(!bar.view.filled)
+                    bar.grabbed()
+                }
+            }
+        }
+
+        // §5.7.13 step 5's three settings, and only for the tool they belong to. The
+        // row collapses instead of greying out: a 边框 switch is not a rectangle's
+        // switch, and offering one that is lit for a tool with no border is a knob that
+        // lies about what it tunes. `height` goes to 0 as well as `visible`, because the
+        // `Column` above adds its spacing per child and a hidden row should not leave a
+        // gap the user can see.
+        Row {
+            spacing: 6
+            visible: bar.view.zoom_tool
+            height: visible ? implicitHeight : 0
+
+            Repeater {
+                model: bar.magnifications
+
+                delegate: Cell {
+                    required property int index
+                    required property var modelData
+
+                    label: modelData + "%"
+                    active: bar.view.zoom_percent === modelData
+                    onTapped: {
+                        bar.view.applyZoomPercent(modelData)
+                        bar.grabbed()
+                    }
+                }
+            }
+
+            // Owned by this Row for the reason `pens` gives: the handler hears over its
+            // parent item, and that item is the magnification cells and nothing else.
+            WheelHandler {
+                onWheel: (event) => {
+                    const notch = event.angleDelta.y
+                    if (notch === 0) {
+                        return
+                    }
+                    bar.view.applyZoomPercent(bar.view.zoom_percent + (notch > 0 ? 50 : -50))
+                    bar.grabbed()
+                }
+            }
+
+            // The number the buttons and the wheel agree on, because between two named
+            // values none of the three cells is lit and the user is left aiming blind.
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: bar.view.zoom_percent + "%"
+                font.pixelSize: 12
+                color: "#f2f2f2"
+            }
+
+            Item { width: 1; height: 18 }
+
+            Cell {
+                label: "边框"
+                active: bar.view.zoom_border
+                onTapped: {
+                    bar.view.applyZoomBorder(!bar.view.zoom_border)
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "连接线"
+                active: bar.view.connection_line
+                onTapped: {
+                    bar.view.applyConnectionLine(!bar.view.connection_line)
                     bar.grabbed()
                 }
             }

@@ -98,6 +98,15 @@ pub mod qobject {
         #[qproperty(i32, pen_rgb)]
         #[qproperty(bool, dashed)]
         #[qproperty(bool, filled)]
+        /// §5.7.13 step 5's three settings, and the flag that says whether the tool in
+        /// hand is the one they belong to. The flag is Rust's answer rather than a QML
+        /// comparison against a tool index, because the index of 放大 in
+        /// [`crate::annotate::TOOLS`] is Rust's number and a second copy of it in QML is
+        /// a second ladder that can disagree with the first.
+        #[qproperty(bool, zoom_tool)]
+        #[qproperty(i32, zoom_percent)]
+        #[qproperty(bool, zoom_border)]
+        #[qproperty(bool, connection_line)]
         type MaskView = super::MaskViewRust;
 
         /// Which screen this window is. Called by the `Instantiator` after creation,
@@ -223,6 +232,18 @@ pub mod qobject {
         #[cxx_name = "applyFilled"]
         fn apply_filled(self: Pin<&mut Self>, on: bool);
 
+        /// §5.7.13 step 5: 放大倍数、边框和连接线. `apply_` again, for the same
+        /// duplicate-name reason as `apply_dashed`.
+        #[qinvokable]
+        #[cxx_name = "applyZoomPercent"]
+        fn apply_zoom_percent(self: Pin<&mut Self>, percent: i32);
+        #[qinvokable]
+        #[cxx_name = "applyZoomBorder"]
+        fn apply_zoom_border(self: Pin<&mut Self>, on: bool);
+        #[qinvokable]
+        #[cxx_name = "applyConnectionLine"]
+        fn apply_connection_line(self: Pin<&mut Self>, on: bool);
+
         /// §5.7.14's 撤销 / 重做 and §5.7.15's 全部清除. `true` is "there was something
         /// to do": the toolbar greys itself off from `can_undo`/`can_redo`, and a
         /// keystroke that hit an empty stack has to be able to say so.
@@ -282,6 +303,10 @@ pub struct MaskViewRust {
     pen_rgb: i32,
     dashed: bool,
     filled: bool,
+    zoom_tool: bool,
+    zoom_percent: i32,
+    zoom_border: bool,
+    connection_line: bool,
 }
 
 impl qobject::MaskView {
@@ -329,6 +354,10 @@ impl qobject::MaskView {
                         | i32::from(m.ink.color()[2]),
                     m.ink.dashed(),
                     m.ink.filled(),
+                    m.ink.zoom_tool(),
+                    m.ink.zoom_percent(),
+                    m.ink.zoom_border(),
+                    m.ink.connection_line(),
                 ),
             )
         });
@@ -360,7 +389,21 @@ impl qobject::MaskView {
                 self.as_mut().set_name(QString::default());
             }
         }
-        let (overlay, tool, objects, can_undo, can_redo, width, rgb, dashed, filled) = ink;
+        let (
+            overlay,
+            tool,
+            objects,
+            can_undo,
+            can_redo,
+            width,
+            rgb,
+            dashed,
+            filled,
+            zoom_tool,
+            zoom_percent,
+            zoom_border,
+            connection_line,
+        ) = ink;
         self.as_mut().set_overlay_key(QString::from(&*overlay));
         self.as_mut().set_tool(tool);
         self.as_mut().set_objects(objects);
@@ -370,6 +413,10 @@ impl qobject::MaskView {
         self.as_mut().set_pen_rgb(rgb);
         self.as_mut().set_dashed(dashed);
         self.as_mut().set_filled(filled);
+        self.as_mut().set_zoom_tool(zoom_tool);
+        self.as_mut().set_zoom_percent(zoom_percent);
+        self.as_mut().set_zoom_border(zoom_border);
+        self.as_mut().set_connection_line(connection_line);
     }
 
     pub fn note_shader_status(self: Pin<&mut Self>, status: i32) {
@@ -476,6 +523,25 @@ impl qobject::MaskView {
 
     pub fn apply_filled(mut self: Pin<&mut Self>, on: bool) {
         mask::with(|m| m.ink.set_filled(on));
+        self.as_mut().reload();
+    }
+
+    /// `max(0)` rather than a clamp here: the range the knob and the copy agree on is
+    /// [`crate::annotate`]'s answer, and a negative number from QML becoming 800% by way
+    /// of `as u32` is the kind of arithmetic only a cast between signed and unsigned
+    /// could invent.
+    pub fn apply_zoom_percent(mut self: Pin<&mut Self>, percent: i32) {
+        mask::with(|m| m.ink.set_zoom_percent(percent.max(0) as u32));
+        self.as_mut().reload();
+    }
+
+    pub fn apply_zoom_border(mut self: Pin<&mut Self>, on: bool) {
+        mask::with(|m| m.ink.set_zoom_border(on));
+        self.as_mut().reload();
+    }
+
+    pub fn apply_connection_line(mut self: Pin<&mut Self>, on: bool) {
+        mask::with(|m| m.ink.set_connection_line(on));
         self.as_mut().reload();
     }
 

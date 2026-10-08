@@ -301,6 +301,12 @@ pub struct Style {
     pub arrow_head: ArrowHead,
     /// §5.7.13 step 5: 放大倍数 as a percent, 100 = no change.
     pub zoom_percent: u32,
+    /// §5.7.13 step 5: 边框. The PRD names the setting and fixes no shape for it, so
+    /// this is the one thing about the frame a user can actually be asked to decide:
+    /// whether it is there. Its width stays one pixel of the picture and its colour
+    /// stays the pen's, because a second number the PRD does not ask for is a second
+    /// number nothing can check it against.
+    pub zoom_border: bool,
     /// §5.7.13 step 5: 连接线.
     pub connection_line: bool,
     /// §5.7.14 rule: 擦除到透明. Off by default, and the UI has to explain the
@@ -325,6 +331,7 @@ impl Default for Style {
             brush: Brush::default(),
             arrow_head: ArrowHead::default(),
             zoom_percent: 200,
+            zoom_border: true,
             connection_line: true,
             erase_to_transparent: false,
         }

@@ -68,6 +68,12 @@ pub const TOOLS: &[Option<Kind>] = &[
     Some(Kind::Eraser),
 ];
 
+/// §5.7.13 step 5's 放大倍数 range, in one pair of numbers shared by the knob and by
+/// [`Layer::place`]: two clamps that disagree about what 800% means would light the
+/// toolbar cell for a size the copy is not drawn at.
+const ZOOM_MIN: u32 = 100;
+const ZOOM_MAX: u32 = 800;
+
 /// The tool a code from QML names. Anything out of range is the arrow tool rather
 /// than an error: a stale number from a reloaded document must not disable input.
 pub fn tool_at(code: i32) -> Option<Kind> {
@@ -412,9 +418,31 @@ impl Layer {
         self.style.fill.is_some()
     }
 
+    /// §5.7.13 step 5's three settings, read back rather than kept in the toolbar for
+    /// the same reason [`Layer::dashed`] is: §5.7.1's per-tool memory can hand a tool
+    /// back a switch no button has ever touched. `zoom_tool` is the one that says
+    /// whether the row belongs on screen at all, and it is Rust's answer because the
+    /// index of 放大 in [`TOOLS`] is Rust's number too.
+    pub fn zoom_tool(&self) -> bool {
+        self.tool == Some(Kind::Zoom)
+    }
+
+    pub fn zoom_percent(&self) -> i32 {
+        self.style.zoom_percent as i32
+    }
+
+    pub fn zoom_border(&self) -> bool {
+        self.style.zoom_border
+    }
+
+    pub fn connection_line(&self) -> bool {
+        self.style.connection_line
+    }
+
     pub fn set_color(&mut self, rgba: [u8; 4]) {
         self.style.color = rgba;
         self.remember_style();
+        self.refresh_preview();
     }
 
     /// Line width and brush diameter move together: §5.7.20's 多级画笔粗细 is one
@@ -424,6 +452,7 @@ impl Layer {
         self.style.width = width.clamp(1, 64);
         Self::link_brush(&mut self.style);
         self.remember_style();
+        self.refresh_preview();
     }
 
     pub fn set_dashed(&mut self, dashed: bool) {
@@ -433,6 +462,7 @@ impl Layer {
             Dash::Solid
         };
         self.remember_style();
+        self.refresh_preview();
     }
 
     /// §5.7.2 step 4's 填充, at a third of the pen's alpha so a filled box still
@@ -444,6 +474,69 @@ impl Layer {
             c
         });
         self.remember_style();
+        self.refresh_preview();
+    }
+
+    /// §5.7.13 step 5's 放大倍数. A copy that is still in hand is regenerated rather
+    /// than left at the old scale, keeping the corner the second drag put it at: a knob
+    /// the pending object ignores is the tool-that-ignores-the-knob shape [`Layer::set_width`]
+    /// was written against. An object that already committed is *not* resized - step 5
+    /// sets the pen, and §5.7.17's per-object editing is a different feature with a
+    /// different undo command.
+    pub fn set_zoom_percent(&mut self, percent: u32) {
+        self.style.zoom_percent = percent.clamp(ZOOM_MIN, ZOOM_MAX);
+        self.remember_style();
+        if let Some(z) = self.zoom {
+            let grown = self.place(z.from);
+            let next = Placement {
+                from: z.from,
+                to: PhysRect::new(z.to.x, z.to.y, grown.w, grown.h),
+                held: z.held,
+            };
+            self.zoom = Some(next);
+        }
+        self.refresh_preview();
+    }
+
+    /// §5.7.13 step 5's 边框 and 连接线. Both are read by the rasteriser off the
+    /// element's own style, so a pending copy that is not repainted is previewing the
+    /// answer to the previous click.
+    pub fn set_zoom_border(&mut self, on: bool) {
+        self.style.zoom_border = on;
+        self.remember_style();
+        self.refresh_preview();
+    }
+
+    pub fn set_connection_line(&mut self, on: bool) {
+        self.style.connection_line = on;
+        self.remember_style();
+        self.refresh_preview();
+    }
+
+    /// Catch a pending preview up with the pen. Only the two node-style gestures have a
+    /// life of their own between style calls: a stroke mid-drag cannot meet a toolbar
+    /// click, because the pointer that draws it is the pointer the toolbar would need.
+    fn refresh_preview(&mut self) {
+        match self.draft.first().map(|e| e.kind) {
+            Some(Kind::Zoom) => self.draft_zoom(),
+            Some(Kind::Polyline) => self.draft_polyline(),
+            _ => {}
+        }
+    }
+
+    /// Is the preview already exactly what the state asks for - geometry *and* pen?
+    ///
+    /// A draft snapshots the style it was built with, so a guard on the geometry alone
+    /// lets a switch flipped while a gesture is in hand leave the old pen on the screen.
+    /// The user then sees one thing and commits another, which is the tool-that-ignores-
+    /// the-knob shape [`Layer::set_width`] was written against, in the other direction:
+    /// the knob was obeyed, by the object that has not been drawn yet.
+    fn draft_matches(&self, wanted: Option<&Geom>) -> bool {
+        match (self.draft.first(), wanted) {
+            (Some(e), Some(g)) => &e.geom == g && e.style == self.style,
+            (None, None) => true,
+            _ => false,
+        }
     }
 
     fn remember_style(&mut self) {
@@ -763,7 +856,7 @@ impl Layer {
     /// source is a 1.5 GB allocation inside the rasteriser's `resized` - a number this
     /// program should not discover on a user's machine.
     fn place(&self, from: PhysRect) -> PhysRect {
-        let pct = self.style.zoom_percent.clamp(100, 800) as u64;
+        let pct = self.style.zoom_percent.clamp(ZOOM_MIN, ZOOM_MAX) as u64;
         let hole = self.hole_doc();
         let side = |src: u32, cap: u32| {
             (src as u64 * pct / 100)
@@ -782,20 +875,17 @@ impl Layer {
 
     /// The pending 放大 as a draft: the source region, the copy and the connectors
     /// between them are one element, because step 4 drags *the copy* and a gesture that
-    /// moved two objects would leave the two of them disagreeing about the same magnifier.
-    /// The same no-op rule as [`Layer::draft_polyline`] applies - an unchanged preview
-    /// must not buy a new key, or the gauge charges the flow for a stroke that changed
-    /// nothing.
+    /// moved two objects would leave the two of them disagreeing about the same
+    /// magnifier. The same no-op rule as [`Layer::draft_polyline`] applies - an unchanged
+    /// preview must not buy a new key, or the gauge charges the flow for a stroke that
+    /// changed nothing - and "unchanged" now covers the pen as well as the geometry, see
+    /// [`Layer::draft_matches`].
     fn draft_zoom(&mut self) {
         let wanted = self.zoom.map(|z| Geom::Zoom {
             from: z.from,
             to: z.to,
         });
-        if self
-            .draft
-            .first()
-            .is_some_and(|e| Some(&e.geom) == wanted.as_ref())
-        {
+        if self.draft_matches(wanted.as_ref()) {
             return;
         }
         let was = self.draft.first().map(|e| e.bounds());
@@ -917,11 +1007,7 @@ impl Layer {
         } else {
             None
         };
-        if self
-            .draft
-            .first()
-            .is_some_and(|e| Some(&e.geom) == wanted.as_ref())
-        {
+        if self.draft_matches(wanted.as_ref()) {
             // The release after a click that was not dragged asks for exactly the
             // preview the press already painted, and repainting the same pixels under a
             // new key would charge the flow for a stroke that changed nothing.
@@ -1075,12 +1161,22 @@ impl Layer {
         let mut elements = self.doc.elements.clone();
         elements.extend(self.draft.iter().cloned());
         let origin = self.origin;
-        let hole = self.hole_doc();
         let next_rev = self.rev + 1;
         let shifts: Vec<(i32, i32)> = self
             .canvases
             .iter()
             .map(|c| shift(origin, c.bounds))
+            .collect();
+        // The selection in each canvas's *own* pixels, because the clip below is
+        // compared against `area`, which is canvas-local. A document-space rect would
+        // only answer for the one screen that sits at the desktop's corner; every other
+        // screen gets an offset, and a clip offset from the thing it clips throws that
+        // screen's ink away - the ink rule §9.1 ③ applied to the wrong pixels, so
+        // nothing is drawn where the user is drawing.
+        let holes: Vec<PhysRect> = self
+            .canvases
+            .iter()
+            .map(|c| self.hole.offset(-c.bounds.x, -c.bounds.y))
             .collect();
         let mut touched = 0u64;
         let mut problems = Vec::new();
@@ -1109,7 +1205,7 @@ impl Layer {
             }
             // Outside the selection the layer has to show *nothing*, or an undimmed
             // copy of the desktop replaces the dim that QML just drew under it.
-            let Some(clip) = hole.intersection(&area) else {
+            let Some(clip) = holes[i].intersection(&area) else {
                 // Whole area is outside the hole: all of it becomes transparent.
                 for y in area.y..area.bottom() {
                     for x in area.x..area.right() {
@@ -1319,6 +1415,44 @@ mod tests {
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn the_screen_that_is_not_at_the_desktops_corner_keeps_its_ink() {
+        // The pair above starts at x = -1280, so the *right* screen is the one whose own
+        // corner is not the desktop's: `shift` hands it a non-zero offset, and the clip
+        // that keeps ink inside the selection is compared against canvas-local pixels.
+        // Measured, not inferred - this house got the hardware on 2026-10-08 (a second
+        // monitor above and left of the primary, selection on the primary) and `--ink`
+        // then read `0 opaque px compared` across the whole hole: the layer drew nothing
+        // on the very screen the user was annotating, while the saved picture had the ink.
+        let left = PhysRect::new(-1280, 0, 640, 320);
+        let right = PhysRect::new(-640, 0, 640, 320);
+        let grey = [90, 90, 90, 255];
+        let mut l = screens(&[("left", left), ("right", right)], grey);
+        l.set_hole(right);
+        l.set_color([255, 0, 0, 255]);
+        l.select_tool(code_of(Some(Kind::Rect)));
+
+        // Desktop (-600,40) is local (40,40) of the right screen.
+        assert!(l.press(PhysPoint::new(-600, 40)));
+        l.drag(PhysPoint::new(-500, 140));
+        assert!(l.release());
+        assert_eq!(l.objects(), 1);
+
+        let on = l.layer_of("right").unwrap().get(40, 40);
+        assert_eq!(
+            on[3], 255,
+            "the selection's own screen drew nothing: {on:?}"
+        );
+        // The failure this pins is "what you save is not what you saw", so the export -
+        // the picture the crop takes - has to have the same pixel, not merely the layer.
+        assert_eq!(on, l.flatten("right").unwrap().get(40, 40));
+        assert_eq!(
+            mismatched(&l, "right").unwrap(),
+            Vec::<String>::new(),
+            "the layer is not the document"
+        );
     }
 
     #[test]
@@ -1872,10 +2006,10 @@ mod tests {
 
     #[test]
     fn the_copy_is_generated_not_typed_but_capped_by_the_selection() {
-        // §5.7.13 step 3 has no control on the toolbar yet, which is exactly why it has
-        // to be arithmetic the user can predict: `zoom_percent` of the source's own size,
-        // its corner a pen's width beyond the source's bottom-right so the copy does not
-        // sit glued on top of what it magnifies.
+        // §5.7.13 step 3 is arithmetic the user has to be able to predict, whatever the
+        // step 5 cell is set to: `zoom_percent` of the source's own size, its corner a
+        // pen's width beyond the source's bottom-right so the copy does not sit glued on
+        // top of what it magnifies.
         let mut l = zoom_layer();
         magnify(&mut l, (20, 20), (60, 60));
         let (from, to) = l.zoom_pending().unwrap();
@@ -2071,6 +2205,207 @@ mod tests {
                 labels[i],
                 l.tool()
             );
+        }
+    }
+
+    // -------------------------------------------------- §5.7.13 step 5 的三件控制
+
+    #[test]
+    fn the_magnification_knob_regrows_the_copy_in_hand() {
+        let mut l = zoom_layer();
+        magnify(&mut l, (20, 20), (60, 60));
+        let (from, to) = l.zoom_pending().unwrap();
+        assert_eq!((to.w, to.h), (80, 80), "the copy starts at the tool's 200%");
+
+        l.set_zoom_percent(400);
+        let (still_from, grown) = l.zoom_pending().expect("the knob lost the copy");
+        assert_eq!((grown.w, grown.h), (160, 160), "400% of a 40x40 source");
+        assert_eq!(
+            (grown.x, grown.y),
+            (to.x, to.y),
+            "the copy moved when only its size was asked for"
+        );
+        assert_eq!(still_from, from, "the knob resized the source region");
+        assert_eq!(
+            l.zoom_percent(),
+            400,
+            "the knob does not read back what it set"
+        );
+
+        // The knob cannot be taken outside the range `place` enforces, and says so in the
+        // same number it set: a cell lit for 800% over a copy drawn at 2000% is the two
+        // clamps disagreeing, which is why there is one pair of numbers here.
+        l.set_zoom_percent(20);
+        assert_eq!(
+            l.zoom_percent(),
+            100,
+            "a magnifier smaller than its own source"
+        );
+        let (_, small) = l.zoom_pending().unwrap();
+        assert_eq!((small.w, small.h), (40, 40), "100% is no change");
+        l.set_zoom_percent(9000);
+        assert_eq!(
+            l.zoom_percent(),
+            800,
+            "and one the rasteriser would not survive"
+        );
+        let (_, huge) = l.zoom_pending().unwrap();
+        assert_eq!(
+            (huge.w, huge.h),
+            (320, 300),
+            "800%, then the selection's cap"
+        );
+
+        // An object that already committed keeps the size it was placed at. Step 5 sets
+        // the pen; §5.7.17's per-object editing is a different command in the undo stack,
+        // not a side effect of a toolbar click.
+        let mut l = zoom_layer();
+        magnify(&mut l, (20, 20), (60, 60));
+        assert!(l.finish_zoom(), "the copy never committed");
+        l.set_zoom_percent(800);
+        let Geom::Zoom { to, .. } = l.doc.elements[0].geom else {
+            panic!("放大 committed a {:?}", l.doc.elements[0].kind);
+        };
+        assert_eq!(
+            (to.w, to.h),
+            (80, 80),
+            "the knob resized an object that was already placed"
+        );
+        assert!(l.undo_step(), "the commit was not undoable");
+        assert_eq!(l.objects(), 0);
+        assert!(
+            !l.undo_step(),
+            "one toolbar click became more than one undo step"
+        );
+    }
+
+    #[test]
+    fn the_two_switches_land_in_the_object_that_commits() {
+        let mut l = zoom_layer();
+        assert!(
+            l.zoom_border(),
+            "§5.7.13: 边框 on until the user says otherwise"
+        );
+        assert!(l.connection_line(), "and 连接线 the same");
+        l.set_zoom_border(false);
+        l.set_connection_line(false);
+        assert!(!l.zoom_border(), "the switch does not read back");
+        assert!(!l.connection_line(), "the switch does not read back");
+
+        magnify(&mut l, (20, 20), (60, 60));
+        assert!(l.finish_zoom(), "the switches never reached a commit");
+        let e = &l.doc.elements[0];
+        assert!(
+            !e.style.zoom_border,
+            "边框 is a cell the rasteriser never sees"
+        );
+        assert!(
+            !e.style.connection_line,
+            "连接线 is a cell the rasteriser never sees"
+        );
+        assert_eq!(
+            e.style.zoom_percent, 200,
+            "the third setting did not travel with the other two"
+        );
+    }
+
+    #[test]
+    fn a_switch_flipped_while_a_copy_waits_takes_the_old_pen_off_the_screen() {
+        // A draft snapshots the style it was built with. Guarded on geometry alone, a
+        // knob flipped while 放大 is in hand leaves the *previous* pen on the screen and
+        // only agrees with the user when the object commits - a preview that lies about
+        // what it will become. The flat grey base makes this measurable in one pixel: the
+        // only ink a magnifier adds here is its frames and its connectors, in the pen's
+        // colour.
+        let mut l = zoom_layer();
+        magnify(&mut l, (20, 20), (60, 60));
+        let green = l.layer_of("m0").unwrap().get(40, 20);
+        assert_ne!(
+            green,
+            [70, 70, 70, 255],
+            "the source frame is not on the canvas"
+        );
+        assert!(
+            green[1] as i32 - green[0].max(green[2]) as i32 > 40,
+            "the preview is not the green pen: {green:?}"
+        );
+        let both = inked(&l, "m0");
+
+        // The two switches first, while the pen is still the colour [`inked`] counts.
+        // Each one gets its own number: the connector's pixels go and the frame's stay.
+        l.set_connection_line(false);
+        let framed = inked(&l, "m0");
+        assert!(framed < both, "连接线 off left its pixels on screen");
+        assert!(framed > 0, "…and it took the 边框 with it");
+        l.set_zoom_border(false);
+        assert_eq!(inked(&l, "m0"), 0, "边框 off left its pixels on screen");
+
+        // Then the pen, over a preview that is visible again - the switch this test is
+        // really about, because the geometry did not move and a guard on geometry alone
+        // would have stopped here without repainting anything.
+        l.set_zoom_border(true);
+        l.set_color([0, 0, 255, 255]);
+        let blue = l.layer_of("m0").unwrap().get(40, 20);
+        assert!(
+            blue[2] as i32 - blue[0].max(blue[1]) as i32 > 40,
+            "the pen switch left the old colour on the preview: {blue:?}"
+        );
+
+        // And what the user goes on to commit is what the switches and the pen said:
+        // `flatten` is the *committed* document's export, so a gesture still in hand has
+        // no honest comparison to make until it is one.
+        l.set_connection_line(true);
+        assert!(l.finish_zoom(), "the switches never reached a commit");
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "the layer is not the document"
+        );
+    }
+
+    #[test]
+    fn the_three_settings_travel_with_the_tool_that_learned_them() {
+        // §5.7.1's memory is one whole-`Style` snapshot per tool, so a field with a cell
+        // of its own is remembered exactly like a colour is - and a magnifier that came
+        // back at 200% after the user set 400% would be a tool that forgets on its own.
+        let mut l = zoom_layer();
+        l.set_zoom_percent(400);
+        l.set_zoom_border(false);
+        l.set_connection_line(false);
+
+        l.select_tool(code_of(Some(Kind::Rect)));
+        l.set_color([0, 0, 255, 255]);
+
+        l.select_tool(code_of(Some(Kind::Zoom)));
+        assert_eq!(
+            l.zoom_percent(),
+            400,
+            "放大 came back without its magnification"
+        );
+        assert!(!l.zoom_border(), "放大 came back with its 边框 on");
+        assert!(!l.connection_line(), "放大 came back with its 连接线 on");
+        assert_eq!(
+            l.color(),
+            [0, 200, 0, 255],
+            "the magnifier came back with the rectangle's pen"
+        );
+    }
+
+    #[test]
+    fn the_magnifier_knobs_are_offered_to_the_magnifier_only() {
+        // The toolbar hides the row off one Rust bool rather than a comparison against a
+        // tool index it would have to keep in step with [`TOOLS`] by itself - the same
+        // reason `AnnotationToolbar.qml` takes its labels from `tool_names()`.
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 40, 40))], [70, 70, 70, 255]);
+        for (code, want) in [
+            (code_of(None), false),
+            (code_of(Some(Kind::Rect)), false),
+            (code_of(Some(Kind::Polyline)), false),
+            (code_of(Some(Kind::Zoom)), true),
+            (code_of(Some(Kind::Eraser)), false),
+        ] {
+            l.select_tool(code);
+            assert_eq!(l.zoom_tool(), want, "the row moved with button {code}");
         }
     }
 }
