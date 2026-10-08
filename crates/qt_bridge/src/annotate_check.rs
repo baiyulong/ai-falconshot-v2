@@ -66,11 +66,18 @@ const SAME_TOL: i32 = 8;
 /// How far apart the samples of a stroke's band sit, in device pixels.
 const BAND_STEP: i32 = 8;
 
-/// What share of a stroke's samples have to read as expected. Antialiasing at the
-/// two ends of a run, and a window whose first frame pre-dates the last publish, are
+/// What share of a stroke's *usable* samples have to read as expected. Antialiasing at
+/// the two ends of a run, and a window whose first frame pre-dates the last publish, are
 /// the honest sources of a near miss; a stroke that is absent reads far below this.
 const INK_PASS: usize = 8;
 const GHOST_PASS: usize = 9;
+
+/// The fewest usable samples a band row may be graded on at all - see [`Hits::usable`].
+/// Thirty is about a quarter of the smallest band this gauge plants (the freehand
+/// stroke's 121 samples), and a reading taken on fewer pixels than that says more about
+/// the desktop under the stroke than about the stroke. The number is a 口径 of §9.4, not
+/// a tuning knob: moving it changes what a green row is evidence of.
+const MIN_USABLE: usize = 30;
 
 /// What was planted, so the read-back can grade the same rectangles that were drawn.
 struct Plan {
@@ -366,19 +373,40 @@ struct Hits {
 }
 
 impl Hits {
-    /// `pass` as a tenths-of-a-whole threshold, so the row can be graded on a sample
-    /// set whose size the screen decides.
+    /// The samples the screen actually offered: what was planted, minus the pixels too
+    /// dark to divide and the pixels that fell off this screen. This is the denominator
+    /// of the grade. Grading against `want` instead asks the ink to account for the
+    /// wallpaper - a dark desktop put 148 of a polyline's 150 samples in `dark`, and the
+    /// row read `0/150 FAIL` over a stroke that had not been drawn wrong once (R20).
+    /// A pixel that is readable and matches none of the buckets stays in here, which is
+    /// the point: an unexplained pixel is a miss, an unreadable one is not.
+    fn usable(&self) -> usize {
+        self.want.saturating_sub(self.dark + self.off)
+    }
+
+    /// `tenths` is the pass share of [`Hits::usable`], in tenths-of-a-whole, so the row
+    /// can be graded on a sample set whose size the screen decides. A band the screen
+    /// refused to show is `BLOCKED` rather than `FAIL`: "this desktop cannot be graded"
+    /// and "this stroke was drawn wrong" are not the same finding, and exit 3 is the
+    /// only way the run says which.
     fn verdict(&self, tenths: usize) -> Check {
-        if self.want == 0 {
+        let usable = self.usable();
+        if usable < MIN_USABLE {
             return Check::Blocked;
         }
-        Check::from(self.ok * 10 >= self.want * tenths)
+        Check::from(self.ok * 10 >= usable * tenths)
     }
 
     fn line(&self) -> String {
         format!(
-            "{}/{} as expected, {} the other ink, {} bare desktop, {} too dark, {} off this screen",
-            self.ok, self.want, self.other_ink, self.plain, self.dark, self.off
+            "{}/{} as expected of {} planted, {} the other ink, {} bare desktop, {} too dark, {} off this screen",
+            self.ok,
+            self.usable(),
+            self.want,
+            self.other_ink,
+            self.plain,
+            self.dark,
+            self.off
         )
     }
 }
@@ -674,4 +702,67 @@ pub fn measure() -> (Check, String) {
         ),
     );
     rep.finish("ink check")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A band that read on the dark desktop of R20's third run: 16 of 165 samples
+    /// visible, and every one of those was the expected ink.
+    fn r20() -> Hits {
+        Hits {
+            want: 165,
+            ok: 16,
+            other_ink: 0,
+            plain: 0,
+            dark: 149,
+            off: 0,
+        }
+    }
+
+    #[test]
+    fn a_desktop_too_dark_to_read_blocks_the_row_instead_of_failing_it() {
+        // The whole point of the change: this row was `FAIL 16/165`, and it read exactly
+        // like a stroke that had been drawn wrong. Nothing about the ink is being
+        // asserted here - the screen refused 149 of the 165 samples.
+        assert_eq!(r20().usable(), 16);
+        assert_eq!(r20().verdict(INK_PASS), Check::Blocked);
+        // The same band on a desktop that does show its pixels grades normally, so
+        // BLOCKED is not this row's way of always declining.
+        let shown = Hits {
+            ok: 149,
+            plain: 16,
+            dark: 0,
+            ..r20()
+        };
+        assert_eq!(shown.usable(), 165);
+        assert_eq!(shown.verdict(INK_PASS), Check::Pass);
+    }
+
+    #[test]
+    fn a_band_that_can_be_read_and_does_not_match_still_fails() {
+        // BLOCKED must not become where a real defect goes to hide: 40 samples the
+        // desktop refused, 125 it showed, and not one of those is the stroke.
+        let missing = Hits {
+            want: 165,
+            ok: 0,
+            other_ink: 0,
+            plain: 125,
+            dark: 40,
+            off: 0,
+        };
+        assert_eq!(missing.usable(), 125);
+        assert_eq!(missing.verdict(INK_PASS), Check::Fail);
+    }
+
+    #[test]
+    fn the_row_names_the_sample_it_divided_by_and_the_one_it_was_planted() {
+        // Both numbers, or the row cannot be read as a measurement of the ink rather
+        // than of the desktop.
+        assert_eq!(
+            r20().line(),
+            "16/16 as expected of 165 planted, 0 the other ink, 0 bare desktop, 149 too dark, 0 off this screen"
+        );
+    }
 }

@@ -661,7 +661,7 @@ pub fn selftest() -> (bool, String) {
 ///
 /// Ordering matters as much as the names: `Fail` dominates `Blocked`, so a run
 /// that is both cannot report only the excuse.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Check {
     Pass,
     Blocked,
