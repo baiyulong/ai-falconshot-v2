@@ -1,9 +1,10 @@
 //! The ink, checked against the pixels it is supposed to be covering.
 //!
 //! `--ink <ms>` is `--mask` plus a script: the mask opens on a real freeze, this
-//! module drives *the same entry points a pointer uses* through six strokes and an
-//! undo, and the run ends with one `PrintWindow` read-back of each mask window. That
-//! single read-back is why the script is arranged the way it is:
+//! module drives *the same entry points a pointer uses* through seven strokes, two
+//! erases and an undo, and the run ends with one `PrintWindow` read-back of each mask
+//! window. That single read-back is why the strokes are laid out the way they are, and
+//! why the 橡皮 rows sit outside it:
 //!
 //! * **stroke 1 and 2 are in different places**. If the second commit never reaches
 //!   the screen - plan §3.6 constraint 8, the failure P4 measured on the spike, where
@@ -23,6 +24,17 @@
 //!   box's are not: the click is the script's and the letters are the product's, which
 //!   is why the row that grades them counts an area the script declared instead of
 //!   sampling a path, and prints how much of that area came back as ink.
+//! * **the 橡皮 leg reads no photograph at all.** §5.7.14's two modes cannot be told
+//!   apart on the screen: QML draws the frozen frame *under* the overlay, so a pixel the
+//!   eraser put back onto the screenshot and a pixel it took out of the exported picture
+//!   both read as the desktop. So one more line of ink is drawn and then erased twice,
+//!   once with the mode off and once with it on, and those two thirds are graded out of
+//!   the two bitmaps Rust owns - the incremental canvas and a whole-canvas render of the
+//!   same document - against the freeze itself. The exactness half of that is a claim the
+//!   `layer == export` row cannot make: it steps over every pixel whose alpha is 0, which
+//!   is exactly what 擦除到透明 produces, so a canvas that dropped a pixel the export kept
+//!   is invisible to it by construction. The new row grades that way round and the other
+//!   one too.
 //!
 //! The colour tests are relational (one channel must lead the other two) rather than
 //! exact, because composition and antialiasing are allowed to round a pixel; the ghost
@@ -120,6 +132,35 @@ const TEXT_H: u32 = 40;
 /// it prints is the finding. A 口径 of §9.4 like [`MIN_USABLE`], not a tuning knob.
 const MIN_TEXT_INK: usize = 24;
 
+/// The diameter of 橡皮's brush when the leg erases with [`PEN`] in hand. This is
+/// [`crate::annotate`]'s `link_brush` arithmetic written out here rather than trusted:
+/// `width * 4` clamped to `3..=96`, and 8 * 4 sits inside the clamp, so the value is the
+/// one the product will compute and not a guess at it. The leg needs the *radius* to keep
+/// its samples clear of the run next door - a sample a neighbour's brush can reach is a
+/// sample two rows can grade. If `link_brush` ever changes, the erase rows fail on their
+/// own printed witnesses instead of passing on margins that no longer hold.
+const ERASE_BRUSH: i32 = PEN as i32 * 4;
+
+/// Half of it: how far outside an erase run's endpoints its pixels reach.
+const ERASE_REACH: i32 = ERASE_BRUSH / 2;
+
+/// The y of 橡皮's band, as a fraction of the selection: the slice between the
+/// selection's own top edge and the 0.12 where 方框's top border and 折线's first point
+/// begin. Why not the bottom, where the rest of the script's spare room is: the 放大 copy
+/// is dragged to the selection's bottom-right corner and its size is the product's
+/// (magnifier side x zoom), so no band placed in the lower half can promise not to land
+/// inside a rectangle another row grades off the *screen*. 橡皮's own rows read the export
+/// and would survive that overlap - the eraser's objects are planted after the copy and
+/// paint over it - but the zoom row's would not, and a leg that moves its neighbour's
+/// numbers is not a leg that added nothing.
+const ERASE_Y: f64 = 0.06;
+
+/// The run's x extent, as fractions of the selection, split into the three zones the
+/// rows grade: a third nobody erases, a third erased with §5.7.14's mode off, a third
+/// with it on.
+const ERASE_X0: f64 = 0.12;
+const ERASE_X1: f64 = 0.88;
+
 /// What was planted, so the read-back can grade the same rectangles that were drawn.
 struct Plan {
     /// The box's geometry, in device desktop pixels.
@@ -139,6 +180,10 @@ struct Plan {
     /// reading it withholds. Never derived from the box the product measured: the point
     /// of the row is that the click is the script's and the letters are the product's.
     text: Option<PhysRect>,
+    /// 橡皮 (§5.7.14) as the script laid it, or the reason this selection has no room
+    /// for it. Both arms are read: the rows that come out of an `Ok` are the four the leg
+    /// was built to print, and the `Err` says in one line why none of them is there.
+    erase: Result<Erase, String>,
     /// The keys each publish produced, oldest first: four strokes and one undo.
     keys: Vec<Vec<String>>,
     /// The layer's own line at planting time, and the selection it was drawn in.
@@ -316,6 +361,74 @@ fn text_strip(hole: PhysRect) -> Option<PhysRect> {
     ))
 }
 
+/// 橡皮 (§5.7.14), as the script laid it out: one line of ink across the free slice of
+/// the selection, a third of it erased with the mode off, a third with it on.
+struct Erase {
+    /// The pencil run, end to end. Its first third is never erased, and that third is
+    /// the control: without it, "the pixels are gone" is equally a reading of a stroke
+    /// that never arrived.
+    ink: (PhysPoint, PhysPoint),
+    /// The two drags, in the order the script makes them: §5.7.14's 默认 first, then
+    /// 擦除到透明. Each is a press-move-release through [`Erase::zones`]' middle.
+    runs: [(PhysPoint, PhysPoint); 2],
+    /// The samples the rows read, one list per zone: unerased, erased with the mode off,
+    /// erased with it on. They sit on the runs' centre lines, inside them by [`CLEAR]` and
+    /// outside the next run's [`ERASE_REACH`], because a sample a neighbour's brush can
+    /// reach is a sample two rows can grade.
+    zones: [Vec<PhysPoint>; 3],
+}
+
+/// Lay 橡皮's band into the selection, or say why the selection has no room for one.
+///
+/// Two refusals are possible and they are different questions, so the sentence names
+/// whichever one happened: the band's height is what the selection's own top edge and the
+/// 0.12 where 方框 and 折线 begin leave the brush, and its width is what the three zones
+/// need once each erase run has kept [`ERASE_REACH`] out of its neighbour. A row that
+/// declines is a row whose reading the desktop could not have given - which is a fact
+/// about the script's geometry, not about the product, and gets said as one.
+fn erase_band(hole: PhysRect) -> Result<Erase, String> {
+    let need = ERASE_REACH + CLEAR;
+    let y = hole.y + (hole.h as f64 * ERASE_Y).round() as i32;
+    let above = hole.y;
+    let below = hole.y + (hole.h as f64 * 0.12).round() as i32;
+    if y - above < need || below - y < need {
+        return Err(format!(
+            "the slice between the selection's top edge and where 方框 and 折线 begin (y 0.12) is {} px tall here, and \
+             橡皮's brush needs {need} of it on each side of y {y}",
+            below - above
+        ));
+    }
+
+    let left = hole.x + (hole.w as f64 * ERASE_X0).round() as i32;
+    let right = hole.x + (hole.w as f64 * ERASE_X1).round() as i32;
+    let third = (right - left) / 3;
+    let least = 2 * need + 2 * CLEAR + BAND_STEP;
+    if third < least {
+        return Err(format!(
+            "each third of the run is {third} px wide here, and a zone needs {least} to hold a run that keeps \
+             {need} out of its neighbour and samples that sit {CLEAR} inside the run"
+        ));
+    }
+
+    let (z1, z2) = (left + third, left + 2 * third);
+    let row = |a: i32, b: i32| along(PhysPoint::new(a, y), PhysPoint::new(b, y));
+    Ok(Erase {
+        ink: (PhysPoint::new(left, y), PhysPoint::new(right, y)),
+        runs: [
+            (PhysPoint::new(z1 + need, y), PhysPoint::new(z2 - need, y)),
+            (
+                PhysPoint::new(z2 + need, y),
+                PhysPoint::new(right - need, y),
+            ),
+        ],
+        zones: [
+            row(left + CLEAR, z1 - CLEAR),
+            row(z1 + need + CLEAR, z2 - need - CLEAR),
+            row(z2 + need + CLEAR, right - need - CLEAR),
+        ],
+    })
+}
+
 /// Freeze, open, draw, undo. Must run before the QML engine, for the same reason
 /// [`mask_check::open`] must: the windows must not capture the screen they cover.
 pub fn plant(shader: bool) -> Result<String, String> {
@@ -331,8 +444,12 @@ pub fn plant(shader: bool) -> Result<String, String> {
     // there. The 放大 source patch is the one band *below* the arrow for the same
     // reason: its copy paints over anything inside it. 文本 goes in the one slice of the
     // selection none of them touches - see [`text_strip`] - and in a third ink, so it can
-    // satisfy none of their rows and none of them can satisfy its own.
-    let (rect, zig, poly, arrow, zsrc, strip) = mask::with(|m| {
+    // satisfy none of their rows and none of them can satisfy its own. 橡皮 goes above
+    // all of them, in the slice between the selection's edge and the 0.12 the box and the
+    // zig start at, for the reason just given for the copy: it needs a width of its own to
+    // be worth reading, and the only full-width slice left is at the top. See
+    // [`erase_band`].
+    let (rect, zig, poly, arrow, zsrc, strip, erase) = mask::with(|m| {
         let h = m.hole;
         let f = |fx: f64, fy: f64| {
             PhysPoint::new(
@@ -353,6 +470,7 @@ pub fn plant(shader: bool) -> Result<String, String> {
             [f(0.15, 0.62), f(0.85, 0.76)],
             PhysRect::from_points(f(0.12, 0.84), f(0.37, 0.94)),
             text_strip(h),
+            erase_band(h),
         )
     });
 
@@ -462,6 +580,58 @@ pub fn plant(shader: bool) -> Result<String, String> {
         }
         flush(m, &mut keys);
 
+        // 橡皮 (§5.7.14): the leg that reads no photograph. What the script can promise
+        // is the setup only - ink down first, then one drag per mode - because a drag
+        // that commits nothing is indistinguishable, in the exported frame, from an erase
+        // that erased nothing. So the object count is asked here, in the one place it can
+        // be asked, and the pixels are graded in `measure`.
+        match &erase {
+            Ok(e) => {
+                m.ink.select_tool(annotate::code_of(Some(Kind::Pencil)));
+                m.ink.set_color(GREEN);
+                m.ink.set_width(PEN);
+                stroke(m, &slots, &along(e.ink.0, e.ink.1), &mut notes);
+                flush(m, &mut keys);
+
+                m.ink.select_tool(annotate::code_of(Some(Kind::Eraser)));
+                // Both halves of the pen are read back before the runs, for the reason
+                // [`crate::annotate`]'s `erase_transparent` gives: §5.7.1's per-tool
+                // memory can hand 橡皮 a mode and a 线宽 no button ever touched, and the
+                // band's margins are measured in that 线宽's radius. Setting them is not
+                // enough - saying what the tool came up with is what keeps the next
+                // round's reading attributable to this leg rather than to the file.
+                if m.ink.erase_transparent() {
+                    notes.push("橡皮 came up 擦除到透明, not §5.7.14's 默认".to_string());
+                }
+                if m.ink.width() != PEN {
+                    notes.push(format!("橡皮 came up 线宽 {}, not {PEN}", m.ink.width()));
+                }
+                m.ink.set_width(PEN);
+                for (mode, run) in [(false, &e.runs[0]), (true, &e.runs[1])] {
+                    let which = if mode {
+                        "擦除到透明"
+                    } else {
+                        "只擦标注"
+                    };
+                    m.ink.set_erase_transparent(mode);
+                    if m.ink.erase_transparent() != mode {
+                        notes.push(format!(
+                            "the pen refused {which}: erase_transparent reads {}",
+                            m.ink.erase_transparent()
+                        ));
+                    }
+                    let before = m.ink.objects();
+                    stroke(m, &slots, &along(run.0, run.1), &mut notes);
+                    let made = m.ink.objects().saturating_sub(before);
+                    if made != 1 {
+                        notes.push(format!("{which} committed {made} object(s), not 1"));
+                    }
+                    flush(m, &mut keys);
+                }
+            }
+            Err(why) => notes.push(format!("橡皮: {why}")),
+        }
+
         // The stroke that is about to be undone, in the other ink.
         m.ink.select_tool(annotate::code_of(Some(Kind::Arrow)));
         m.ink.set_color(BLUE);
@@ -479,6 +649,14 @@ pub fn plant(shader: bool) -> Result<String, String> {
 
     let (line, hole, problems) = mask::with(|m| (m.ink_line(), m.hole, m.problems.clone()));
     let distinct: HashSet<&String> = keys.iter().flatten().collect();
+    // The summary counts the strokes the script actually drove. A line that said "6
+    // strokes" on a selection too narrow for 橡皮 would leave the reader to notice that
+    // no erase row appeared at all, which is the difference between a declined leg and
+    // one nobody asked for.
+    let script = match &erase {
+        Ok(_) => "7 strokes + 2 erases + 1 undo",
+        Err(_) => "7 strokes + 1 undo, 橡皮 declined",
+    };
     *plan().lock().unwrap_or_else(PoisonError::into_inner) = Some(Plan {
         rect,
         zig,
@@ -486,13 +664,14 @@ pub fn plant(shader: bool) -> Result<String, String> {
         arrow,
         zoom,
         text: strip,
+        erase,
         keys: keys.clone(),
         line: line.clone(),
         hole,
         notes,
     });
     Ok(format!(
-        "6 strokes + 1 undo, {} publish(es) with {} distinct key(s), hole={hole}, {line}{}",
+        "{script}, {} publish(es) with {} distinct key(s), hole={hole}, {line}{}",
         keys.len(),
         distinct.len(),
         if problems.is_empty() {
@@ -1044,6 +1223,390 @@ fn enlarged(
 }
 
 /// The check itself, after the event loop has painted.
+/// Which of 橡皮's three zones a set of samples belongs to. Each is graded against a
+/// different expectation, and only two of them are about colour:
+///
+/// * [`Zone::Ink`] - the third nobody erased, and the control. Without it "the pixels are
+///   gone" is equally a reading of ink that never arrived, which is the confusion
+///   [`crate::annotate`]'s §5.7.14 test refuses on purpose.
+/// * [`Zone::Base`] - erased with §5.7.14's 默认. The exported picture has to be the
+///   frozen frame at that pixel, byte for byte: 只擦标注 hands the screenshot back.
+/// * [`Zone::Void`] - erased with the mode on. The pixel has left the picture, so its
+///   alpha is 0 whatever its rgb happens to be - which is why this expectation is a
+///   number and not a colour. Clearing a pixel is not a colour operation, and the rgb
+///   the product leaves behind is the ink's.
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Zone {
+    Ink,
+    Base,
+    Void,
+}
+
+impl Zone {
+    /// The row's name in the report.
+    fn name(self) -> &'static str {
+        match self {
+            Zone::Ink => "erase ink",
+            Zone::Base => "erase 只擦标注",
+            Zone::Void => "erase 擦到透明",
+        }
+    }
+
+    /// What the row says it asked for, so the numerator of its fraction is not a mystery.
+    fn asks(self) -> &'static str {
+        match self {
+            Zone::Ink => "the unerased third (ink expected)",
+            Zone::Base => "只擦标注 (the screenshot expected)",
+            Zone::Void => "擦除到透明 (no pixel expected)",
+        }
+    }
+
+    /// The counter this zone's verdict is read out of.
+    fn of(self, h: &Erased) -> usize {
+        match self {
+            Zone::Ink => h.ink,
+            Zone::Base => h.desk,
+            Zone::Void => h.void,
+        }
+    }
+
+    /// Can this claim be told apart from its opposite on this desktop? Where the frozen
+    /// frame is already this pen's colour, "the ink is there" and "the ink was erased"
+    /// are the same reading, and the row may not claim either. [`Zone::Void`] needs no
+    /// such floor: the freeze is opaque by construction (§3.5① ⑦), so an alpha of 0 is
+    /// a thing no wallpaper leaves behind by accident.
+    fn creditable(self, base: [u8; 4]) -> bool {
+        self == Zone::Void || !coloured(base, GREEN)
+    }
+}
+
+/// One erase zone, as the exported frame read it. The buckets partition [`Erased::want`]
+/// exactly as [`Hits`]' do and for the same reason: a line whose numbers do not add up to
+/// what was planted is a line that dropped pixels on the way to the verdict.
+#[derive(Default)]
+struct Erased {
+    want: usize,
+    ink: usize,
+    desk: usize,
+    void: usize,
+    neither: usize,
+    /// The sample the desktop cannot answer: this pen's colour is already what the freeze
+    /// shows there. A refusal, and named as one - it is not a miss.
+    uncredited: usize,
+    off: usize,
+    /// Up to [`NAMED`] samples that came back as something other than what the zone asks,
+    /// with both frames and the freeze beside them.
+    examples: Vec<String>,
+}
+
+impl Erased {
+    /// The samples this zone can be graded on at all: planted, minus the pixels off this
+    /// canvas and the pixels whose desktop colour is this ink. There is no "too dark" term
+    /// because nothing is divided - see [`erase_read`].
+    fn usable(&self) -> usize {
+        self.want.saturating_sub(self.off + self.uncredited)
+    }
+
+    /// A subtraction is not a thing that can be "mostly right", and nothing in this row
+    /// goes through a compositor: the export is a bitmap this process made. So the bar is
+    /// every graded sample, and a zone that cannot reach [`MIN_USABLE`] graded samples
+    /// declines out loud instead of passing on one lucky pixel.
+    fn verdict(&self, zone: Zone) -> Check {
+        let usable = self.usable();
+        if usable < MIN_USABLE {
+            return Check::Blocked;
+        }
+        Check::from(zone.of(self) == usable)
+    }
+
+    fn line(&self, zone: Zone) -> String {
+        let named = if self.examples.is_empty() {
+            String::new()
+        } else {
+            format!("; first {}", self.examples.join(" | "))
+        };
+        format!(
+            "{}/{} as {} of {} planted, {} this ink, {} the frozen frame, {} transparent, {} neither, \
+             {} the desktop is already this ink, {} off this canvas{named}",
+            zone.of(self),
+            self.usable(),
+            zone.asks(),
+            self.want,
+            self.ink,
+            self.desk,
+            self.void,
+            self.neither,
+            self.uncredited,
+            self.off,
+        )
+    }
+}
+
+/// What one graded pixel actually read as. A four-way name rather than four counters, so
+/// [`Zone::expected`] can say what a row wanted and the loop can say what it got, in the
+/// same sentence, without a reader matching counters by eye.
+#[derive(Copy, Clone, PartialEq, Debug)]
+enum Read {
+    Ink,
+    Desk,
+    Void,
+    Neither,
+}
+
+impl Zone {
+    /// The reading this zone is asking the export for.
+    fn expected(self) -> Read {
+        match self {
+            Zone::Ink => Read::Ink,
+            Zone::Base => Read::Desk,
+            Zone::Void => Read::Void,
+        }
+    }
+}
+
+/// Read one erase zone out of the **exported** frame.
+///
+/// No photograph is involved, and that is the whole point of the leg: on the screen the
+/// two modes are the same picture, because QML draws the frozen frame under an overlay
+/// whose cleared pixels and restored pixels both show the desktop. What differs is what
+/// leaves the mask, so that is what gets read. Nor is anything divided: the freeze and
+/// the export are two bitmaps this process owns, which is why this row has no `dark`
+/// bucket where [`band`] has one, and why its pass bar is every sample.
+///
+/// `canvas` is this screen's bounds in desktop pixels: the export is canvas-local, and a
+/// desktop point becomes one of its pixels by the subtraction `layer == export`'s own walk
+/// uses.
+fn erase_read(
+    zone: Zone,
+    at: &[PhysPoint],
+    canvas: PhysRect,
+    frozen: &ScreenSnapshot,
+    export: &Frame,
+) -> Erased {
+    let mut h = Erased::default();
+    for at in at {
+        h.want += 1;
+        let (lx, ly) = (at.x - canvas.x, at.y - canvas.y);
+        if lx < 0 || ly < 0 || (lx as u32) >= export.width || (ly as u32) >= export.height {
+            h.off += 1;
+            continue;
+        }
+        let Some(base) = frozen.color_at(*at) else {
+            h.off += 1;
+            continue;
+        };
+        if !zone.creditable(base) {
+            h.uncredited += 1;
+            continue;
+        }
+        let c = export.get(lx as u32, ly as u32);
+        // Exactly one bucket per graded sample. Transparent first: a pixel that left the
+        // picture is not this ink, even though the rgb it keeps is the ink's own.
+        let read = if c[3] == 0 {
+            h.void += 1;
+            Read::Void
+        } else if coloured(c, GREEN) {
+            h.ink += 1;
+            Read::Ink
+        } else if c == base {
+            h.desk += 1;
+            Read::Desk
+        } else {
+            h.neither += 1;
+            Read::Neither
+        };
+        if read != zone.expected() && h.examples.len() < NAMED {
+            h.examples.push(format!(
+                "{},{} export={:?} over desktop={:?}",
+                at.x, at.y, c, base
+            ));
+        }
+    }
+    h
+}
+
+/// The incremental canvas against a whole-canvas render of the same document, at the
+/// pixels 橡皮 touched.
+///
+/// This is not the `layer == export` row again: that row steps over every pixel whose
+/// alpha is 0, because the overlay is only obliged to know the areas it was asked to
+/// repaint - and 擦除到透明's entire output is alpha 0. So the one zone that row cannot
+/// speak about is graded here, in both directions: a canvas that kept a pixel the export
+/// dropped, and a canvas that dropped one the export kept, are both a subtract mode
+/// getting the dirty rects wrong, and the first of them is what the user would see as a
+/// smear on the mask.
+#[derive(Default)]
+struct Synced {
+    want: usize,
+    ok: usize,
+    off: usize,
+    bad: Vec<String>,
+}
+
+impl Synced {
+    fn usable(&self) -> usize {
+        self.want.saturating_sub(self.off)
+    }
+
+    fn verdict(&self) -> Check {
+        let usable = self.usable();
+        if usable < MIN_USABLE {
+            return Check::Blocked;
+        }
+        Check::from(self.ok == usable)
+    }
+
+    fn line(&self) -> String {
+        format!(
+            "{}/{} of {} planted pixels agree, {} off this canvas, first mismatch: {}",
+            self.ok,
+            self.usable(),
+            self.want,
+            self.off,
+            if self.bad.is_empty() {
+                "none".to_string()
+            } else {
+                self.bad.join(" | ")
+            }
+        )
+    }
+}
+
+fn sync_read(at: &[PhysPoint], canvas: PhysRect, layer: &Frame, export: &Frame) -> Synced {
+    let mut s = Synced::default();
+    for at in at {
+        s.want += 1;
+        let (lx, ly) = (at.x - canvas.x, at.y - canvas.y);
+        if lx < 0
+            || ly < 0
+            || (lx as u32) >= layer.width
+            || (ly as u32) >= layer.height
+            || (lx as u32) >= export.width
+            || (ly as u32) >= export.height
+        {
+            s.off += 1;
+            continue;
+        }
+        let (a, b) = (
+            layer.get(lx as u32, ly as u32),
+            export.get(lx as u32, ly as u32),
+        );
+        if a == b {
+            s.ok += 1;
+        } else if s.bad.len() < NAMED {
+            s.bad
+                .push(format!("{},{}: layer={a:?} export={b:?}", at.x, at.y));
+        }
+    }
+    s
+}
+
+/// 橡皮's four rows, for one canvas. They run **before** anything that needs the
+/// `PrintWindow` bitmap, and that order is the finding: a desktop that refuses to be
+/// photographed costs this leg nothing, because it never asked the desktop.
+fn erase_rows(rep: &mut Report, slot: &mask::Slot, frozen: Option<&ScreenSnapshot>, p: &Plan) {
+    let tag = slot.name.clone();
+    let e = match &p.erase {
+        Ok(e) => e,
+        Err(why) => {
+            rep.row(&format!("erase of {tag}"), Check::Blocked, why.clone());
+            return;
+        }
+    };
+    let Some(frozen) = frozen else {
+        rep.row(
+            &format!("erase of {tag}"),
+            Check::Blocked,
+            "the freeze is gone, so neither the desktop nor an erased pixel can be told from nothing"
+                .to_string(),
+        );
+        return;
+    };
+    let read = {
+        // Which canvas the band sits on is geometry, never a pixel count: a second screen
+        // the selection never enters has no erase samples and no exported frame to grade
+        // them in, and grading its emptiness as a failure would put a spurious row into
+        // every run for reasons of desktop layout. Same rule as `layer == export`.
+        let band = PhysRect::new(
+            e.ink.0.x - ERASE_REACH,
+            e.ink.0.y - ERASE_REACH,
+            ((e.ink.1.x - e.ink.0.x) + 2 * ERASE_REACH) as u32,
+            (2 * ERASE_REACH) as u32,
+        );
+        match band.intersection(&slot.bounds) {
+            None => {
+                rep.row(
+                    &format!("erase of {tag}"),
+                    Check::Blocked,
+                    format!(
+                        "the 橡皮 band {}..{} does not reach this canvas, so there is nothing here it erased to read",
+                        e.ink.0.x, e.ink.1.x
+                    ),
+                );
+                return;
+            }
+            Some(_) => mask::with(|m| {
+                let (Some(export), Some(layer)) =
+                    (m.ink.flatten(&slot.name), m.ink.layer_of(&slot.name))
+                else {
+                    return None;
+                };
+                let zones = [
+                    erase_read(Zone::Ink, &e.zones[0], slot.bounds, frozen, &export),
+                    erase_read(Zone::Base, &e.zones[1], slot.bounds, frozen, &export),
+                    erase_read(Zone::Void, &e.zones[2], slot.bounds, frozen, &export),
+                ];
+                let all: Vec<PhysPoint> = e.zones.iter().flatten().cloned().collect();
+                Some((zones, sync_read(&all, slot.bounds, layer, &export)))
+            }),
+        }
+    };
+    let Some((zones, synced)) = read else {
+        rep.row(
+            &format!("erase of {tag}"),
+            Check::Blocked,
+            format!("no canvas by the name {tag}, so there is no exported frame to read"),
+        );
+        return;
+    };
+    for (zone, h) in [
+        (Zone::Ink, &zones[0]),
+        (Zone::Base, &zones[1]),
+        (Zone::Void, &zones[2]),
+    ] {
+        rep.row(
+            &format!("{} of {tag}", zone.name()),
+            h.verdict(zone),
+            h.line(zone),
+        );
+    }
+    rep.row(
+        &format!("erase layer == export of {tag}"),
+        synced.verdict(),
+        synced.line(),
+    );
+    // The geometry the rows walked, in the same run as the readings: a reader who wants
+    // to know whether a zone's brush reached the neighbour's samples can answer it from
+    // this line and nothing else.
+    rep.note(
+        &format!("erase band of {tag}"),
+        format!(
+            "y {} over x {}..{}: unerased from {}, 只擦标注 {}..{}, 擦除到透明 {}..{}; brush {ERASE_BRUSH} px, \
+             {}/{wanted} samples off this canvas",
+            e.ink.0.y,
+            e.ink.0.x,
+            e.ink.1.x,
+            e.zones[0].first().map_or(0, |q| q.x),
+            e.zones[1].first().map_or(0, |q| q.x),
+            e.zones[1].last().map_or(0, |q| q.x),
+            e.zones[2].first().map_or(0, |q| q.x),
+            e.zones[2].last().map_or(0, |q| q.x),
+            zones.iter().map(|z| z.off).sum::<usize>(),
+            wanted = zones.iter().map(|z| z.want).sum::<usize>(),
+        ),
+    );
+}
+
 pub fn measure() -> (Check, String) {
     let mut rep = Report::new();
     let Some(p) = plan().lock().unwrap_or_else(PoisonError::into_inner).take() else {
@@ -1092,6 +1655,10 @@ pub fn measure() -> (Check, String) {
 
     for slot in &slots {
         let tag = slot.name.clone();
+        // 橡皮 first, and it stays first even when everything below it declines: the leg
+        // reads two bitmaps this process made, so a desktop that refuses `PrintWindow`
+        // still gets its two erase modes graded here.
+        erase_rows(&mut rep, slot, snap.as_ref(), &p);
         let want_title = format!("{}{}", mask_check::TITLE, slot.name);
         let Some(win) = masks.iter().find(|t| t.title == want_title) else {
             rep.row(
@@ -1445,27 +2012,34 @@ mod tests {
     /// machine the test runs on. The monitor and its frame have to agree or
     /// [`ScreenSnapshot::color_at`] answers `None` and every sample lands in `off`.
     fn desk(rgba: [u8; 4]) -> ScreenSnapshot {
+        desk_sized(200, 200, rgba)
+    }
+
+    /// [`desk`] at a size the caller picks. 橡皮's zones need it: a run is sampled every
+    /// [`BAND_STEP`] pixels, so a 200 px canvas hands a zone 25 samples and [`MIN_USABLE`]
+    /// is 30 - the desk every other row uses is too small to be able to pass.
+    fn desk_sized(w: u32, h: u32, rgba: [u8; 4]) -> ScreenSnapshot {
         let mut snap = ScreenSnapshot {
             monitors: vec![FrozenMonitor {
                 info: MonitorInfo {
                     id: "m0".into(),
                     name: "display1".into(),
                     friendly: "display1".into(),
-                    bounds: PhysRect::new(0, 0, 200, 200),
+                    bounds: PhysRect::new(0, 0, w, h),
                     scale: Scale::ONE,
                     primary: true,
                     builtin: false,
                 },
-                frame: Frame::filled(200, 200, rgba).expect("frame"),
+                frame: Frame::filled(w, h, rgba).expect("frame"),
             }],
-            virtual_bounds: PhysRect::new(0, 0, 200, 200),
+            virtual_bounds: PhysRect::new(0, 0, w, h),
             ..Default::default()
         };
         // The patch the `dark` bucket needs: a source too dim to divide, in the corner
         // rows of samples never visit.
         snap.monitors[0]
             .frame
-            .fill_rect(&PhysRect::new(0, 190, 200, 10), [4, 4, 4, 255]);
+            .fill_rect(&PhysRect::new(0, h as i32 - 10, w, 10), [4, 4, 4, 255]);
         snap
     }
 
@@ -1988,5 +2562,303 @@ mod tests {
         // has none between the strip and the selection's own edge.
         assert_eq!(text_strip(PhysRect::new(0, 0, 1536, 480)), None);
         assert_eq!(text_strip(PhysRect::new(0, 0, 400, 960)), None);
+    }
+
+    /// 橡皮's band on the selection the real runs are handed.
+    fn band_on(hole: PhysRect) -> Erase {
+        match erase_band(hole) {
+            Ok(e) => e,
+            Err(why) => panic!("no band on {hole:?}: {why}"),
+        }
+    }
+
+    #[test]
+    fn the_erase_band_keeps_each_zone_inside_the_run_that_erased_it_and_out_of_the_next() {
+        let hole = PhysRect::new(768, 480, 1536, 960);
+        let e = band_on(hole);
+        // One line, inside the selection, and long enough on all three zones that no row
+        // has to fall back on `Blocked` for want of pixels on a 1536x960 crop.
+        for z in &e.zones {
+            assert!(!z.is_empty());
+            assert!(z.iter().all(|p| p.y == e.ink.0.y && hole.contains(*p)));
+            assert!(
+                z.len() >= MIN_USABLE,
+                "a zone of {} samples cannot be graded",
+                z.len()
+            );
+        }
+        // The control has to be out of the first drag's reach by more than one step, or
+        // the row that says "the ink is still there" is reading a pixel the eraser was
+        // allowed to eat - and then the two modes agree for the wrong reason.
+        let gap = e.runs[0].0.x - e.zones[0].last().unwrap().x;
+        assert!(
+            gap > ERASE_REACH + BAND_STEP,
+            "the first drag comes within {gap} px of the control's last sample"
+        );
+        // Each erased zone sits inside its own run by `CLEAR`, so the drag's endpoints -
+        // where a round brush covers the most ground - are not what the row counts.
+        for (run, zone) in e.runs.iter().zip(&e.zones[1..]) {
+            assert!(zone.first().unwrap().x >= run.0.x + CLEAR);
+            assert!(zone.last().unwrap().x <= run.1.x - CLEAR);
+        }
+        // ...and out of its neighbour's, so one stroke cannot move two readings.
+        let gap = e.zones[2].first().unwrap().x - e.runs[0].1.x;
+        assert!(
+            gap > ERASE_REACH + BAND_STEP,
+            "the second drag reaches back {gap} px into the third zone"
+        );
+    }
+
+    #[test]
+    fn a_selection_too_flat_or_too_narrow_refuses_the_band_and_says_which() {
+        // Neither arm is reachable on this machine's 1536x960 selection (58 px of slice
+        // against the 24 the brush needs, 389 px of third against the 72 a zone needs), so
+        // they are walked here or never (§9.1 第十条). They are two different questions and
+        // each sentence names the measurement that failed: the slice the selection's edge
+        // and the box leave the brush, and the width three zones need once each run keeps
+        // its reach out of its neighbour.
+        let flat = erase_band(PhysRect::new(0, 0, 1536, 320)).err().unwrap();
+        let thin = erase_band(PhysRect::new(0, 0, 260, 960)).err().unwrap();
+        assert!(
+            flat.contains("the slice between the selection's top edge"),
+            "{flat}"
+        );
+        assert!(thin.contains("each third of the run"), "{thin}");
+        assert_ne!(flat, thin);
+    }
+
+    #[test]
+    fn the_two_modes_differ_only_in_the_export_and_the_rows_read_the_export() {
+        let snap = desk_sized(800, 200, GREY);
+        let canvas = PhysRect::new(0, 0, 800, 200);
+        let at: Vec<PhysPoint> = along(PhysPoint::new(0, 50), PhysPoint::new(360, 50));
+        let n = at.len();
+
+        // The three pictures the export can be, over one grey freeze: ink left alone,
+        // the screenshot handed back, and the pixel taken out of the picture with the
+        // ink's rgb still on it.
+        let paint = |c: [u8; 4]| {
+            let mut f = Frame::filled(800, 200, GREY).expect("frame");
+            for p in &at {
+                f.set(p.x as u32, p.y as u32, c);
+            }
+            f
+        };
+        let kept = paint(GREEN);
+        let restored = Frame::filled(800, 200, GREY).expect("frame");
+        let cleared = paint([0, 232, 0, 0]);
+
+        assert_eq!(
+            erase_read(Zone::Ink, &at, canvas, &snap, &kept).verdict(Zone::Ink),
+            Check::Pass
+        );
+        let off = erase_read(Zone::Base, &at, canvas, &snap, &restored);
+        assert_eq!((off.desk, off.usable()), (n, n));
+        assert_eq!(off.verdict(Zone::Base), Check::Pass);
+        let on = erase_read(Zone::Void, &at, canvas, &snap, &cleared);
+        assert_eq!((on.void, on.usable()), (n, n));
+        assert_eq!(on.verdict(Zone::Void), Check::Pass);
+
+        // Each mode graded by the other's row: a 擦除到透明 pixel read as 只擦标注 is the
+        // defect this leg exists to catch - both of them show the desktop on the mask, and
+        // nothing but the alpha tells them apart. A control the eraser ate is a Fail too,
+        // never a Pass handed out by the two thirds that did get erased.
+        assert_eq!(
+            erase_read(Zone::Base, &at, canvas, &snap, &cleared).verdict(Zone::Base),
+            Check::Fail
+        );
+        assert_eq!(
+            erase_read(Zone::Void, &at, canvas, &snap, &restored).verdict(Zone::Void),
+            Check::Fail
+        );
+        assert_eq!(
+            erase_read(Zone::Ink, &at, canvas, &snap, &restored).verdict(Zone::Ink),
+            Check::Fail
+        );
+    }
+
+    #[test]
+    fn every_erase_sample_lands_in_one_bucket_and_a_desktop_that_already_wore_the_ink_is_a_refusal()
+    {
+        let mut snap = desk_sized(800, 200, GREY);
+        // One pixel of the freeze is already this pen's green. There, "the ink is still
+        // there" and "the ink was erased" are the same reading, so the row may not claim
+        // either and the sample is named as a refusal rather than counted as a miss.
+        snap.monitors[0].frame.set(360, 50, GREEN);
+        let canvas = PhysRect::new(0, 0, 800, 200);
+        let run = along(PhysPoint::new(0, 50), PhysPoint::new(360, 50));
+        let mut at = run.clone();
+        at.push(PhysPoint::new(900, 50)); // a point on no screen at all
+        let mut export = Frame::filled(800, 200, GREY).expect("frame");
+        for (i, p) in at.iter().enumerate().take(45) {
+            let c = match i {
+                0..=29 => GREEN,
+                30..=39 => GREY,
+                40..=42 => [0, 232, 0, 0],
+                _ => ORPHAN,
+            };
+            export.set(p.x as u32, p.y as u32, c);
+        }
+        let h = erase_read(Zone::Ink, &at, canvas, &snap, &export);
+        assert_eq!(
+            (
+                h.want,
+                h.ink,
+                h.desk,
+                h.void,
+                h.neither,
+                h.uncredited,
+                h.off
+            ),
+            (47, 30, 10, 3, 2, 1, 1)
+        );
+        assert_eq!(
+            h.want,
+            h.ink + h.desk + h.void + h.neither + h.uncredited + h.off
+        );
+        assert_eq!(h.usable(), 45);
+        assert_eq!(h.verdict(Zone::Ink), Check::Fail);
+        assert_eq!(
+            h.examples.len(),
+            NAMED,
+            "the witnesses are the row's evidence"
+        );
+
+        // The refusal taken all the way: a wallpaper in this pen's green gives the colour
+        // rows nothing, and `Blocked` is the honest answer - not the Pass that counting
+        // the ink alone would have handed out on a desktop that never needed any.
+        let wall = desk_sized(800, 200, GREEN);
+        let all = erase_read(Zone::Ink, &at, canvas, &wall, &paint_green(&run));
+        assert_eq!((all.uncredited, all.off), (46, 1));
+        assert_eq!(all.usable(), 0);
+        assert_eq!(all.verdict(Zone::Ink), Check::Blocked);
+        // 擦除到透明 is the one claim no wallpaper can refuse: an alpha of 0 is not a
+        // thing a desktop leaves behind by accident, so this zone needs no floor.
+        let void_on_green = erase_read(Zone::Void, &at, canvas, &wall, &cleared(&run));
+        assert_eq!(void_on_green.uncredited, 0);
+        assert_eq!(void_on_green.verdict(Zone::Void), Check::Pass);
+    }
+
+    fn paint_green(at: &[PhysPoint]) -> Frame {
+        let mut f = Frame::filled(800, 200, GREEN).expect("frame");
+        for p in at {
+            f.set(p.x as u32, p.y as u32, GREEN);
+        }
+        f
+    }
+
+    fn cleared(at: &[PhysPoint]) -> Frame {
+        let mut f = Frame::filled(800, 200, GREY).expect("frame");
+        for p in at {
+            f.set(p.x as u32, p.y as u32, [0, 232, 0, 0]);
+        }
+        f
+    }
+
+    #[test]
+    fn the_alpha_the_layer_row_steps_over_is_graded_in_both_directions() {
+        let canvas = PhysRect::new(0, 0, 800, 200);
+        let at: Vec<PhysPoint> = along(PhysPoint::new(0, 50), PhysPoint::new(360, 50));
+        let n = at.len();
+        let export = cleared(&at);
+        let layer = cleared(&at);
+
+        // The claim, first: the incremental canvas and a whole-canvas render of the same
+        // document agree byte for byte, alpha 0 included.
+        let both = sync_read(&at, canvas, &layer, &export);
+        assert_eq!((both.ok, both.usable()), (n, n));
+        assert_eq!(both.verdict(), Check::Pass);
+
+        // One way to be wrong: the canvas still holds an opaque pixel where the export has
+        // none. That is a smear on the mask the saved file does not have.
+        let mut kept = layer.clone();
+        for p in at.iter().take(3) {
+            kept.set(p.x as u32, p.y as u32, GREEN);
+        }
+        let smear = sync_read(&at, canvas, &kept, &export);
+        assert_eq!(smear.verdict(), Check::Fail);
+        assert_eq!(smear.bad.len(), NAMED);
+
+        // The other way, and this is the one `layer == export` cannot see: the canvas
+        // dropped a pixel the export kept, so its own alpha is 0 - and that row steps over
+        // every pixel whose alpha is 0, by construction. The control below is that row's
+        // own walk over this zone: it compares none of the samples and reports nothing,
+        // while this one names three.
+        let mut dropped = layer.clone();
+        for p in at.iter().take(3) {
+            dropped.set(p.x as u32, p.y as u32, [0, 0, 0, 0]);
+        }
+        let lost = sync_read(&at, canvas, &dropped, &export);
+        assert_eq!(lost.verdict(), Check::Fail);
+        let (compared, mismatched) = at.iter().fold((0usize, 0usize), |(c, m), p| {
+            let a = dropped.get(p.x as u32, p.y as u32);
+            if a[3] == 0 {
+                (c, m)
+            } else {
+                (
+                    c + 1,
+                    if a != export.get(p.x as u32, p.y as u32) {
+                        m + 1
+                    } else {
+                        m
+                    },
+                )
+            }
+        });
+        assert_eq!(
+            (compared, mismatched),
+            (0, 0),
+            "the row this one replaces sees no disagreement here"
+        );
+    }
+
+    #[test]
+    fn a_sync_row_whose_pixels_are_on_another_screen_declines() {
+        // An empty partition is not a pass: two frames of one grey and zero samples in
+        // common would otherwise agree by having nothing to say.
+        let layer = Frame::filled(200, 200, GREY).expect("frame");
+        let export = Frame::filled(200, 200, GREY).expect("frame");
+        let at: Vec<PhysPoint> = (0..40).map(|i| PhysPoint::new(1000 + i * 8, 50)).collect();
+        let s = sync_read(&at, PhysRect::new(0, 0, 200, 200), &layer, &export);
+        assert_eq!((s.want, s.off, s.ok), (at.len(), at.len(), 0));
+        assert_eq!(s.usable(), 0);
+        assert_eq!(s.verdict(), Check::Blocked);
+    }
+
+    #[test]
+    fn the_erase_rows_name_every_bucket_between_the_planted_and_the_graded() {
+        // Both fractions, in the same order the counters are kept in, or the lines cannot
+        // be added up by the reader who has to decide whether a run measured the ink or
+        // the desktop. `Synced` gets the same treatment: the number it skipped is the
+        // number that makes its `ok` mean something.
+        let h = Erased {
+            want: 47,
+            ink: 30,
+            desk: 10,
+            void: 3,
+            neither: 2,
+            uncredited: 1,
+            off: 1,
+            examples: vec![
+                "16,50 export=[255, 0, 255, 255] over desktop=[200, 200, 200, 255]".to_string(),
+            ],
+        };
+        assert_eq!(
+            h.line(Zone::Ink),
+            "30/45 as the unerased third (ink expected) of 47 planted, 30 this ink, 10 the frozen frame, \
+             3 transparent, 2 neither, 1 the desktop is already this ink, 1 off this canvas; \
+             first 16,50 export=[255, 0, 255, 255] over desktop=[200, 200, 200, 255]"
+        );
+        assert_eq!(
+            Synced {
+                want: 46,
+                ok: 43,
+                off: 3,
+                bad: vec!["16,50: layer=[0, 232, 0, 255] export=[0, 232, 0, 0]".to_string()],
+            }
+            .line(),
+            "43/43 of 46 planted pixels agree, 3 off this canvas, first mismatch: \
+             16,50: layer=[0, 232, 0, 255] export=[0, 232, 0, 0]"
+        );
     }
 }
