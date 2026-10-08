@@ -1,7 +1,7 @@
 //! The ink, checked against the pixels it is supposed to be covering.
 //!
 //! `--ink <ms>` is `--mask` plus a script: the mask opens on a real freeze, this
-//! module drives *the same entry points a pointer uses* through four strokes and an
+//! module drives *the same entry points a pointer uses* through six strokes and an
 //! undo, and the run ends with one `PrintWindow` read-back of each mask window. That
 //! single read-back is why the script is arranged the way it is:
 //!
@@ -18,6 +18,11 @@
 //!   outside the hole by construction; get that wrong and the mask shows an un-dimmed
 //!   copy of the desktop where the user has not selected anything - a bug the ink rows
 //!   alone would pass.
+//! * **one stroke is 文本, in a third ink**. Everything else the script plants is a
+//!   shape it drew point by point, so its pixels are where the script put them. A text
+//!   box's are not: the click is the script's and the letters are the product's, which
+//!   is why the row that grades them counts an area the script declared instead of
+//!   sampling a path, and prints how much of that area came back as ink.
 //!
 //! The colour tests are relational (one channel must lead the other two) rather than
 //! exact, because composition and antialiasing are allowed to round a pixel; the ghost
@@ -83,6 +88,38 @@ const GHOST_PASS: usize = 9;
 /// a tuning knob: moving it changes what a green row is evidence of.
 const MIN_USABLE: usize = 30;
 
+/// 文本's own ink: the third colour the script plants, and [`falcon_core::annotation::Style`]'s
+/// default one. A third rather than a repeat of either of the other two because a row
+/// that another stroke can satisfy is not a row - the green bands grade green and the
+/// ghost row grades blue, so letters in either of those inks would be read by a row that
+/// was not asked about them. Red is neither, and the pen the product starts with is the
+/// one whose colour this row can therefore also grade.
+const RED: [u8; 4] = [232, 17, 35, 255];
+
+/// The string the sixth stroke types. ASCII on purpose: an expectation that depends on
+/// which input method is loaded is not an expectation, and what this row asks - did the
+/// letters the script typed reach the place the script's click chose - does not need one.
+const TEXT: &str = "Falcon 2026";
+
+/// How far inside the free band a text strip sits, in device pixels: the pen's own
+/// half-width plus the antialiasing of a composited read-back, so a strip that is
+/// declared clear of the other bands is clear of their *pixels* and not of their centre
+/// lines.
+const CLEAR: i32 = PEN as i32 / 2 + 4;
+
+/// The strip whose ink 文本's row counts, in device pixels. A fixed size rather than a
+/// fraction of the selection, because the pen's 字号 is a count of device pixels too: the
+/// line this gauge types is the same height on a 960-tall selection as on a 480-tall one,
+/// and a strip that shrank with the selection would stop containing it.
+const TEXT_W: u32 = 240;
+const TEXT_H: u32 = 40;
+
+/// The fewest pixels of 文本 ink a strip has to show before the row calls it letters.
+/// Deliberately far below any legible line at 字号 18 and above the single stray pixel a
+/// seam or a neighbour's corner could leave: the row's claim is *presence*, and the count
+/// it prints is the finding. A 口径 of §9.4 like [`MIN_USABLE`], not a tuning knob.
+const MIN_TEXT_INK: usize = 24;
+
 /// What was planted, so the read-back can grade the same rectangles that were drawn.
 struct Plan {
     /// The box's geometry, in device desktop pixels.
@@ -96,6 +133,12 @@ struct Plan {
     /// 放大 (§5.7.13) as Rust placed it: the source region and the copy. `None` is a
     /// gesture that never got that far, which the row says out loud rather than skipping.
     zoom: Option<(PhysRect, PhysRect)>,
+    /// 文本 (§5.7.11) as the script planted it: the strip whose ink the row counts,
+    /// anchored at the click. `None` is a selection too small for one line to sit in it
+    /// clear of the bands the other rows grade - a refusal the row names rather than a
+    /// reading it withholds. Never derived from the box the product measured: the point
+    /// of the row is that the click is the script's and the letters are the product's.
+    text: Option<PhysRect>,
     /// The keys each publish produced, oldest first: four strokes and one undo.
     keys: Vec<Vec<String>>,
     /// The layer's own line at planting time, and the selection it was drawn in.
@@ -248,6 +291,31 @@ fn flush(m: &mut mask::MaskState, keys: &mut Vec<Vec<String>>) {
     keys.push(m.ink.flush());
 }
 
+/// The strip 文本's row counts: centred in the selection's one free band, the slice of
+/// its height between the box's bottom border (y 0.42) and the polyline's top node
+/// (y 0.50), and [`CLEAR`] inside both. Nothing else is planted there, and a strip that
+/// does not fit is refused rather than allowed to paint over a stroke another row is
+/// already grading - one stroke moving two rows is a reading nobody can attribute.
+///
+/// `None` is a selection too short or too narrow for one line of 字号 text to sit in
+/// that band, which is a property of the geometry the script was handed and not of the
+/// product. The row says so as a refusal; the tests give the branch a leg, because a
+/// path this gauge never walks is a path this gauge has not checked.
+fn text_strip(hole: PhysRect) -> Option<PhysRect> {
+    let top = hole.y + (hole.h as f64 * 0.425).round() as i32 + CLEAR;
+    let bottom = hole.y + (hole.h as f64 * 0.50).round() as i32 - CLEAR;
+    let x = hole.x + (hole.w as f64 * 0.445).round() as i32;
+    if bottom - top < TEXT_H as i32 || x + TEXT_W as i32 > hole.right() - CLEAR {
+        return None;
+    }
+    Some(PhysRect::new(
+        x,
+        top + (bottom - top - TEXT_H as i32) / 2,
+        TEXT_W,
+        TEXT_H,
+    ))
+}
+
 /// Freeze, open, draw, undo. Must run before the QML engine, for the same reason
 /// [`mask_check::open`] must: the windows must not capture the screen they cover.
 pub fn plant(shader: bool) -> Result<String, String> {
@@ -261,8 +329,10 @@ pub fn plant(shader: bool) -> Result<String, String> {
     // look for green must not be able to satisfy each other, and the arrow's band -
     // the one graded for absence - has to stay clear of ink that is still meant to be
     // there. The 放大 source patch is the one band *below* the arrow for the same
-    // reason: its copy paints over anything inside it.
-    let (rect, zig, poly, arrow, zsrc) = mask::with(|m| {
+    // reason: its copy paints over anything inside it. 文本 goes in the one slice of the
+    // selection none of them touches - see [`text_strip`] - and in a third ink, so it can
+    // satisfy none of their rows and none of them can satisfy its own.
+    let (rect, zig, poly, arrow, zsrc, strip) = mask::with(|m| {
         let h = m.hole;
         let f = |fx: f64, fy: f64| {
             PhysPoint::new(
@@ -282,6 +352,7 @@ pub fn plant(shader: bool) -> Result<String, String> {
             ],
             [f(0.15, 0.62), f(0.85, 0.76)],
             PhysRect::from_points(f(0.12, 0.84), f(0.37, 0.94)),
+            text_strip(h),
         )
     });
 
@@ -362,6 +433,35 @@ pub fn plant(shader: bool) -> Result<String, String> {
         }
         flush(m, &mut keys);
 
+        // §5.7.11's three steps, in the order a hand makes them and through the same
+        // entry points the pointer does: one click places the box, the string arrives the
+        // way the field sends it, and the finisher files it. The release is *not* the
+        // finisher - step 5 is the next press or `Enter` - and the row that grades this
+        // stroke counts the area the click chose, never the area the product measured,
+        // which is what keeps a box filed in the wrong place from being graded by the
+        // arithmetic that put it there.
+        m.ink.select_tool(annotate::code_of(Some(Kind::Text)));
+        m.ink.set_color(RED);
+        let before = m.ink.objects();
+        if let Some(strip) = strip {
+            stroke(m, &slots, &[strip.top_left()], &mut notes);
+            m.ink.type_text(TEXT);
+            if !m.ink.finish_typing() {
+                notes.push("文本 had nothing to finish".to_string());
+            } else if m.ink.objects() != before + 1 {
+                notes.push(format!(
+                    "finishing 文本 made {} object(s), not 1",
+                    m.ink.objects().saturating_sub(before)
+                ));
+            }
+        } else {
+            notes.push(
+                "the selection is too small for a text strip that clears the other bands"
+                    .to_string(),
+            );
+        }
+        flush(m, &mut keys);
+
         // The stroke that is about to be undone, in the other ink.
         m.ink.select_tool(annotate::code_of(Some(Kind::Arrow)));
         m.ink.set_color(BLUE);
@@ -385,13 +485,14 @@ pub fn plant(shader: bool) -> Result<String, String> {
         poly,
         arrow,
         zoom,
+        text: strip,
         keys: keys.clone(),
         line: line.clone(),
         hole,
         notes,
     });
     Ok(format!(
-        "5 strokes + 1 undo, {} publish(es) with {} distinct key(s), hole={hole}, {line}{}",
+        "6 strokes + 1 undo, {} publish(es) with {} distinct key(s), hole={hole}, {line}{}",
         keys.len(),
         distinct.len(),
         if problems.is_empty() {
@@ -630,6 +731,153 @@ fn band(
     h
 }
 
+/// One declared area's worth of ink, counted pixel by pixel instead of sampled along a
+/// path. The band rows can ask "is the stroke *here*", because the script drew it there;
+/// a text box's letters are where the product put them, and the gauge does not get to
+/// ask where without repeating the measurement it is meant to be checking. So this row's
+/// denominator is a strip the script chose and its reading is a count.
+///
+/// The buckets partition [`Footprint::planted`] exactly as [`Hits`]' do, for the same
+/// reason: a line whose numbers do not add up to the area it asked about is a line that
+/// dropped pixels on the way.
+#[derive(Default)]
+struct Footprint {
+    /// Every device pixel of the strip the script declared.
+    planted: usize,
+    /// This pen's colour, on a pixel the frozen frame was not that colour: the letters.
+    ink: usize,
+    /// Either of the other two inks, which means the strip is not clear of a neighbour's
+    /// stroke - a fact about the script's layout, and printed as one.
+    other_ink: usize,
+    /// The frozen desktop, unchanged: the space between the letters.
+    plain: usize,
+    /// Read the pixel, matched none of the above.
+    unexplained: usize,
+    /// Refusal: the pixel the screen shows is too dark to divide.
+    dark: usize,
+    /// Refusal: the pixel is on no canvas this window photographs.
+    off: usize,
+    /// Refusal: the desktop under that pixel was *already* this colour, so the colour
+    /// cannot be credited to the ink. [`enlarged`] calls the same refusal `flat`, for
+    /// the same reason - a wallpaper that supplies the answer is not evidence.
+    preexisting: usize,
+    /// The first credited pixel, so the count is a thing the next round can look at.
+    first: Option<PhysPoint>,
+    examples: Vec<String>,
+}
+
+impl Footprint {
+    /// The pixels the screen offered: the strip, minus the refusals. Grading against
+    /// `planted` instead would ask the ink to account for the wallpaper.
+    fn usable(&self) -> usize {
+        self.planted
+            .saturating_sub(self.dark + self.off + self.preexisting)
+    }
+
+    /// Presence, not a share: almost all of a text strip is the space between letters,
+    /// so the ratio the band rows grade is meaningless here and a floor on the count is
+    /// not. A strip the screen refused to show is `Blocked`, and a strip that shows none
+    /// of this pen's colour - or shows somebody else's - is a `Fail`.
+    fn verdict(&self) -> Check {
+        if self.usable() < MIN_USABLE {
+            return Check::Blocked;
+        }
+        Check::from(self.ink >= MIN_TEXT_INK && self.other_ink == 0)
+    }
+
+    fn line(&self) -> String {
+        let named = if self.examples.is_empty() {
+            String::new()
+        } else {
+            format!("; first {}", self.examples.join(" | "))
+        };
+        let first = match self.first {
+            Some(p) => format!("{},{}", p.x, p.y),
+            None => "-".to_string(),
+        };
+        format!(
+            "{} inked px of {} usable of {} planted, {} the other ink, {} bare desktop, {} nobody can name, {} already this colour in the freeze, {} too dark, {} off this canvas, first ink at {first}{named}",
+            self.ink,
+            self.usable(),
+            self.planted,
+            self.other_ink,
+            self.plain,
+            self.unexplained,
+            self.preexisting,
+            self.dark,
+            self.off,
+        )
+    }
+}
+
+/// Count the 文本 ink inside `strip`, in the same desk-to-bitmap arithmetic [`band`]
+/// spells out, so a read-back that came back at another resolution is still sampled at
+/// the pixels the strip names.
+///
+/// The `dark` refusal is keyed to the pixel the *screen* shows, not to the pixel the
+/// freeze shows under it - the opposite of what [`band`] does, and deliberately: this
+/// row's question is "is the picture reaching the screen this pen's colour", so which of
+/// its answers the desktop can decide has to be a property of that picture. Keying it to
+/// the freeze is how the R20 run read `0/150 FAIL` over a stroke that had not been drawn
+/// wrong once, on nothing but a dark wallpaper.
+fn footprint(cover: PhysRect, got: &Frame, snap: &ScreenSnapshot, strip: PhysRect) -> Footprint {
+    let mut f = Footprint::default();
+    let scale_x = cover.w.max(1) as f64 / got.width.max(1) as f64;
+    let scale_y = cover.h.max(1) as f64 / got.height.max(1) as f64;
+    for y in strip.y..strip.bottom() {
+        for x in strip.x..strip.right() {
+            f.planted += 1;
+            let at = PhysPoint::new(x, y);
+            if !cover.contains(at) {
+                f.off += 1;
+                continue;
+            }
+            let Some(src) = snap.color_at(at) else {
+                f.off += 1;
+                continue;
+            };
+            let px = ((x - cover.x) as f64 / scale_x).round() as i32;
+            let py = ((y - cover.y) as f64 / scale_y).round() as i32;
+            if px < 0 || py < 0 || px >= got.width as i32 || py >= got.height as i32 {
+                f.off += 1;
+                continue;
+            }
+            let c = got.get(px as u32, py as u32);
+            if (c[0].max(c[1]).max(c[2]) as u32) < mask_check::MIN_SOURCE {
+                f.dark += 1;
+                continue;
+            }
+            if coloured(c, RED) {
+                if same(c, src) {
+                    f.preexisting += 1;
+                } else {
+                    f.ink += 1;
+                    if f.first.is_none() {
+                        f.first = Some(at);
+                    }
+                }
+                continue;
+            }
+            if coloured(c, GREEN) || coloured(c, BLUE) {
+                f.other_ink += 1;
+                continue;
+            }
+            if same(c, src) {
+                f.plain += 1;
+                continue;
+            }
+            f.unexplained += 1;
+            if f.examples.len() < NAMED {
+                f.examples.push(format!(
+                    "{},{} read={:?} not ink={:?} nor desktop={:?}",
+                    at.x, at.y, c, RED, src
+                ));
+            }
+        }
+    }
+    f
+}
+
 /// Per-channel agreement for the 放大 row, which is deliberately looser than
 /// [`SAME_TOL`]. Before P24 the looseness bought the difference between a nearest
 /// expectation and a resampled copy; it now buys something narrower - the copy is
@@ -859,6 +1107,7 @@ pub fn measure() -> (Check, String) {
                 "ink box",
                 "ink stroke",
                 "ink polyline",
+                "ink text",
                 "zoom copy",
                 "no ghost",
                 "dim",
@@ -983,6 +1232,31 @@ pub fn measure() -> (Check, String) {
                 hits.verdict(tenths),
                 hits.line(),
             );
+        }
+
+        // 文本 (§5.7.11), counted over an area rather than sampled along a path: the
+        // click is the script's and the letters are the product's, so the strip is the
+        // one thing the two can agree on without the row grading its own arithmetic.
+        // This is also the desktop control P26's placement fix never had - a box filed
+        // anywhere other than under the click that opened it is a strip that reads back
+        // as the frozen desktop, and no headless test can tell those two apart because
+        // both of them ask `box_at` the same question and take the same answer.
+        match p.text {
+            Some(strip) => {
+                let fp = footprint(win.phys, &got, frozen, strip);
+                rep.row(&format!("ink text of {tag}"), fp.verdict(), fp.line());
+                rep.note(
+                    &format!("text strip of {tag}"),
+                    format!("{strip:?} typed {TEXT:?}"),
+                );
+            }
+            None => rep.row(
+                &format!("ink text of {tag}"),
+                Check::Blocked,
+                "the selection is too small for a text strip that clears the bands the \
+                 other rows grade, so none of this pen's colour was planted to count"
+                    .to_string(),
+            ),
         }
 
         // 放大 (§5.7.13), graded against the picture rather than the pen: see
@@ -1536,5 +1810,183 @@ mod tests {
         let (h, _) = zoom_row(&snap, &zoom_read(ODD), FROM, COPY);
         assert_eq!((h.blended, h.unexplained, h.usable()), (0, 81, 81));
         assert_eq!(h.verdict(INK_PASS), Check::Fail);
+    }
+
+    /// The strip 文本's rows are graded on: 20x10 device pixels of the test desk, so the
+    /// area asked about is 200 and every bucket can be named in the assertion. A strip
+    /// this gauge can hold in one hand, because the arithmetic being tested is the
+    /// counting; the placement is the test below that, and is a separate claim.
+    fn strip() -> PhysRect {
+        PhysRect::new(10, 10, 20, 10)
+    }
+
+    /// A read-back of the whole test desk, with the first `n` pixels of `s` - in the
+    /// order the row walks it - written in `c`.
+    fn strip_read(s: PhysRect, c: [u8; 4], n: usize) -> Frame {
+        let mut got = Frame::filled(200, 200, GREY).expect("frame");
+        let mut painted = 0usize;
+        for y in s.y..s.bottom() {
+            for x in s.x..s.right() {
+                if painted >= n {
+                    return got;
+                }
+                got.set(x as u32, y as u32, c);
+                painted += 1;
+            }
+        }
+        got
+    }
+
+    #[test]
+    fn the_row_counts_the_letters_and_names_the_space_between_them() {
+        let snap = desk(GREY);
+        let fp = footprint(
+            PhysRect::new(0, 0, 200, 200),
+            &strip_read(strip(), RED, 40),
+            &snap,
+            strip(),
+        );
+        assert_eq!(
+            (fp.planted, fp.ink, fp.plain, fp.usable()),
+            (200, 40, 160, 200)
+        );
+        assert_eq!(fp.first, Some(PhysPoint::new(10, 10)));
+        assert_eq!(fp.verdict(), Check::Pass);
+        // The printed line, in full, because the count is the deliverable: 40 is the
+        // number this row exists to say out loud, and the buckets are what makes it
+        // readable as *letters* rather than as "40 of something".
+        assert_eq!(
+            fp.line(),
+            "40 inked px of 200 usable of 200 planted, 0 the other ink, 160 bare desktop, 0 nobody can name, 0 already this colour in the freeze, 0 too dark, 0 off this canvas, first ink at 10,10"
+        );
+    }
+
+    #[test]
+    fn a_box_that_never_reached_the_screen_is_a_fail_and_not_an_empty_pass() {
+        // The control the count needs, and the defect class it is aimed at: a text object
+        // that is filed in the document and painted into no pixels at all. Two hundred
+        // plain desktop pixels is what that looks like from here, and it is also what a
+        // strip that was never planted looks like - which is why [`plant`] types the
+        // string through the same entry points a keyboard does and the row prints whose
+        // ink it found.
+        let snap = desk(GREY);
+        let fp = footprint(
+            PhysRect::new(0, 0, 200, 200),
+            &Frame::filled(200, 200, GREY).expect("frame"),
+            &snap,
+            strip(),
+        );
+        assert_eq!((fp.ink, fp.plain, fp.usable()), (0, 200, 200));
+        assert_eq!(fp.verdict(), Check::Fail);
+        assert_eq!(fp.first, None);
+    }
+
+    #[test]
+    fn the_floor_is_a_number_whose_teeth_the_row_can_be_shown() {
+        // 23 and 24 of the same thing, one pixel apart: a count with no floor passes on
+        // an accident, and a floor nobody tests is a number nobody read.
+        let snap = desk(GREY);
+        let cover = PhysRect::new(0, 0, 200, 200);
+        let one_short = footprint(
+            cover,
+            &strip_read(strip(), RED, MIN_TEXT_INK - 1),
+            &snap,
+            strip(),
+        );
+        let on_it = footprint(
+            cover,
+            &strip_read(strip(), RED, MIN_TEXT_INK),
+            &snap,
+            strip(),
+        );
+        assert_eq!((one_short.ink, one_short.verdict()), (23, Check::Fail));
+        assert_eq!((on_it.ink, on_it.verdict()), (24, Check::Pass));
+    }
+
+    #[test]
+    fn neither_ink_can_satisfy_the_other_s_row() {
+        // Both directions, because the third ink exists for exactly this claim. Letters
+        // planted in the polyline's colour are not this pen's colour, and the row says
+        // whose they are instead of calling them nothing.
+        let snap = desk(GREY);
+        let cover = PhysRect::new(0, 0, 200, 200);
+        let green = footprint(cover, &strip_read(strip(), GREEN, 200), &snap, strip());
+        assert_eq!((green.ink, green.other_ink, green.usable()), (0, 200, 200));
+        assert_eq!(green.verdict(), Check::Fail);
+        // And the way round: a band walked entirely through this stroke's ink, graded by a
+        // row that wants green, reads not one expected sample.
+        let points: Vec<PhysPoint> = (0..40).map(|i| PhysPoint::new(10 + i, 10)).collect();
+        let hits = band(
+            cover,
+            &strip_read(strip(), RED, 40),
+            &snap,
+            &points,
+            GREEN,
+            true,
+        );
+        assert_eq!((hits.ok, hits.usable()), (0, 40));
+    }
+
+    #[test]
+    fn a_wallpaper_that_is_already_this_colour_cannot_be_credited() {
+        // The refusal [`enlarged`] calls `flat`, in the row that needs it most: red text
+        // on a red desktop is a claim about the desktop, and a count that grew from 0 to
+        // 200 because the wallpaper changed would be the P22 finding all over again.
+        let snap = desk(RED);
+        let fp = footprint(
+            PhysRect::new(0, 0, 200, 200),
+            &Frame::filled(200, 200, RED).expect("frame"),
+            &snap,
+            strip(),
+        );
+        assert_eq!((fp.ink, fp.preexisting, fp.usable()), (0, 200, 0));
+        assert_eq!(fp.verdict(), Check::Blocked);
+    }
+
+    #[test]
+    fn every_pixel_the_row_walks_lands_in_exactly_one_bucket() {
+        // A strip that runs off the window the bitmap photographs, so `off` is reachable,
+        // and one pixel of every other kind: the identity is the claim, and `plain` is
+        // what is left when the named six are subtracted.
+        let snap = desk(GREY);
+        let mut got = Frame::filled(200, 200, GREY).expect("frame");
+        got.set(195, 5, RED);
+        got.set(196, 5, GREEN);
+        got.set(197, 5, [10, 10, 10, 255]);
+        got.set(198, 5, ORPHAN);
+        let fp = footprint(
+            PhysRect::new(0, 0, 200, 200),
+            &got,
+            &snap,
+            PhysRect::new(195, 5, 10, 10),
+        );
+        assert_eq!(fp.planted, 100);
+        assert_eq!(
+            (fp.ink, fp.other_ink, fp.dark, fp.unexplained),
+            (1, 1, 1, 1)
+        );
+        assert_eq!(fp.off, 50);
+        assert_eq!(fp.plain, 46);
+        assert_eq!(
+            fp.ink + fp.other_ink + fp.plain + fp.unexplained + fp.dark + fp.off + fp.preexisting,
+            fp.planted
+        );
+    }
+
+    #[test]
+    fn the_strip_is_laid_where_the_selection_is_free_and_refused_where_it_is_not() {
+        // The band this gauge actually walks, in the selection the P26 run was handed:
+        // inside the free band, clear of the polyline's reach below and of the box's
+        // right border to the left.
+        let s = text_strip(PhysRect::new(768, 480, 1536, 960)).expect("strip");
+        assert_eq!(s, PhysRect::new(1452, 904, TEXT_W, TEXT_H));
+        assert!(s.y >= 480 + 408 && s.bottom() <= 480 + 480 - CLEAR);
+        assert!(s.x > 768 + 614 + CLEAR);
+        // The two refusals. Neither is reachable on this machine, and a branch no run
+        // walks is a branch that has to be walked here or not at all (§9.1 第十条): half
+        // the height has no room for one line between the bands, and a third of the width
+        // has none between the strip and the selection's own edge.
+        assert_eq!(text_strip(PhysRect::new(0, 0, 1536, 480)), None);
+        assert_eq!(text_strip(PhysRect::new(0, 0, 400, 960)), None);
     }
 }
