@@ -32,7 +32,6 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use falcon_core::annotation::model::{Dash, Document, Element, Geom, Kind, Style};
-use falcon_core::annotation::raster::NoGlyphs;
 use falcon_core::annotation::undo::UndoStack;
 use falcon_core::annotation::{raster, Command, Dirty};
 use falcon_core::capture::ScreenSnapshot;
@@ -40,6 +39,7 @@ use falcon_core::colors::{format as format_color, ColorFormat};
 use falcon_core::config::ToolStyle;
 use falcon_core::frame::Frame;
 use falcon_core::geometry::{PhysPoint, PhysRect};
+use platform_windows::glyphs::DirectWrite;
 
 use crate::mask::Slot;
 use crate::mask_view::shim;
@@ -49,8 +49,11 @@ use crate::mask_view::shim;
 /// §5.7.16/§5.7.17 will hang the object-editing gestures on.
 ///
 /// Deliberately absent, each for a missing capability rather than a missing button:
-/// 文本/编号 need the font bridge (§5.7.11/§5.7.12 - [`NoGlyphs`] would draw a
-/// background box and call it text), and 自由选择/旋转 are M4b/M4c.
+/// 文本/编号 have their letters — the paint paths below ask [`DirectWrite`] for
+/// glyph coverage, so a document that carries a 文本 object draws it — but not the
+/// interaction: §5.7.11 steps 2-5 (click, type, click away) and §5.7.12's
+/// click-to-place and renumber have no QML surface and no setter on [`Layer`].
+/// 自由选择/旋转 are M4b/M4c.
 pub const TOOLS: &[Option<Kind>] = &[
     None,
     Some(Kind::Rect),
@@ -1119,7 +1122,12 @@ impl Layer {
     pub fn flatten(&self, name: &str) -> Option<Frame> {
         let c = self.canvases.iter().find(|c| c.name == name)?;
         let (dx, dy) = shift(self.origin, c.bounds);
-        raster::render(&c.base, &view_of(&self.doc.elements, c, dx, dy), &NoGlyphs).ok()
+        raster::render(
+            &c.base,
+            &view_of(&self.doc.elements, c, dx, dy),
+            &DirectWrite,
+        )
+        .ok()
     }
 
     /// A whole-canvas repaint, for the cases where the document changed in a way no
@@ -1200,7 +1208,9 @@ impl Layer {
             // measured `last_paint_px` a lie about the cost.
             let area = local;
             let doc = view_of(&elements, canvas, dx, dy);
-            if let Err(e) = raster::paint(&canvas.base, &doc, &mut canvas.layer, &area, &NoGlyphs) {
+            if let Err(e) =
+                raster::paint(&canvas.base, &doc, &mut canvas.layer, &area, &DirectWrite)
+            {
                 problems.push(format!("repaint of {} failed: {e}", canvas.name));
             }
             // Outside the selection the layer has to show *nothing*, or an undimmed
@@ -2407,5 +2417,80 @@ mod tests {
             l.select_tool(code);
             assert_eq!(l.zoom_tool(), want, "the row moved with button {code}");
         }
+    }
+
+    /// §5.7.11's letters through the product's own paths rather than core's: the
+    /// incremental layer QML shows and the export the crop takes. The control is the
+    /// same document painted through [`NoGlyphs`], which is what these two call sites
+    /// did until the font bridge landed - it lays down no box here (背景 is off) and
+    /// therefore nothing at all, so the count of pixels that left the desktop grey is
+    /// the difference the bridge makes.
+    #[cfg(windows)]
+    #[test]
+    fn a_text_element_lands_letters_on_the_layer_and_the_export() {
+        use falcon_core::annotation::raster::NoGlyphs;
+
+        let bounds = PhysRect::new(0, 0, 400, 200);
+        let grey = [90, 90, 90, 255];
+        let mut l = screens(&[("m0", bounds)], grey);
+        l.set_hole(bounds);
+
+        let area = PhysRect::new(10, 20, 220, 80);
+        let style = Style {
+            color: [255, 0, 0, 255],
+            font_size: 24,
+            ..Default::default()
+        };
+        let mut e = Element::new(1, Kind::Text, Geom::Rect(area), style);
+        e.text = "局部放大 Annotation".into();
+        l.apply(Command::Add(vec![e]));
+
+        // Pixels the desktop is not, which is the only way to see letters through a
+        // paint path that resets its own area to the base before drawing on it.
+        let inked = |f: &Frame| -> usize {
+            let mut n = 0;
+            for y in area.y..area.bottom() {
+                for x in area.x..area.right() {
+                    if f.get(x as u32, y as u32) != grey {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+
+        let layer = l.layer_of("m0").unwrap();
+        let on = inked(layer);
+        assert!(on > 200, "文本 drew {on} pixels that are not the desktop");
+        let export = l.flatten("m0").unwrap();
+        assert_eq!(on, inked(&export), "the export counted a different picture");
+        assert_eq!(
+            mismatched(&l, "m0").unwrap(),
+            Vec::<String>::new(),
+            "the layer is not the document"
+        );
+        let solid = (area.w * area.h) as usize;
+        assert!(on * 3 < solid, "the box came back filled: {on} of {solid}");
+        let pen = (area.y..area.bottom()).any(|y| {
+            (area.x..area.right()).any(|x| {
+                let p = export.get(x as u32, y as u32);
+                p[0] as i32 - p[1].max(p[2]) as i32 > 40
+            })
+        });
+        assert!(
+            pen,
+            "no pixel carries the pen's colour, so something else drew"
+        );
+
+        let c = &l.canvases[0];
+        let (dx, dy) = shift(l.origin, c.bounds);
+        let view = view_of(&l.doc.elements, c, dx, dy);
+        let mut bare = c.base.clone();
+        raster::paint(&c.base, &view, &mut bare, &c.bounds, &NoGlyphs).unwrap();
+        assert_eq!(
+            inked(&bare),
+            0,
+            "the leg that answers no glyphs drew letters anyway"
+        );
     }
 }

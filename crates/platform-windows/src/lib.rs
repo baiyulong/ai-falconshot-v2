@@ -3,10 +3,34 @@
 #[cfg(windows)]
 pub mod clip;
 
+#[cfg(windows)]
+pub mod glyphs;
+
 pub mod desktop;
 pub mod print;
 pub mod proc;
 pub mod win;
+
+/// The font here is DirectWrite's, and the MVP is Windows-only. Same arrangement as
+/// [`clip`]: a machine without Windows still compiles the workspace and still runs
+/// `cargo test`, and answers "no glyphs" - which is what [`NoGlyphs`] answers too,
+/// so the text keeps its box and loses its letters rather than inventing either.
+///
+/// [`NoGlyphs`]: falcon_core::annotation::raster::NoGlyphs
+#[cfg(not(windows))]
+pub mod glyphs {
+    use falcon_core::annotation::model::Style;
+    use falcon_core::annotation::raster::{Glyphs, Ink};
+
+    #[derive(Debug, Default)]
+    pub struct DirectWrite;
+
+    impl Glyphs for DirectWrite {
+        fn ink(&self, _line: &str, _style: &Style) -> Option<Ink> {
+            None
+        }
+    }
+}
 
 /// The clipboard here is the Win32 one, and the MVP is Windows-only. This
 /// alternative exists so a machine without Windows still compiles the workspace

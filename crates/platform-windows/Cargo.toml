@@ -10,9 +10,14 @@ name = "platform_windows"
 path = "src/lib.rs"
 
 [target.'cfg(windows)'.dependencies]
+# `windows-core` is named separately because the `#[implement]` macro emits paths
+# rooted at `::windows_core`, which the `windows` crate's re-export cannot satisfy.
+# It is the version `windows` already depends on, so nothing new enters the build.
+windows-core = "0.62.2"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_DirectWrite",
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
