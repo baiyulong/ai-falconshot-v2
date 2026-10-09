@@ -93,15 +93,36 @@ fn main() {
     // interactive app and ran until the process was killed - with an empty log,
     // because the app prints no report of its own. A mis-invocation is a measurement
     // that cannot be taken, which is the third verdict, not a crash and not a pass.
-    let mut orphans = Vec::new();
+    let mut orphans: Vec<String> = Vec::new();
     if flag("--mask-soft") && !flag("--mask") && !flag("--ink") {
-        orphans.push("--mask-soft 需要和 --mask <ms>（或 --ink <ms>）一起用");
+        orphans.push("--mask-soft 需要和 --mask <ms>（或 --ink <ms>）一起用".to_string());
     }
     if (flag("--clipboard") || flag("--capture")) && !flag("--selftest") {
-        orphans.push("--clipboard / --capture 是 --selftest 的附加档");
+        orphans.push("--clipboard / --capture 是 --selftest 的附加档".to_string());
     }
     if after("--warm-rounds").unwrap_or(0) > 0 && !flag("--mask") && !flag("--ink") {
-        orphans.push("--warm-rounds 需要和 --mask <ms> 一起用");
+        orphans.push("--warm-rounds 需要和 --mask <ms> 一起用".to_string());
+    }
+    // Four modes are named by a flag *and* a number, and the number is the one that
+    // decides whether the mode runs at all: `after` answers `None` for a missing or
+    // unparseable `<ms>`, and every `if x_ms.is_some()` below then skips itself. What
+    // runs instead is `app.exec()` waiting for a human to close a window, printing
+    // nothing - and because Rust's stdout is line-buffered, that is a zero-byte log
+    // from a live process, which is indistinguishable from a gauge that hung. A run
+    // whose evidence looks exactly like a defect is worse than a crash, so the
+    // mis-invocation is refused in the same voice as the orphans above.
+    let mut missing_ms = Vec::new();
+    for name in ["--probe", "--r13", "--mask", "--ink"] {
+        if flag(name) && after(name).is_none() {
+            missing_ms.push(name);
+        }
+    }
+    if !missing_ms.is_empty() {
+        orphans.push(format!(
+            "{} 少了毫秒数（例如 `{} 1500`）：不带数字时这一档什么都不跑，只会退化成一次等真人的产品 GUI 会话",
+            missing_ms.join(" / "),
+            missing_ms[0]
+        ));
     }
     if !orphans.is_empty() {
         println!("[falconshot] {}", orphans.join("；"));
