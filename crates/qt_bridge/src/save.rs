@@ -9,6 +9,8 @@
 //! drift the same way, so the sentence, the format choice and the count live here and
 //! the doors only say what a refusal costs *their* user.
 
+use std::borrow::Cow;
+
 use falcon_core::encode::{self, EncodeOptions};
 use falcon_core::frame::Frame;
 
@@ -21,6 +23,60 @@ pub enum Refusal {
     BadName(String),
     /// The encoder or the disk said no. The picture is still there.
     Write(String),
+}
+
+/// Turns what a dialog hands the product into the path it names.
+///
+/// `FileDialog.selectedFile` is a `QUrl`, and this Qt gives JS no way to convert one:
+/// the member read out of the runtime is `undefined` at both the empty and the set
+/// value (`toLocalFile`, `isFile` and `path` alike - P37 measured the `TypeError` that
+/// `AnnotationToolbar.qml` and `PinWindow.qml` were about to throw on every accept), so
+/// the only text a door can pass is the URL itself. Read as a path, `file:///C:/x.png`
+/// is a *relative* path whose first component is `file:`, so the write would land
+/// somewhere the user never named and the sentence would still say 已保存到.
+pub fn local_path(typed: &str) -> Cow<'_, str> {
+    let Some(rest) = typed.strip_prefix("file://") else {
+        return Cow::Borrowed(typed);
+    };
+    // `file:///C:/…` has an empty host; `file://server/share/…` is UNC, and the two
+    // need different repairs: one slash to drop, and a `\\server` to put back.
+    let (host, path) = match rest.split_once('/') {
+        Some(("", path)) => ("", path),
+        Some((host, path)) => (host, path),
+        None => ("", rest),
+    };
+    let decoded = percent_decode(path);
+    // A drive path (`/C:/x`) loses its leading slash; every separator becomes
+    // Windows', because that is the form the dialog's own text was written in.
+    let body = decoded.trim_start_matches('/').replace('/', "\\");
+    if host.is_empty() {
+        Cow::Owned(body)
+    } else {
+        Cow::Owned(format!("\\\\{host}\\{body}"))
+    }
+}
+
+/// One pass of `%XX`, so a name that legitimately contains a `%` stays itself:
+/// `%2520` decodes to `%20`, not to a space.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = &text[i + 1..i + 3];
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                out.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    // The bytes came out of a `&str` one third at a time, so a `%XX` can only have
+    // landed mid-codepoint if the dialog wrote it that way; decode best-effort.
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
 /// Writes `frame` to the name the user gave, and returns the sentence to say about it.
@@ -36,7 +92,8 @@ pub fn write(
     export: &EncodeOptions,
     subject: &str,
 ) -> Result<String, Refusal> {
-    let path = std::path::Path::new(typed);
+    let named = local_path(typed);
+    let path = std::path::Path::new(named.as_ref());
     // An extension is the user's choice; a bare name is the configured format, because
     // the dialog was showing a format while they typed.
     let (target, format) = match path.extension() {
@@ -45,15 +102,17 @@ pub fn write(
             encode::Format::from_ext(&ext.to_string_lossy()),
         ),
         None => {
-            let mut named = path.as_os_str().to_os_string();
-            named.push(".");
-            named.push(export.format.ext());
-            (std::path::PathBuf::from(named), Some(export.format))
+            let mut suffixed = path.as_os_str().to_os_string();
+            suffixed.push(".");
+            suffixed.push(export.format.ext());
+            (std::path::PathBuf::from(suffixed), Some(export.format))
         }
     };
     let Some(format) = format else {
+        // The converted name, because the `file:///` is the dialog's own writing and
+        // not something the user recognises as the name they typed.
         return Err(Refusal::BadName(format!(
-            "{typed} 不是本程序会写的格式：用 .png、.jpg 或 .bmp。"
+            "{named} 不是本程序会写的格式：用 .png、.jpg 或 .bmp。"
         )));
     };
     // Counted before the write, from the frame about to be encoded: asking the file
@@ -347,5 +406,102 @@ mod tests {
             said.contains("贴图 600×400 像素"),
             "the sentence quoted the file instead of the picture: {said}"
         );
+    }
+
+    /// The two QML doors hand a URL, because this Qt gives JS no way to turn one into
+    /// a path (`toLocalFile` measured `undefined` at both the empty and the set value).
+    /// A URL read as a path is a *relative* path whose first component is `file:`, so
+    /// without this leg the dialog writes somewhere the user never named and still says
+    /// 已保存到 - a wrong file with a confident sentence, which is the worst thing this
+    /// owner can do.
+    #[test]
+    fn the_url_a_dialog_hands_over_lands_where_it_names() {
+        let dir = sandbox("url");
+        let plain = dir.join("shot.png");
+        let typed = format!(
+            "file:///{}/shot.png",
+            dir.to_string_lossy().replace('\\', "/")
+        );
+        let said =
+            write(&textured(24, 16), &typed, &EncodeOptions::default(), "贴图").expect("write");
+        assert!(plain.exists(), "{typed} did not reach {plain:?}: {said}");
+        assert!(
+            said.contains(&plain.to_string_lossy().to_string()),
+            "{said}"
+        );
+        assert!(!said.contains("file://"), "{said}");
+        // Nothing was written at the literal text either: a second file would mean the
+        // URL was treated as a name rather than converted.
+        assert_eq!(
+            std::fs::read_dir(&dir)
+                .expect("dir")
+                .filter_map(Result::ok)
+                .count(),
+            1,
+            "the URL form also appeared on disk as a name"
+        );
+    }
+
+    /// A space in a folder name reaches the dialog as `%20`, so the decoding has to
+    /// happen or the write lands in a directory that does not exist. One pass only:
+    /// `%2520` is a name that contains `%20`, and a second pass would move that file.
+    #[test]
+    fn a_percent_in_the_name_is_read_once() {
+        assert_eq!(
+            local_path("file:///C:/My%20Docs/shot.png"),
+            "C:\\My Docs\\shot.png"
+        );
+        assert_eq!(
+            local_path("file:///C:/100%25/shot.png"),
+            "C:\\100%\\shot.png"
+        );
+        assert_eq!(local_path("file:///C:/a%2520b.png"), "C:\\a%20b.png");
+        // Not a hex pair after the `%` is the user's own punctuation, left alone.
+        assert_eq!(local_path("file:///C:/100%zz.png"), "C:\\100%zz.png");
+    }
+
+    /// The shapes a `QUrl` can carry, and the one shape the Rust doors already use.
+    #[test]
+    fn a_path_that_is_already_one_is_carried_untouched() {
+        let bare = r"C:\Users\me\Pictures\shot.png";
+        assert!(
+            matches!(local_path(bare), Cow::Borrowed(s) if s == bare),
+            "a plain path was rewritten"
+        );
+        assert_eq!(local_path("shot.png"), "shot.png");
+        // UNC: the host is part of the name, so it has to come back as `\\server\…`.
+        assert_eq!(
+            local_path("file://NAS/share/shot.png"),
+            "\\\\NAS\\share\\shot.png"
+        );
+        // A scheme this app was never handed is not ours to reinterpret.
+        assert_eq!(
+            local_path("https://example.com/a.png"),
+            "https://example.com/a.png"
+        );
+    }
+
+    /// The refusal has to name the thing the user can find in the dialog's edit box,
+    /// not the URL the property returned behind their back.
+    #[test]
+    fn a_refused_url_speaks_of_the_path_it_read() {
+        let dir = sandbox("url-refusal");
+        let odd = format!(
+            "file:///{}/shot.qqq",
+            dir.to_string_lossy().replace('\\', "/")
+        );
+        let err = write(&textured(8, 8), &odd, &EncodeOptions::default(), "贴图")
+            .expect_err("a format this app cannot write was accepted");
+        match err {
+            Refusal::BadName(said) => {
+                assert!(said.contains("不是本程序会写的格式"), "{said}");
+                assert!(
+                    !said.contains("file://"),
+                    "the refusal quoted the dialog's url: {said}"
+                );
+                assert!(said.contains("shot.qqq"), "{said}");
+            }
+            Refusal::Write(said) => panic!("a refused name came back as a failed write: {said}"),
+        }
     }
 }

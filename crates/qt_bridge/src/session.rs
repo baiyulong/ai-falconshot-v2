@@ -156,6 +156,20 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "pinClipboard"]
         fn pin_clipboard(self: Pin<&mut Self>) -> i64;
+
+        /// The `--pin` gauge's plan as one line, and the one way a pin window
+        /// learns it is being measured. Empty when nobody asked, which is what keeps
+        /// `PinWindow.qml` out of this in a product session. See
+        /// [`crate::pin_check::plan_line`] for why it is a string and not four
+        /// properties.
+        #[qinvokable]
+        #[cxx_name = "pinGaugePlan"]
+        fn pin_gauge_plan(self: &Self) -> QString;
+
+        /// One line the pin window read off its own doors, into the gauge's report.
+        #[qinvokable]
+        #[cxx_name = "pinGaugeReport"]
+        fn pin_gauge_report(self: &Self, line: &QString);
     }
 }
 
@@ -289,6 +303,14 @@ impl qobject::Session {
                 -1
             }
         }
+    }
+
+    pub fn pin_gauge_plan(&self) -> QString {
+        QString::from(crate::pin_check::plan_line().as_str())
+    }
+
+    pub fn pin_gauge_report(&self, line: &QString) {
+        crate::pin_check::report(&line.to_string());
     }
 }
 

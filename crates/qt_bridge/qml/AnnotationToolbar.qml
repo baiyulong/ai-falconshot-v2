@@ -636,7 +636,11 @@ Rectangle {
         fileMode: FileDialog.SaveFile
         nameFilters: ["PNG 图片 (*.png)", "JPG 图片 (*.jpg)", "BMP 图片 (*.bmp)"]
         onAccepted: {
-            bar.delivered = bar.view.saveSelection(saveAs.selectedFile.toLocalFile())
+            // `String()` rather than `.toLocalFile()`: this Qt hands JS a `QUrl` object
+            // with no members at all - `toLocalFile`, `isFile` and `path` all measured
+            // `undefined`, and the call threw a TypeError that §8-R14 keeps off stdout -
+            // so the URL text is what travels and `save::local_path` reads it as a path.
+            bar.delivered = bar.view.saveSelection(String(saveAs.selectedFile))
             bar.grabbed()
         }
     }

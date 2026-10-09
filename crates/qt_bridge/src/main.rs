@@ -1,6 +1,6 @@
 //! AI Falconshot - the process that owns the pin windows.
 //!
-//! Seven modes, because "does it work" has seven different answers:
+//! Eight modes, because "does it work" has eight different answers:
 //! * `--selftest` drives the state machine and the pixel pipeline and prints
 //!   PASS/FAIL per step, without ever creating a window. `--clipboard` and
 //!   `--capture` add the two checks that take over something real - the user's
@@ -20,6 +20,10 @@
 //!   strokes and one undo, through the same pointer calls a real drag makes - and
 //!   reads the ink back off the window, pixel by pixel, alongside the dim it must
 //!   not have disturbed.
+//! * `--pin <ms>` plants a pin and has *that window's own QML* walk the two items its
+//!   menu offers, then grades the sentences the door answered with and the files it
+//!   wrote. `--ink` measures what a pin looks like; this measures what pressing 另存为
+//!   says, which nothing had ever read back (§10 第 37 项 ①).
 //! * no flags: the app.
 
 mod annotate;
@@ -28,6 +32,7 @@ mod capture;
 mod mask;
 mod mask_check;
 mod mask_view;
+mod pin_check;
 mod pin_view;
 mod r13;
 mod save;
@@ -103,7 +108,7 @@ fn main() {
     if after("--warm-rounds").unwrap_or(0) > 0 && !flag("--mask") && !flag("--ink") {
         orphans.push("--warm-rounds 需要和 --mask <ms> 一起用".to_string());
     }
-    // Four modes are named by a flag *and* a number, and the number is the one that
+    // Five modes are named by a flag *and* a number, and the number is the one that
     // decides whether the mode runs at all: `after` answers `None` for a missing or
     // unparseable `<ms>`, and every `if x_ms.is_some()` below then skips itself. What
     // runs instead is `app.exec()` waiting for a human to close a window, printing
@@ -112,7 +117,7 @@ fn main() {
     // whose evidence looks exactly like a defect is worse than a crash, so the
     // mis-invocation is refused in the same voice as the orphans above.
     let mut missing_ms = Vec::new();
-    for name in ["--probe", "--r13", "--mask", "--ink"] {
+    for name in ["--probe", "--r13", "--mask", "--ink", "--pin"] {
         if flag(name) && after(name).is_none() {
             missing_ms.push(name);
         }
@@ -123,6 +128,17 @@ fn main() {
             missing_ms.join(" / "),
             missing_ms[0]
         ));
+    }
+    // A combination rather than a mis-spelling, and refused for the same reason a
+    // missing `<ms>` is: the reading would belong to neither mode. The mask covers
+    // every screen with its own window, so `pin window` - which picks the top-level
+    // that overlaps the pin's rect - would be measuring the wrong window, and
+    // `--mask` closes the freeze it is scored against.
+    if flag("--pin") && (flag("--mask") || flag("--ink")) {
+        orphans.push(
+            "--pin 不能和 --mask / --ink 一起用：遮罩的窗会盖住贴图，那几格读的就不是这块窗了"
+                .to_string(),
+        );
     }
     if !orphans.is_empty() {
         println!("[falconshot] {}", orphans.join("；"));
@@ -265,6 +281,18 @@ fn main() {
         }
     }
 
+    // §5.9.16 and §5.9.17 walked by the pin window's own QML. The pin and the plan
+    // both have to exist before the engine: the delegate reads the plan once, in
+    // `Component.onCompleted`, and nothing else in this process can hand a QML object
+    // a piece of Rust state later without a binding that would fire in every session.
+    let pin_ms = after("--pin").map(|ms| ms.max(pin_check::MIN_MS));
+    if pin_ms.is_some() {
+        match pin_check::plant() {
+            Ok(line) => println!("[pin] {line}"),
+            Err(e) => println!("[pin] 种不下贴图：{e}"),
+        }
+    }
+
     // Extra rounds of the same freeze-and-open, run once the process is warm. The
     // plan has to be written before the engine loads, because QML reads it in
     // `Component.onCompleted` and only a QML timer can fire afterwards.
@@ -305,6 +333,12 @@ fn main() {
             0
         };
         state::quit_after(ms.max(rounds_ms));
+    }
+    if let Some(ms) = pin_ms {
+        // The leg fires [`pin_check::LEG_DELAY_MS`] after the window is built, and the
+        // floor above already gives it the same again, so a `--pin` run that was asked
+        // for has the time it needs rather than a run that reports its own absence.
+        state::quit_after(ms);
     }
 
     let mut code = 0;
@@ -425,6 +459,21 @@ fn main() {
         println!(
             "[{} after {ms} ms] qml_loaded={} {}",
             if ink { "ink" } else { "mask" },
+            state::qml_loaded(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
+    }
+
+    if let Some(ms) = pin_ms {
+        // The report is QML's own lines, graded against the files on disk and against
+        // the same door called from Rust. Nothing here samples the screen: a pin's
+        // doors answer with a sentence and a file, and both are readable without
+        // trusting a capture path at all.
+        let (verdict, report) = pin_check::measure();
+        println!("{report}");
+        println!(
+            "[pin after {ms} ms] qml_loaded={} {}",
             state::qml_loaded(),
             state::desktop_summary()
         );

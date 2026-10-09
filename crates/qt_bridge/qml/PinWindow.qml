@@ -32,6 +32,17 @@ Window {
         win.view.reload()
     }
 
+    // The `--pin` gauge's plan, read once at completion and split by index. Empty in
+    // every session nobody asked to measure, which is what keeps the leg below inert
+    // for a user. Read in `Component.onCompleted` rather than in a property
+    // initializer on purpose: `session` is a *required* property, and a binding that
+    // calls a method on it can be evaluated before the delegate's creator has
+    // assigned it - a TypeError that takes the whole document down (§8-R14).
+    //
+    // The fields are read by index, and the order is `pin_check::plan_line`'s:
+    // 0 目录, 1 qml.png, 2 qml.jpg, 3 never.png, 4 贴图 id, 5 一个不存在的 id, 6 延迟 ms.
+    property var gauge: []
+
     color: "transparent"
 
     // Frameless, no taskbar entry, and optionally top-most - all three as Qt
@@ -64,11 +75,80 @@ Window {
         shim.install(win)
         view.reload()
         shim.applyStyle(win, view.topmost, view.click_through)
+        win.gauge = win.session.pinGaugePlan().split("|")
     }
 
     // Style bits are the one thing a property change cannot carry by itself.
     function restyle() {
         shim.applyStyle(win, view.topmost, view.click_through)
+    }
+
+    // One line to the `--pin` gauge, in the `key|value` shape `pin_check` grades.
+    function gaugeSay(key, value) {
+        win.session.pinGaugeReport(key + "|" + value)
+    }
+
+    // Walk this window's two output items the way the menu's own handlers do, and
+    // report what each one answered.
+    //
+    // The sentences come back from `session.status` for the dialog leg, because
+    // `onAccepted` drops `savePin`'s return value and §5.9.13 says the string has to
+    // reach the screen anyway - so the gauge reads the user-visible line rather than
+    // a log line, which is the only way an English clause inside a Chinese prefix
+    // (`保存失败：pin 3 has never been drawn`, what §10 第 37 项 ① found) shows up as
+    // the thing a user would actually have read.
+    function runGauge() {
+        gaugeSay("menu", saveAsItem.text)
+        gaugeSay("filters", saveAs.nameFilters.join(";;"))
+        // The members are read rather than assumed: `selectedNameFilter` came back as
+        // a `QQuickFileNameFilter` object in the first P37 run, and the one probe that
+        // enumerated it found `name`, `extensions`, `globs` and `index` - empty here,
+        // because a dialog that has never been shown has not selected a filter yet.
+        const chosen = saveAs.selectedNameFilter
+        gaugeSay("filter", chosen.name + "|" + chosen.extensions.join(",") + "|" + chosen.index)
+        gaugeSay("before", String(saveAs.selectedFile))
+        // The question this asks, rather than the answer it assumes: can a
+        // `FileDialog` that was never `open()`ed still fire its own `accepted`? The
+        // row grades what happened either way, and the two writes below are the same
+        // two statements the menu items make, so the door is measured whether or not
+        // a dialog that has never been shown is willing to accept.
+        //
+        // Spaces become `%20` because that is the form a dialog hands over, and it is
+        // the reason `save::local_path` decodes: a name that reaches the disk with a
+        // literal `%20` in it is a file the user cannot open.
+        const url = "file:///" + String(win.gauge[1]).replace(/\\/g, "/").replace(/ /g, "%20")
+        saveAs.currentFile = url
+        gaugeSay("current", String(saveAs.currentFile))
+        gaugeSay("accept-was", win.session.status)
+        saveAs.accept()
+        gaugeSay("accept", win.session.status)
+        // The PNG leg goes through the URL text, which is exactly what `onAccepted`
+        // passes; the JPG leg keeps the plain path, so both spellings of the name are
+        // graded by the same run.
+        gaugeSay("png-url", url)
+        gaugeSay("png", win.session.savePin(win.pinId, url))
+        gaugeSay("jpg", win.session.savePin(win.pinId, win.gauge[2]))
+        // The two legs that have to fail: an id the set never handed out, so the
+        // door answers before it reaches the clipboard or the disk.
+        gaugeSay("never-copy", win.session.copyPin(Number(win.gauge[5])))
+        gaugeSay("never-save", win.session.savePin(Number(win.gauge[5]), win.gauge[3]))
+        gaugeSay("done", win.gauge[0])
+    }
+
+    Timer {
+        id: gaugeLeg
+        // The delay comes from the plan (`pin_check::LEG_DELAY_MS`) rather than being
+        // written twice, and the window's native side is what it waits for: Win32 has
+        // no frame for this window until the event loop has exposed it, so a leg run
+        // straight from `onCompleted` would report a missing window as a missing
+        // feature.
+        interval: Number(win.gauge[6]) || 400
+        repeat: false
+        // Stopped for every delegate that is not the planned pin, and for every
+        // ordinary session: `pinId` is -1 until `assign` and a plan with no gauge run
+        // is one field long, not seven.
+        running: win.gauge.length === 7 && String(win.gauge[4]) === String(win.pinId)
+        onTriggered: win.runGauge()
     }
 
     Connections {
@@ -213,7 +293,9 @@ Window {
         id: pinMenu
 
         MenuItem { text: "复制图片"; onTriggered: win.session.copyPin(win.pinId) }
-        MenuItem { text: "另存为…"; onTriggered: saveAs.open() }
+        // `id` for the `--pin` gauge, which reports the text it is shown rather than
+        // assuming the menu still says what §5.9.17 calls it.
+        MenuItem { id: saveAsItem; text: "另存为…"; onTriggered: saveAs.open() }
 
         MenuSeparator {}
 
@@ -265,11 +347,16 @@ Window {
     // §5.9.17. The dialog decides the name and the extension; `savePin` reads the
     // extension to pick the encoder, so the filter order below is also the list of
     // formats this app writes from a pin.
+    //
+    // The name is handed over as the URL text rather than a local path, because this
+    // Qt gives JS no way to convert one: `selectedFile.toLocalFile()` measured
+    // `undefined` - a TypeError on every accept, P37 - and `save::local_path` is now
+    // the single place that reads a `file:///…` back into the path it names.
     FileDialog {
         id: saveAs
         title: "另存为"
         fileMode: FileDialog.SaveFile
         nameFilters: ["PNG 图片 (*.png)", "JPG 图片 (*.jpg)", "BMP 图片 (*.bmp)"]
-        onAccepted: win.session.savePin(win.pinId, saveAs.selectedFile.toLocalFile())
+        onAccepted: win.session.savePin(win.pinId, String(saveAs.selectedFile))
     }
 }

@@ -234,7 +234,7 @@ impl PinState {
                 .map(|_| (frame.width as usize) * (frame.height as usize))
                 .map_err(|e| e.to_string())
         }) else {
-            return Err(format!("pin {id} has never been drawn"));
+            return Err(not_drawn(id));
         };
         done
     }
@@ -256,7 +256,7 @@ impl PinState {
                 }
             }
         }) else {
-            return Err(format!("pin {id} has never been drawn"));
+            return Err(not_drawn(id));
         };
         done
     }
@@ -292,6 +292,17 @@ impl PinState {
     fn note(&mut self, message: String) {
         self.problems.push(message);
     }
+}
+
+/// What both output doors say about a pin that has no picture yet.
+///
+/// One sentence rather than two copies because it is a promise to the user, not a
+/// log line: [`crate::session`] wraps it under `复制失败：` and `保存失败：`, and an
+/// English clause inside either prefix is what §10 第 37 项 ① measured for the first
+/// time in P37. It names 贴图 so the wrapping reads as one Chinese sentence, and the
+/// `--pin` gauge judges exactly those two properties (contains 贴图, no English).
+fn not_drawn(id: PinId) -> String {
+    format!("贴图 {id} 还没有画过，没有可输出的像素")
 }
 
 // ---------------------------------------------------------------- the session
@@ -1231,4 +1242,25 @@ pub fn capture_selftest() -> (Check, String) {
         }
     ));
     (worst, out.join("\n"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::not_drawn;
+
+    /// §10 第 37 项 ①. `session` prints this under `复制失败：` and `保存失败：`, so for
+    /// as long as it was English the line a user read was one Chinese prefix wrapped
+    /// around a sentence they could not use. The `--pin` gauge is the acceptance; this
+    /// is the guard for the runs with no screen attached, and it is written against the
+    /// whole sentence because a prefix is not allowed to be the only Chinese part of a
+    /// Chinese interface.
+    #[test]
+    fn an_undrawn_pin_answers_without_an_english_word() {
+        let said = not_drawn(7);
+        assert!(said.contains("贴图") && said.contains('7'), "{said}");
+        assert!(
+            !said.chars().any(|c| c.is_ascii_alphabetic()),
+            "the sentence still carries Latin letters: {said}"
+        );
+    }
 }
