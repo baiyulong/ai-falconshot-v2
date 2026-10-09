@@ -1006,6 +1006,59 @@ impl Hits {
     }
 }
 
+/// §10 第 42 项 ②: the two ways a painting row ends up with no grade are two findings, and
+/// this round splits them into two rows because one `SKIP` word had covered both.
+///
+/// A locked desktop is not the reason `ink box` went PASS→SKIP between two runs of the same
+/// binary (P39 read *better* ink on the locked run), and a leg the script never planted is
+/// not the reason `ink box of m1-display2` sits at `0/0` while the screen answers fine.
+/// `asked` is a fact about this round's script; `readable` is a fact about the desktop, and
+/// each one says what it was asked about. Neither borrows the other's sentence: the two
+/// refusals below are checked unequal by a headless test, because "unequal wording" is the
+/// whole content of the判据 and a run cannot show it unless one leg is starved on purpose.
+fn asked_row(planted: usize) -> (Check, String) {
+    if planted == 0 {
+        return (
+            Check::Blocked,
+            "这一轮压根没问：这条腿没有播种点（planted=0），屏幕没有被告知要答什么。\
+             日程那一格仍然数它的键，所以没问过不等于腿被删。"
+                .to_string(),
+        );
+    }
+    (Check::Pass, format!("问过：planted={planted}"))
+}
+
+/// The desktop's half. `flat` is whatever the leg calls the samples whose two candidates
+/// were the same colour - [`Hits::flat`] for a band, [`Footprint::preexisting`] for a strip.
+///
+/// With nothing planted there is no desktop reading to quote either, so the third sentence
+/// is its own and names the other row rather than reusing the second one.
+fn readable_row(
+    planted: usize,
+    usable: usize,
+    dark: usize,
+    off: usize,
+    flat: usize,
+    centre: &str,
+) -> (Check, String) {
+    if planted == 0 {
+        return (
+            Check::Blocked,
+            "这一轮没向屏幕要过像素，所以答得了答不了没有读数（问没问过看同一行的 asked）。"
+                .to_string(),
+        );
+    }
+    let counts = format!(
+        "usable={usable} of planted={planted}（{dark} too dark、{off} off this screen、\
+         {flat} the desktop cannot distinguish），现场 pixel@centre={centre}"
+    );
+    if usable < MIN_USABLE {
+        (Check::Blocked, format!("屏幕答不了：{counts}"))
+    } else {
+        (Check::Pass, counts)
+    }
+}
+
 /// Grade one stroke's band against the read-back bitmap. `cover` is what the bitmap is
 /// a photograph of, in device pixels; the arithmetic from a desk point to a *bitmap*
 /// pixel is spelled out, because a bitmap that came back at the wrong resolution must
@@ -2880,6 +2933,11 @@ pub fn measure() -> (Check, String) {
             );
             continue;
         };
+        // The desktop's own reading, quoted by every `readable` row of this slot. §10 第 42
+        // 项 ② wants the explanation of a skipped painting row to be a coordinate the screen
+        // answered, not a word about the session: the lock is one input of a row, not a
+        // verdict over a round, and this is the input.
+        let centre = capture::centre_pixel(frozen);
 
         // Which dim path is under the ink. A shader that did not compile dims the
         // layer along with the desktop, and the ink rows below would then read as
@@ -3018,6 +3076,17 @@ pub fn measure() -> (Check, String) {
                 hits.verdict(tenths),
                 hits.line(),
             );
+            let (c, l) = asked_row(hits.want);
+            rep.row(&format!("{label} of {tag} asked"), c, l);
+            let (c, l) = readable_row(
+                hits.want,
+                hits.usable(),
+                hits.dark,
+                hits.off,
+                hits.flat,
+                &centre,
+            );
+            rep.row(&format!("{label} of {tag} readable"), c, l);
         }
 
         // 文本 (§5.7.11), counted over an area rather than sampled along a path: the
@@ -3031,18 +3100,38 @@ pub fn measure() -> (Check, String) {
             Some(strip) => {
                 let fp = footprint(win.phys, &got, frozen, strip);
                 rep.row(&format!("ink text of {tag}"), fp.verdict(), fp.line());
+                let (c, l) = asked_row(fp.planted);
+                rep.row(&format!("ink text of {tag} asked"), c, l);
+                let (c, l) = readable_row(
+                    fp.planted,
+                    fp.usable(),
+                    fp.dark,
+                    fp.off,
+                    fp.preexisting,
+                    &centre,
+                );
+                rep.row(&format!("ink text of {tag} readable"), c, l);
                 rep.note(
                     &format!("text strip of {tag}"),
                     format!("{strip:?} typed {TEXT:?}"),
                 );
             }
-            None => rep.row(
-                &format!("ink text of {tag}"),
-                Check::Blocked,
-                "the selection is too small for a text strip that clears the bands the \
-                 other rows grade, so none of this pen's colour was planted to count"
-                    .to_string(),
-            ),
+            None => {
+                rep.row(
+                    &format!("ink text of {tag}"),
+                    Check::Blocked,
+                    "the selection is too small for a text strip that clears the bands the \
+                     other rows grade, so none of this pen's colour was planted to count"
+                        .to_string(),
+                );
+                // The third state of the pair: a strip the script never planted is not the
+                // desktop declining, and `readable` says so in its own words instead of
+                // letting the graded row's `SKIP` stand for both halves at once.
+                let (c, l) = asked_row(0);
+                rep.row(&format!("ink text of {tag} asked"), c, l);
+                let (c, l) = readable_row(0, 0, 0, 0, 0, &centre);
+                rep.row(&format!("ink text of {tag} readable"), c, l);
+            }
         }
 
         // 放大 (§5.7.13), graded against the picture rather than the pen: see
@@ -3335,6 +3424,63 @@ mod tests {
             missing.is_empty() && extra.is_empty(),
             "日程与 AnnotationToolbar.qml 的腿对不上：日程有而 QML 不写 {missing:?}；QML 写而日程没有 {extra:?}"
         );
+    }
+
+    /// §10 第 42 项 ② 的判据本体：一行 painting 没有评分有两种走法，自此是两行、两句话。
+    /// P39 那趟是同一条反例的两半 —— 同一枚二进制，`ink box` 一趟 PASS 一趟 SKIP，而那一个
+    /// `SKIP` 同时代表"桌面给不出 30 个可用样本"和"这条腿压根没播种"。
+    #[test]
+    fn a_row_that_asked_and_a_row_the_desktop_refused_are_two_rows() {
+        let asked = asked_row(0);
+        assert_eq!(asked.0, Check::Blocked);
+        assert!(asked.1.contains("压根没问"), "{}", asked.1);
+
+        let unreadable = readable_row(165, 29, 136, 0, 0, "Some([163, 163, 163, 255])");
+        assert_eq!(unreadable.0, Check::Blocked);
+        assert!(unreadable.1.contains("屏幕答不了"), "{}", unreadable.1);
+
+        // Not asked at all: the desktop was never consulted, so this row may not claim that
+        // it declined - which is the third sentence, and the reason the graded row's `SKIP`
+        // could not be left to stand for the pair.
+        let unasked = readable_row(0, 0, 0, 0, 0, "Some([163, 163, 163, 255])");
+        assert_eq!(unasked.0, Check::Blocked);
+
+        let lines: [&str; 3] = [asked.1.as_str(), unreadable.1.as_str(), unasked.1.as_str()];
+        let distinct: HashSet<&str> = lines.iter().copied().collect();
+        assert_eq!(distinct.len(), 3, "三条拒绝共用了一句措辞：{lines:?}");
+    }
+
+    /// ② 的另一半，也是这一格唯一会烂掉的那半：解释写成一个坐标，不写成一句关于会话的话。
+    /// 锁屏是一行的输入（§10 第 41 项 ⑤），不是盖在一轮上的结论 —— 所以 `readable` 里出现
+    /// "会话/锁/LockApp" 任一，就说明这行在解释一轮而不是量一个点。
+    #[test]
+    fn readable_quotes_the_centre_pixel_and_never_the_session() {
+        let centre = "Some([163, 163, 163, 255])";
+        let (verdict, line) = readable_row(165, 29, 136, 0, 0, centre);
+        assert_eq!(verdict, Check::Blocked);
+        assert!(line.contains(&format!("pixel@centre={centre}")), "{line}");
+        for forbidden in ["锁", "会话", "LockApp"] {
+            assert!(!line.contains(forbidden), "{line}");
+        }
+        let (verdict, line) = readable_row(165, 41, 124, 0, 0, centre);
+        assert_eq!(verdict, Check::Pass);
+        assert!(line.contains("usable=41 of planted=165"), "{line}");
+        assert!(line.contains("124 too dark"), "{line}");
+    }
+
+    /// The split added rows; it re-graded nothing. R20's band is the same denominator in all
+    /// three sentences: asked, because 165 samples were planted; unreadable, because the
+    /// screen left 16 of them, and the graded row still Blocked.
+    #[test]
+    fn the_split_rows_read_the_graded_rows_own_denominator() {
+        let h = r20();
+        assert_eq!(h.verdict(INK_PASS), Check::Blocked);
+        assert_eq!(asked_row(h.want).0, Check::Pass);
+        assert_eq!(
+            readable_row(h.want, h.usable(), h.dark, h.off, h.flat, "-").0,
+            Check::Blocked
+        );
+        assert_eq!(h.usable(), 16);
     }
 
     /// A band that read on the dark desktop of R20's third run: 16 of 165 samples

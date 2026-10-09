@@ -181,21 +181,37 @@ pub fn monitors_line() -> String {
     }
 }
 
-/// One line describing a snapshot: backend, monitors, union, colour-pick probe.
-pub fn snapshot_line(snap: &ScreenSnapshot) -> String {
-    let centre = PhysPoint::new(
+/// The point a screen-reading row takes as the desktop's own: the centre of the virtual
+/// bounds.
+///
+/// §10 第 42 项 ② made this a reading a row quotes rather than a detail of one log line:
+/// a `readable` row has to say *what the desktop was* when it declined to answer, and the
+/// answer it prints has to be the same coordinate [`snapshot_line`] prints, or the two
+/// sentences describe two different screens.
+pub fn centre_point(snap: &ScreenSnapshot) -> PhysPoint {
+    PhysPoint::new(
         snap.virtual_bounds.x + snap.virtual_bounds.w as i32 / 2,
         snap.virtual_bounds.y + snap.virtual_bounds.h as i32 / 2,
-    );
+    )
+}
+
+/// What the desktop is at [`centre_point`], already formatted, so a row that quotes it and
+/// the line that prints it cannot disagree about how the reading is written.
+pub fn centre_pixel(snap: &ScreenSnapshot) -> String {
+    format!("{:?}", snap.color_at(centre_point(snap)))
+}
+
+/// One line describing a snapshot: backend, monitors, union, colour-pick probe.
+pub fn snapshot_line(snap: &ScreenSnapshot) -> String {
     format!(
-        "backend={} monitors={} virtual={}x{}@{},{} pixel@centre={:?}",
+        "backend={} monitors={} virtual={}x{}@{},{} pixel@centre={}",
         snap.backend,
         snap.monitors.len(),
         snap.virtual_bounds.w,
         snap.virtual_bounds.h,
         snap.virtual_bounds.x,
         snap.virtual_bounds.y,
-        snap.color_at(centre),
+        centre_pixel(snap),
     )
 }
 
