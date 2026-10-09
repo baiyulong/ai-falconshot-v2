@@ -235,7 +235,7 @@ const DIALOG_STEM: &str = "dialog";
 /// The formats §5.9.17's dialog offers, in the order `PinWindow.qml` lists them.
 /// The extension is what picks the encoder, so this list is also the list of things
 /// the door can promise to write.
-const FILTERS: [&str; 3] = ["*.png", "*.jpg", "*.bmp"];
+pub(crate) const FILTERS: [&str; 3] = ["*.png", "*.jpg", "*.bmp"];
 
 /// How far a window's device rect may sit from the pin's own rect and still be it.
 /// The shim reads the frame Win32 has; the pin's rect is what the state machine
@@ -365,6 +365,19 @@ pub fn plant() -> Result<String, String> {
     for p in [&qml_png, &qml_jpg, &rust_png, &rust_jpg, &never, &dialog] {
         let _ = std::fs::remove_file(p);
     }
+    // The filter leg's name, which the door finishes: QML hands the door `<stem>-f` with no
+    // extension and the format the menu was showing decides what follows the dot, so this
+    // file cannot name the file it will read. Every spelling the stem could have become is
+    // cleared, or a file the last run left behind answers for a leg that never ran.
+    let swept = format!("{DIALOG_STEM}-f");
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.file_stem().and_then(|s| s.to_str()) == Some(swept.as_str()) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
 
     let id = state::add_demo(DEMO_W, DEMO_H)?;
     let view = state::with(|s| s.view_data(id));
@@ -405,6 +418,25 @@ pub fn plant() -> Result<String, String> {
 /// this file cannot account for.
 pub fn push_dialog_button() -> String {
     shim::push_dialog_button()
+}
+
+/// A push report with its `desc=<n>` field removed, for the text of a judgement row.
+///
+/// §10 第 39 项 ⑤ / 第 40 项 ⑤. `desc` counts the dialog's descendant windows, and the
+/// number is a fact about the shell's moment, not about this product: two gauges of one
+/// binary disagreed in the same round (`p40_brokenpin1.log` read `desc=50`,
+/// `p40_brokenink1.log` read `desc=48`), and P38 read 49 and 50 inside one round. Nothing
+/// grades it - the row's three claims are `pushed=yes`, `class=[#32770]` and `bid=1` - so
+/// leaving it in the row's *text* made that text uncomparable across runs, which is the
+/// only thing a ladder archive is for. The full line stays reachable: it goes into a
+/// `note` row beside this one, because a note is not a judgement and the raw reading is
+/// still the honest witness if the count is ever asked about.
+pub(crate) fn push_row_text(report: &str) -> String {
+    report
+        .split(' ')
+        .filter(|field| !field.starts_with("desc="))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Whether one push report describes the click this row is about.
@@ -492,7 +524,7 @@ fn both_doors(
     qml_said: Option<&str>,
     want: &str,
 ) {
-    let rust_said = state::with(|s| s.save_image(id, &rust_path.to_string_lossy()));
+    let rust_said = state::with(|s| s.save_image(id, &rust_path.to_string_lossy(), ""));
     let (qml_bytes, rust_bytes) = (read(qml_path), read(rust_path));
     let same = qml_bytes.is_some() && qml_bytes == rust_bytes;
     let verdict =
@@ -541,20 +573,22 @@ fn never_drawn(rep: &mut Report, key: &str, label: &str, prefix: &str, lines: &[
 pub fn measure() -> (Check, String) {
     state::stamp("pin end");
     let mut rep = Report::new();
-    let (id, bad, qml_png, qml_jpg, rust_png, rust_jpg, never, dialog, rect, lines) = with(|p| {
-        (
-            p.id,
-            p.bad,
-            p.qml_png.clone(),
-            p.qml_jpg.clone(),
-            p.rust_png.clone(),
-            p.rust_jpg.clone(),
-            p.never.clone(),
-            p.dialog.clone(),
-            p.rect,
-            p.lines.clone(),
-        )
-    });
+    let (id, bad, qml_png, qml_jpg, rust_png, rust_jpg, never, dialog, dir, rect, lines) =
+        with(|p| {
+            (
+                p.id,
+                p.bad,
+                p.qml_png.clone(),
+                p.qml_jpg.clone(),
+                p.rust_png.clone(),
+                p.rust_jpg.clone(),
+                p.never.clone(),
+                p.dialog.clone(),
+                p.dir.clone(),
+                p.rect,
+                p.lines.clone(),
+            )
+        });
 
     // Every other row reads a value, so this one reads whether there is a value to
     // read: a document that failed to build, a delegate that never matched the plan,
@@ -665,6 +699,7 @@ pub fn measure() -> (Check, String) {
     );
 
     let push = said(&lines, "dlg-push").unwrap_or("");
+    let shown = push_row_text(push);
     // How many waits the press needed, and what each of the earlier ones saw. The count
     // is not a grade - a door that took three waits still opened - but it is the
     // difference between a press that was earned and one that was lucky, and the reasons
@@ -673,11 +708,11 @@ pub fn measure() -> (Check, String) {
     rep.row(
         "pin dialog pushed",
         Check::from(real_click(push)),
-        format!("{push}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）"),
+        format!("{shown}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）"),
     );
     rep.note(
         "push 每次尝试",
-        format!("{:?}", said(&lines, "dlg-push-log")),
+        format!("原始 {push:?}；每次 {:?}", said(&lines, "dlg-push-log")),
     );
 
     let (was, now) = (
@@ -776,6 +811,95 @@ pub fn measure() -> (Check, String) {
     rep.note(
         "jpg 透明提示",
         format!("{:?}", said(&lines, "jpg").unwrap_or("")),
+    );
+
+    // Which format a name *without* an extension takes, at this door (§10 第 40 项 ②).
+    // Every arm of the menu gets a leg against the same bare stem, because the config these
+    // runs is pinned to says `format = "png"`: one PNG leg would grade the setting and call
+    // it the filter, and a door that dropped the filter on the way to `save::write` would
+    // pass it. The configured format is printed beside the legs so the reading says which
+    // of the three were redundant on this machine.
+    //
+    // Two independent readings, not one: the file's first four bytes name the encoder that
+    // actually ran (a PNG wearing a `.jpg` name is the failure this row is out to catch, and
+    // the name alone cannot see it), and the count says nothing else appeared - a door that
+    // wrote every candidate would satisfy a row that only looked for the one it expected.
+    let configured = crate::settings::export().format;
+    let candidates: Vec<PathBuf> = FILTERS
+        .iter()
+        .copied()
+        .filter_map(crate::save::filter_format)
+        .map(|f| dir.join(format!("filtered.{}", f.ext())))
+        .collect();
+    let mut legs = Vec::new();
+    let mut agreed = candidates.len() == FILTERS.len();
+    for &filter in &FILTERS {
+        for stale in &candidates {
+            let _ = std::fs::remove_file(stale);
+        }
+        let bare = dir.join("filtered");
+        let said = state::with(|s| s.save_image(id, &bare.to_string_lossy(), filter));
+        let Some(want) = crate::save::filter_format(filter) else {
+            agreed = false;
+            legs.push(format!("{filter} 认不出格式"));
+            continue;
+        };
+        let target = dir.join(format!("filtered.{}", want.ext()));
+        let wrote = crate::save::written_as(&target);
+        let only = candidates.iter().filter(|p| p.exists()).count();
+        let ok = wrote == Some(want)
+            && only == 1
+            && said
+                .as_ref()
+                .is_ok_and(|s| s.contains(&format!("filtered.{}", want.ext())));
+        agreed &= ok;
+        legs.push(format!(
+            "{filter}→{} 头字节={wrote:?} 只这一份={}{}",
+            want.ext(),
+            only == 1,
+            if ok {
+                String::new()
+            } else {
+                format!("；那句 {said:?}")
+            }
+        ));
+    }
+    rep.row(
+        "pin filter decides format",
+        Check::from(agreed),
+        format!(
+            "配置 {:?}；{}",
+            configured.ext(),
+            if legs.is_empty() {
+                "没有一腿跑".to_string()
+            } else {
+                legs.join(" ; ")
+            }
+        ),
+    );
+
+    // The filter text has to *cross* the boundary, which nothing above can see: the Rust
+    // legs call the state machine directly, and the real-click row is handed a name the
+    // shell already suffixed, so a `savePin` whose third argument QML never passes would
+    // leave every row in this report green. This leg calls the door exactly the way
+    // `onAccepted` does - a bare URL and one of the dialog's own filter texts - and reads
+    // the encoder off the file that appears.
+    let filtered = dir.join(format!("{DIALOG_STEM}-f.jpg"));
+    let leg = said(&lines, "f-jpg").unwrap_or("");
+    let wrote = crate::save::written_as(&filtered);
+    let arm = FILTERS[1];
+    rep.row(
+        "pin filter via qml",
+        Check::from(
+            leg.starts_with(arm)
+                && leg.contains("已保存到")
+                && leg.contains("-f.jpg")
+                && wrote == Some(falcon_core::encode::Format::Jpg),
+        ),
+        format!(
+            "QML 那一条 {leg:?}（要求以 {arm:?} 开头）；{} 的头四字节读成 {wrote:?}",
+            filtered.display()
+        ),
     );
 
     // The one file this run did not name. The dialog was handed a folder and a stem and
@@ -920,6 +1044,40 @@ mod tests {
         let no_button =
             "pushed=no reason=no-enabled-idok-button dialogs=1 desc=50 buttons=2 title=[另存为]";
         assert!(!real_click(no_button), "{no_button}");
+    }
+
+    /// §10 第 40 项 ⑤'s other half. A judgement row's text is the thing two ladder
+    /// archives are `diff`ed, so a field the shell changes between runs makes the archive
+    /// unreadable - and one round of `--pin` / `--ink` produced `desc=50` and `desc=48`
+    /// from the *same* binary. Two things are checked, in this order: the count is gone
+    /// from the row text, and the grade is bit-for-bit the grade the raw line got, because
+    /// a normalisation that could flip a verdict would be a new judgement wearing the old
+    /// row's name.
+    #[test]
+    fn a_push_row_says_nothing_the_shell_decides_on_its_own() {
+        use super::push_row_text;
+        let raw = "pushed=yes dialog=0x4c134e class=[#32770] title=[另存为] dialogs=1 \
+                   desc=50 buttons=4 button=0x3c4d btitle=[&Save] bid=1 ret=0 visible_after=1";
+        let row = push_row_text(raw);
+        assert!(!row.contains("desc="), "{row}");
+        assert!(
+            row.contains("pushed=yes") && row.contains("class=[#32770]") && row.contains("bid=1"),
+            "{row}"
+        );
+        assert_eq!(real_click(raw), real_click(&row));
+        assert!(real_click(&row), "{row}");
+
+        // The field is a token of its own, so removing it cannot eat a neighbour: a
+        // report that failed stays failed with the count taken out.
+        let failed = "pushed=no reason=no-enabled-idok-button dialogs=1 desc=50 buttons=2";
+        assert_eq!(
+            push_row_text(failed),
+            "pushed=no reason=no-enabled-idok-button dialogs=1 buttons=2"
+        );
+        assert!(!real_click(&push_row_text(failed)));
+
+        // Nothing to remove, nothing changed - the shape a `pushed=no` first-try line has.
+        assert_eq!(push_row_text("dialogs=0"), "dialogs=0");
     }
 
     /// The name the dialog hands back is its own writing, so this one comparison folds

@@ -573,12 +573,17 @@ pub fn plant(shader: bool) -> Result<String, String> {
     // The stale files go here rather than in [`measure`]: this write lands while the run is
     // still going, so a file the last run left behind would answer for a click that never
     // happened, and the extension the shell picks is not something this file can predict.
+    // Every name beginning with the stem is in scope, because the filter leg below plants
+    // `<stem>-f` through the door and its three possible outcomes are this run's to clear.
     let dialog_dir = save_gauge_dir();
     let _ = std::fs::create_dir_all(&dialog_dir);
     if let Ok(entries) = std::fs::read_dir(&dialog_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.file_stem().and_then(|s| s.to_str()) == Some(DIALOG_STEM) {
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if stem.starts_with(DIALOG_STEM) {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -2220,7 +2225,7 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
         .count();
 
     // ---- PNG: the lossless half, graded losslessly.
-    let done_png = mask::with(|m| m.save_out(&png.to_string_lossy()));
+    let done_png = mask::with(|m| m.save_out(&png.to_string_lossy(), ""));
     let said_png = mask::with(|m| m.message.clone());
     rep.note("saved png sentence", said_png.clone());
     let back_png = std::fs::read(&png)
@@ -2267,7 +2272,7 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
     );
 
     // ---- JPG: the format that cannot keep it, and the sentence that has to say so.
-    let done_jpg = mask::with(|m| m.save_out(&jpg.to_string_lossy()));
+    let done_jpg = mask::with(|m| m.save_out(&jpg.to_string_lossy(), ""));
     let said_jpg = mask::with(|m| m.message.clone());
     rep.note("saved jpg sentence", said_jpg.clone());
     let back_jpg = std::fs::read(&jpg)
@@ -2318,6 +2323,74 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
             back_jpg.as_ref().map_or(0, |(n, _)| *n),
             drift / (total.max(1) as u64 * 3),
             said_jpg,
+        ),
+    );
+
+    // ---- Which format a name *without* an extension takes (§10 第 40 项 ②).
+    //
+    // One leg per filter the dialogs offer, each handed the same bare stem, so the row
+    // answers "选了哪一档 → 写出的是什么格式" for every arm of the menu rather than for the
+    // one that happens to agree with `[output] format`. That agreement is the trap: the
+    // pinned config says `format = "png"`, so a single PNG leg would measure nothing and a
+    // door that dropped the filter on its way to the owner would still pass it. The
+    // configured format is printed next to the legs to say which of the three are redundant
+    // on this run.
+    //
+    // The file's first bytes are read as well as its name: the name is what the door meant
+    // and the bytes are which encoder ran, and a PNG wearing a `.jpg` name is the failure
+    // this row exists to catch. The count is the other half - a door that wrote every
+    // candidate would satisfy a row that only looked for the one it expected.
+    let configured = mask::with(|m| m.export.format);
+    let candidates: Vec<PathBuf> = pin_check::FILTERS
+        .iter()
+        .copied()
+        .filter_map(crate::save::filter_format)
+        .map(|f| dir.join(format!("filtered.{}", f.ext())))
+        .collect();
+    let mut legs = Vec::new();
+    let mut agreed = candidates.len() == pin_check::FILTERS.len();
+    for &filter in &pin_check::FILTERS {
+        for stale in &candidates {
+            let _ = std::fs::remove_file(stale);
+        }
+        let bare = dir.join("filtered");
+        let done = mask::with(|m| m.save_out(&bare.to_string_lossy(), filter));
+        let said = mask::with(|m| m.message.clone());
+        let Some(want) = crate::save::filter_format(filter) else {
+            legs.push(format!("{filter} 认不出格式"));
+            agreed = false;
+            continue;
+        };
+        let target = dir.join(format!("filtered.{}", want.ext()));
+        let wrote = crate::save::written_as(&target);
+        let only = candidates.iter().filter(|p| p.exists()).count();
+        let ok = done
+            && wrote == Some(want)
+            && said.contains(&format!("filtered.{}", want.ext()))
+            && only == 1;
+        agreed &= ok;
+        legs.push(format!(
+            "{filter}→{} 头字节={wrote:?} 只这一份={}{}",
+            want.ext(),
+            only == 1,
+            if ok {
+                String::new()
+            } else {
+                format!("；那句 {said:?}")
+            }
+        ));
+    }
+    rep.row(
+        "mask filter decides format",
+        Check::from(agreed),
+        format!(
+            "配置 {:?}；{}",
+            configured.ext(),
+            if legs.is_empty() {
+                "没有一腿跑".to_string()
+            } else {
+                legs.join(" ; ")
+            }
         ),
     );
 
@@ -2401,15 +2474,16 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
     );
 
     let push = said(&lines, "dlg-push").unwrap_or("");
+    let shown = pin_check::push_row_text(push);
     let tries = said(&lines, "dlg-push-tries").unwrap_or("<没有读数>");
     rep.row(
         "mask dialog pushed",
         Check::from(pin_check::real_click(push)),
-        format!("{push}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）"),
+        format!("{shown}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）"),
     );
     rep.note(
         "mask push 每次尝试",
-        format!("{:?}", said(&lines, "dlg-push-log")),
+        format!("原始 {push:?}；每次 {:?}", said(&lines, "dlg-push-log")),
     );
 
     let was = said(&lines, "accept-was");
@@ -2482,6 +2556,30 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
             clicked
         ),
     );
+
+    // The same rule one rung further along: the filter text has to *cross* the boundary.
+    // Every leg above runs in Rust, where a `saveSelection` whose second argument QML never
+    // hands over would still be green - and the real-click row cannot see the difference
+    // either, because the shell puts the extension on the name before `onAccepted` is ever
+    // read (P38's probe E), so the door is handed a name that already decides its own
+    // format. This leg calls the door the way `onAccepted` does, with a bare URL and one of
+    // the dialog's own filter texts, and the encoder that ran is read off the file.
+    let filtered = dir.join(format!("{DIALOG_STEM}-f.jpg"));
+    let leg = said(&lines, "f-jpg").unwrap_or("");
+    let wrote = crate::save::written_as(&filtered);
+    let arm = pin_check::FILTERS[1];
+    rep.row(
+        "mask filter via qml",
+        Check::from(
+            leg.starts_with(&format!("{arm}|true|"))
+                && leg.contains("-f.jpg")
+                && wrote == Some(falcon_core::encode::Format::Jpg),
+        ),
+        format!(
+            "QML 那一条 {leg:?}（要求以 {arm:?} 开头且门写了）；{} 的头四字节读成 {wrote:?}",
+            filtered.display()
+        ),
+    );
 }
 
 /// The same act at the other door: a pin's 另存为 (§5.9.17), read against the mask's
@@ -2525,8 +2623,8 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
         }
     };
 
-    let said_png = state::with(|s| s.save_image(id, &pin_png.to_string_lossy()));
-    let said_jpg = state::with(|s| s.save_image(id, &pin_jpg.to_string_lossy()));
+    let said_png = state::with(|s| s.save_image(id, &pin_png.to_string_lossy(), ""));
+    let said_jpg = state::with(|s| s.save_image(id, &pin_jpg.to_string_lossy(), ""));
     let both = |a: &Path, b: &Path| {
         let (x, y) = (std::fs::read(a).ok(), std::fs::read(b).ok());
         let same = x.is_some() && y.is_some() && x == y;
@@ -2595,8 +2693,8 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
         for stale in [&m_path, &p_path] {
             let _ = std::fs::remove_file(stale);
         }
-        let mask_said = mask::with(|m| m.save_out(&m_path.to_string_lossy()));
-        let pin_said = state::with(|s| s.save_image(id, &p_path.to_string_lossy()));
+        let mask_said = mask::with(|m| m.save_out(&m_path.to_string_lossy(), ""));
+        let pin_said = state::with(|s| s.save_image(id, &p_path.to_string_lossy(), ""));
         let (same, m_len, p_len) = both(&m_path, &p_path);
         // "agree" is the two doors saying they wrote *and* the bytes matching: a door that
         // refused and happened to leave the previous run's file behind would otherwise be

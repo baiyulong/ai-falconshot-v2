@@ -158,12 +158,24 @@ Window {
         // passes; the JPG leg keeps the plain path, so both spellings of the name are
         // graded by the same run.
         gaugeSay("png-url", url)
-        gaugeSay("png", win.session.savePin(win.pinId, url))
-        gaugeSay("jpg", win.session.savePin(win.pinId, win.gauge[2]))
+        gaugeSay("png", win.session.savePin(win.pinId, url, ""))
+        gaugeSay("jpg", win.session.savePin(win.pinId, win.gauge[2], ""))
         // The two legs that have to fail: an id the set never handed out, so the
         // door answers before it reaches the clipboard or the disk.
         gaugeSay("never-copy", win.session.copyPin(Number(win.gauge[5])))
-        gaugeSay("never-save", win.session.savePin(Number(win.gauge[5]), win.gauge[3]))
+        gaugeSay("never-save", win.session.savePin(Number(win.gauge[5]), win.gauge[3], ""))
+        // §10 第 40 项 ②, at this door: a name with no extension takes the format of the arm
+        // the dialog was showing, so the leg hands the door one arm's own text, read off
+        // `nameFilters` because the *selected* arm is read-only (P38's probe E found the
+        // assignment). The JPG arm is the one the configured `[output] format` would never
+        // pick on this machine, so it is what tells a forwarded filter from one dropped at
+        // the boundary - and the boundary is the question, since the three legs above call
+        // the door with a name that already carries an extension, and a real dialog click
+        // cannot see the difference either (the shell suffixes a bare name before
+        // `onAccepted` reads it).
+        const bareName = win.dlgUrl(String(win.gauge[0]) + "/" + win.gauge[7] + "-f")
+        const arm = win.filterExt(1)
+        gaugeSay("f-jpg", arm + "|" + win.session.savePin(win.pinId, bareName, arm))
         win.openDialogLeg()
     }
 
@@ -261,6 +273,17 @@ Window {
     function readFilter(key) {
         const chosen = saveAs.selectedNameFilter
         gaugeSay(key, chosen.name + "|" + chosen.extensions.join(",") + "|" + chosen.index)
+    }
+
+    // One arm of the menu, in the shape the selected arm arrives in: `JPG 图片 (*.jpg)` →
+    // `*.jpg`. Same reading as the toolbar's function of this name, for the same reason -
+    // an arm cannot be pointed at, so a leg that wants to ask what one of them does reads
+    // the list.
+    function filterExt(i) {
+        const text = String(saveAs.nameFilters[i])
+        const from = text.lastIndexOf("(") + 1
+        const to = text.lastIndexOf(")")
+        return to > from ? text.substring(from, to) : ""
     }
 
     Timer {
@@ -511,17 +534,28 @@ Window {
 
     // §5.9.17. The dialog decides the name and the extension; `savePin` reads the
     // extension to pick the encoder, so the filter order below is also the list of
-    // formats this app writes from a pin.
+    // formats this app writes from a pin - and since P40 it is a second time over, because
+    // §5.5.5 step 3 counts 格式 among the three things chosen and the arm therefore decides
+    // the format of a name typed *without* one. Both halves travel from this one list.
     //
     // The name is handed over as the URL text rather than a local path, because this
     // Qt gives JS no way to convert one: `selectedFile.toLocalFile()` measured
     // `undefined` - a TypeError on every accept, P37 - and `save::local_path` is now
-    // the single place that reads a `file:///…` back into the path it names.
+    // the single place that reads a `file:///…` back into the path it names. The arm is
+    // handed over flattened the same way `readFilter` reports it, because
+    // `selectedNameFilter` is an object and `String()` of one is not the text the owner
+    // can read.
     FileDialog {
         id: saveAs
         title: "另存为"
         fileMode: FileDialog.SaveFile
         nameFilters: ["PNG 图片 (*.png)", "JPG 图片 (*.jpg)", "BMP 图片 (*.bmp)"]
-        onAccepted: win.session.savePin(win.pinId, String(saveAs.selectedFile))
+        onAccepted: {
+            win.session.savePin(
+                win.pinId,
+                String(saveAs.selectedFile),
+                saveAs.selectedNameFilter.extensions.join(",")
+            )
+        }
     }
 }

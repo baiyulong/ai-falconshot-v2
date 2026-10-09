@@ -336,13 +336,16 @@ pub mod qobject {
         fn copy_selection(self: Pin<&mut Self>) -> bool;
 
         /// §5.5.5's 另存为: the same stitched frame 复制 puts on the clipboard, written
-        /// to the path the file dialog chose. `true` is "the file is there", and as with
-        /// [`crate::mask::MaskState::copy_out`] the sentence - including the one about
-        /// transparency the format cannot hold - is in `message` either way, so this
-        /// neither closes the mask nor needs a second answer in QML.
+        /// to the path the file dialog chose. `filter` is the extension text of the
+        /// format the dialog was showing (`png`, `jpg`), which decides a name typed
+        /// without one; an empty text is the dialog saying it offered nothing. `true` is
+        /// "the file is there", and as with [`crate::mask::MaskState::copy_out`] the
+        /// sentence - including the one about transparency the format cannot hold - is in
+        /// `message` either way, so this neither closes the mask nor needs a second
+        /// answer in QML.
         #[qinvokable]
         #[cxx_name = "saveSelection"]
-        fn save_selection(self: Pin<&mut Self>, path: &QString) -> bool;
+        fn save_selection(self: Pin<&mut Self>, path: &QString, filter: &QString) -> bool;
 
         /// The tool buttons' labels, in [`crate::annotate::TOOLS`]' order. Read once
         /// by the toolbar's `Component.onCompleted`: the list is Rust's, so a tool
@@ -752,9 +755,10 @@ impl qobject::MaskView {
     /// §5.5.2's 另存为. `to_string` rather than a borrowed `&str` because the path is
     /// Qt's to keep: `MaskState::save_out` hands it to `std::path`, which wants an
     /// owned name on a Windows drive that may not be one this process can read.
-    pub fn save_selection(mut self: Pin<&mut Self>, path: &QString) -> bool {
+    pub fn save_selection(mut self: Pin<&mut Self>, path: &QString, filter: &QString) -> bool {
         let target = path.to_string();
-        let done = mask::with(|m| m.save_out(&target));
+        let chosen = filter.to_string();
+        let done = mask::with(|m| m.save_out(&target, &chosen));
         self.as_mut().reload();
         done
     }

@@ -179,6 +179,18 @@ Rectangle {
         gaugeSay(key, chosen.name + "|" + chosen.extensions.join(",") + "|" + chosen.index)
     }
 
+    // The extension text of one arm of the menu, spelled the way `selectedNameFilter`
+    // spells the arm actually selected: `PNG 图片 (*.png)` → `*.png`. That member cannot be
+    // pointed at an arm of this choosing - assigning to it is the hard `TypeError` P38's
+    // probe E found - so a leg that wants to ask what the JPG arm does reads the list
+    // instead, and hands the door the same text `onAccepted` would hand it for that arm.
+    function filterExt(i) {
+        const text = String(saveAs.nameFilters[i])
+        const from = text.lastIndexOf("(") + 1
+        const to = text.lastIndexOf(")")
+        return to > from ? text.substring(from, to) : ""
+    }
+
     // Phase 1: name the file, then open the door the way the cell does. The name is the
     // gauge's and the extension is the shell's, which is the point - the file
     // `mask save via real click` reads back is the one this run could only predict.
@@ -188,6 +200,22 @@ Rectangle {
         saveAs.currentFile = bar.dlgUrl(stem)
         gaugeSay("dlg-folder", String(saveAs.currentFolder))
         gaugeSay("dlg-name", String(saveAs.currentFile))
+        // §10 第 40 项 ② at this door, before the dialog is in the way: a name with no
+        // extension takes the format of the arm the dialog was showing, so the leg hands the
+        // door the JPG arm's own text and a bare stem. JPG is the arm the configured
+        // `[output] format` would never pick on this machine, which is what tells a
+        // forwarded filter from one dropped at the boundary - and the boundary is the thing
+        // being asked, since every leg that runs in Rust cannot see whether QML passes the
+        // argument at all, and a real dialog click cannot either (the shell suffixes the
+        // name before `onAccepted` reads it).
+        //
+        // It runs *above* the refusal underneath on purpose: `message` is one slot, and
+        // P39's `accept-was`/`pre-save` pair has to stay that refusal's two halves.
+        const bareName = bar.dlgUrl(String(bar.gauge[0]) + "/" + String(bar.gauge[1]) + "-f")
+        const arm = bar.filterExt(1)
+        const wrote = bar.view.saveSelection(bareName, arm)
+        bar.gaugeSay("f-jpg", arm + "|" + String(wrote) + "|" + bar.view.message)
+
         // The click's before-half has to be a sentence, not silence. P38 read
         // `accept-was ""` here - a true reading, and an empty one, so the graded pair
         // measured "from nothing to 已保存到" and could not tell an `onAccepted` that wrote
@@ -202,7 +230,9 @@ Rectangle {
         // refused name leaves nothing on disk and its sentence carries no operating-system
         // wording, so "the product wrote this" is readable off the sentence itself.
         const refused = String(bar.gauge[0]) + "/" + String(bar.gauge[1]) + ".not-a-format"
-        bar.view.saveSelection(bar.dlgUrl(refused))
+        // The empty filter is honest here: no dialog is open, so no arm is showing - and the
+        // name carries an extension of its own, which is what the owner reads first.
+        bar.view.saveSelection(bar.dlgUrl(refused), "")
         gaugeSay("pre-save", bar.view.message)
         bar.dlgLeg = true
         saveAs.open()
@@ -798,6 +828,10 @@ Rectangle {
     // `saveSelection` reads the extension to pick the encoder, so the filter list below
     // is the list of formats this app writes from the mask - the same floor §5.5.5's
     // "至少支持 PNG、JPG、BMP" asks for, and the same three the pin menu offers.
+    //
+    // The list carries a second duty since P40: step 3 counts 格式 as one of the three
+    // things the user chooses, so the arm that was showing decides the format of a name
+    // typed without an extension, and `[output] format` only speaks when no arm names one.
     FileDialog {
         id: saveAs
         title: "另存为"
@@ -808,7 +842,17 @@ Rectangle {
             // with no members at all - `toLocalFile`, `isFile` and `path` all measured
             // `undefined`, and the call threw a TypeError that §8-R14 keeps off stdout -
             // so the URL text is what travels and `save::local_path` reads it as a path.
-            bar.delivered = bar.view.saveSelection(String(saveAs.selectedFile))
+            //
+            // The second argument is the arm of the menu the user was looking at, in the
+            // same flattened shape `readFilter` reports: §5.5.5 step 3 counts 格式 as one of
+            // the three things chosen, so a name typed without an extension is that arm's
+            // and not the setting's. An empty text is what a dialog that has selected no
+            // filter answers with (`||-1`, read here the first time), and `save::write`
+            // treats it as "the menu named nothing".
+            bar.delivered = bar.view.saveSelection(
+                String(saveAs.selectedFile),
+                saveAs.selectedNameFilter.extensions.join(",")
+            )
             bar.grabbed()
         }
     }

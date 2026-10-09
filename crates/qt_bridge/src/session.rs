@@ -148,10 +148,11 @@ pub mod qobject {
         #[cxx_name = "copyPin"]
         fn copy_pin(self: Pin<&mut Self>, id: i64) -> QString;
 
-        /// §5.9.17 - this pin out to a file; the extension picks the format.
+        /// §5.9.17 - this pin out to a file; the extension picks the format, and `filter`
+        /// is what the dialog's menu says for a name that has none.
         #[qinvokable]
         #[cxx_name = "savePin"]
-        fn save_pin(self: Pin<&mut Self>, id: i64, path: &QString) -> QString;
+        fn save_pin(self: Pin<&mut Self>, id: i64, path: &QString, filter: &QString) -> QString;
 
         /// §5.8.2 - whatever is on the clipboard becomes a pin. -1 and a status
         /// line when there was nothing to pin (§8.1: no window, but a message).
@@ -306,9 +307,19 @@ impl qobject::Session {
         self.as_mut().say(&message)
     }
 
-    pub fn save_pin(mut self: Pin<&mut Self>, id: i64, path: &QString) -> QString {
+    /// `filter` is the extension text of the format the dialog was showing
+    /// (`selectedNameFilter.extensions`, spelled `*.jpg`), and it only matters when the
+    /// name the user typed has no extension of its own: §5.5.5 step 3 counts the format as
+    /// one of the three things chosen, so a bare 报表 leaves the menu's decision in.
+    pub fn save_pin(
+        mut self: Pin<&mut Self>,
+        id: i64,
+        path: &QString,
+        filter: &QString,
+    ) -> QString {
         let target = path.to_string();
-        let message = match state::with(|s| s.save_image(id as u64, &target)) {
+        let chosen = filter.to_string();
+        let message = match state::with(|s| s.save_image(id as u64, &target, &chosen)) {
             Ok(done) => done,
             Err(e) => format!("保存失败：{e}"),
         };

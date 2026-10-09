@@ -64,6 +64,31 @@ fn verdict_code(code: i32, verdict: state::Check) -> i32 {
     }
 }
 
+/// §10 第 40 项 ③ - which binary the footer's numbers came out of.
+///
+/// A judgement row is evidence about one build, and the ladder writes a new log every
+/// rung while the old ones stay readable, so a line has to say what exe printed it or a
+/// PASS from the rung before the fix is indistinguishable from the one after. Seconds
+/// since the epoch rather than a wall-clock string, because the number is what a reader
+/// compares - against `stat -c %Y`, and against the same field in the next log to see
+/// whether the rung actually rebuilt anything.
+///
+/// Module level, not inside `main`: a binary's `fn main` is unreachable to `cargo test`,
+/// so a footer that is only assembled there is a footer whose format nothing checks.
+fn exe_stamp() -> String {
+    let Ok(meta) = std::env::current_exe().and_then(std::fs::metadata) else {
+        return "exe=?".to_string();
+    };
+    // A platform that will not hand over an mtime folds to 0, which is 1970 - and 1970
+    // printed as `{}` looks exactly like a timestamp. The unit test is the guard.
+    let when = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    format!("exe={} B @{when}s", meta.len())
+}
+
 fn main() {
     // The clock the cold-path split is measured from, stamped before Qt says
     // anything at all. See `state::stamp`.
@@ -479,10 +504,11 @@ fn main() {
             String::new()
         };
         println!(
-            "[{} after {ms} ms] {}qml_loaded={} {}",
+            "[{} after {ms} ms] {}qml_loaded={} {} {}",
             if ink { "ink" } else { "mask" },
             raised,
             state::qml_loaded(),
+            exe_stamp(),
             state::desktop_summary()
         );
         code = verdict_code(code, verdict);
@@ -496,12 +522,52 @@ fn main() {
         let (verdict, report) = pin_check::measure();
         println!("{report}");
         println!(
-            "[pin after {ms} ms] 要求 {} ms 生效 {ms} ms qml_loaded={} {}",
+            "[pin after {ms} ms] 要求 {} ms 生效 {ms} ms qml_loaded={} {} {}",
             pin_want.unwrap_or(ms),
             state::qml_loaded(),
+            exe_stamp(),
             state::desktop_summary()
         );
         code = verdict_code(code, verdict);
     }
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::exe_stamp;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// The field's only job is to make a log attributable to a build, and the way it
+    /// fails quietly is a zero: `@0s` is 1970, which is a date, and two logs sharing it
+    /// read like two runs of one binary. So both numbers are checked against the file
+    /// the string claims to name - the byte count for equality, the mtime for being this
+    /// century's and not in the future.
+    #[test]
+    fn the_footer_names_the_binary_that_printed_it() {
+        let stamp = exe_stamp();
+        let Some(rest) = stamp.strip_prefix("exe=") else {
+            panic!("{stamp:?} 不以 `exe=` 开头");
+        };
+        let Some((bytes, rest)) = rest.split_once(" B @") else {
+            panic!("{stamp:?} 里没有 ` B @`");
+        };
+        let Some(seconds) = rest.strip_suffix('s') else {
+            panic!("{stamp:?} 不以 `s` 收尾");
+        };
+        let Ok(bytes) = bytes.parse::<u64>() else {
+            panic!("{bytes:?} 不是体积的数字");
+        };
+        let Ok(seconds) = seconds.parse::<u64>() else {
+            panic!("{seconds:?} 不是 mtime 的数字");
+        };
+        let measured = std::fs::metadata(std::env::current_exe().unwrap()).unwrap();
+        assert_eq!(bytes, measured.len(), "{stamp:?} 的体积不是这个文件的");
+        assert!(seconds > 1_577_836_800, "{stamp:?} 的 mtime 早于 2020 年");
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(seconds <= now + 60, "{stamp:?} 的 mtime 在未来");
+    }
 }

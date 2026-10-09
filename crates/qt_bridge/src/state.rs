@@ -243,12 +243,14 @@ impl PinState {
     /// ([`crate::save`]), so the two doors read `[output] jpeg_quality`, answer in the
     /// same Chinese sentence and name the pixels a format without alpha threw away.
     /// The extension picks the format, so `core::encode`'s ICO-downscale and
-    /// JPG-flatten rules apply on the way; a name without one becomes the configured
-    /// format rather than PNG, which is what P35 changed about this door.
-    pub fn save_image(&self, id: PinId, path: &str) -> Result<String, String> {
+    /// JPG-flatten rules apply on the way; a name without one takes the format the
+    /// dialog was showing (`chosen`), and only when that offers nothing the configured
+    /// one - which is the half P35 fixed, widened by §10 第 40 项 ② because PRD §5.5.5
+    /// has the user choosing 格式 in that dialog too.
+    pub fn save_image(&self, id: PinId, path: &str, chosen: &str) -> Result<String, String> {
         let export = crate::settings::export();
         let Some(done) = self.with_rendered(id, |frame| {
-            match crate::save::write(frame, path, &export, "贴图") {
+            match crate::save::write(frame, path, &export, "贴图", chosen) {
                 Ok(said) => Ok(said),
                 Err(crate::save::Refusal::BadName(e)) => Err(e),
                 Err(crate::save::Refusal::Write(e)) => {
@@ -850,7 +852,7 @@ pub fn clipboard_selftest() -> (Check, String) {
     }
 
     let file = std::env::temp_dir().join("falconshot-clipcheck.png");
-    let saved = with(|s| s.save_image(id, &file.to_string_lossy()));
+    let saved = with(|s| s.save_image(id, &file.to_string_lossy(), ""));
     let again = saved
         .as_ref()
         .ok()

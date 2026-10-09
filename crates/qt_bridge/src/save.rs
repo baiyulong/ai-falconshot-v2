@@ -79,6 +79,47 @@ fn percent_decode(text: &str) -> String {
     String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
 }
 
+/// The format a name without an extension takes.
+///
+/// `chosen` is the extension text of the filter the dialog was showing when the name
+/// was typed - `png`, `jpg`, or a door's `png,jpg` when one filter offers several
+/// spellings. PRD §5.5.5's third step is "选择目录、文件名和格式", so the filter is
+/// part of what the user chose and it outranks `[output] format`; the configured one
+/// is what is left when no filter names a format this app can write, which includes
+/// the empty text a dialog answers with before anything is selected (§10 第 40 项 ②
+/// measured that shape as `||-1`: no name, no extensions, index -1).
+///
+/// First recognizable wins rather than the most frequent: a filter that offers
+/// `png, jpg` shows the user that *both* are this format's spellings, and the name
+/// they typed has no way to say which.
+pub fn filter_format(chosen: &str) -> Option<encode::Format> {
+    chosen
+        .split([' ', ',', ';', '.'])
+        .find_map(encode::Format::from_ext)
+}
+
+/// Which encoder actually ran, read off the file's own first bytes.
+///
+/// The name says what the door *meant* to write; this says what landed. Both gauges need
+/// the second, because a row that only looked for `shot.jpg` would pass on a PNG written
+/// under a JPEG name - which is exactly the failure §10 第 40 项 ② is out to catch, since
+/// the configured format is PNG on this machine and a door that ignored the dialog's
+/// filter would still answer "已保存到 …jpg" if the suffix were the only evidence.
+///
+/// Only the three formats the two dialogs offer are recognisable: PNG, JPEG and BMP each
+/// start with a fixed signature, and TGA has none worth trusting in eight bytes.
+pub fn written_as(path: &std::path::Path) -> Option<encode::Format> {
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut head = [0u8; 4];
+    std::io::Read::read_exact(&mut file, &mut head).ok()?;
+    match head {
+        [0x89, b'P', b'N', b'G'] => Some(encode::Format::Png),
+        [0xff, 0xd8, 0xff, _] => Some(encode::Format::Jpg),
+        [b'B', b'M', _, _] => Some(encode::Format::Bmp),
+        _ => None,
+    }
+}
+
 /// Writes `frame` to the name the user gave, and returns the sentence to say about it.
 ///
 /// `subject` is what the picture is called *from the caller's side* - 选区 behind the
@@ -86,26 +127,32 @@ fn percent_decode(text: &str) -> String {
 /// clause. It is a parameter rather than fixed wording because a sentence that says
 /// "选区" about a floating window is a sentence nobody checked, which is exactly how the
 /// English one got there.
+///
+/// `chosen` is the dialog's own filter text, and only a name that carries no extension
+/// can consult it: see [`filter_format`].
 pub fn write(
     frame: &Frame,
     typed: &str,
     export: &EncodeOptions,
     subject: &str,
+    chosen: &str,
 ) -> Result<String, Refusal> {
     let named = local_path(typed);
     let path = std::path::Path::new(named.as_ref());
-    // An extension is the user's choice; a bare name is the configured format, because
-    // the dialog was showing a format while they typed.
+    // An extension is the user's choice; a bare name is the format the dialog was
+    // showing while they typed, and only when that names nothing is it the configured
+    // one (`[output] format`).
     let (target, format) = match path.extension() {
         Some(ext) => (
             path.to_path_buf(),
             encode::Format::from_ext(&ext.to_string_lossy()),
         ),
         None => {
+            let wanted = filter_format(chosen).unwrap_or(export.format);
             let mut suffixed = path.as_os_str().to_os_string();
             suffixed.push(".");
-            suffixed.push(export.format.ext());
-            (std::path::PathBuf::from(suffixed), Some(export.format))
+            suffixed.push(wanted.ext());
+            (std::path::PathBuf::from(suffixed), Some(wanted))
         }
     };
     let Some(format) = format else {
@@ -208,6 +255,7 @@ mod tests {
                     ..Default::default()
                 },
                 "贴图",
+                "",
             )
             .expect("write");
             assert!(said.contains("已保存到"), "{said}");
@@ -245,6 +293,7 @@ mod tests {
             &pin.to_string_lossy(),
             &EncodeOptions::default(),
             "贴图",
+            "",
         )
         .expect("write");
         assert!(
@@ -265,6 +314,7 @@ mod tests {
             &sel.to_string_lossy(),
             &EncodeOptions::default(),
             "选区",
+            "",
         )
         .expect("write");
         assert!(
@@ -283,6 +333,7 @@ mod tests {
             &png.to_string_lossy(),
             &EncodeOptions::default(),
             "贴图",
+            "",
         )
         .expect("write");
         assert!(
@@ -313,6 +364,7 @@ mod tests {
                     ..Default::default()
                 },
                 "贴图",
+                "",
             )
             .expect("write");
             let named = dir.join(format!("shot.{ext}"));
@@ -328,6 +380,117 @@ mod tests {
         }
     }
 
+    /// The filter outranks the setting (§10 第 40 项 ②, PRD §5.5.5 step 3's "选择目录、文件名
+    /// 和格式"). Every leg below is graded against a `[output] format` that *disagrees* with
+    /// the filter handed to it, because the config pinned for these runs says
+    /// `format = "png"`: a rule that ignored the dialog and answered PNG would pass a leg
+    /// that also expected PNG, and the round would have written down a rule it never
+    /// measured. The magic bytes are read as well as the name for the same reason - a PNG
+    /// wearing a `.jpg` name is a lie with a suffix on it.
+    #[test]
+    fn a_bare_name_takes_the_filter_the_dialog_was_showing() {
+        let frame = textured(48, 32);
+        for (filter, config, want) in [
+            ("*.png", Format::Bmp, Format::Png),
+            ("*.jpg", Format::Png, Format::Jpg),
+            ("*.bmp", Format::Png, Format::Bmp),
+            ("*.png *.jpg", Format::Bmp, Format::Png),
+        ] {
+            let dir = sandbox("filter");
+            let typed = dir.join("shot");
+            let said = write(
+                &frame,
+                &typed.to_string_lossy(),
+                &EncodeOptions {
+                    format: config,
+                    ..Default::default()
+                },
+                "贴图",
+                filter,
+            )
+            .expect("write");
+            let named = dir.join(format!("shot.{}", want.ext()));
+            assert!(named.exists(), "{filter}: nothing at {named:?}: {said}");
+            assert_eq!(
+                written_as(&named),
+                Some(want),
+                "{filter}: the name is right but a different encoder ran: {said}"
+            );
+            assert!(
+                said.contains(&format!("shot.{}", want.ext())),
+                "{filter}: {said}"
+            );
+            assert_eq!(
+                std::fs::read_dir(&dir)
+                    .expect("dir")
+                    .filter_map(Result::ok)
+                    .count(),
+                1,
+                "{filter}: a second file appeared: {said}"
+            );
+        }
+    }
+
+    /// The other side of the same rule: a filter that names no format leaves the choice
+    /// where it was. The empty text is not a hypothetical - P40 read `||-1` off a dialog
+    /// that had not selected a filter, so `""` is one of the shapes a door can hand this
+    /// owner, and `*.*` is what a "所有文件" entry carries.
+    #[test]
+    fn a_filter_that_names_no_format_leaves_the_setting_to_answer() {
+        let frame = textured(32, 24);
+        for (filter, want) in [
+            ("", Format::Bmp),
+            ("*.*", Format::Png),
+            ("所有文件 (*)", Format::Png),
+        ] {
+            assert_eq!(filter_format(filter), None, "{filter:?} named one");
+            let dir = sandbox("nofilter");
+            let typed = dir.join("shot");
+            let said = write(
+                &frame,
+                &typed.to_string_lossy(),
+                &EncodeOptions {
+                    format: want,
+                    ..Default::default()
+                },
+                "贴图",
+                filter,
+            )
+            .expect("write");
+            let named = dir.join(format!("shot.{}", want.ext()));
+            assert!(named.exists(), "{filter:?}: nothing at {named:?}: {said}");
+            assert_eq!(written_as(&named), Some(want), "{filter:?}: {said}");
+        }
+        // And the readings the two legs above are made of.
+        assert_eq!(filter_format("*.png"), Some(Format::Png));
+        assert_eq!(filter_format("*.jpeg"), Some(Format::Jpg));
+        assert_eq!(filter_format("*.PNG"), Some(Format::Png));
+    }
+
+    /// The filter is a fallback and not a rewrite: an extension the user typed is their own
+    /// choice and outranks the menu, which is the reading P34 recorded when it declined to
+    /// second-guess a `.jpg` name behind the mask. A leg that let the filter win here would
+    /// silently re-encode a picture the user had already named.
+    #[test]
+    fn a_typed_extension_outranks_the_filter_showing() {
+        let dir = sandbox("typed");
+        let typed = dir.join("shot.png");
+        let said = write(
+            &textured(24, 16),
+            &typed.to_string_lossy(),
+            &EncodeOptions {
+                format: Format::Bmp,
+                ..Default::default()
+            },
+            "贴图",
+            "*.jpg",
+        )
+        .expect("write");
+        assert_eq!(written_as(&typed), Some(Format::Png), "{said}");
+        assert!(said.contains("shot.png"), "{said}");
+        assert!(!dir.join("shot.jpg").exists(), "{said}");
+    }
+
     /// The rungs that answer before a byte is written must not leave a file behind -
     /// and a refused name is the user's own doing, so it stands without the tail each
     /// caller adds about the picture still being there.
@@ -340,6 +503,7 @@ mod tests {
             &odd.to_string_lossy(),
             &EncodeOptions::default(),
             "贴图",
+            "",
         )
         .expect_err("a format this app cannot write was accepted");
         match err {
@@ -370,6 +534,7 @@ mod tests {
             &dir.join("shot.png").join("inner.png").to_string_lossy(),
             &EncodeOptions::default(),
             "贴图",
+            "",
         )
         .expect_err("a write into a file was accepted");
         match err {
@@ -394,6 +559,7 @@ mod tests {
             &ico.to_string_lossy(),
             &EncodeOptions::default(),
             "贴图",
+            "",
         )
         .expect("write");
         let back = encode::decode_file(&ico).expect("decode");
@@ -422,8 +588,14 @@ mod tests {
             "file:///{}/shot.png",
             dir.to_string_lossy().replace('\\', "/")
         );
-        let said =
-            write(&textured(24, 16), &typed, &EncodeOptions::default(), "贴图").expect("write");
+        let said = write(
+            &textured(24, 16),
+            &typed,
+            &EncodeOptions::default(),
+            "贴图",
+            "",
+        )
+        .expect("write");
         assert!(plain.exists(), "{typed} did not reach {plain:?}: {said}");
         assert!(
             said.contains(&plain.to_string_lossy().to_string()),
@@ -490,7 +662,7 @@ mod tests {
             "file:///{}/shot.qqq",
             dir.to_string_lossy().replace('\\', "/")
         );
-        let err = write(&textured(8, 8), &odd, &EncodeOptions::default(), "贴图")
+        let err = write(&textured(8, 8), &odd, &EncodeOptions::default(), "贴图", "")
             .expect_err("a format this app cannot write was accepted");
         match err {
             Refusal::BadName(said) => {

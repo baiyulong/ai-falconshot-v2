@@ -582,10 +582,16 @@ impl MaskState {
     /// cost. A pre-write confirm rung - the other way to read those lines - is a
     /// decision this round records rather than makes.
     ///
+    /// `chosen` is the extension text of the filter the dialog was showing when the name
+    /// was typed, and it decides a name that carries no extension. PRD §5.5.5's third
+    /// step has the user choosing 目录、文件名 **和格式** in that same dialog, so the
+    /// filter outranks `[output] format` - the configured one is what is left when the
+    /// dialog has offered no format to honour (§10 第 40 项 ②).
+    ///
     /// Like 复制, this does not end the flow: the freeze, the ink and the sentence all
     /// go with the mask, and a save that closed the overlay would take the picture the
     /// user may still want to copy with it.
-    pub fn save_out(&mut self, path: &str) -> bool {
+    pub fn save_out(&mut self, path: &str, chosen: &str) -> bool {
         if !self.has_selection() {
             self.message = "还没有选区：先把要保存的范围拖出来。".to_string();
             return false;
@@ -594,7 +600,7 @@ impl MaskState {
             self.message = "选区的画面拼不出来：截图还在，可以再保存一次。".to_string();
             return false;
         };
-        match crate::save::write(&frame, path, &self.export, "选区") {
+        match crate::save::write(&frame, path, &self.export, "选区", chosen) {
             Ok(said) => {
                 self.message = said;
                 true
@@ -1340,7 +1346,7 @@ mod tests {
             vec![slot(0, PhysRect::new(0, 0, 640, 480), 1.0)],
             PhysRect::default(),
         );
-        assert!(!m.save_out(&png.to_string_lossy()));
+        assert!(!m.save_out(&png.to_string_lossy(), ""));
         assert!(
             m.message.contains("还没有选区"),
             "an empty hole said {:?}",
@@ -1350,7 +1356,7 @@ mod tests {
 
         // A hole the user drew, on a layer that was never given frames.
         m.hole = PhysRect::new(10, 20, 100, 80);
-        assert!(!m.save_out(&png.to_string_lossy()));
+        assert!(!m.save_out(&png.to_string_lossy(), ""));
         assert!(
             m.message.contains("拼不出来"),
             "a hole with no frames said {:?}",
@@ -1363,7 +1369,7 @@ mod tests {
         // formats rather than the state.
         let mut m = savable(PhysRect::new(10, 20, 100, 80));
         let odd = dir.join("selection.qqq");
-        assert!(!m.save_out(&odd.to_string_lossy()));
+        assert!(!m.save_out(&odd.to_string_lossy(), "*.png"));
         assert!(
             m.message.contains("不是本程序会写的格式"),
             "an unknown extension said {:?}",
@@ -1391,7 +1397,7 @@ mod tests {
         let total = (hole.w * hole.h) as usize;
 
         let png = dir.join("selection.png");
-        assert!(m.save_out(&png.to_string_lossy()), "{:?}", m.message);
+        assert!(m.save_out(&png.to_string_lossy(), ""), "{:?}", m.message);
         assert!(m.message.contains("已保存到"), "{:?}", m.message);
         assert!(
             !m.message.contains("透明"),
@@ -1407,7 +1413,7 @@ mod tests {
         );
 
         let jpg = dir.join("selection.jpg");
-        assert!(m.save_out(&jpg.to_string_lossy()), "{:?}", m.message);
+        assert!(m.save_out(&jpg.to_string_lossy(), ""), "{:?}", m.message);
         assert!(
             m.message.contains(&format!("{total} px 透明")),
             "the prompt did not name the size of what it filled: {:?}",
@@ -1422,8 +1428,9 @@ mod tests {
         );
     }
 
-    /// §5.5.5's dialog is showing a format while the user types a bare name: the
-    /// configured format wins, and the file that appears is the one the sentence names.
+    /// §5.5.5's dialog is showing a format while the user types a bare name: when the
+    /// filter names nothing the configured format wins, and the file that appears is the
+    /// one the sentence names.
     ///
     /// BMP is the format under test, not JPG, because the prompt must key off "this
     /// format has no alpha" rather than off the one format the PRD happens to name.
@@ -1433,7 +1440,7 @@ mod tests {
         let mut m = savable(PhysRect::new(10, 20, 100, 80));
         m.export.format = encode::Format::Bmp;
         let bare = dir.join("selection");
-        assert!(m.save_out(&bare.to_string_lossy()), "{:?}", m.message);
+        assert!(m.save_out(&bare.to_string_lossy(), ""), "{:?}", m.message);
         let written = dir.join("selection.bmp");
         assert!(written.exists(), "the bare name did not become {written:?}");
         assert!(
@@ -1446,6 +1453,51 @@ mod tests {
             m.message
         );
         assert!(m.message.contains("透明"), "{:?}", m.message);
+    }
+
+    /// The same door one rung further along (§10 第 40 项 ②): the mask's `另存为` now hands
+    /// `save::write` the extension text of the filter the dialog was showing, so a bare
+    /// name takes *that* format and `[output] format` speaks only when the filter does not.
+    ///
+    /// The configured format is BMP here while the filter says PNG, and the second leg says
+    /// JPG - two formats the setting would never have chosen - so a door that drops `chosen`
+    /// on the way to the owner, which is exactly the argument shape this round changed,
+    /// cannot pass. The sentence is read as well as the file: a mask that wrote
+    /// `selection.jpg` and named `selection.png` in `message` would still be a mask that
+    /// lied to the user.
+    #[test]
+    fn the_dialogs_filter_gives_a_bare_name_its_format() {
+        for (filter, want) in [("*.png", "png"), ("*.jpg", "jpg")] {
+            let dir = sandbox("filter-door");
+            let mut m = savable(PhysRect::new(10, 20, 100, 80));
+            m.export.format = encode::Format::Bmp;
+            let bare = dir.join("selection");
+            assert!(
+                m.save_out(&bare.to_string_lossy(), filter),
+                "{:?}",
+                m.message
+            );
+            let written = dir.join(format!("selection.{want}"));
+            assert!(
+                written.exists(),
+                "{filter}: the bare name did not become {written:?}; it said {:?}",
+                m.message
+            );
+            assert_eq!(
+                crate::save::written_as(&written),
+                crate::save::filter_format(filter),
+                "{filter}: the name is right but a different encoder ran"
+            );
+            assert!(
+                m.message.contains(&format!("selection.{want}")),
+                "{filter}: the sentence named {:?}",
+                m.message
+            );
+            assert!(
+                !dir.join("selection.bmp").exists(),
+                "{filter}: the configured format was written as well"
+            );
+        }
     }
 
     /// §5.3.9: arrows, with the step and the modifier this project chose (the PRD
