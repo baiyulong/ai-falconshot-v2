@@ -12,18 +12,21 @@
 //! nothing that was graded had ever run it.
 //!
 //! The leg is therefore *QML's*, and this file only holds the plan and grades the
-//! lines [`report`] receives. Nothing here pretends to click the mouse: the gauge
-//! calls the same two statements `PinWindow.qml`'s own handlers call, which is what
-//! makes the sentences the user would see rather than a paraphrase of them.
+//! lines [`report`] receives. Since P38 it no longer stops at calling the door's own
+//! statements: one leg opens the real 另存为 dialog, has that native window's default
+//! button pressed with `BM_CLICK`, and reads what `onAccepted` left on disk. That is
+//! still not a synthetic click - it is the same message the shell's own mouse handling
+//! sends, to a dialog this process is showing, found by pid so that no other program's
+//! window is ever a target.
 //!
 //! ## What it does not claim
 //!
-//! `saveAs.accept()` is asked whether a dialog that was never `open()`ed can still
-//! fire its own `accepted` signal. That is a question about Qt, not a promise the
-//! product makes to a user, so its row answers `SKIP` when the dialog stays quiet -
-//! the two file writes below then carry the measurement, and the reading of
-//! `currentFile` sits in the log either way. A witness that needs a human is not a
-//! defect, and P36's whole point was to stop grading the difference as one.
+//! The press is a message to a button, not a mouse event at a coordinate: where the
+//! dialog sat on the screen, and whether a human could have reached it there, are not
+//! what §10 第 38 项 ① asks. And the question that turned out to be about Qt rather
+//! than about the product - can a dialog that was never `open()`ed still fire its own
+//! `accepted`? - is reported as a note now, because whatever it answers says something
+//! about this Qt and nothing about a promise to a user.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
@@ -65,15 +68,167 @@ pub const NEVER_OFFSET: PinId = 999_999;
 /// without either file looking wrong.
 pub const LEG_DELAY_MS: i32 = 400;
 
-/// The shortest `--pin` run that can have measured anything: the leg's delay, then
-/// the same again for the window to be exposed, two files written and the lines to
-/// arrive. A run the user asked for shorter than this is raised rather than refused -
-/// it asked for the mode, and the mode simply needs that much time.
-pub const MIN_MS: i32 = 2 * LEG_DELAY_MS;
+/// How many times the leg may ask the shell for its button before it stops asking.
+///
+/// The wait is not a courtesy: Qt returns from `open()` with the dialog marked visible
+/// while Win32 has not made the `#32770` yet, and the press has to land on that window.
+/// Three runs of P38 say when it appears - one had it at the third wait, one at the
+/// fourth, and one never had it inside four, which is the same measurement read as a
+/// passing run and a failing one by nothing but the cap. Ten waits is two and a half
+/// times the slowest arrival seen, and the cap still has to exist: a shell that never
+/// shows its dialog must end the run with a `pushed=no`, not with an endless poll.
+///
+/// The number travels to QML inside [`plan_line`] rather than being written there too,
+/// and [`LEG_WAITS`] is derived from it, because these three files otherwise hold three
+/// copies of one schedule.
+pub const PUSH_TRIES_MAX: i32 = 10;
 
-/// The five names this run owns inside [`DIR`], in the order the plan keeps them.
-/// `never.png` is written by the leg that must *not* write it.
-const NAMES: [&str; 5] = ["qml.png", "qml.jpg", "rust.png", "rust.jpg", "never.png"];
+/// The waits the leg actually spends, once its window exists: one for the exposure and
+/// the leg's first half, up to [`PUSH_TRIES_MAX`] for the native dialog's window, one for
+/// the tail that reads what `onAccepted` left behind, and one more after the leg says it
+/// is finished, which is the grace [`report`] arms so the run ends when the measurement
+/// does rather than when a guessed budget runs out. They are phases rather than one
+/// straight run because a door that is opened by a real click cannot be driven inside a
+/// single event-loop turn: the click has to land while the dialog's own loop is running.
+pub const LEG_WAITS: i32 = PUSH_TRIES_MAX + 3;
+
+/// What the leg is allowed to spend *besides* its own schedule.
+///
+/// The floor's clock does not start where the plan is armed: `main` arms it just before
+/// `app.exec()`, which is after the QML document has loaded and reached
+/// `Component.onCompleted` (stamped `loaded`). So this grace is slack for whatever else
+/// the event loop has to do before the leg's first wait fires - not for start-up, and
+/// certainly not for `--ink`'s script, which runs before the engine exists at all and
+/// took 15.6 s of the 19.7 s the P38 ink leg's `起步` span shows.
+///
+/// Three runs of P38 bracket the arm→leg gap itself: the one whose tail went missing
+/// placed it between 800 and 1200 ms, and the two that printed it measured **2917 ms** and
+/// **3787 ms** for the same distance - so that gap is neither small nor stable, and the
+/// report prints what the current run measured rather than what this paragraph claims.
+pub const STARTUP_GRACE_MS: i32 = 5000;
+
+/// The shortest `--pin` run that can have measured anything - a *backstop*, not the
+/// schedule: the leg ends itself one wait after it prints `done` (see [`report`]), so a
+/// run that gets there early does not sit for the rest of this. What the number is for is
+/// the run that never gets there, because a truncated leg reports its own absence as
+/// several failing rows and that is the most expensive mistake this gauge can make.
+///
+/// A run the user asked for shorter than this is raised rather than refused - it asked
+/// for the mode, and the mode simply needs that much time. `main` prints both the
+/// requested and the effective number (§10 第 38 项 ②), and the report prints how long the
+/// run really was.
+pub const MIN_MS: i32 = STARTUP_GRACE_MS + LEG_WAITS * LEG_DELAY_MS;
+
+/// The four intervals one leg's timing is made of, and who ended the run.
+///
+/// Both doors read the same four stamps and the same schedule, so the arithmetic lives
+/// here once: `--pin`'s leg and `--ink`'s mask leg differ only in which names were stamped.
+///
+/// The question this answers is *"which of these numbers was too small?"* - and the first
+/// P38 answer to it was wrong. `全程` measured from the plan's arming against the floor
+/// said `是地板收尾的` for an ink leg that had in fact said `done` 3.5 s earlier; the floor
+/// never competes with start-up (see [`STARTUP_GRACE_MS`]) and the run had closed on the
+/// leg's own word. So the attribution is read off `done`'s own two intervals rather than
+/// off a total: the wait between `done` and the read-back is the leg's tail, and anything
+/// longer than that is the backstop having arrived first.
+pub(crate) struct LegTiming {
+    /// 种旗标 → 腿开口.
+    pub start: Option<u64>,
+    /// 腿开口 → 那一句 `done`.
+    pub own: Option<u64>,
+    /// `done` → 读表.
+    pub tail: Option<u64>,
+    /// 种旗标 → 读表.
+    pub total: Option<u64>,
+    /// The one wait the leg arms its own end with.
+    pub delay: u64,
+    /// The waits the schedule spends.
+    pub waits: u64,
+    pub grace: u64,
+    pub min: u64,
+}
+
+impl LegTiming {
+    /// Read the four intervals out of `state`, by stamp name.
+    pub(crate) fn read(
+        arm: &str,
+        leg: &str,
+        done: &str,
+        end: &str,
+        delay: i32,
+        waits: i32,
+        grace: i32,
+        min: i32,
+    ) -> Self {
+        Self {
+            start: state::between(arm, leg),
+            own: state::between(leg, done),
+            tail: state::between(done, end),
+            total: state::between(arm, end),
+            delay: delay as u64,
+            waits: waits as u64,
+            grace: grace as u64,
+            min: min as u64,
+        }
+    }
+
+    pub(crate) fn line(&self) -> String {
+        let Some(start) = self.start else {
+            return "没有读数：那条腿一次也没说话".to_string();
+        };
+        let head = format!(
+            "起步 {start} ms（种旗标→腿开口；地板的钟从 loaded 之后才走，另留 {} ms 松弛），",
+            self.grace
+        );
+        let sched = format!("{} 次 × {} ms 的日程", self.waits, self.delay);
+        match (self.own, self.tail, self.total) {
+            (Some(own), Some(tail), Some(total)) => {
+                let who = if tail <= 2 * self.delay {
+                    format!(
+                        "是腿自己那一句 done 之后 {tail} ms 收的尾，地板（{} ms）没插手",
+                        self.min
+                    )
+                } else {
+                    format!(
+                        "done 之后过了 {tail} ms 才收，超过 {} ms 的两等，是地板先到",
+                        self.delay
+                    )
+                };
+                format!(
+                    "{head}腿自己 {own} ms（{sched}，说完了 done），收尾 {tail} ms —— {who}；全程 {total} ms"
+                )
+            }
+            (own, _, Some(total)) => format!(
+                "{head}腿没有说 done（{sched}，说到 {own:?} ms 为止），全程 {total} ms —— \
+                 是地板（{} ms）收尾的，尾下那几行是没读到而不是读错",
+                self.min
+            ),
+            (own, _, None) => format!("{head}读表那一步没有 stamp（腿说到 {own:?} ms 为止）"),
+        }
+    }
+}
+
+/// The six names this run owns inside [`DIR`], in the order the plan keeps them.
+/// `never.png` is written by the leg that must *not* write it; `dialog.png` is written
+/// by the door a real click closed, and is the only file here whose name the gauge did
+/// not choose - the dialog picked the extension off its own filter list.
+const NAMES: [&str; 6] = [
+    "qml.png",
+    "qml.jpg",
+    "rust.png",
+    "rust.jpg",
+    "never.png",
+    "dialog.png",
+];
+
+/// The name the real-click leg hands the dialog, as a `currentFile` without an
+/// extension. Whether the dialog then appends the selected filter's extension is
+/// measured, not assumed: it is the `pin save via real click` row that says whether
+/// `dialog.png` is what arrived. The stem travels in the plan rather than being written
+/// in both languages, because a pair of copies of one string is a pair that drifts - and
+/// because there is no `fileName` to write it into, which P38's probe F found by
+/// assignment (`Cannot assign to non-existent property "fileName"`).
+const DIALOG_STEM: &str = "dialog";
 
 /// The formats §5.9.17's dialog offers, in the order `PinWindow.qml` lists them.
 /// The extension is what picks the encoder, so this list is also the list of things
@@ -95,6 +250,7 @@ struct Plan {
     rust_png: PathBuf,
     rust_jpg: PathBuf,
     never: PathBuf,
+    dialog: PathBuf,
     id: PinId,
     bad: PinId,
     /// What the pin asked Qt to show, in device pixels, as the state machine saw it.
@@ -113,6 +269,7 @@ impl Plan {
             rust_png: PathBuf::new(),
             rust_jpg: PathBuf::new(),
             never: PathBuf::new(),
+            dialog: PathBuf::new(),
             id: 0,
             bad: 0,
             rect: None,
@@ -138,42 +295,72 @@ fn with<R>(f: impl FnOnce(&mut Plan) -> R) -> R {
 /// `PinWindow.qml` knows to stay out of this.
 ///
 /// The fields are in one order and QML reads them by index, so both are written out
-/// here: `目录 | qml.png | qml.jpg | never.png | 贴图 id | 不存在的 id | 延迟 ms`. The
-/// id that has no pin travels with the plan rather than being recomputed in QML,
-/// because `NEVER_OFFSET` is this file's business and a second copy of a number in
-/// the other language is a pair that drifts without either side looking wrong.
+/// here: `目录 | qml.png | qml.jpg | never.png | 贴图 id | 不存在的 id | 延迟 ms |
+/// 对话框默认名 | 推开尝试上限`. The id that has no pin travels with the plan rather than
+/// being recomputed in QML, because `NEVER_OFFSET` is this file's business and a second
+/// copy of a number in the other language is a pair that drifts without either side
+/// looking wrong. The last two fields are the same argument for a string and for a
+/// schedule: QML types the name into the dialog and this file reads the file it produces,
+/// and QML counts the waits while this file budgets them - all three only agree if the
+/// values were handed over rather than written twice.
 pub fn plan_line() -> String {
     with(|p| {
         if p.dir.as_os_str().is_empty() {
             return String::new();
         }
         format!(
-            "{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
             p.dir.display(),
             p.qml_png.display(),
             p.qml_jpg.display(),
             p.never.display(),
             p.id,
             p.bad,
-            LEG_DELAY_MS
+            LEG_DELAY_MS,
+            DIALOG_STEM,
+            PUSH_TRIES_MAX
         )
     })
 }
 
 /// One line QML read off the door. `key|value`, graded by [`measure`].
+///
+/// The first one is stamped, because it is the leg's start and the interval from the plan's
+/// arming to it is what the run's `起步` reading prints. The `done` line is stamped for the
+/// same reason in the other direction: it is the leg's last word, and the interval from it
+/// to the read-back is the only reading that says which of the two closers fired - the leg's
+/// own 400 ms grace armed here, or `main`'s floor armed just before `app.exec()`.
+///
+/// The `done` line arms the run's own end, one wait later: the leg has then said
+/// everything it has to say, and the remaining wait is only for the last readings to
+/// reach the plan. `main`'s floor stays underneath as the backstop that makes a leg which
+/// never arrives a finite run - P38's first passing-looking run is the counter-example,
+/// where a dialog's own modal loop outlived the floor and the tail survived on luck
+/// rather than on arithmetic.
 pub fn report(line: &str) {
-    with(|p| p.lines.push(line.to_string()));
+    let done = matches!(line.split_once('|'), Some((key, _)) if key == "done");
+    with(|p| {
+        if p.lines.is_empty() {
+            state::stamp("pin leg");
+        }
+        p.lines.push(line.to_string());
+    });
+    if done {
+        state::stamp("pin done");
+        state::quit_after(LEG_DELAY_MS);
+    }
 }
 
 /// Plant the pin and the plan. Must run before the QML engine: the window's
 /// `Component.onCompleted` reads the plan, and a delegate with no plan has nothing
 /// to measure.
 pub fn plant() -> Result<String, String> {
+    state::stamp("pin arm");
     let mut dir = std::env::temp_dir();
     dir.push(DIR);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let [qml_png, qml_jpg, rust_png, rust_jpg, never] = NAMES.map(|n| dir.join(n));
-    for p in [&qml_png, &qml_jpg, &rust_png, &rust_jpg, &never] {
+    let [qml_png, qml_jpg, rust_png, rust_jpg, never, dialog] = NAMES.map(|n| dir.join(n));
+    for p in [&qml_png, &qml_jpg, &rust_png, &rust_jpg, &never, &dialog] {
         let _ = std::fs::remove_file(p);
     }
 
@@ -193,22 +380,56 @@ pub fn plant() -> Result<String, String> {
         p.rust_png = rust_png;
         p.rust_jpg = rust_jpg;
         p.never = never;
+        p.dialog = dialog;
         p.id = id;
         p.bad = bad;
         p.rect = Some(rect);
         p.lines.clear();
     });
     Ok(format!(
-        "贴图 {id} 的窗在 {rect}，写进 {}，另有一个不存在的 id {bad}",
-        dir.display()
+        "贴图 {id} 的窗在 {rect}，写进 {}，另有一个不存在的 id {bad}，真点击那一格交给 {} 的对话框自己取名",
+        dir.display(),
+        DIALOG_STEM
     ))
+}
+
+/// What [`crate::session`]'s `pushDialogButton` answers: the C++ shim's one-line
+/// report of which window it found and what it pressed.
+///
+/// Only ever called by the gauge leg, and only while that leg has its own dialog up -
+/// the shim filters to this process's pid, so a `#32770` belonging to another program
+/// is not a target. There is no `push a specific hwnd` form of this call: the run has
+/// one dialog open and pressing a button the report does not name would be a click
+/// this file cannot account for.
+pub fn push_dialog_button() -> String {
+    shim::push_dialog_button()
+}
+
+/// Whether one push report describes the click this row is about.
+///
+/// Spelled out rather than reduced to `starts_with("pushed=yes")`, because `yes` is
+/// what the shim says whenever it found *a* button: the row is about whether a real
+/// native save dialog's default button was pressed, and that is three separate claims -
+/// that the window was a `#32770`, that the control pressed carried `IDOK`, and that
+/// the report names the dialog rather than some other window. A `#32770` with no
+/// `IDOK` button answers `pushed=no` and fails here rather than passing on one word.
+///
+/// The message's return value is printed in the report and deliberately not graded
+/// here: `BM_CLICK`'s return is undefined by the API, so a row that read it as success
+/// would be grading a number that means nothing. Whether the click *worked* is the
+/// `pin save via real click` row's business, which reads the file the dialog wrote.
+pub(crate) fn real_click(report: &str) -> bool {
+    report.starts_with("pushed=yes ")
+        && report.contains("class=[#32770]")
+        && report.contains("bid=1 ")
 }
 
 /// The value QML reported under one key, or `None` when that leg never spoke.
 ///
 /// The key is matched as a whole field rather than as a prefix, so a future `png2`
-/// cannot be read as `png`.
-fn said<'a>(lines: &'a [String], key: &str) -> Option<&'a str> {
+/// cannot be read as `png`. Shared with [`crate::annotate_check`], whose mask leg reports
+/// in the same shape and has the same reason not to read a prefix as a key.
+pub(crate) fn said<'a>(lines: &'a [String], key: &str) -> Option<&'a str> {
     lines.iter().find_map(|l| {
         let (k, v) = l.split_once('|')?;
         (k == key).then_some(v)
@@ -223,6 +444,19 @@ fn bytes(v: &Option<Vec<u8>>) -> String {
     v.as_ref()
         .map(|b| format!("{} B", b.len()))
         .unwrap_or_else(|| "没有文件".to_string())
+}
+
+/// The same file, allowing for the spelling the shell chose. The name the dialog hands
+/// back is its own writing - a drive letter it may case differently from `temp_dir()` -
+/// and `C:\` against `c:\` says nothing about which picture got saved.
+///
+/// Only this one comparison is folded. Every other path row here reads a name the gauge
+/// itself produced, where matching it exactly is the point of the row.
+fn same_file(a: &Path, b: &Path) -> bool {
+    fn key(p: &Path) -> String {
+        p.to_string_lossy().replace('\\', "/").to_ascii_lowercase()
+    }
+    !a.as_os_str().is_empty() && key(a) == key(b)
 }
 
 /// The window the state machine asked for, out of the top-levels Qt really made.
@@ -303,8 +537,9 @@ fn never_drawn(rep: &mut Report, key: &str, label: &str, prefix: &str, lines: &[
 
 /// The check itself, after the event loop has run and QML has reported.
 pub fn measure() -> (Check, String) {
+    state::stamp("pin end");
     let mut rep = Report::new();
-    let (id, bad, qml_png, qml_jpg, rust_png, rust_jpg, never, rect, lines) = with(|p| {
+    let (id, bad, qml_png, qml_jpg, rust_png, rust_jpg, never, dialog, rect, lines) = with(|p| {
         (
             p.id,
             p.bad,
@@ -313,6 +548,7 @@ pub fn measure() -> (Check, String) {
             p.rust_png.clone(),
             p.rust_jpg.clone(),
             p.never.clone(),
+            p.dialog.clone(),
             p.rect,
             p.lines.clone(),
         )
@@ -330,6 +566,23 @@ pub fn measure() -> (Check, String) {
         "pin leg ran",
         Check::from(keys.contains(&"done")),
         format!("{} 行：{}", lines.len(), keys.join(" ")),
+    );
+    // The run's own arithmetic, printed rather than trusted. Which of the two closers
+    // ended the run is a fact read off `done`'s own interval and not off a total - see
+    // [`LegTiming`], whose first reading of the ink leg got this wrong in this direction.
+    rep.note(
+        "量具计时",
+        LegTiming::read(
+            "pin arm",
+            "pin leg",
+            "pin done",
+            "pin end",
+            LEG_DELAY_MS,
+            LEG_WAITS,
+            STARTUP_GRACE_MS,
+            MIN_MS,
+        )
+        .line(),
     );
 
     let want = rect.unwrap_or(PhysRect::new(0, 0, 1, 1));
@@ -388,6 +641,41 @@ pub fn measure() -> (Check, String) {
         ),
     );
 
+    // Whether the native dialog was actually on the screen when something pressed its
+    // button. `dlg-open` is the same member read in the turn that called `open()` and
+    // is kept as a note: whether the shell comes up inside the call or one loop turn
+    // later is a fact about this Qt, not a promise the product makes.
+    rep.note(
+        "dlg visible 于 open()",
+        format!("{:?}", said(&lines, "dlg-open")),
+    );
+    rep.row(
+        "pin dialog opened",
+        Check::from(said(&lines, "dlg-shown") == Some("true")),
+        format!(
+            "按之前 visible={:?}；currentFolder {:?} currentFile {:?}",
+            said(&lines, "dlg-shown"),
+            said(&lines, "dlg-folder"),
+            said(&lines, "dlg-name")
+        ),
+    );
+
+    let push = said(&lines, "dlg-push").unwrap_or("");
+    // How many waits the press needed, and what each of the earlier ones saw. The count
+    // is not a grade - a door that took three waits still opened - but it is the
+    // difference between a press that was earned and one that was lucky, and the reasons
+    // are what say whether the cap was reached rather than the window found.
+    let tries = said(&lines, "dlg-push-tries").unwrap_or("<没有读数>");
+    rep.row(
+        "pin dialog pushed",
+        Check::from(real_click(push)),
+        format!("{push}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）"),
+    );
+    rep.note(
+        "push 每次尝试",
+        format!("{:?}", said(&lines, "dlg-push-log")),
+    );
+
     let (was, now) = (
         said(&lines, "accept-was").unwrap_or("<没有读数>"),
         said(&lines, "accept").unwrap_or("<没有读数>"),
@@ -395,14 +683,36 @@ pub fn measure() -> (Check, String) {
     let fired = now != was && (now.starts_with("已保存到") || now.starts_with("保存失败"));
     rep.row(
         "pin dialog accept",
-        if fired { Check::Pass } else { Check::Blocked },
+        if fired {
+            Check::Pass
+        } else if real_click(push) {
+            // The click happened and the sentence did not change: that is the door
+            // failing to open, not a question this run is unable to ask.
+            Check::Fail
+        } else {
+            Check::Blocked
+        },
         format!(
-            "未 open() 的窗 accept() 后 status {was:?} -> {now:?}（{}）",
+            "真点击前后 status {was:?} -> {now:?}（{}）",
             if fired {
-                "onAccepted 跑了"
+                "onAccepted 是那一下点击跑起来的"
+            } else if real_click(push) {
+                "点了，但 onAccepted 没跑"
             } else {
-                "onAccepted 没跑，下面两格改走同一句直接调用"
+                "没点成，这一格问不了"
             }
+        ),
+    );
+    // The pair that P37 measured, kept as a reading rather than a grade: what a call
+    // to `accept()` on a dialog that was never shown does. §10 第 38 项 ①'s point is
+    // that this is not the same question as the row above, and the two now have two
+    // pairs of keys.
+    rep.note(
+        "未 open() 就 accept()",
+        format!(
+            "{:?} -> {:?}",
+            said(&lines, "call-accept"),
+            said(&lines, "call-after")
         ),
     );
 
@@ -450,6 +760,51 @@ pub fn measure() -> (Check, String) {
         format!("{:?}", said(&lines, "jpg").unwrap_or("")),
     );
 
+    // The one file this run did not name. The dialog was handed a folder and a stem and
+    // chose the extension off its own filter list - measured in P38, so this row is the
+    // grade of that measurement rather than an assumption of it - and it is the only
+    // write in this report whose every step came from the door: the signal fired by a
+    // `BM_CLICK`, `onAccepted` read `selectedFile`, and the product's own `savePin` put
+    // the bytes there.
+    let dlg_bytes = read(&dialog);
+    let same_as_rust = dlg_bytes.is_some() && dlg_bytes == read(&rust_png);
+    let dlg_url = said(&lines, "dlg-accepted").unwrap_or("");
+    let dlg_landed = PathBuf::from(crate::save::local_path(dlg_url).into_owned());
+    // The name the dialog wrote, printed separately from the folder: the stem was the
+    // gauge's and the extension was the shell's choice, so the last component is the
+    // only part of this path that was not decided before the click.
+    let dlg_name = dlg_landed
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    rep.row(
+        "pin save via real click",
+        Check::from(
+            same_as_rust && same_file(&dlg_landed, &dialog) && now.starts_with("已保存到"),
+        ),
+        format!(
+            "对话框写 {dlg_name:?} 与 rust 那份字节一致={same_as_rust}；{dlg_url:?} 读成 {dlg_landed:?}，要求 {dialog:?}；那句 {now:?}"
+        ),
+    );
+    // The filter has a reader now. §10 第 37 项 ④ listed `selectedNameFilter` as a value
+    // with nothing that consumed it; the extension on the file above is that consumer,
+    // so the three readings of the member are printed together - before any dialog was
+    // shown, while one was up, and after the click closed it.
+    rep.note(
+        "filter 三次读数",
+        format!(
+            "未开 {:?} 开着 {:?} 关上 {:?}",
+            said(&lines, "filter"),
+            said(&lines, "dlg-shown-filter"),
+            said(&lines, "dlg-filter")
+        ),
+    );
+    rep.note(
+        "dlg visible 于尾",
+        format!("{:?}", said(&lines, "dlg-after")),
+    );
+    rep.note("dlg 信号那句", format!("{dlg_url:?}"));
+
     never_drawn(
         &mut rep,
         "never-copy",
@@ -494,7 +849,8 @@ pub fn measure() -> (Check, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::said;
+    use super::{real_click, said, same_file};
+    use std::path::Path;
 
     /// The keys are the entire protocol between QML and this file, so one key must not
     /// be read as another that merely starts the same way: a row grading the wrong
@@ -510,5 +866,60 @@ mod tests {
         assert_eq!(said(&lines, "png"), None);
         assert_eq!(said(&lines, "png2"), Some("甲"));
         assert_eq!(said(&lines, "jpg"), Some("乙"));
+    }
+
+    /// §10 第 38 项 ① grades one string: what the shim said it pressed. `pushed=yes`
+    /// alone would let this pass on *any* button of *any* window the walk happened to
+    /// like, so the three claims the row is about - a real `#32770`, the control id the
+    /// shell's own default button carries, and the report naming the dialog - each have
+    /// to be in the line.
+    ///
+    /// The controls are the two ways that shape fails for real, not strawmen: another
+    /// program's dialog, and a dialog whose default button is not the one asked for.
+    #[test]
+    fn only_a_default_button_of_a_real_save_dialog_counts_as_a_click() {
+        let measured = "pushed=yes dialog=0x1a2c class=[#32770] title=[另存为] dialogs=1 \
+                        desc=50 buttons=2 button=0x3c4d btitle=[&Save] bid=1 ret=0 visible_after=1";
+        assert!(real_click(measured), "{measured}");
+
+        // Nothing was pressed, because nothing of this process was on the screen.
+        let none = "pushed=no reason=no-visible-#32770-of-this-pid dialogs=0";
+        assert!(!real_click(none), "{none}");
+
+        // A button found in a window that is not a file dialog - the walk could report
+        // `pushed=yes` here and the run would have clicked something else entirely.
+        let wrong_window = "pushed=yes dialog=0x9 class=[Qt652QWindowIcon] title=[] \
+                            dialogs=1 desc=3 buttons=1 button=0xa btitle=[OK] bid=1 ret=0 visible_after=1";
+        assert!(!real_click(wrong_window), "{wrong_window}");
+
+        // The right class with the wrong control: `bid=1` is what makes it the default
+        // button, and a dialog can hold several `Button`s.
+        let wrong_button = "pushed=yes dialog=0x1 class=[#32770] title=[另存为] \
+                            dialogs=1 desc=50 buttons=2 button=0x2 btitle=[取消] bid=2 ret=0 visible_after=1";
+        assert!(!real_click(wrong_button), "{wrong_button}");
+
+        // The failure sentence the shim writes when the dialog has no enabled `IDOK`.
+        let no_button =
+            "pushed=no reason=no-enabled-idok-button dialogs=1 desc=50 buttons=2 title=[另存为]";
+        assert!(!real_click(no_button), "{no_button}");
+    }
+
+    /// The name the dialog hands back is its own writing, so this one comparison folds
+    /// case and separators. It must still be able to say no: the control below is the
+    /// difference between the PNG the plan asked for and a JPG with somebody else's
+    /// pixels in it.
+    #[test]
+    fn a_dialog_can_spell_the_name_it_was_given_differently_but_not_differently_enough() {
+        let want = Path::new("C:\\Users\\a\\Temp\\falconshot-pin-gauge\\dialog.png");
+        assert!(same_file(
+            Path::new("c:/users/a/temp/falconshot-pin-gauge/dialog.png"),
+            want
+        ));
+        assert!(!same_file(
+            Path::new("C:\\Users\\a\\Temp\\falconshot-pin-gauge\\dialog.jpg"),
+            want
+        ));
+        // An empty reading is a leg that never spoke, not a file with a short name.
+        assert!(!same_file(Path::new(""), want));
     }
 }

@@ -23,7 +23,10 @@
 //! * `--pin <ms>` plants a pin and has *that window's own QML* walk the two items its
 //!   menu offers, then grades the sentences the door answered with and the files it
 //!   wrote. `--ink` measures what a pin looks like; this measures what pressing 另存为
-//!   says, which nothing had ever read back (§10 第 37 项 ①).
+//!   says, which nothing had ever read back (§10 第 37 项 ①). Since P38 one leg of it
+//!   opens the real dialog and presses that window's own default button, so a sentence
+//!   can be graded as arriving through the path a user's click takes (§10 第 38 项 ①),
+//!   and the run prints the `<ms>` it was asked for next to the one it waited (②).
 //! * no flags: the app.
 
 mod annotate;
@@ -267,7 +270,11 @@ fn main() {
     // mask through the same call and owns the flow from there: the two gauges both
     // close it at the end, and running both would double-close.
     let mask_ms = after("--mask").map(|ms| ms.max(300));
-    let ink_ms = after("--ink").map(|ms| ms.max(300));
+    // The ink run carries a dialog leg of its own now, and that leg needs the same
+    // backstop §10 第 38 项 ② made `--pin` print two numbers for: a run asked for shorter
+    // than the leg's budget is raised rather than refused, and says what it was asked for.
+    let ink_want = after("--ink");
+    let ink_ms = ink_want.map(|ms| ms.max(annotate_check::DIALOG_MIN_MS));
     let shader_on = !flag("--mask-soft");
     if mask_ms.is_some() {
         match mask_check::open(shader_on) {
@@ -285,7 +292,11 @@ fn main() {
     // both have to exist before the engine: the delegate reads the plan once, in
     // `Component.onCompleted`, and nothing else in this process can hand a QML object
     // a piece of Rust state later without a binding that would fire in every session.
-    let pin_ms = after("--pin").map(|ms| ms.max(pin_check::MIN_MS));
+    // §10 第 38 项 ②: the number that was asked for and the number the run waits are
+    // two readings, and keeping only the second is how a `--pin 100` came to print
+    // itself as an 800 ms run. Both are printed below, and the floor is the gauge's.
+    let pin_want = after("--pin");
+    let pin_ms = pin_want.map(|ms| ms.max(pin_check::MIN_MS));
     if pin_ms.is_some() {
         match pin_check::plant() {
             Ok(line) => println!("[pin] {line}"),
@@ -335,9 +346,12 @@ fn main() {
         state::quit_after(ms.max(rounds_ms));
     }
     if let Some(ms) = pin_ms {
-        // The leg fires [`pin_check::LEG_DELAY_MS`] after the window is built, and the
-        // floor above already gives it the same again, so a `--pin` run that was asked
-        // for has the time it needs rather than a run that reports its own absence.
+        // The leg runs in phases of [`pin_check::LEG_DELAY_MS`] each, and the floor
+        // above is `pin_check::LEG_WAITS` of them plus the grace the engine gets to
+        // reach `Component.onCompleted` at all - the watchdog is armed before the QML
+        // document is loaded, so the leg's own budget starts late. A `--pin` run that was
+        // asked for therefore has the time it needs rather than reporting its own
+        // absence, and the report prints the gap it actually measured.
         state::quit_after(ms);
     }
 
@@ -456,9 +470,18 @@ fn main() {
             // so the freeze is deliberately not inside it and the sum is.
             println!("[mask warm {warm_rounds} round(s)] last: {warm_swaps}, window+frame vs ceiling {} ms (add each round's freeze ms for the hot-key total)", mask_check::FIRST_FRAME_MS);
         }
+        // §10 第 38 项 ②'s pair, at this gauge too. Only the ink run has a floor raised
+        // under it - `--mask` asks for a freeze and a read-back, and gets the milliseconds
+        // it named - so only its line grows the two numbers.
+        let raised = if ink {
+            format!("要求 {} ms 生效 {ms} ms ", ink_want.unwrap_or(ms))
+        } else {
+            String::new()
+        };
         println!(
-            "[{} after {ms} ms] qml_loaded={} {}",
+            "[{} after {ms} ms] {}qml_loaded={} {}",
             if ink { "ink" } else { "mask" },
+            raised,
             state::qml_loaded(),
             state::desktop_summary()
         );
@@ -473,7 +496,8 @@ fn main() {
         let (verdict, report) = pin_check::measure();
         println!("{report}");
         println!(
-            "[pin after {ms} ms] qml_loaded={} {}",
+            "[pin after {ms} ms] 要求 {} ms 生效 {ms} ms qml_loaded={} {}",
+            pin_want.unwrap_or(ms),
             state::qml_loaded(),
             state::desktop_summary()
         );

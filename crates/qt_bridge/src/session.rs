@@ -57,6 +57,8 @@ pub mod qobject {
         fn pinWindowReport() -> QString;
         #[rust_name = "pin_top_levels"]
         fn pinTopLevels() -> QString;
+        #[rust_name = "pin_push_dialog_button"]
+        fn pinPushDialogButton() -> QString;
         #[rust_name = "pin_screen_grab"]
         fn pinScreenGrab() -> QByteArray;
         #[rust_name = "pin_screen_grab_info"]
@@ -170,6 +172,27 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "pinGaugeReport"]
         fn pin_gauge_report(self: &Self, line: &QString);
+
+        /// Press the default button of the native file dialog this process is
+        /// showing, and answer with what was pressed. Only the two gauges call it -
+        /// `--pin`'s own dialog leg and `--ink`'s mask leg - and only while a dialog of
+        /// theirs is on the screen; the window it finds is filtered to this pid for the
+        /// reason [`crate::pin_check`] spells out.
+        #[qinvokable]
+        #[cxx_name = "pushDialogButton"]
+        fn push_dialog_button(self: &Self) -> QString;
+
+        /// The `--ink` gauge's plan for the mask's own 另存为 leg, and the one way a
+        /// toolbar learns it is being measured. Empty in a product session and in a
+        /// `--mask` run, which is what keeps the leg out of both.
+        #[qinvokable]
+        #[cxx_name = "maskGaugePlan"]
+        fn mask_gauge_plan(self: &Self) -> QString;
+
+        /// One line the toolbar read off its own door, into the ink report.
+        #[qinvokable]
+        #[cxx_name = "maskGaugeReport"]
+        fn mask_gauge_report(self: &Self, line: &QString);
     }
 }
 
@@ -312,6 +335,18 @@ impl qobject::Session {
     pub fn pin_gauge_report(&self, line: &QString) {
         crate::pin_check::report(&line.to_string());
     }
+
+    pub fn push_dialog_button(&self) -> QString {
+        QString::from(crate::pin_check::push_dialog_button().as_str())
+    }
+
+    pub fn mask_gauge_plan(&self) -> QString {
+        QString::from(crate::annotate_check::mask_gauge_plan().as_str())
+    }
+
+    pub fn mask_gauge_report(&self, line: &QString) {
+        crate::annotate_check::mask_report(&line.to_string());
+    }
 }
 
 /// The shim, in Rust shapes. Everything the state machine needs from Qt goes
@@ -372,6 +407,13 @@ pub mod shim {
     /// One line per top-level window, with its Win32 handle and device-pixel rect.
     pub fn top_levels() -> String {
         qobject::pin_top_levels().to_string()
+    }
+
+    /// Press the default button of a native `#32770` dialog *this process* is showing,
+    /// and report what was pressed. `top_levels` cannot serve this because it walks
+    /// Qt's own `topLevelWindows()`, and a native file dialog is not one of them.
+    pub fn push_dialog_button() -> String {
+        qobject::pin_push_dialog_button().to_string()
     }
 
     /// The whole primary screen as Qt's backend produced it, RGBA8. Empty means Qt

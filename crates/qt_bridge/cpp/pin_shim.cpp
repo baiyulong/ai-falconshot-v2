@@ -426,6 +426,174 @@ QString pinTopLevels()
     return out;
 }
 
+// ---------------------------------------------------------------- native dialog
+
+#ifdef Q_OS_WIN
+namespace {
+
+/// One window's caption or class name, bracketed. The brackets are the field: a
+/// dialog with an empty title and a query that returned nothing are two different
+/// readings, and a report that folds them together cannot be graded.
+///
+/// Only ever called on this process's own windows, for the reason `walkDialog`
+/// below gives - a foreign handle's text is a foreign process's business.
+QString winField(HWND hwnd, bool title)
+{
+    wchar_t buf[512]{};
+    const int n = title ? GetWindowTextW(hwnd, buf, 512) : GetClassNameW(hwnd, buf, 512);
+    if (n <= 0) {
+        return QStringLiteral("[?]");
+    }
+    // The count is the return value rather than a NUL search: `wchar_t` is 16 bits
+    // on MSVC, which is what these two APIs write, and a caption may legitimately
+    // contain a NUL the API chose not to report.
+    return QLatin1Char('[') + QString::fromWCharArray(buf, n) + QLatin1Char(']');
+}
+
+/// The `#32770` dialog boxes the walk found, plus a census of what it did *not*
+/// match so a miss is self-explaining. `seen`/`first` are the click target; the rest
+/// answers "why zero": how many top-levels this pid owns at all, how many are visible,
+/// how many visible `#32770` dialogs another pid owns (the foreign-modal case the pid
+/// filter exists to reject), and a bounded list of this pid's own visible top-levels with
+/// the title `openDialogLeg` asked for, so a Qt dialog that does not report class
+/// `#32770` shows up here rather than as a bare zero.
+struct DialogWalk {
+    int seen = 0;
+    HWND first = nullptr;
+    int pidTops = 0;          // top-levels owned by this process
+    int pidVisible = 0;       // …of those, IsWindowVisible
+    int foreignDialogs = 0;   // visible #32770 owned by another process
+    QString pidClasses;       // bounded "[class]caption " list of this pid's visible tops
+};
+
+/// Everything under one dialog, plus the one button this run wants.
+struct ButtonWalk {
+    int descendants = 0;
+    int buttons = 0;
+    HWND ok = nullptr;
+};
+
+BOOL CALLBACK walkDialog(HWND hwnd, LPARAM lp)
+{
+    auto *walk = reinterpret_cast<DialogWalk *>(lp);
+    const bool visible = IsWindowVisible(hwnd);
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    const bool mine = pid == GetCurrentProcessId();
+    wchar_t cls[64]{};
+    const int clsLen = GetClassNameW(hwnd, cls, 64);
+    const bool isDialog = clsLen > 0 && QString::fromWCharArray(cls, clsLen) == QLatin1String("#32770");
+
+    if (mine) {
+        ++walk->pidTops;
+        if (visible) {
+            ++walk->pidVisible;
+            // The census is the answer to `dialogs=0`: the classes this process really
+            // had a window for, with the caption next to them. Bounded because this runs
+            // on a machine with the user's whole desktop in it - and only this process's
+            // windows are ever named, for the reason below.
+            if (walk->pidClasses.size() < 400) {
+                walk->pidClasses += winField(hwnd, false) + winField(hwnd, true) + QLatin1Char(' ');
+            }
+        }
+    } else if (visible && isDialog) {
+        // Counted, never touched: another process can and does own a visible `#32770` on
+        // the same desktop - an activation prompt, a consent box - and pressing its
+        // default button would be a write to a window this project has no claim on.
+        ++walk->foreignDialogs;
+    }
+
+    // The click target keeps the three filters it had: visible, ours, and a real Win32
+    // dialog box.
+    if (!visible || !mine || !isDialog) {
+        return TRUE;
+    }
+    ++walk->seen;
+    if (walk->first == nullptr) {
+        walk->first = hwnd;
+    }
+    return TRUE;
+}
+
+BOOL CALLBACK walkButton(HWND hwnd, LPARAM lp)
+{
+    auto *walk = reinterpret_cast<ButtonWalk *>(lp);
+    ++walk->descendants; // `EnumChildWindows` walks descendants, not children only.
+    wchar_t cls[64]{};
+    if (GetClassNameW(hwnd, cls, 64) <= 0
+        || QString::fromWCharArray(cls) != QLatin1String("Button")) {
+        return TRUE;
+    }
+    ++walk->buttons;
+    // Matched on the control id, never on the caption: the measured button is
+    // `title=[&Save]` on an English shell and 保存 on a Chinese one, and §5.9.17's
+    // dialog is localized by the shell. `IDOK` is what makes it the default button.
+    if (!walk->ok && GetDlgCtrlID(hwnd) == IDOK && IsWindowVisible(hwnd)) {
+        walk->ok = hwnd;
+    }
+    return TRUE;
+}
+} // namespace
+#endif
+
+QString pinPushDialogButton()
+{
+#ifdef Q_OS_WIN
+    DialogWalk dialogs;
+    EnumWindows(walkDialog, reinterpret_cast<LPARAM>(&dialogs));
+    if (dialogs.first == nullptr) {
+        return QString::fromLatin1(
+                   "pushed=no reason=no-visible-#32770-of-this-pid dialogs=%1 "
+                   "mine_tops=%2 mine_visible=%3 foreign_dialogs=%4 mine=%5")
+            .arg(dialogs.seen)
+            .arg(dialogs.pidTops)
+            .arg(dialogs.pidVisible)
+            .arg(dialogs.foreignDialogs)
+            .arg(dialogs.pidClasses.trimmed().isEmpty() ? QStringLiteral("[-]")
+                                                         : dialogs.pidClasses.trimmed());
+    }
+    const HWND dialog = dialogs.first;
+
+    ButtonWalk buttons;
+    EnumChildWindows(dialog, walkButton, reinterpret_cast<LPARAM>(&buttons));
+    if (buttons.ok == nullptr) {
+        return QString::fromLatin1(
+                   "pushed=no reason=no-enabled-idok-button dialogs=%1 desc=%2 buttons=%3 title=%4")
+            .arg(dialogs.seen)
+            .arg(buttons.descendants)
+            .arg(buttons.buttons)
+            .arg(winField(dialog, true));
+    }
+    const HWND button = buttons.ok;
+
+    // Same-thread `SendMessageW`: the leg that calls this runs from a QML timer
+    // inside the dialog's own nested loop, so the button's window procedure is
+    // entered directly rather than queued behind anything. `BM_CLICK` is what the
+    // shell's mouse handling sends, so what arrives afterwards is the dialog's
+    // normal `accepted`, not a completion Qt was talked into.
+    //
+    // `BM_CLICK`'s return value is undefined by the API, so it is printed as what it
+    // is (`ret=`) and the caller grades the click by what the dialog did next.
+    const LRESULT clicked = SendMessageW(button, BM_CLICK, 0, 0);
+    return QString::fromLatin1(
+               "pushed=yes dialog=0x%1 class=%2 title=%3 dialogs=%4 desc=%5 buttons=%6 "
+               "button=0x%7 btitle=%8 bid=%9 ret=%10 visible_after=%11")
+        .arg(reinterpret_cast<qulonglong>(dialog), 0, 16)
+        .arg(winField(dialog, false))
+        .arg(winField(dialog, true))
+        .arg(dialogs.seen)
+        .arg(buttons.descendants)
+        .arg(buttons.buttons)
+        .arg(reinterpret_cast<qulonglong>(button), 0, 16)
+        .arg(winField(button, true))
+        .arg(GetDlgCtrlID(button))
+        .arg(static_cast<qint64>(clicked))
+        .arg(IsWindowVisible(dialog) ? 1 : 0);
+#else
+    return QStringLiteral("pushed=no reason=not-windows");
+#endif
+}
+
 // ---------------------------------------------------------------- provider
 
 PinImageProvider::PinImageProvider()

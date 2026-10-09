@@ -40,8 +40,33 @@ Window {
     // assigned it - a TypeError that takes the whole document down (§8-R14).
     //
     // The fields are read by index, and the order is `pin_check::plan_line`'s:
-    // 0 目录, 1 qml.png, 2 qml.jpg, 3 never.png, 4 贴图 id, 5 一个不存在的 id, 6 延迟 ms.
+    // 0 目录, 1 qml.png, 2 qml.jpg, 3 never.png, 4 贴图 id, 5 一个不存在的 id,
+    // 6 延迟 ms, 7 对话框默认名, 8 推开尝试上限.
     property var gauge: []
+
+    // True only between the moment the dialog leg asked for a real dialog and the moment
+    // it stopped watching. The gauge reads the *first* line it was given under a key, so
+    // a key two phases could both write is a row graded on the wrong phase's answer -
+    // and the phase above calls `accept()` directly, which is a completion this run did
+    // not press. This property is what keeps `dlg-accepted` a click's word.
+    property bool dlgLeg: false
+
+    // How many times phase 2 may ask the shell for its button before it stops asking,
+    // and how many times it has actually asked. The first run answered `dialogs=0` 400 ms
+    // after `open()` — Qt had marked the dialog visible while Win32 had not made the
+    // window yet — so the press waits for the native window instead of failing on the
+    // first turn. Three runs put that window's arrival at the third wait, at the fourth,
+    // and past the fourth, which is the same measurement passing and failing on a count
+    // alone; the count therefore comes from the plan rather than from a second copy here.
+    // The cap still has to exist: a dialog the shell never shows must end the run with a
+    // `pushed=no`, not with an endless poll.
+    readonly property int pushTriesMax: Number(win.gauge[8]) || 10
+    property int pushTries: 0
+
+    // Every attempt's own answer, kept apart so the count is not the only evidence: which
+    // window the shell had (or did not have) at each wait is what says whether the
+    // `pushed=yes` below was earned by waiting or given for free.
+    property string pushTriesLog: ""
 
     color: "transparent"
 
@@ -88,6 +113,14 @@ Window {
         win.session.pinGaugeReport(key + "|" + value)
     }
 
+    // A local path as the text a `QUrl` arrives in. Spaces become `%20` because that is
+    // the form a dialog hands over, and it is the reason `save::local_path` decodes: a
+    // name that reaches the disk with a literal `%20` in it is a file the user cannot
+    // open.
+    function dlgUrl(local) {
+        return "file:///" + String(local).replace(/\\/g, "/").replace(/ /g, "%20")
+    }
+
     // Walk this window's two output items the way the menu's own handlers do, and
     // report what each one answered.
     //
@@ -97,6 +130,10 @@ Window {
     // a log line, which is the only way an English clause inside a Chinese prefix
     // (`保存失败：pin 3 has never been drawn`, what §10 第 37 项 ① found) shows up as
     // the thing a user would actually have read.
+    //
+    // This first phase does not open a dialog. Everything after it that does runs in
+    // its own timed phase, because a door has to be *on the screen* while something
+    // presses its button and that cannot be fitted into this event-loop turn.
     function runGauge() {
         gaugeSay("menu", saveAsItem.text)
         gaugeSay("filters", saveAs.nameFilters.join(";;"))
@@ -104,24 +141,19 @@ Window {
         // a `QQuickFileNameFilter` object in the first P37 run, and the one probe that
         // enumerated it found `name`, `extensions`, `globs` and `index` - empty here,
         // because a dialog that has never been shown has not selected a filter yet.
-        const chosen = saveAs.selectedNameFilter
-        gaugeSay("filter", chosen.name + "|" + chosen.extensions.join(",") + "|" + chosen.index)
+        win.readFilter("filter")
         gaugeSay("before", String(saveAs.selectedFile))
         // The question this asks, rather than the answer it assumes: can a
         // `FileDialog` that was never `open()`ed still fire its own `accepted`? The
         // row grades what happened either way, and the two writes below are the same
         // two statements the menu items make, so the door is measured whether or not
         // a dialog that has never been shown is willing to accept.
-        //
-        // Spaces become `%20` because that is the form a dialog hands over, and it is
-        // the reason `save::local_path` decodes: a name that reaches the disk with a
-        // literal `%20` in it is a file the user cannot open.
-        const url = "file:///" + String(win.gauge[1]).replace(/\\/g, "/").replace(/ /g, "%20")
+        const url = win.dlgUrl(win.gauge[1])
         saveAs.currentFile = url
         gaugeSay("current", String(saveAs.currentFile))
-        gaugeSay("accept-was", win.session.status)
+        gaugeSay("call-accept", win.session.status)
         saveAs.accept()
-        gaugeSay("accept", win.session.status)
+        gaugeSay("call-after", win.session.status)
         // The PNG leg goes through the URL text, which is exactly what `onAccepted`
         // passes; the JPG leg keeps the plain path, so both spellings of the name are
         // graded by the same run.
@@ -132,7 +164,103 @@ Window {
         // door answers before it reaches the clipboard or the disk.
         gaugeSay("never-copy", win.session.copyPin(Number(win.gauge[5])))
         gaugeSay("never-save", win.session.savePin(Number(win.gauge[5]), win.gauge[3]))
+        win.openDialogLeg()
+    }
+
+    // The dialog leg, phase 1 of 3: hand the native dialog a folder and a name, then
+    // open it for real. §10 第 38 项 ① is the reason this exists rather than another
+    // `accept()` above - until P38 the gauge had proved what `onAccepted` does with the
+    // text it is handed, never that the door opens the way a user's click opens it.
+    //
+    // `currentFolder` is set and the name is a bare stem, both measured necessities: a
+    // `currentFile` naming a folder that is not there makes the dialog answer `accepted`
+    // about a millisecond after `open()` and the process dies (P38's probe C,
+    // `exit=-1073741819`), and a name without a folder would be resolved against
+    // whatever the user's Documents is - which is not a place this run gets to write.
+    //
+    // The stem goes in through `currentFile` rather than `fileName`, because there is no
+    // `fileName` to write: P38's probe F found the assignment answers
+    // `Cannot assign to non-existent property "fileName"` and the read-back is
+    // `undefined`, exactly as qmllint's `[missing-property]` said. A bare name still
+    // reaches the shell - `currentFile` set to a path without an extension came back from
+    // a real accept with the selected filter's extension on it (probe E), which is the
+    // reading the gauge wants.
+    function openDialogLeg() {
+        const stem = String(win.gauge[0]) + "/" + String(win.gauge[7])
+        saveAs.currentFolder = win.dlgUrl(String(win.gauge[0]) + "/")
+        saveAs.currentFile = win.dlgUrl(stem)
+        gaugeSay("dlg-folder", String(saveAs.currentFolder))
+        gaugeSay("dlg-name", String(saveAs.currentFile))
+        win.dlgLeg = true
+        saveAs.open()
+        // Read in the same turn that asked for it, and again from the phase that
+        // presses the button: whether `open()` comes back with the dialog already up
+        // is a number about this Qt, not a promise to a user, so the first is reported
+        // and the second is graded.
+        gaugeSay("dlg-open", String(saveAs.visible))
+        dlgPush.restart()
+    }
+
+    // Phase 2: press the dialog's own default button - but only once it is actually on
+    // the screen, which is not the same moment as Qt saying it opened. The first P38 run
+    // answered `dialogs=0 mine_tops=12 mine_visible=1`, and the one visible top-level of
+    // this process was the pin window itself: 400 ms after `open()` the shell had not
+    // made its window yet. So the attempt repeats until the window is there, up to a cap.
+    //
+    // One attempt's answer is what the gauge grades, and it is the last one: the earlier
+    // waits are the same question asked too early, and their full text travels under a key
+    // of its own so that the count and the reasons stay readable. `accept-was` and the
+    // other first-attempt readings are taken once, because they are the same members on
+    // every attempt and the gauge grades the pair across the click rather than across the
+    // waiting - an `onAccepted` that ran leaves a 已保存到 sentence behind, and nothing
+    // else in this process writes one at this moment.
+    function pushDialogLeg() {
+        win.pushTries += 1
+        if (win.pushTries === 1) {
+            gaugeSay("dlg-shown", String(saveAs.visible))
+            win.readFilter("dlg-shown-filter")
+            gaugeSay("accept-was", win.session.status)
+        }
+        const said = win.session.pushDialogButton()
+        win.pushTriesLog += (win.pushTries === 1 ? "" : " ~ ") + String(said)
+        if (said.startsWith("pushed=yes") || win.pushTries >= win.pushTriesMax) {
+            gaugeSay("dlg-push", said)
+            gaugeSay("dlg-push-tries", String(win.pushTries))
+            gaugeSay("dlg-push-log", win.pushTriesLog)
+            dlgTail.restart()
+        } else {
+            dlgPush.restart()
+        }
+    }
+
+    // Phase 3: what the click left behind.
+    //
+    // The dismiss is guarded on `visible` on purpose. A door the click already closed
+    // is gone, and calling `reject()` on it would be a second completion this run did
+    // not measure - P38's whole claim is that the tail readings come from a click.
+    function finishDialogLeg() {
+        gaugeSay("accept", win.session.status)
+        win.readFilter("dlg-filter")
+        gaugeSay("dlg-after", String(saveAs.visible))
+        if (saveAs.visible) {
+            gaugeSay("dlg-dismiss", "reject")
+            saveAs.reject()
+        }
+        // Closed last, after the reject above: that one is this phase's own dismissal and
+        // is meant to be reported. From here nothing else may answer under the click's
+        // keys.
+        win.dlgLeg = false
         gaugeSay("done", win.gauge[0])
+    }
+
+    // `selectedNameFilter` three times, because it is read-only (assigning to it is a
+    // hard `TypeError`, P38's probe E) and the three readings are the story: empty
+    // before any dialog, the shell's default while one is up, and whatever the accepted
+    // file's extension says afterwards. The `|` inside the value is what the gauge's
+    // `name|extensions|index` shape already uses.
+    function readFilter(key) {
+        const chosen = saveAs.selectedNameFilter
+        gaugeSay(key, chosen.name + "|" + chosen.extensions.join(",") + "|" + chosen.index)
     }
 
     Timer {
@@ -146,9 +274,46 @@ Window {
         repeat: false
         // Stopped for every delegate that is not the planned pin, and for every
         // ordinary session: `pinId` is -1 until `assign` and a plan with no gauge run
-        // is one field long, not seven.
-        running: win.gauge.length === 7 && String(win.gauge[4]) === String(win.pinId)
+        // is one field long, not eight.
+        running: win.gauge.length === 9 && String(win.gauge[4]) === String(win.pinId)
         onTriggered: win.runGauge()
+    }
+
+    // The two waits of the dialog leg, same interval from the same plan. The first is
+    // the native dialog's own loop coming up after `open()`; the second is the
+    // `onAccepted` tail, which cannot have run in the turn that pressed the button -
+    // the shell unwinds its modal loop before Qt gets the signal.
+    Timer {
+        id: dlgPush
+        interval: Number(win.gauge[6]) || 400
+        repeat: false
+        onTriggered: win.pushDialogLeg()
+    }
+
+    Timer {
+        id: dlgTail
+        interval: Number(win.gauge[6]) || 400
+        repeat: false
+        onTriggered: win.finishDialogLeg()
+    }
+
+    // The gauge's witness that the signal fired, taken from outside the door so the
+    // `onAccepted` below stays the one statement §5.9.17 asks for. It is not the whole
+    // claim: this object cannot write a file, so the bytes at `dialog.png` are what say
+    // the product's own handler ran.
+    //
+    // `dlgLeg` is the half of the condition that says *which* completion is being
+    // witnessed. Without it the direct `accept()` in the first phase could answer under
+    // this key, and since the gauge reads the first line a key produced, the click's own
+    // row would be graded on a sentence the gauge wrote itself.
+    Connections {
+        target: saveAs
+        function onAccepted() {
+            if (win.gauge.length === 9 && win.dlgLeg) win.gaugeSay("dlg-accepted", String(saveAs.selectedFile))
+        }
+        function onRejected() {
+            if (win.gauge.length === 9 && win.dlgLeg) win.gaugeSay("dlg-rejected", String(saveAs.selectedFile))
+        }
     }
 
     Connections {

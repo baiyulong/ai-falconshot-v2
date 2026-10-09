@@ -107,6 +107,18 @@ QString pinScreenGrabInfo();
 /// order that is a debugging aid, not a contract.
 QString pinTopLevels();
 
+/// Click the *default button* of the native file dialog this process is showing,
+/// and report what was clicked. §10 第 38 项 ① is the reason: until now the gauge
+/// called `accept()` on the dialog, which proves Qt can complete a dialog but not
+/// that the dialog was ever on the screen - a `BM_CLICK` on the real 保存 button is
+/// the same message the shell's own button sends, so `accepted` arrives through the
+/// native path a user's click takes.
+///
+/// Answers a one-line description either way: what was found, what was clicked, and
+/// whether the dialog is gone. `pinTopLevels` cannot serve this - it walks Qt's own
+/// `topLevelWindows()`, and a native dialog is not one of them.
+QString pinPushDialogButton();
+
 /// className / visible / opacity / alphaBufferSize / hwnd / GWL_STYLE / GWL_EXSTYLE
 /// for every top-level window. This is the evidence that frameless + alpha +
 /// StaysOnTop actually landed on the native window.

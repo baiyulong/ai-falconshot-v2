@@ -70,6 +70,7 @@ use crate::capture;
 use crate::mask;
 use crate::mask_check::{self, median, ratio_row, samples, Sides};
 use crate::mask_view::shim;
+use crate::pin_check::{self, said};
 use crate::r13::{parse_levels, Report, Top};
 use crate::session;
 use crate::state::{self, Check};
@@ -458,6 +459,85 @@ fn gauge_config() -> PathBuf {
     dir
 }
 
+/// Where the 另存为 rows write, and where the clicked dialog is told to write.
+///
+/// One function because two copies of the path is how a run grades a file the previous
+/// run left behind: [`crate::pin_check`] keeps its own directory for the same reason.
+fn save_gauge_dir() -> PathBuf {
+    let mut dir = std::env::temp_dir();
+    dir.push("falconshot-save-gauge");
+    dir
+}
+
+/// The stem the mask's clicked dialog is handed. The extension is its own choice, made
+/// off the filter list, which is the point of the row: the file this run reads back is
+/// the one the shell named.
+const DIALOG_STEM: &str = "dialog";
+
+/// The mask's own dialog leg, in the same shape and for the same reasons as
+/// [`crate::pin_check`]'s: a wait per phase, up to [`DIALOG_PUSH_TRIES_MAX`] of them for
+/// the shell to make its `#32770`, and the run ending one wait after the leg says `done`.
+///
+/// The startup grace is the pin's measured figure rather than a new guess. The distance it
+/// covers is the same one - `main` arms the quit timer, then the QML document loads and
+/// reaches `Component.onCompleted` - and P38 measured it at 2917, 3544 and 3787 ms on three
+/// runs of one process. What a mask document adds on top is the subject of the note this
+/// constant is printed against, so the first run of this leg is the one that says whether
+/// the figure carries over.
+pub const DIALOG_DELAY_MS: i32 = 400;
+pub const DIALOG_PUSH_TRIES_MAX: i32 = 10;
+pub const DIALOG_LEG_WAITS: i32 = DIALOG_PUSH_TRIES_MAX + 3;
+pub const DIALOG_STARTUP_GRACE_MS: i32 = 5000;
+
+/// The shortest `--ink` run that can have measured the dialog leg - a backstop, not the
+/// schedule, for exactly the reason [`crate::pin_check::MIN_MS`] gives: a leg truncated by
+/// its own watchdog reports its absence as several failing rows.
+pub const DIALOG_MIN_MS: i32 = DIALOG_STARTUP_GRACE_MS + DIALOG_LEG_WAITS * DIALOG_DELAY_MS;
+
+/// The plan the mask window reads: `目录 | 名字 | 延迟 ms | 尝试上限 | 窗 index`. The last
+/// field is why this is a line rather than four properties - several mask windows bind the
+/// same toolbar document, and only the one whose screen holds the selection's middle runs
+/// the leg.
+static MASK_PLAN: Mutex<Option<String>> = Mutex::new(None);
+
+/// What that window reported, in the order it said it.
+static MASK_LINES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn mask_with<R>(f: impl FnOnce(&mut Vec<String>) -> R) -> R {
+    let mut lines = MASK_LINES.lock().unwrap_or_else(PoisonError::into_inner);
+    f(&mut lines)
+}
+
+/// The plan as one `|`-separated line, empty when nobody asked for the leg - which is how
+/// `AnnotationToolbar.qml` stays out of a product session, and out of a `--mask` run.
+pub fn mask_gauge_plan() -> String {
+    MASK_PLAN
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+        .unwrap_or_default()
+}
+
+/// One line the toolbar read off its own door, graded by [`save_rows`].
+///
+/// The first stamps the leg's start and the `done` line arms the run's end, for the two
+/// reasons [`crate::pin_check::report`] spells out: the gap between arming the watchdog and
+/// reaching `Component.onCompleted` is neither small nor stable, and a leg that has said
+/// everything it has to say should not sit out the rest of a guessed budget.
+pub fn mask_report(line: &str) {
+    let done = matches!(line.split_once('|'), Some((key, _)) if key == "done");
+    mask_with(|l| {
+        if l.is_empty() {
+            state::stamp("mask leg");
+        }
+        l.push(line.to_string());
+    });
+    if done {
+        state::stamp("mask done");
+        state::quit_after(DIALOG_DELAY_MS);
+    }
+}
+
 /// Freeze, open, draw, undo. Must run before the QML engine, for the same reason
 /// [`mask_check::open`] must: the windows must not capture the screen they cover.
 pub fn plant(shader: bool) -> Result<String, String> {
@@ -477,6 +557,51 @@ pub fn plant(shader: bool) -> Result<String, String> {
     mask_check::open(shader)?;
     let slots = mask::with(|m| m.slots.clone());
     let mut notes = vec![format!("config writes pinned to {}", pinned.display())];
+
+    // §10 第 38 项 ①'s *other* door. The two rows below this run already grade a 另存为
+    // whose file Rust named and wrote itself, which is the half of the flow that never
+    // touches a dialog; what was never proved is that `AnnotationToolbar.qml`'s
+    // `onAccepted` runs when a pointer-equivalent closes the real one. So the toolbar gets
+    // a plan, opens its own dialog and presses its own button, and the file that comes back
+    // is graded against the same frame [`save_rows`] already holds.
+    //
+    // The plan names one window: several screens each carry a toolbar bound to the same
+    // document, and a leg that ran on each would open the dialog as many times as there are
+    // monitors. The one chosen is where the selection's middle sits, which is the toolbar a
+    // user would find themselves pointing at.
+    //
+    // The stale files go here rather than in [`measure`]: this write lands while the run is
+    // still going, so a file the last run left behind would answer for a click that never
+    // happened, and the extension the shell picks is not something this file can predict.
+    let dialog_dir = save_gauge_dir();
+    let _ = std::fs::create_dir_all(&dialog_dir);
+    if let Ok(entries) = std::fs::read_dir(&dialog_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.file_stem().and_then(|s| s.to_str()) == Some(DIALOG_STEM) {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+    let dialog_window = mask::with(|m| {
+        let middle = PhysPoint::new(
+            m.hole.x + (m.hole.w / 2) as i32,
+            m.hole.y + (m.hole.h / 2) as i32,
+        );
+        m.slots
+            .iter()
+            .find(|s| s.bounds.contains(middle))
+            .map_or(0, |s| s.index)
+    });
+    *MASK_PLAN.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
+        "{}|{}|{}|{}|{}",
+        dialog_dir.display(),
+        DIALOG_STEM,
+        DIALOG_DELAY_MS,
+        DIALOG_PUSH_TRIES_MAX,
+        dialog_window
+    ));
+    state::stamp("mask arm");
 
     // Every region is a fraction of the selection, so the script needs no knowledge
     // of the monitor's size or of the default hole's arithmetic. The polyline's strip
@@ -2062,8 +2187,7 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
         }
         return;
     };
-    let mut dir = std::env::temp_dir();
-    dir.push("falconshot-save-gauge");
+    let dir = save_gauge_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         for label in ["saved png", "saved jpg"] {
             rep.row(
@@ -2197,7 +2321,145 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
         ),
     );
 
+    mask_dialog_rows(rep, &dir, &png);
     pin_save_rows(rep, want, &dir, &png, &jpg);
+}
+
+/// The same act at the mask's own door, closed by a click rather than by this file.
+///
+/// The two rows above call [`crate::mask::MaskState::save_out`] with a name this run
+/// chose, which proves the encoder and nothing about the dialog: no `FileDialog` was opened,
+/// so `AnnotationToolbar.qml`'s `onAccepted` never ran, and §10 第 38 项 ① is exactly the
+/// claim that a handler which is never entered cannot be said to work. What follows is the
+/// leg the pin window's own gauge proved in P38, run at this door: the toolbar opens the
+/// real dialog, the shim presses its default button once the shell has made the window, and
+/// the file that appears is the one the *shell* named.
+///
+/// The bytes are compared against [`save_rows`]'s own PNG rather than against the frame
+/// again: the two files differ only in who named them, so any difference between them is a
+/// difference between the two ways this app reaches the same encoder.
+fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
+    let lines = mask_with(|l| l.clone());
+    let keys: Vec<&str> = lines
+        .iter()
+        .filter_map(|l| l.split_once('|').map(|(k, _)| k))
+        .collect();
+    rep.row(
+        "mask leg ran",
+        Check::from(keys.contains(&"done")),
+        format!(
+            "{} 行：{}（{DIALOG_PUSH_TRIES_MAX} 次尝试为上限，每等 {DIALOG_DELAY_MS} ms）",
+            lines.len(),
+            keys.join(" ")
+        ),
+    );
+    rep.note(
+        "mask 量具计时",
+        pin_check::LegTiming::read(
+            "mask arm",
+            "mask leg",
+            "mask done",
+            "mask end",
+            DIALOG_DELAY_MS,
+            DIALOG_LEG_WAITS,
+            DIALOG_STARTUP_GRACE_MS,
+            DIALOG_MIN_MS,
+        )
+        .line(),
+    );
+
+    rep.row(
+        "mask dialog opened",
+        Check::from(said(&lines, "dlg-shown") == Some("true")),
+        format!(
+            "按之前 visible={:?}；currentFolder {:?} currentFile {:?}",
+            said(&lines, "dlg-shown"),
+            said(&lines, "dlg-folder"),
+            said(&lines, "dlg-name")
+        ),
+    );
+
+    let push = said(&lines, "dlg-push").unwrap_or("");
+    let tries = said(&lines, "dlg-push-tries").unwrap_or("<没有读数>");
+    rep.row(
+        "mask dialog pushed",
+        Check::from(pin_check::real_click(push)),
+        format!("{push}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）"),
+    );
+    rep.note(
+        "mask push 每次尝试",
+        format!("{:?}", said(&lines, "dlg-push-log")),
+    );
+
+    let (was, now) = (
+        said(&lines, "accept-was").unwrap_or("<没有读数>"),
+        said(&lines, "accept").unwrap_or("<没有读数>"),
+    );
+    let fired = now.starts_with("已保存到") && now != was;
+    rep.row(
+        "mask dialog accept",
+        if fired {
+            Check::Pass
+        } else if pin_check::real_click(push) {
+            Check::Fail
+        } else {
+            Check::Blocked
+        },
+        format!(
+            "真点击前后 message {was:?} -> {now:?}；信号 {:?}（{}）",
+            said(&lines, "dlg-accepted"),
+            if fired {
+                "onAccepted 是那一下点击跑起来的"
+            } else if pin_check::real_click(push) {
+                "点了，但 onAccepted 没跑"
+            } else {
+                "没点成，这一格问不了"
+            }
+        ),
+    );
+
+    // 判据 ①'s other half, and the only reading that tells "the click closed the door"
+    // apart from "the gauge closed it for her": the leg asks `visible` again and may only
+    // `reject()` a dialog it still sees, so a `dlg-dismiss` line here is the run admitting
+    // the click did not finish the job. The filter the shell settled on rides along, since
+    // this is the one file in the report whose name was not decided before the click.
+    rep.row(
+        "mask dialog closed",
+        Check::from(said(&lines, "dlg-after") == Some("false") && !keys.contains(&"dlg-dismiss")),
+        format!(
+            "点完之后 visible {:?}，量具代关={}，选中的滤镜 {:?}",
+            said(&lines, "dlg-after"),
+            keys.contains(&"dlg-dismiss"),
+            said(&lines, "dlg-filter")
+        ),
+    );
+
+    // The extension is the shell's own choice off the filter list, so this is the only
+    // file in the report whose name was not decided before the click - and the only one
+    // whose every step came through the door.
+    let clicked = dir.join(format!("{DIALOG_STEM}.png"));
+    let got = std::fs::read(&clicked).ok();
+    let wrote = said(&lines, "dlg-accepted").unwrap_or("");
+    let landed = PathBuf::from(crate::save::local_path(wrote).into_owned());
+    rep.row(
+        "mask save via real click",
+        Check::from(
+            got.is_some()
+                && got == std::fs::read(mask_png).ok()
+                && landed == clicked
+                && now.starts_with("已保存到"),
+        ),
+        format!(
+            "对话框写 {:?} 与 rust 那份字节一致={}；{:?} 读成 {:?}，要求 {:?}；那句 {now:?}",
+            clicked
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+            got.is_some() && got == std::fs::read(mask_png).ok(),
+            wrote,
+            landed,
+            clicked
+        ),
+    );
 }
 
 /// The same act at the other door: a pin's 另存为 (§5.9.17), read against the mask's
@@ -2350,6 +2612,10 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
 }
 
 pub fn measure() -> (Check, String) {
+    // The far end of the dialog leg's clock: [`plant`] armed the watchdog, the leg's first
+    // line stamped its start, and this is where the run stops, so the two gaps the mask
+    // rows print are measured rather than assumed.
+    state::stamp("mask end");
     let mut rep = Report::new();
     let Some(p) = plan().lock().unwrap_or_else(PoisonError::into_inner).take() else {
         return (

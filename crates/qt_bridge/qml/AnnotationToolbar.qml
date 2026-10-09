@@ -50,6 +50,28 @@ Rectangle {
     /// which is why it is a property of the bar rather than a `MaskView` one.
     property bool delivered: false
 
+    /// The `--ink` gauge's plan for this door, read by index in
+    /// [`crate::annotate_check::mask_gauge_plan`]'s order: 0 目录, 1 对话框默认名,
+    /// 2 延迟 ms, 3 推开尝试上限, 4 窗 index. One field when nobody asked for the leg,
+    /// which is what keeps it out of a product session and out of a `--mask` run.
+    property var gauge: []
+
+    /// True only between the moment the leg asked for a real dialog and the moment it
+    /// stopped watching. The gauge reads the *first* line it was given under a key, so this
+    /// is what keeps `dlg-accepted` the click's own word rather than a reading from some
+    /// other completion of this door.
+    property bool dlgLeg: false
+
+    /// How many times the leg may ask the shell for its button, and how many times it has.
+    /// The count comes from the plan because the pin's three runs put that window's arrival
+    /// anywhere between the third wait and past the fourth, and a cap written in two
+    /// languages is two numbers that can disagree.
+    readonly property int pushTriesMax: Number(bar.gauge[3]) || 10
+    property int pushTries: 0
+
+    /// Every attempt's own answer, kept apart so the count is not the only evidence.
+    property string pushTriesLog: ""
+
     color: "#f0232326"
     border.color: "#55555c"
     border.width: 1
@@ -81,6 +103,12 @@ Rectangle {
     /// changed Rust's answer - the selection and the ink are one desktop-space state
     /// drawn by two windows. Same reason `CaptureMask` has its own `grabbed`.
     signal grabbed()
+
+    // The plan is read once, at the moment this toolbar comes into being: `plant` has
+    // already run - it has to, because the freeze happens before any window exists - so a
+    // session that asked for the leg has an answer here, and every other session gets the
+    // one field that turns the leg's timer off.
+    Component.onCompleted: bar.gauge = bar.session.maskGaugePlan().split("|")
 
     function commit() {
         if (view.commitHole()) {
@@ -124,6 +152,130 @@ Rectangle {
     /// this file is written the short way for the same reason.
     function save() {
         saveAs.open()
+    }
+
+    // The `--ink` gauge at this door. Everything above is the product's own path; what
+    // follows only ever runs when a plan was planted, and it asks the one question
+    // [`crate::annotate_check::save_rows`]'s two rows cannot: those name the file and call
+    // the encoder from Rust, so `onAccepted` above is never entered and a handler that does
+    // not work would pass them anyway. Here the door opens by `save()` and closes by a
+    // click on the shell's own default button.
+    //
+    // One line to the gauge, in the `key|value` shape `annotate_check` grades.
+    function gaugeSay(key, value) {
+        bar.session.maskGaugeReport(key + "|" + value)
+    }
+
+    // A local path as the text a `QUrl` arrives in, because `currentFile` and
+    // `currentFolder` take URLs and the plan carries a native path.
+    function dlgUrl(local) {
+        return "file:///" + String(local).replace(/\\/g, "/").replace(/ /g, "%20")
+    }
+
+    // `selectedNameFilter` is read-only and hands back an object, not a string, so it is
+    // flattened here the way the pin window's same probe found it.
+    function readFilter(key) {
+        const chosen = saveAs.selectedNameFilter
+        gaugeSay(key, chosen.name + "|" + chosen.extensions.join(",") + "|" + chosen.index)
+    }
+
+    // Phase 1: name the file, then open the door the way the cell does. The name is the
+    // gauge's and the extension is the shell's, which is the point - the file
+    // `mask save via real click` reads back is the one this run could only predict.
+    function openDialogLeg() {
+        const stem = String(bar.gauge[0]) + "/" + String(bar.gauge[1])
+        saveAs.currentFolder = bar.dlgUrl(String(bar.gauge[0]) + "/")
+        saveAs.currentFile = bar.dlgUrl(stem)
+        gaugeSay("dlg-folder", String(saveAs.currentFolder))
+        gaugeSay("dlg-name", String(saveAs.currentFile))
+        bar.dlgLeg = true
+        saveAs.open()
+        // Read in the turn that asked for it, and again from the phase that presses:
+        // whether `open()` comes back with the dialog up is a fact about this Qt, and the
+        // graded one is whether the window exists when a button is looked for.
+        gaugeSay("dlg-open", String(saveAs.visible))
+        dlgPush.restart()
+    }
+
+    // Phase 2: press the dialog's own default button, once it is on the screen. The same
+    // measurement as the pin's leg: Qt marks the dialog visible inside `open()` while Win32
+    // has not made the `#32770` yet, so the attempt repeats until it has, up to the cap the
+    // plan carries. `accept-was` is taken on the first attempt only, because it is the
+    // before half of a pair graded across the click rather than across the waiting.
+    function pushDialogLeg() {
+        bar.pushTries += 1
+        if (bar.pushTries === 1) {
+            gaugeSay("dlg-shown", String(saveAs.visible))
+            bar.readFilter("dlg-shown-filter")
+            gaugeSay("accept-was", bar.view.message)
+        }
+        const said = bar.session.pushDialogButton()
+        bar.pushTriesLog += (bar.pushTries === 1 ? "" : " ~ ") + String(said)
+        if (said.startsWith("pushed=yes") || bar.pushTries >= bar.pushTriesMax) {
+            gaugeSay("dlg-push", said)
+            gaugeSay("dlg-push-tries", String(bar.pushTries))
+            gaugeSay("dlg-push-log", bar.pushTriesLog)
+            dlgTail.restart()
+        } else {
+            dlgPush.restart()
+        }
+    }
+
+    // Phase 3: what the click left behind. The dismiss is guarded on `visible` because a
+    // door the click already closed is gone, and `reject()` on it would be a second
+    // completion this run did not measure.
+    function finishDialogLeg() {
+        gaugeSay("accept", bar.view.message)
+        bar.readFilter("dlg-filter")
+        gaugeSay("dlg-after", String(saveAs.visible))
+        if (saveAs.visible) {
+            gaugeSay("dlg-dismiss", "reject")
+            saveAs.reject()
+        }
+        bar.dlgLeg = false
+        gaugeSay("done", bar.gauge[0])
+    }
+
+    Timer {
+        id: gaugeLeg
+        interval: Number(bar.gauge[2]) || 400
+        repeat: false
+        // Stopped for every window but the one the plan named - several screens bind this
+        // same document, and a leg that ran on each would open the dialog once per monitor -
+        // and for every run that planted no plan at all.
+        running: bar.gauge.length === 5 && String(bar.gauge[4]) === String(bar.view.index)
+        onTriggered: bar.openDialogLeg()
+    }
+
+    Timer {
+        id: dlgPush
+        interval: Number(bar.gauge[2]) || 400
+        repeat: false
+        onTriggered: bar.pushDialogLeg()
+    }
+
+    Timer {
+        id: dlgTail
+        interval: Number(bar.gauge[2]) || 400
+        repeat: false
+        onTriggered: bar.finishDialogLeg()
+    }
+
+    // The gauge's witness that the signal fired, taken from outside the door so the
+    // `onAccepted` below stays the one statement §5.5.5 asks for. It is not the whole
+    // claim: the file it names is the rest of it.
+    Connections {
+        target: saveAs
+        function onAccepted() {
+            if (bar.gauge.length === 5 && bar.dlgLeg) {
+                bar.gaugeSay("dlg-accepted", String(saveAs.selectedFile))
+            }
+        }
+        function onRejected() {
+            if (bar.gauge.length === 5 && bar.dlgLeg) {
+                bar.gaugeSay("dlg-rejected", String(saveAs.selectedFile))
+            }
+        }
     }
 
     // One button. `tapped` is the only thing a delegate has to say; everything the
