@@ -159,6 +159,28 @@ impl Report {
     }
 }
 
+/// The scene row, §10 第 41 项 ④: what the desktop is showing at its own centre, printed by
+/// every gauge rather than only by `--r13`. Until this round a lone `--ink` run left no
+/// witness of the session behind it - the batch file's `tasklist` was the only one, and it
+/// had been misspelled (`//FI`) for three rounds, so it printed nothing.
+///
+/// `Blocked` and not `Fail` when the shell answers nothing: an unreadable scene is a property
+/// of the machine, which is the standing rule for an environment refusal. The verdict is
+/// [`crate::capture::Scene::hwnd`], not a word of the sentence, so the row cannot go green on
+/// this crate's own phrasing (§10 第 41 项 ⑥).
+///
+/// It is one function rather than three copies because the *rule* is the thing that must not
+/// drift between the doors, and it is called first in each report because what the desktop
+/// was doing is context for every row that follows it.
+pub(crate) fn scene_row(rep: &mut Report) {
+    let scene = crate::capture::desktop_scene();
+    rep.row(
+        "desktop scene",
+        Check::from(scene.hwnd.is_some()),
+        scene.line,
+    );
+}
+
 /// Plant the control. Must run before the QML engine, so the pin window exists
 /// when the event loop starts painting.
 pub fn plant() -> Result<PinId, String> {
@@ -302,13 +324,12 @@ pub fn measure(id: PinId) -> (Check, String) {
     // A locked workstation puts a full-screen LockApp window, backed by LogonUI,
     // above every other window, and nothing short of unlocking moves it. Naming
     // that here is what turns `screen:gdi SKIP` into a statement about the
-    // session rather than a bug report about the capture path.
+    // session rather than a bug report about the capture path. The rule itself is
+    // one function now (§10 第 41 项 ④), because the three other gauges started
+    // naming the same thing the same round.
     let lock = who
         .as_ref()
-        .map(|(app, _)| {
-            let a = app.to_ascii_lowercase();
-            a.contains("lockapp") || a.contains("logonui")
-        })
+        .map(|(app, _)| crate::capture::is_lock(app))
         .unwrap_or(false);
     let reason = if lock {
         "会话已锁屏，桌面两列在本机本次不可测"

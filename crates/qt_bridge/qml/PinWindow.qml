@@ -164,18 +164,14 @@ Window {
         // door answers before it reaches the clipboard or the disk.
         gaugeSay("never-copy", win.session.copyPin(Number(win.gauge[5])))
         gaugeSay("never-save", win.session.savePin(Number(win.gauge[5]), win.gauge[3], ""))
-        // §10 第 40 项 ②, at this door: a name with no extension takes the format of the arm
-        // the dialog was showing, so the leg hands the door one arm's own text, read off
-        // `nameFilters` because the *selected* arm is read-only (P38's probe E found the
-        // assignment). The JPG arm is the one the configured `[output] format` would never
-        // pick on this machine, so it is what tells a forwarded filter from one dropped at
-        // the boundary - and the boundary is the question, since the three legs above call
-        // the door with a name that already carries an extension, and a real dialog click
-        // cannot see the difference either (the shell suffixes a bare name before
-        // `onAccepted` reads it).
-        const bareName = win.dlgUrl(String(win.gauge[0]) + "/" + win.gauge[7] + "-f")
-        const arm = win.filterExt(1)
-        gaugeSay("f-jpg", arm + "|" + win.session.savePin(win.pinId, bareName, arm))
+        // §10 第 41 项 ②: the refusal above is this door's click-facing before-state, so its
+        // text is read back here and `pin_check` grades the pair the way the mask door has
+        // since P39. `session.status` is one slot, so any leg that writes it between this
+        // line and `accept-was` replaces the product's sentence with a leg's own - which is
+        // exactly what P40's JPG arm did to this door, and why that arm no longer runs here
+        // (it is `jpgArmLeg` below, past the click). The schedule order is a judged row now,
+        // so this placement has a reader rather than only a comment.
+        gaugeSay("pre-save", win.session.status)
         win.openDialogLeg()
     }
 
@@ -262,7 +258,30 @@ Window {
         // is meant to be reported. From here nothing else may answer under the click's
         // keys.
         win.dlgLeg = false
+        win.jpgArmLeg()
         gaugeSay("done", win.gauge[0])
+    }
+
+    // §10 第 40 项 ②, at this door: a name with no extension takes the format of the arm
+    // the dialog was showing, so the leg hands the door one arm's own text, read off
+    // `nameFilters` because the *selected* arm is read-only (P38's probe E found the
+    // assignment). The JPG arm is the one the configured `[output] format` would never
+    // pick on this machine, so it is what tells a forwarded filter from one dropped at
+    // the boundary - and the boundary is the question, since the legs that call the door
+    // with a name already carrying an extension cannot see the difference either, and a
+    // real dialog click cannot (the shell suffixes a bare name before `onAccepted` reads it).
+    //
+    // It runs here, after the click and its tail readings, for the reason §10 第 41 项 ②
+    // registered: this leg writes `session.status`, and the graded pair above needs that
+    // slot to still hold the product's own refusal when the click arrives. P40 had it
+    // first in the schedule, which left `pin dialog accept` comparing two file names
+    // instead of two sentences. The mask door solved the same problem by running its arm
+    // *above* its refusal; this door's refusal is a leg of its own, further up, so the
+    // arm goes below everything the click is measured on.
+    function jpgArmLeg() {
+        const bareName = win.dlgUrl(String(win.gauge[0]) + "/" + win.gauge[7] + "-f")
+        const arm = win.filterExt(1)
+        gaugeSay("f-jpg", arm + "|" + win.session.savePin(win.pinId, bareName, arm))
     }
 
     // `selectedNameFilter` three times, because it is read-only (assigning to it is a

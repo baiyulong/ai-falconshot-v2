@@ -15,7 +15,9 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use falcon_core::capture::{CaptureService, ScreenSnapshot, WindowInfo, XcapCapture};
 use falcon_core::geometry::{PhysPoint, PhysRect};
 use falcon_core::pin::PinId;
-use platform_windows::proc::cursor_pos;
+use platform_windows::proc::{
+    cursor_pos, pid_of_window, process_name, window_at_point, window_title,
+};
 use platform_windows::win::WinExtras;
 
 use crate::state;
@@ -197,9 +199,101 @@ pub fn snapshot_line(snap: &ScreenSnapshot) -> String {
     )
 }
 
+/// Whether a process name belongs to the workstation lock.
+///
+/// A locked session puts a full-screen `LockApp` window, backed by `LogonUI`, above every
+/// other window and nothing short of unlocking moves it. Naming that is what turns a
+/// screen-reading row's SKIP into a statement about the session rather than a bug report
+/// about the capture path - which since §10 第 41 项 ⑤ is *not* an excuse to explain a
+/// row away by it: P40 read better ink on the locked run than on the unlocked one, so the
+/// lock is one input parameter of a row, not a verdict over a round.
+pub(crate) fn is_lock(app: &str) -> bool {
+    let a = app.to_ascii_lowercase();
+    a.contains("lockapp") || a.contains("logonui")
+}
+
+/// What the desktop is showing at its own centre right now.
+///
+/// §10 第 41 项 ④: `--r13` has been able to say 会话已锁屏 since P39 and the other three
+/// gauges said nothing at all, so a run of `--ink` alone left no scene behind it and the
+/// only witness was a `tasklist` in a batch file - which was broken (`//FI`, the Git-Bash
+/// spelling) until this round. The reading lives here, next to the capture paths, because
+/// it is an input of every row that reads the screen and not a property of one report.
+///
+/// No pixels are grabbed: the point is the primary monitor's centre and the answer is which
+/// window the shell puts there. A `--pin` run does not look at the desktop (§10 第 41 项 ⑧)
+/// and still gets to say what was there.
+///
+/// [`Scene::hwnd`] is the reading and not a word in the sentence: a row that graded "the
+/// line does not begin with 没有" would be grading this file's own phrasing, which is the
+/// shape §10 第 41 项 ⑥ refuses - 判接线的格，对面必须是操作系统.
+pub struct Scene {
+    pub line: String,
+    pub hwnd: Option<u64>,
+}
+
+pub fn desktop_scene() -> Scene {
+    let refused = |why: String| Scene {
+        line: format!("没有桌面读数：{why}"),
+        hwnd: None,
+    };
+    let monitors = match service().monitors() {
+        Ok(m) => m,
+        Err(e) => return refused(format!("monitors() 报 {e}")),
+    };
+    let Some(m) = monitors
+        .iter()
+        .find(|m| m.primary)
+        .or_else(|| monitors.first())
+    else {
+        return refused(format!("枚举到 {} 个显示器", monitors.len()));
+    };
+    let centre = PhysPoint::new(
+        m.bounds.x + m.bounds.w as i32 / 2,
+        m.bounds.y + m.bounds.h as i32 / 2,
+    );
+    match window_at_point(centre) {
+        None => refused(format!("({},{}) 处桌面没有任何窗口", centre.x, centre.y)),
+        Some(hwnd) => {
+            let app = pid_of_window(hwnd)
+                .and_then(process_name)
+                .unwrap_or_else(|| "未知进程".to_string());
+            let title = window_title(hwnd).unwrap_or_default();
+            Scene {
+                line: format!(
+                    "({},{}) 上是 {app}「{title}」 hwnd=0x{hwnd:x} 会话锁屏={}",
+                    centre.x,
+                    centre.y,
+                    is_lock(&app)
+                ),
+                hwnd: Some(hwnd),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// §10 第 41 项 ④: the rule that turns a screen row's refusal into a statement about the
+    /// session is two substrings, and until this round those two substrings lived inside one
+    /// report's `map(|(app, _)| …)` closure - so the other three gauges could not name the
+    /// same thing without writing the rule a second time. A name a test can hit is what keeps
+    /// them honest, and the case list is the shell's own spelling, not this file's: the name
+    /// comes back from `QueryFullProcessImageNameW` in whatever case the exe's own directory
+    /// entry has.
+    #[test]
+    fn a_lock_is_named_by_the_process_and_not_by_a_pixel() {
+        assert!(is_lock("LockApp.exe"));
+        assert!(is_lock("LOCKAPP.EXE"));
+        assert!(is_lock("LogonUI.exe"));
+        assert!(!is_lock("falconshot-desktop.exe"));
+        assert!(!is_lock("explorer.exe"));
+        // The desktop's own window, which is what a normal unlocked session answers here.
+        assert!(!is_lock("Progman"));
+        assert!(!is_lock(""));
+    }
 
     #[test]
     fn a_rect_argument_is_four_numbers_and_nothing_else() {

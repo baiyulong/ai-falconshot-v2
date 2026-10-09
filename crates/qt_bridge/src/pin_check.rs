@@ -244,6 +244,121 @@ pub(crate) const FILTERS: [&str; 3] = ["*.png", "*.jpg", "*.bmp"];
 /// rect row allows.
 const RECT_SLACK: i32 = 2;
 
+/// The order this door's legs are meant to run in, as one list.
+///
+/// §10 第 41 项 ② is the reason a schedule is graded rather than merely counted: P40 added
+/// a leg that writes `session.status` in front of the click's before-reading, and the row
+/// count went up while the meaning of one of them went down - `pin dialog accept` kept
+/// printing PASS because it still saw *two* different sentences, just no longer the pair it
+/// was written to compare. Which leg runs when is therefore part of what a row means, and a
+/// row is the only place here that can say so.
+///
+/// Two entries are allowed to be absent, because they are confessions rather than phases:
+/// `dlg-dismiss` is the leg admitting it closed a door the click should have closed, and
+/// `dlg-rejected` is that close's own signal. [`leg_order`] grades what arrived, so a leg
+/// that did not run costs nothing - while a leg that runs and is *not* in this list costs
+/// the row. That is the point of keeping the list in Rust instead of in a comment: adding a
+/// leg means saying where it runs.
+pub(crate) const PIN_SCHEDULE: &[&str] = &[
+    "menu",
+    "filters",
+    "filter",
+    "before",
+    "current",
+    "call-accept",
+    "call-after",
+    "png-url",
+    "png",
+    "jpg",
+    "never-copy",
+    "never-save",
+    "pre-save",
+    "dlg-folder",
+    "dlg-name",
+    "dlg-open",
+    "dlg-shown",
+    "dlg-shown-filter",
+    "accept-was",
+    "dlg-push",
+    "dlg-push-tries",
+    "dlg-push-log",
+    "dlg-accepted",
+    "accept",
+    "dlg-filter",
+    "dlg-after",
+    "dlg-dismiss",
+    "dlg-rejected",
+    "f-jpg",
+    "done",
+];
+
+/// What the observed key order says about its schedule: `None` when every leg that ran is
+/// in the schedule and ran in its relative order, otherwise the problems, joined.
+///
+/// The comparison is *relative*, the way the finding is: two legs changing position inside
+/// one phase is the same defect as two phases swapping, and a fixed index per line would
+/// call a run that skipped its optional legs out of order. Equal indices are allowed,
+/// because a key a door writes twice is the same leg answering twice, not a schedule change.
+pub(crate) fn leg_order(keys: &[&str], schedule: &[&str]) -> Option<String> {
+    let mut problems: Vec<String> = Vec::new();
+    let mut prev: Option<(&str, usize)> = None;
+    for key in keys {
+        let Some(at) = schedule.iter().position(|s| s == key) else {
+            if !problems.iter().any(|p| p.ends_with(key)) {
+                problems.push(format!("日程里没有这条腿：{key}"));
+            }
+            continue;
+        };
+        if let Some((before, before_at)) = prev {
+            if at < before_at {
+                problems.push(format!(
+                    "{before} 与 {key} 的相对顺序和日程不符（实测 {before} 先、日程 {key} 先）"
+                ));
+            }
+        }
+        prev = Some((key, at));
+    }
+    if problems.is_empty() {
+        None
+    } else {
+        Some(problems.join("；"))
+    }
+}
+
+/// Every leg key a door's QML writes. The list comes out grouped by emitter form, not in
+/// the order the file reads, which is the first reason nothing below claims to be a schedule.
+///
+/// Two forms emit a key: `gaugeSay("<key>", …)` hands over a value the leg computed, and
+/// `readFilter("<key>")` asks the door for its selected filter, which is why that one is a
+/// call of its own. Scanning both is what lets a schedule be compared against the source as
+/// a *set*.
+///
+/// Order is deliberately not one of the claims this can make. A leg emitted inside a
+/// function is found in the text where the function is defined, and P41's probe put
+/// `jpgArmLeg()` back above the click's pre-state read without moving that definition, so
+/// the text still said "arm last" while the door ran it first - a source scan that stays
+/// green over the exact defect it is supposed to catch. The run reads the keys in the order
+/// they arrive, so the run is the order authority and [`leg_order`] is the row that reddens.
+#[cfg(test)]
+pub(crate) fn qml_leg_keys(src: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for emitter in ["gaugeSay(\"", "readFilter(\""] {
+        let mut from = 0usize;
+        while let Some(hit) = src[from..].find(emitter) {
+            let start = from + hit + emitter.len();
+            let Some(end) = src[start..].find('"') else {
+                break;
+            };
+            let key = &src[start..start + end];
+            if !key.is_empty() && !out.iter().any(|k| k == key) {
+                out.push(key.to_string());
+            }
+            from = start + end;
+        }
+    }
+    out
+}
+
 /// The plan, the paths, and whatever QML has reported into it so far.
 struct Plan {
     dir: PathBuf,
@@ -573,6 +688,10 @@ fn never_drawn(rep: &mut Report, key: &str, label: &str, prefix: &str, lines: &[
 pub fn measure() -> (Check, String) {
     state::stamp("pin end");
     let mut rep = Report::new();
+    // §10 第 41 项 ④: `--pin` never looks at the desktop (第 41 项 ⑧ is why its rows survive
+    // a change of wallpaper), but a run of it alone is still a run inside some session, and
+    // "which session" was the question this round could not answer from an archived log.
+    crate::r13::scene_row(&mut rep);
     let (id, bad, qml_png, qml_jpg, rust_png, rust_jpg, never, dialog, dir, rect, lines) =
         with(|p| {
             (
@@ -598,10 +717,19 @@ pub fn measure() -> (Check, String) {
         .iter()
         .filter_map(|l| l.split_once('|').map(|(k, _)| k))
         .collect();
+    let order = leg_order(&keys, PIN_SCHEDULE);
     rep.row(
         "pin leg ran",
-        Check::from(keys.contains(&"done")),
-        format!("{} 行：{}", lines.len(), keys.join(" ")),
+        Check::from(keys.contains(&"done") && order.is_none()),
+        format!(
+            "{} 行：{}{}",
+            lines.len(),
+            keys.join(" "),
+            order
+                .as_deref()
+                .map(|p| format!("；{p}"))
+                .unwrap_or_default()
+        ),
     );
     // The run's own arithmetic, printed rather than trusted. Which of the two closers
     // ended the run is a fact read off `done`'s own interval and not off a total - see
@@ -715,11 +843,19 @@ pub fn measure() -> (Check, String) {
         format!("原始 {push:?}；每次 {:?}", said(&lines, "dlg-push-log")),
     );
 
-    let (was, now) = (
-        said(&lines, "accept-was").unwrap_or("<没有读数>"),
-        said(&lines, "accept").unwrap_or("<没有读数>"),
-    );
-    let fired = now != was && (now.starts_with("已保存到") || now.starts_with("保存失败"));
+    // §10 第 41 项 ②: this door now reads its before-state the way the mask door has since
+    // P39, because comparing "some sentence" against "another sentence" was never the claim.
+    // `pre-save` is the product's own refusal (`never-save` above answers `保存失败：贴图 999999
+    // 还没有画过…`), and the pair only counts while the two are still the same string - so a
+    // leg that writes `session.status` between the refusal and the click reddens this row
+    // instead of quietly changing what it compares. That is P40's defect, made mechanical.
+    let was = said(&lines, "accept-was");
+    let now = said(&lines, "accept").unwrap_or("<没有读数>");
+    let pre = said(&lines, "pre-save");
+    let shown = was.unwrap_or("<没有读数>");
+    let fired = crate::annotate_check::before_is_products_own(was, pre)
+        && now.starts_with("已保存到")
+        && now != shown;
     rep.row(
         "pin dialog accept",
         if fired {
@@ -732,11 +868,12 @@ pub fn measure() -> (Check, String) {
             Check::Blocked
         },
         format!(
-            "真点击前后 status {was:?} -> {now:?}（{}）",
+            "真点击前后 status {shown:?} -> {now:?}；前态那句读自被拒的那次 savePin 之后的 {:?}（{}）",
+            pre.unwrap_or("<没有读数>"),
             if fired {
                 "onAccepted 是那一下点击跑起来的"
             } else if real_click(push) {
-                "点了，但 onAccepted 没跑"
+                "点了，但 onAccepted 没跑或前态不是产品那句"
             } else {
                 "没点成，这一格问不了"
             }
@@ -991,7 +1128,7 @@ pub fn measure() -> (Check, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{real_click, said, same_file};
+    use super::{leg_order, qml_leg_keys, real_click, said, same_file, PIN_SCHEDULE};
     use std::path::Path;
 
     /// The keys are the entire protocol between QML and this file, so one key must not
@@ -1097,5 +1234,106 @@ mod tests {
         ));
         // An empty reading is a leg that never spoke, not a file with a short name.
         assert!(!same_file(Path::new(""), want));
+    }
+
+    /// §10 第 41 项 ②, as a name a test can hit. The sequence below is copied out of
+    /// `p40_pin1500.log`'s own `pin leg ran` row - not invented - because the defect that
+    /// round registered is exactly a schedule change that no row could see: `f-jpg` ran
+    /// between the refusal and the click's before-reading, so `pin dialog accept` stayed
+    /// green while comparing two file names instead of two sentences. Counting rows cannot
+    /// say that; the relative order can.
+    #[test]
+    fn last_rounds_pin_order_is_out_of_order_by_this_rounds_schedule() {
+        let p40 = [
+            "menu",
+            "filters",
+            "filter",
+            "before",
+            "current",
+            "call-accept",
+            "call-after",
+            "png-url",
+            "png",
+            "jpg",
+            "never-copy",
+            "never-save",
+            "f-jpg",
+            "dlg-folder",
+            "dlg-name",
+            "dlg-open",
+            "dlg-shown",
+            "dlg-shown-filter",
+            "accept-was",
+            "dlg-push",
+            "dlg-push-tries",
+            "dlg-push-log",
+            "dlg-accepted",
+            "accept",
+            "dlg-filter",
+            "dlg-after",
+            "done",
+        ];
+        let problems = leg_order(&p40, PIN_SCHEDULE).unwrap_or_default();
+        assert!(problems.contains("f-jpg"), "{problems}");
+        assert!(problems.contains("日程不符"), "{problems}");
+    }
+
+    /// The order this round's QML writes, which has to be the schedule's own order: the
+    /// row that grades the run is only worth having if the plan it grades against is the
+    /// plan the door follows.
+    #[test]
+    fn the_pin_schedule_orders_its_own_legs() {
+        let p41: Vec<&str> = PIN_SCHEDULE
+            .iter()
+            .filter(|k| **k != "dlg-dismiss" && **k != "dlg-rejected")
+            .copied()
+            .collect();
+        assert_eq!(leg_order(&p41, PIN_SCHEDULE), None, "{p41:?}");
+    }
+
+    /// Two things the grade must not do: fail a run for the two legs that are confessions
+    /// rather than phases, and let a leg through that nobody gave a place to.
+    #[test]
+    fn an_unregistered_leg_costs_the_row_and_an_absent_optional_one_costs_nothing() {
+        let mut legs: Vec<&str> = PIN_SCHEDULE.to_vec();
+        assert_eq!(leg_order(&legs, PIN_SCHEDULE), None);
+        // The click closed the door, so the leg that would have admitted closing it stayed
+        // silent, and the one that would have reported its signal did too.
+        legs.retain(|k| *k != "dlg-dismiss" && *k != "dlg-rejected");
+        assert_eq!(leg_order(&legs, PIN_SCHEDULE), None);
+
+        legs.push("bmp-arm");
+        let problems = leg_order(&legs, PIN_SCHEDULE).unwrap_or_default();
+        assert!(problems.contains("日程里没有这条腿：bmp-arm"), "{problems}");
+
+        // A key the same leg writes twice is one leg answering twice, not a reorder.
+        let twice = ["accept-was", "accept", "accept"];
+        assert_eq!(leg_order(&twice, PIN_SCHEDULE), None);
+    }
+
+    /// The other half of ②(b), and the half that reaches the file that actually runs the
+    /// legs: the schedule above is only this round's reading if `PinWindow.qml` still has
+    /// the legs it names. Not their order - P41's probe is the reason that claim is gone, and
+    /// [`qml_leg_keys`] says why a scan of the source cannot make it. What a scan can settle
+    /// is the set, which is what a rename or a deleted leg breaks, and it breaks quietly: the
+    /// door stops writing the key, the row reports fewer lines, and only someone comparing
+    /// this round's count with last round's notices. So both directions are graded here.
+    #[test]
+    fn the_pin_qml_still_emits_exactly_the_scheduled_legs() {
+        let keys = qml_leg_keys(include_str!("../qml/PinWindow.qml"));
+        let missing: Vec<&str> = PIN_SCHEDULE
+            .iter()
+            .filter(|k| !keys.contains(&k.to_string()))
+            .copied()
+            .collect();
+        let extra: Vec<&str> = keys
+            .iter()
+            .filter(|k| !PIN_SCHEDULE.contains(&k.as_str()))
+            .map(|k| k.as_str())
+            .collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "日程与 PinWindow.qml 的腿对不上：日程有而 QML 不写 {missing:?}；QML 写而日程没有 {extra:?}"
+        );
     }
 }

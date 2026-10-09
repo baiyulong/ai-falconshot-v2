@@ -353,6 +353,9 @@ pub(crate) fn qml_row(rep: &mut Report) {
 
 pub fn measure() -> (Check, String) {
     let mut rep = Report::new();
+    // §10 第 41 项 ④: this gauge reads the desktop in every one of its scored rows, and
+    // until now the only thing it could say about the session was what its rows refused to.
+    crate::r13::scene_row(&mut rep);
     let snap = capture::current();
     let levels = parse_levels(&session::shim::top_levels());
     let masks: Vec<&Top> = levels

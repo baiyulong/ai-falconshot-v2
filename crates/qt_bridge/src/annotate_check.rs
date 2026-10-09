@@ -2398,7 +2398,7 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
     pin_save_rows(rep, want, &dir, &png, &jpg);
 }
 
-/// The same act at the mask's own door, closed by a click rather than by this file.
+/// The same act at either output door, closed by a click rather than by this file.
 ///
 /// The before-half of the click's sentence pair, judged on its own so the rule below is a
 /// name a test can hit (§10 第 39 项 ①, and the same reach as 第 39 项 ⑥'s `refusals`).
@@ -2412,12 +2412,43 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
 /// What makes this a reading rather than a tautology is one layer down and not checkable
 /// here: `gaugeSay` has exactly one destination - the report channel - so the only writer of
 /// the string both keys carry is `MaskState::save_out`, reached by `bar.view.saveSelection`.
+///
+/// The pin door reached the same rule from the other side (§10 第 41 项 ②): there the slot is
+/// `Session::status` and its writer is `PinState::save_image`, and the equality below is what
+/// turns "another leg wrote the slot between the refusal and the click" from a sentence
+/// nobody compares into a row that goes red.
 pub(crate) fn before_is_products_own(was: Option<&str>, pre: Option<&str>) -> bool {
     match (was, pre) {
         (Some(w), Some(p)) => w == p && !w.is_empty() && !w.starts_with("已保存到"),
         _ => false,
     }
 }
+
+/// This door's leg order, in the same shape and for the same reason as
+/// [`pin_check::PIN_SCHEDULE`] (§10 第 41 项 ②). `f-jpg` sits *above* the refusal here, which
+/// is the placement `AnnotationToolbar.qml`'s own comment asks for and the opposite of the
+/// pin's, because this door's refusal is written by the leg that reads it back rather than
+/// by an earlier one. `dlg-dismiss`/`dlg-rejected` are the two confessions that may be absent.
+pub(crate) const MASK_SCHEDULE: &[&str] = &[
+    "dlg-folder",
+    "dlg-name",
+    "f-jpg",
+    "pre-save",
+    "dlg-open",
+    "dlg-shown",
+    "dlg-shown-filter",
+    "accept-was",
+    "dlg-push",
+    "dlg-push-tries",
+    "dlg-push-log",
+    "dlg-accepted",
+    "accept",
+    "dlg-filter",
+    "dlg-after",
+    "dlg-dismiss",
+    "dlg-rejected",
+    "done",
+];
 
 /// The two rows above call [`crate::mask::MaskState::save_out`] with a name this run
 /// chose, which proves the encoder and nothing about the dialog: no `FileDialog` was opened,
@@ -2436,13 +2467,18 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
         .iter()
         .filter_map(|l| l.split_once('|').map(|(k, _)| k))
         .collect();
+    let order = pin_check::leg_order(&keys, MASK_SCHEDULE);
     rep.row(
         "mask leg ran",
-        Check::from(keys.contains(&"done")),
+        Check::from(keys.contains(&"done") && order.is_none()),
         format!(
-            "{} 行：{}（{DIALOG_PUSH_TRIES_MAX} 次尝试为上限，每等 {DIALOG_DELAY_MS} ms）",
+            "{} 行：{}{}（{DIALOG_PUSH_TRIES_MAX} 次尝试为上限，每等 {DIALOG_DELAY_MS} ms）",
             lines.len(),
-            keys.join(" ")
+            keys.join(" "),
+            order
+                .as_deref()
+                .map(|p| format!("；{p}"))
+                .unwrap_or_default()
         ),
     );
     rep.note(
@@ -2737,6 +2773,9 @@ pub fn measure() -> (Check, String) {
     // rows print are measured rather than assumed.
     state::stamp("mask end");
     let mut rep = Report::new();
+    // §10 第 41 项 ④: the scene first, because four of this report's rows are about what
+    // the desktop was showing and none of them could say so until now.
+    crate::r13::scene_row(&mut rep);
     let Some(p) = plan().lock().unwrap_or_else(PoisonError::into_inner).take() else {
         return (
             Check::Fail,
@@ -3244,6 +3283,58 @@ mod tests {
             Some("保存失败：路径不存在。截图还在，可以再保存一次。"),
             Some("保存失败：路径不存在。截图还在，可以再保存一次。")
         ));
+        // §10 第 41 项 ②: the same rule now covers the other door, whose refusal is the
+        // state machine's own words about an id the set never handed out - the sentence
+        // `pin dialog accept` compares against from this round on.
+        assert!(before_is_products_own(
+            Some("保存失败：贴图 999999 还没有画过，没有可输出的像素。"),
+            Some("保存失败：贴图 999999 还没有画过，没有可输出的像素。")
+        ));
+    }
+
+    /// The schedule at this door, which is the mirror image of the pin's and has to be
+    /// read as one: `f-jpg` runs *above* the refusal here because this door's refusal is
+    /// written by the leg that reads it back, so the arm is allowed to speak first. What
+    /// neither door allows is a leg writing the message slot between the refusal and the
+    /// click's before-reading, and the archived order below is this run's own.
+    #[test]
+    fn the_mask_schedule_orders_its_own_legs() {
+        let p41: Vec<&str> = MASK_SCHEDULE
+            .iter()
+            .filter(|k| **k != "dlg-dismiss" && **k != "dlg-rejected")
+            .copied()
+            .collect();
+        assert_eq!(pin_check::leg_order(&p41, MASK_SCHEDULE), None);
+
+        // The one reorder this door has to refuse: the arm moved underneath its own
+        // refusal, which is what P40 did to the other door.
+        let mut moved = p41.clone();
+        moved.remove(2);
+        moved.insert(5, "f-jpg");
+        let problems = pin_check::leg_order(&moved, MASK_SCHEDULE).unwrap_or_default();
+        assert!(problems.contains("f-jpg"), "{problems}");
+        assert!(problems.contains("日程不符"), "{problems}");
+    }
+
+    /// The QML side of the same rule, and the same narrowed claim: the set of legs, not
+    /// their order. `PinWindow.qml`'s probe run is why - see [`pin_check::qml_leg_keys`].
+    #[test]
+    fn the_mask_qml_still_emits_exactly_the_scheduled_legs() {
+        let keys = pin_check::qml_leg_keys(include_str!("../qml/AnnotationToolbar.qml"));
+        let missing: Vec<&str> = MASK_SCHEDULE
+            .iter()
+            .filter(|k| !keys.contains(&k.to_string()))
+            .copied()
+            .collect();
+        let extra: Vec<&str> = keys
+            .iter()
+            .filter(|k| !MASK_SCHEDULE.contains(&k.as_str()))
+            .map(|k| k.as_str())
+            .collect();
+        assert!(
+            missing.is_empty() && extra.is_empty(),
+            "日程与 AnnotationToolbar.qml 的腿对不上：日程有而 QML 不写 {missing:?}；QML 写而日程没有 {extra:?}"
+        );
     }
 
     /// A band that read on the dark desktop of R20's third run: 16 of 165 samples
