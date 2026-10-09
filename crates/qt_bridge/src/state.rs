@@ -239,21 +239,22 @@ impl PinState {
         done
     }
 
-    /// §5.9.17 - the pin out to a file. The extension picks the format, so
-    /// `core::encode`'s ICO-downscale and JPG-flatten rules apply on the way.
+    /// §5.9.17 - the pin out to a file, through the same owner the mask's 另存为 uses
+    /// ([`crate::save`]), so the two doors read `[output] jpeg_quality`, answer in the
+    /// same Chinese sentence and name the pixels a format without alpha threw away.
+    /// The extension picks the format, so `core::encode`'s ICO-downscale and
+    /// JPG-flatten rules apply on the way; a name without one becomes the configured
+    /// format rather than PNG, which is what P35 changed about this door.
     pub fn save_image(&self, id: PinId, path: &str) -> Result<String, String> {
-        let target = std::path::Path::new(path);
-        let format =
-            encode::Format::from_ext(target.extension().and_then(|e| e.to_str()).unwrap_or("png"))
-                .ok_or_else(|| format!("not a format this app writes: {path}"))?;
+        let export = crate::settings::export();
         let Some(done) = self.with_rendered(id, |frame| {
-            let opt = EncodeOptions {
-                format,
-                ..Default::default()
-            };
-            encode::save(frame, target, &opt)
-                .map(|_| format!("saved {path} {}x{}", frame.width, frame.height))
-                .map_err(|e| e.to_string())
+            match crate::save::write(frame, path, &export, "贴图") {
+                Ok(said) => Ok(said),
+                Err(crate::save::Refusal::BadName(e)) => Err(e),
+                Err(crate::save::Refusal::Write(e)) => {
+                    Err(format!("{e}。贴图还在，可以再保存一次。"))
+                }
+            }
         }) else {
             return Err(format!("pin {id} has never been drawn"));
         };

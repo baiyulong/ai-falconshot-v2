@@ -562,11 +562,12 @@ impl MaskState {
     /// what 复制 put on the clipboard and what 保存 put on disk are the same picture
     /// rather than two answers to the same selection.
     ///
-    /// A name without an extension is not a refusal: the dialog was showing the filter
-    /// for PNG while the user typed `foo`, so `foo` means §5.5.5's configured format,
-    /// and the file that appears is `foo.png`.
+    /// The name, the format, the count and the sentence are [`crate::save`'s`] - the pin
+    /// window's 另存为 reads through the same owner, so the two doors cannot say two
+    /// different things about one picture again (P35: they had, and one of them said it
+    /// in English while ignoring `[output] jpeg_quality`).
     ///
-    /// The fourth sentence is the reason this round exists. Three rows of the PRD ask
+    /// The fourth sentence is the reason P34 exists. Three rows of the PRD ask
     /// for it - §5.5.5 line 506 ("包含透明背景时，应推荐 PNG"), §5.4.5's line 447
     /// ("不支持透明度的输出格式应提醒用户背景将被填充") and §5.5.6's line 521 - and all
     /// three are true of the same write, because `flatten_on_lossy` paints those pixels
@@ -593,63 +594,16 @@ impl MaskState {
             self.message = "选区的画面拼不出来：截图还在，可以再保存一次。".to_string();
             return false;
         };
-        let typed = std::path::Path::new(path);
-        let (target, format) = match typed.extension() {
-            Some(ext) => (
-                typed.to_path_buf(),
-                encode::Format::from_ext(&ext.to_string_lossy()),
-            ),
-            None => {
-                let mut named = typed.as_os_str().to_os_string();
-                named.push(".");
-                named.push(self.export.format.ext());
-                (std::path::PathBuf::from(named), Some(self.export.format))
-            }
-        };
-        let Some(format) = format else {
-            self.message = format!("{path} 不是本程序会写的格式：用 .png、.jpg 或 .bmp。");
-            return false;
-        };
-        // Counted before the write, from the frame that is about to be encoded: asking
-        // the file afterwards would be asking a JPG whether it kept an alpha channel.
-        let filled = if format.supports_alpha() || !frame.has_transparency() {
-            0
-        } else {
-            frame
-                .pixels
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .filter(|p| p[3] != 255)
-                .count()
-        };
-        let opt = encode::EncodeOptions {
-            format,
-            ..self.export
-        };
-        match encode::save(&frame, &target, &opt) {
-            Ok(()) => {
-                // The selection's size, not the file's: `encode` rescales an ICO down to
-                // 256 before it writes, and a success sentence that quoted the frame
-                // would be quoting a picture the file is not. What the user selected is
-                // true of every format, and is the number they recognise.
-                self.message = format!(
-                    "已保存到 {}（选区 {}×{} 像素）。{}",
-                    target.display(),
-                    frame.width,
-                    frame.height,
-                    if filled == 0 {
-                        String::new()
-                    } else {
-                        format!(
-                            "选区里有 {filled} px 透明，{} 存不下，已填成白色；要保留透明请存成 PNG。",
-                            format.label()
-                        )
-                    }
-                );
+        match crate::save::write(&frame, path, &self.export, "选区") {
+            Ok(said) => {
+                self.message = said;
                 true
             }
-            Err(e) => {
+            Err(crate::save::Refusal::BadName(e)) => {
+                self.message = e;
+                false
+            }
+            Err(crate::save::Refusal::Write(e)) => {
                 self.message = format!("{e}。截图还在，可以再保存一次。");
                 false
             }

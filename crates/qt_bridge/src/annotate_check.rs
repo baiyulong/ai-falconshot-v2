@@ -37,7 +37,10 @@
 //!   one too.
 //! * **the last two legs leave the process.** 复制 writes to the machine's own clipboard
 //!   and puts the user's contents back; 另存为 writes two files under the OS temp dir and
-//!   reads them back. Neither one samples a photograph, because neither one is about the
+//!   reads them back - and since P35 writes them a second time through a pin made from the
+//!   frame the mask just stitched, because the claim that the two doors hand over one
+//!   picture is only readable as a comparison between their bytes. Neither one samples a
+//!   photograph, because neither one is about the
 //!   screen: the claim each can support is that the bytes which came back are the bytes
 //!   [`crate::annotate::Layer::deliver`] stitched - to the byte for the PNG and the
 //!   clipboard, and in the one respect that matters for the JPG, whose entire contract is
@@ -53,7 +56,7 @@
 //! strokes - so an expectation can never drift away from what was drawn.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use falcon_core::annotation::Kind;
@@ -69,7 +72,7 @@ use crate::mask_check::{self, median, ratio_row, samples, Sides};
 use crate::mask_view::shim;
 use crate::r13::{parse_levels, Report, Top};
 use crate::session;
-use crate::state::Check;
+use crate::state::{self, Check};
 
 /// The pen used by every stroke in the script. The default is 3 device pixels,
 /// which is inside the antialiasing of a composited read-back; 8 is unambiguous and
@@ -2033,37 +2036,49 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
 /// compared against the one before it without a threshold this project never chose.
 ///
 /// Nothing here depends on the screen, which is why the leg is worth having on a machine
-/// whose desktop is too dark for the rows above: the two rows can pass inside a run that
+/// whose desktop is too dark for the rows above: the rows can pass inside a run that
 /// reads BLOCKED overall. Files go under the OS temp dir and are removed before the
 /// write, because a file the previous run left behind would be graded as this run's
 /// answer to a write that never happened.
+///
+/// [`pin_save_rows`] closes the same act at the pin window's door and hangs its three
+/// rows off the files written here, so a run that could not get this far says why for all
+/// five rather than printing two and being silent about the other three.
 fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
     let Some(want) = shipped else {
-        rep.row(
-            "saved png",
-            Check::Fail,
-            "nothing was stitched, so there was no picture to save".to_string(),
-        );
-        rep.row(
-            "saved jpg",
-            Check::Fail,
-            "the same frame was missing for this leg too".to_string(),
-        );
+        for label in ["saved png", "saved jpg"] {
+            rep.row(
+                label,
+                Check::Fail,
+                "nothing was stitched, so there was no picture to save".to_string(),
+            );
+        }
+        for label in ["pin saved png", "pin saved jpg", "jpeg quality knob"] {
+            rep.row(
+                label,
+                Check::Fail,
+                "the same frame was missing, so there was no picture to pin either".to_string(),
+            );
+        }
         return;
     };
     let mut dir = std::env::temp_dir();
     dir.push("falconshot-save-gauge");
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        rep.row(
-            "saved png",
-            Check::Blocked,
-            format!("{} could not be made ready ({e})", dir.display()),
-        );
-        rep.row(
-            "saved jpg",
-            Check::Blocked,
-            "the same directory".to_string(),
-        );
+        for label in ["saved png", "saved jpg"] {
+            rep.row(
+                label,
+                Check::Blocked,
+                format!("{} could not be made ready ({e})", dir.display()),
+            );
+        }
+        for label in ["pin saved png", "pin saved jpg", "jpeg quality knob"] {
+            rep.row(
+                label,
+                Check::Blocked,
+                "the same directory, and the pin writes into it too".to_string(),
+            );
+        }
         return;
     }
     let png = dir.join("selection.png");
@@ -2179,6 +2194,157 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
             back_jpg.as_ref().map_or(0, |(n, _)| *n),
             drift / (total.max(1) as u64 * 3),
             said_jpg,
+        ),
+    );
+
+    pin_save_rows(rep, want, &dir, &png, &jpg);
+}
+
+/// The same act at the other door: a pin's 另存为 (§5.9.17), read against the mask's
+/// answer to the *same picture*.
+///
+/// P34's two rows above graded a door the pins never used. `state::save_image` had its
+/// own spelling of the same write until P35 unified it, and all three of the differences
+/// were invisible to every row this file had ever printed: it answered `saved {path}
+/// {w}x{h}` in English, it took `..Default::default()` so `[output] jpeg_quality` (PRD
+/// 507) was inert behind a floating window, and it flattened transparency without
+/// repeating PRD 447's prompt. A shared owner fixes the code; only a run that writes both
+/// doors and compares the bytes fixes the drift, and says what it cost - which is what
+/// these three rows are.
+///
+/// The pin is made by the product's own `add`, which renders, encodes and hands Qt a
+/// texture - the shape §5.9's `selftest` runs in, and the reason no window appears: the
+/// count property that QML's `Instantiator` repeats is never touched. The frame is the
+/// mask's stitched delivery, cloned, so a difference between the two files is a difference
+/// between the doors rather than between two pictures.
+///
+/// What this does *not* reach is `PinWindow.qml`'s `另存为…` item: like the mask's, that
+/// half needs a real pointer and a real file dialog, and §10 第 35 项 ⑤ keeps the account.
+fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, mask_jpg: &Path) {
+    let pin_png = dir.join("pin.png");
+    let pin_jpg = dir.join("pin.jpg");
+    for stale in [&pin_png, &pin_jpg] {
+        let _ = std::fs::remove_file(stale);
+    }
+
+    let id = match state::with(|s| s.add(want.clone(), PhysPoint::new(10, 10))) {
+        Ok(id) => id,
+        Err(e) => {
+            for label in ["pin saved png", "pin saved jpg", "jpeg quality knob"] {
+                rep.row(
+                    label,
+                    Check::Fail,
+                    format!("the pin this leg saves could not be made: {e}"),
+                );
+            }
+            return;
+        }
+    };
+
+    let said_png = state::with(|s| s.save_image(id, &pin_png.to_string_lossy()));
+    let said_jpg = state::with(|s| s.save_image(id, &pin_jpg.to_string_lossy()));
+    let both = |a: &Path, b: &Path| {
+        let (x, y) = (std::fs::read(a).ok(), std::fs::read(b).ok());
+        let same = x.is_some() && y.is_some() && x == y;
+        (same, x.map_or(0, |v| v.len()), y.map_or(0, |v| v.len()))
+    };
+
+    // ---- PNG: the door that has never been read at all, against the one that has.
+    let (same_png, mask_len, pin_len) = both(mask_png, &pin_png);
+    let zh_png = said_png
+        .as_ref()
+        .is_ok_and(|s| s.contains("已保存到") && s.contains("贴图"));
+    rep.row(
+        "pin saved png",
+        Check::from(same_png && zh_png),
+        format!(
+            "the mask's file is {mask_len} bytes and the pin's is {pin_len}, identical={same_png}; \
+             the pin's own sentence was {:?}{}",
+            said_png,
+            if zh_png {
+                String::new()
+            } else {
+                " - which is not the Chinese one the mask says".to_string()
+            }
+        ),
+    );
+
+    // ---- JPG: the lossy half, where the flattening used to happen in silence.
+    let (same_jpg, mask_len, pin_len) = both(mask_jpg, &pin_jpg);
+    let gone = want
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[3] != 255)
+        .count();
+    let told = match &said_jpg {
+        Ok(said) if gone == 0 => !said.contains("透明"),
+        Ok(said) => said.contains(&format!("贴图里有 {gone} px 透明")) && said.contains("填成白色"),
+        Err(_) => false,
+    };
+    rep.row(
+        "pin saved jpg",
+        Check::from(same_jpg && told),
+        format!(
+            "the mask's file is {mask_len} bytes and the pin's is {pin_len}, identical={same_jpg}; \
+             the document had {gone} px with alpha below 255 and the pin's sentence named and \
+             promised to fill them={told}; the product's own sentence was {:?}",
+            said_jpg
+        ),
+    );
+
+    // ---- The knob itself, at both ends of its range, at both doors.
+    //
+    // `save_image` reads the live settings and `save_out` the snapshot the mask took at
+    // `open`, so a leg that moved only one of them would grade two different questions.
+    // Both move, and both are put back: the run writes a settings file at flow end
+    // (§5.7.1's "did anything move?"), and a quality left at 30 would be written into the
+    // pinned copy as though the user had set it.
+    let q0 = crate::settings::with(|s| s.config.output.jpeg_quality);
+    let mut sizes = Vec::new();
+    for quality in [30u32, 95u32] {
+        crate::settings::with(|s| s.config.output.jpeg_quality = quality);
+        mask::with(|m| m.export.quality = quality as u8);
+        let m_path = dir.join(format!("mask-q{quality}.jpg"));
+        let p_path = dir.join(format!("pin-q{quality}.jpg"));
+        for stale in [&m_path, &p_path] {
+            let _ = std::fs::remove_file(stale);
+        }
+        let mask_said = mask::with(|m| m.save_out(&m_path.to_string_lossy()));
+        let pin_said = state::with(|s| s.save_image(id, &p_path.to_string_lossy()));
+        let (same, m_len, p_len) = both(&m_path, &p_path);
+        // "agree" is the two doors saying they wrote *and* the bytes matching: a door that
+        // refused and happened to leave the previous run's file behind would otherwise be
+        // counted as a door that agreed with its neighbour.
+        sizes.push((quality, m_len, p_len, same && mask_said && pin_said.is_ok()));
+    }
+    crate::settings::with(|s| s.config.output.jpeg_quality = q0);
+    mask::with(|m| m.export.quality = q0 as u8);
+
+    let agreed = sizes.iter().all(|(_, _, _, same)| *same);
+    let moved = sizes[0].1 != sizes[1].1;
+    let closed = state::with(|s| s.close(&[id]));
+    let problems = state::with(|s| s.problems.clone());
+    rep.row(
+        "jpeg quality knob",
+        Check::from(agreed && moved && closed == 1 && problems.is_empty()),
+        format!(
+            "{} wrote {} bytes from the mask and {} from the pin; {} wrote {} and {}; \
+             the two doors agree at each setting={agreed}, the two settings disagree={moved}{}; \
+             the pin closed={closed} and it noted {:?}",
+            sizes[0].0,
+            sizes[0].1,
+            sizes[0].2,
+            sizes[1].0,
+            sizes[1].1,
+            sizes[1].2,
+            if moved {
+                ""
+            } else {
+                " - which makes the knob inert"
+            },
+            problems
         ),
     );
 }
@@ -2588,11 +2754,12 @@ pub fn measure() -> (Check, String) {
         ),
     );
 
-    // The two legs of this gauge that touch something outside the process, and the only
-    // two that need the selection, the ink and the freeze all still standing. 复制 first
+    // The legs of this gauge that touch something outside the process, and the only ones
+    // that need the selection, the ink and the freeze all still standing. 复制 first
     // because it is the one that has to put the user's clipboard back; 另存为 after it,
     // because its rows quote the product's own sentence and `copy_out` has just
-    // overwritten that field.
+    // overwritten that field - and the pin's five rows last, because two of them are read
+    // against the files the mask wrote.
     clipboard_rows(&mut rep, shipped.as_ref());
     save_rows(&mut rep, shipped.as_ref());
 

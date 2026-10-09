@@ -30,6 +30,7 @@ mod mask_check;
 mod mask_view;
 mod pin_view;
 mod r13;
+mod save;
 mod session;
 mod settings;
 mod state;
