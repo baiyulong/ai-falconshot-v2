@@ -355,6 +355,18 @@ pub fn write_text(text: &str) -> Result<(), ClipError> {
     write_formats(&[(CF_UNICODETEXT.0 as u32, &wide)])
 }
 
+/// Empty the clipboard and publish nothing.
+///
+/// The product never asks for this: no user action means "clear the clipboard". It
+/// exists for the two legs that *do* write the clipboard to measure something -
+/// `--selftest --clipboard` and `--ink`'s 复制 - because "the user's contents come back"
+/// is only true when an empty clipboard can be made empty again. Without it a gauge that
+/// found nothing on the clipboard leaves its own test picture there and reports that it
+/// restored what was there.
+pub fn clear() -> Result<(), ClipError> {
+    write_formats(&[])
+}
+
 /// One `OpenClipboard` / `EmptyClipboard` / `SetClipboardData` transaction.
 ///
 /// Each block is allocated moveable because that is what the clipboard contract

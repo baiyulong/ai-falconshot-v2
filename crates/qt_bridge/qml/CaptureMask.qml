@@ -363,7 +363,7 @@ Window {
         Keys.onUpPressed: (event) => win.step(0, -1, event.modifiers)
         Keys.onDownPressed: (event) => win.step(0, 1, event.modifiers)
 
-        // §5.7.19's 撤销 / 重做.
+        // §5.7.19's 撤销 / 重做 and §5.5.2's 复制.
         //
         // Tested against `event.key` in the generic `pressed` rather than with
         // `Keys.onZPressed`: this type's per-key signals are the ones its metadata
@@ -381,10 +381,21 @@ Window {
             const shifted = (event.modifiers & Qt.ShiftModifier) !== 0
             const undo = event.key === Qt.Key_Z && !shifted
             const redo = event.key === Qt.Key_Y || (event.key === Qt.Key_Z && shifted)
-            if (!undo && !redo) {
+            // `Ctrl+C`, and only without Shift: `Ctrl+Shift+C` is not this program's,
+            // and a copy that swallowed a chord it did not implement would leave the
+            // user with no way to find out what the chord does.
+            const copy = event.key === Qt.Key_C && !shifted
+            if (!undo && !redo && !copy) {
                 return
             }
             event.accepted = true
+            // The toolbar owns the gesture, key or click alike: it is the item that
+            // has to remember whether the copy got through, and a second path to the
+            // same `copySelection()` is a path that colours its own sentence wrong.
+            if (copy) {
+                inkBar.copy()
+                return
+            }
             if (redo ? view.redoStep() : view.undoStep()) {
                 win.grabbed()
             }

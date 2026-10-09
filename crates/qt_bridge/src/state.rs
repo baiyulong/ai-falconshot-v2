@@ -688,6 +688,45 @@ impl From<bool> for Check {
     }
 }
 
+/// Put back what the user had, as far as this app can represent it, and say how far
+/// that was.
+///
+/// Two gauges owe the machine this now: `--selftest --clipboard` writes a test picture,
+/// and `--ink`'s 复制 leg goes through the product's own clipboard call, which writes
+/// the screenshot. Both take the user's contents away in order to measure something,
+/// and the debt is paid here rather than in two copies of the same four branches -
+/// the copy that forgets the `html or a file list` case is the one that silently eats
+/// what was in front of the user, and the copy that forgets *empty* leaves its own test
+/// picture on a clipboard the user had cleared.
+pub fn put_back(before: &Option<platform_windows::clip::Contents>) -> Result<String, String> {
+    match before {
+        // `read()` answering `None` is not an empty clipboard: it is a clipboard that
+        // would not open, and whatever was on it went with the write that followed. The
+        // leg that reports that as "it was empty" is a leg claiming to have restored
+        // what it never read.
+        None => Err("it would not open for reading, so what was on it is not knowable".to_string()),
+        Some(c) if c.is_empty() => platform_windows::clip::clear()
+            .map(|_| "it was empty, and is empty again".to_string())
+            .map_err(|e| e.to_string()),
+        Some(c) => {
+            if let Some(bytes) = &c.image_bytes {
+                match encode::decode(bytes) {
+                    Ok(frame) => platform_windows::clip::write_image(&frame)
+                        .map(|_| format!("image {}x{}", frame.width, frame.height))
+                        .map_err(|e| e.to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
+            } else if let Some(t) = &c.text {
+                platform_windows::clip::write_text(t)
+                    .map(|_| format!("text ({} chars)", t.chars().count()))
+                    .map_err(|e| e.to_string())
+            } else {
+                Ok("html or a file list, which this check cannot put back".to_string())
+            }
+        }
+    }
+}
+
 pub fn clipboard_selftest() -> (Check, String) {
     // Ask first, because the clipboard can belong to somebody else. When it does,
     // the honest answer is who holds it - not a row of failures that reads as if
@@ -827,25 +866,7 @@ pub fn clipboard_selftest() -> (Check, String) {
     match &blocked {
         Some(who) => check("the clipboard came back", Check::Blocked, who.to_string()),
         None => {
-            let restored: Result<String, String> = match &before {
-                None => Ok("it was empty".to_string()),
-                Some(c) => {
-                    if let Some(bytes) = &c.image_bytes {
-                        match encode::decode(bytes) {
-                            Ok(frame) => platform_windows::clip::write_image(&frame)
-                                .map(|_| format!("image {}x{}", frame.width, frame.height))
-                                .map_err(|e| e.to_string()),
-                            Err(e) => Err(e.to_string()),
-                        }
-                    } else if let Some(t) = &c.text {
-                        platform_windows::clip::write_text(t)
-                            .map(|_| format!("text ({} chars)", t.chars().count()))
-                            .map_err(|e| e.to_string())
-                    } else {
-                        Ok("html or a file list, which this check cannot put back".to_string())
-                    }
-                }
-            };
+            let restored = put_back(&before);
             check(
                 "the clipboard came back",
                 Check::from(restored.is_ok()),

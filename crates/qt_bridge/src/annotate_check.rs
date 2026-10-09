@@ -43,10 +43,12 @@
 //! strokes - so an expectation can never drift away from what was drawn.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use falcon_core::annotation::Kind;
 use falcon_core::capture::ScreenSnapshot;
+use falcon_core::config::FILE_NAME;
 use falcon_core::frame::Frame;
 use falcon_core::geometry::{PhysPoint, PhysRect};
 
@@ -429,12 +431,39 @@ fn erase_band(hole: PhysRect) -> Result<Erase, String> {
     })
 }
 
+/// Where this gauge's writes go instead of the file it read.
+///
+/// Under the OS temp dir, one path for the whole gauge, and never next to the script
+/// that measures it: the file this run teaches pens into is a measurement artefact, and
+/// an artefact that lands in the user's `%APPDATA%` is a defect that reports itself as a
+/// setting. `Config::save` creates the parent directory, so this needs no `mkdir` - and
+/// nothing here reads the file back, which is why the name is fixed rather than unique.
+fn gauge_config() -> PathBuf {
+    let mut dir = std::env::temp_dir();
+    dir.push("falconshot-ink-gauge");
+    dir.push(FILE_NAME);
+    dir
+}
+
 /// Freeze, open, draw, undo. Must run before the QML engine, for the same reason
 /// [`mask_check::open`] must: the windows must not capture the screen they cover.
 pub fn plant(shader: bool) -> Result<String, String> {
+    // §10 第 33 项 ①, paid back before the leg that owed it. This script teaches the
+    // pens it is about to measure - `select_tool`, `set_color`, `set_width` below - and
+    // the flow it drives ends the way the product's does, through
+    // [`crate::settings::write_back`]. Without the pin, every `--ink` run leaves the
+    // user's own `config.toml` holding the green 矩形 and the 8 px pen it planted to
+    // grade itself, and §5.7.1 promises that file the *user's* last pen.
+    //
+    // Only the destination moves: the read is still the user's file, so `apply=` still
+    // counts the pens that user set and `write_back`'s "did anything move?" is still
+    // decided against what the user has. The row in [`measure`] grades that this stayed
+    // true, because a pin someone later deletes is a bug that writes itself once per
+    // run and never reports.
+    let pinned = crate::settings::pin_writes(&gauge_config());
     mask_check::open(shader)?;
     let slots = mask::with(|m| m.slots.clone());
-    let mut notes = Vec::new();
+    let mut notes = vec![format!("config writes pinned to {}", pinned.display())];
 
     // Every region is a fraction of the selection, so the script needs no knowledge
     // of the monitor's size or of the default hole's arithmetic. The polyline's strip
@@ -755,8 +784,9 @@ struct Hits {
     /// cause the row does not know, and the difference between those two is the whole
     /// finding.
     unexplained: usize,
-    /// Up to [`NAMED`] of the samples in the two buckets above, with the three colours
-    /// the row compared.
+    /// Up to [`NAMED`] of the samples this row lost its grade on, with the colours that
+    /// made it one. A count without where and what is not actionable by anyone reading
+    /// the log, which is why every bucket that costs the row a point names itself here.
     examples: Vec<String>,
 }
 
@@ -1607,6 +1637,376 @@ fn erase_rows(rep: &mut Report, slot: &mask::Slot, frozen: Option<&ScreenSnapsho
     );
 }
 
+/// The stitched picture, compared against the render it was cut from.
+///
+/// [`crate::annotate::Layer::deliver`] calls [`crate::annotate::Layer::flatten`], crops
+/// the result and pastes it at an offset, so on paper this row compares a frame with
+/// itself and could be skipped. It is here because every one of those three steps is a
+/// coordinate-space change and both of the bugs this project has had in §9.1 ① were
+/// space mix-ups: a crop taken in desktop space instead of canvas space, a paste at the
+/// hole's desktop corner instead of its own, a `shift` applied once per screen instead of
+/// once per canvas. Each of them leaves an *export* that is correct and a *delivery* that
+/// is not, which is exactly the pairing no other row can see - `layer == export` never
+/// looks at the hole, and the on-screen rows never look at the frame that would leave the
+/// process.
+///
+/// Exact, not tolerant: the two bitmaps are made by this process, from one document, and
+/// nothing composites them. A rounding here is a wrong pixel in the user's file.
+fn stitched(
+    shipped: &Frame,
+    export: &Frame,
+    part: PhysRect,
+    hole: PhysRect,
+    canvas: PhysRect,
+) -> Synced {
+    let mut s = Synced::default();
+    for y in part.y..part.bottom() {
+        for x in part.x..part.right() {
+            s.want += 1;
+            let (gx, gy) = (x - hole.x, y - hole.y);
+            let (lx, ly) = (x - canvas.x, y - canvas.y);
+            if gx < 0
+                || gy < 0
+                || lx < 0
+                || ly < 0
+                || (gx as u32) >= shipped.width
+                || (gy as u32) >= shipped.height
+                || (lx as u32) >= export.width
+                || (ly as u32) >= export.height
+            {
+                s.off += 1;
+                continue;
+            }
+            let (a, b) = (
+                shipped.get(gx as u32, gy as u32),
+                export.get(lx as u32, ly as u32),
+            );
+            if a == b {
+                s.ok += 1;
+            } else if s.bad.len() < NAMED {
+                s.bad.push(format!(
+                    "{x},{y}: shipped={a:?} (from {gx},{gy}) export={b:?} (from {lx},{ly})"
+                ));
+            }
+        }
+    }
+    s
+}
+
+/// Share of the graded samples row B has to agree on, in tenths. Deliberately not the
+/// exactness row A grades: this is one Rust-made frame read back through Qt's texture
+/// path, a compositor and `PrintWindow`, so antialiasing and a rounding are the expected
+/// residue. `blended` absorbs a pixel that is nearer the shipped picture than the desktop
+/// under it, which is the residue's own signature - and 9/10 is high enough that an
+/// overlay which simply never repainted (the desktop showing through everywhere) still
+/// fails.
+const SHIP_PASS: usize = 9;
+
+/// What the screen shows inside the selection, against the picture the product says it
+/// will deliver.
+///
+/// Every other read-back row in this gauge compares the screen with a *stroke* - a green
+/// band, a text strip, a magnified patch - which means the shipped frame itself has never
+/// been on screen in any test until now. This row asks the whole-picture question on the
+/// same ~2000-sample grid `--mask` uses, in the same desk-to-bitmap arithmetic, over the
+/// part of the selection this window covers and [`mask_check::BORDER_DIP`] away from the
+/// selection's own edge (that ring is the dim's boundary and the white frame, not a
+/// measurement).
+///
+/// The `flat` refusal is what makes this row more than a second copy of row A: over most
+/// of the picture the shipped pixel *is* the frozen desktop - only the ink differs - so a
+/// sample where the two candidates are the same colour cannot distinguish a correct
+/// delivery from an overlay that paints nothing, and is refused rather than credited.
+/// The samples that survive are the ink's own pixels, which is the part of the delivery
+/// only a compositor can lose.
+fn shipped_on_screen(
+    cover: PhysRect,
+    got: &Frame,
+    shipped: &Frame,
+    snap: &ScreenSnapshot,
+    hole: &PhysRect,
+    part: PhysRect,
+    dpr: f64,
+) -> Hits {
+    let mut h = Hits::default();
+    let scale_x = cover.w.max(1) as f64 / got.width.max(1) as f64;
+    let scale_y = cover.h.max(1) as f64 / got.height.max(1) as f64;
+    let border = (mask_check::BORDER_DIP * dpr / scale_x.max(1.0)) as i32;
+    // The same sample budget as `--mask`, spent inside this rectangle rather than across
+    // the whole window: a grid laid over the window would grade a selection-sized picture
+    // at a fraction of its own resolution, and a small selection would then be a row the
+    // screen refused.
+    let step = ((part.w as f64 * part.h as f64 / 2000.0).sqrt().ceil() as i32).max(1);
+    for y in (part.y..part.bottom()).step_by(step as usize) {
+        for x in (part.x..part.right()).step_by(step as usize) {
+            let at = PhysPoint::new(x, y);
+            let dx = (at.x - hole.x).min(hole.right() - 1 - at.x).abs();
+            let dy = (at.y - hole.y).min(hole.bottom() - 1 - at.y).abs();
+            if dx <= border || dy <= border {
+                // Not a planted sample at all, so it joins none of the buckets: the ring is
+                // where the dim's edge and the selection's own frame live, and `--mask`
+                // refuses it for the same reason.
+                continue;
+            }
+            h.want += 1;
+            let bx = ((at.x - cover.x) as f64 / scale_x).round() as i32;
+            let by = ((at.y - cover.y) as f64 / scale_y).round() as i32;
+            let (sx, sy) = (at.x - hole.x, at.y - hole.y);
+            if bx < 0
+                || by < 0
+                || (bx as u32) >= got.width
+                || (by as u32) >= got.height
+                || (sx as u32) >= shipped.width
+                || (sy as u32) >= shipped.height
+            {
+                h.off += 1;
+                continue;
+            }
+            // On no desktop this run froze: the sample has no second candidate to be
+            // refused against and no first one to be graded on.
+            let Some(src) = snap.color_at(at) else {
+                h.off += 1;
+                continue;
+            };
+            let (seen, want) = (
+                got.get(bx as u32, by as u32),
+                shipped.get(sx as u32, sy as u32),
+            );
+            if want[3] == 0 {
+                // The delivery carries no colour here at all: it is a pixel the 擦除到透明
+                //档 erased, and what the screen must show through it is whatever is under
+                // the ink. Refused rather than blamed - an RGB comparison cannot agree with
+                // "nothing", and crediting it would credit a document that ships no ink.
+                // The band itself is graded by 橡皮's own rows and by the exact stitch
+                // above, where alpha is compared in full.
+                h.flat += 1;
+                if h.examples.len() < NAMED {
+                    h.examples.push(format!(
+                        "{},{}: shipped alpha 0 ({want:?}), screen={seen:?} freeze={src:?}",
+                        at.x, at.y
+                    ));
+                }
+                continue;
+            }
+            if (want[0].max(want[1]).max(want[2]) as u32) < mask_check::MIN_SOURCE {
+                // The expectation is black, so nothing the screen shows here can be
+                // divided: black times anything is black (`--mask`'s `MIN_SOURCE` rule).
+                h.dark += 1;
+                continue;
+            }
+            if same(want, src) {
+                // The delivery and the desktop are the same colour at this pixel, which is
+                // most of the picture: only the ink differs. Such a sample cannot tell a
+                // correct delivery from no delivery, so it is refused - `enlarged`'s `flat`
+                // - and never credited. Without this rung the row would pass on a desktop
+                // whose overlay painted nothing at all.
+                h.flat += 1;
+                continue;
+            }
+            if same(seen, want) {
+                h.ok += 1;
+                continue;
+            }
+            if same(seen, src) {
+                h.plain += 1;
+                // The distance to the selection's own frame travels with the sample. That
+                // frame is decoration no delivery contains, so a miss sitting on it and a
+                // miss in the middle of the picture are different findings - and a reader
+                // has to be able to tell them apart without re-running the gauge.
+                if h.examples.len() < NAMED {
+                    h.examples.push(format!(
+                        "{},{}: edge {dx},{dy} screen={seen:?} shipped={want:?} freeze={src:?}",
+                        at.x, at.y
+                    ));
+                }
+                continue;
+            }
+            if nearer(seen, want, src) {
+                h.blended += 1;
+                continue;
+            }
+            h.unexplained += 1;
+            if h.examples.len() < NAMED {
+                h.examples.push(format!(
+                    "{},{}: screen={seen:?} shipped={want:?} freeze={src:?}",
+                    at.x, at.y
+                ));
+            }
+        }
+    }
+    h
+}
+
+/// §5.5.2's 复制, walked on the machine's own clipboard.
+///
+/// The leg reads the user's contents before it writes anything and puts them back after,
+/// through [`crate::state::put_back`] - the same debt [`--selftest --clipboard`](crate::state)
+/// pays, in the same four branches, including the one that means "the clipboard was empty"
+/// and so has to make it empty again rather than leave the screenshot behind. A clipboard
+/// that will not open for *reading* is refused rather than written to: taking contents
+/// this gauge cannot restore is not a measurement anyone is entitled to make on someone
+/// else's desktop. The same rule covers a clipboard that holds RTF or a file list -
+/// readable, but not something this app can put back.
+///
+/// Nothing here is compared against a stroke or a band. The claim is narrower and harder
+/// than the on-screen rows: the bytes that came back out of the clipboard are the bytes
+/// [`crate::annotate::Layer::deliver`] handed over, at the size of the selection.
+fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
+    // The reason travels with the refusal: "would not open" is only actionable once the
+    // row says who is holding it, which is the same thing `--selftest --clipboard`
+    // learned to print instead of a row of failures that reads as a broken app.
+    let before = match platform_windows::clip::read() {
+        Ok(c) => c,
+        Err(e) => {
+            rep.row(
+                "clipboard copy",
+                Check::Blocked,
+                format!(
+                    "the clipboard would not open for reading ({e}), and this leg will not \
+                     write what it cannot put back"
+                ),
+            );
+            return;
+        }
+    };
+    let formats = platform_windows::clip::formats().unwrap_or_default();
+    rep.note(
+        "clipboard before",
+        format!(
+            "{} bytes of image, {} chars of text, {} format(s): {}",
+            before.image_bytes.as_ref().map_or(0, |b| b.len()),
+            before
+                .text
+                .as_ref()
+                .map(|t| t.chars().count())
+                .unwrap_or_default(),
+            formats.len(),
+            formats.join(",")
+        ),
+    );
+    // Counts and format names only, never the contents: a log that quoted what the user
+    // had copied would be a second copy of the user's clipboard.
+    if !before.is_empty() && before.image_bytes.is_none() && before.text.is_none() {
+        rep.row(
+            "clipboard copy",
+            Check::Blocked,
+            format!(
+                "the clipboard holds {} , which this app cannot put back after writing over \
+                 it, so nothing was written",
+                formats.join(",")
+            ),
+        );
+        return;
+    }
+    if let Err(e) = platform_windows::clip::usable() {
+        // The product's own first rung, on the machine's own answer: PRD §7.2 asks for the
+        // holder's name, and `ClipError::Locked` displays the holder's name.
+        rep.row(
+            "clipboard copy",
+            Check::Blocked,
+            format!("{e} - nothing was written, so nothing had to be put back"),
+        );
+        return;
+    }
+    let done = mask::with(|m| m.copy_out());
+    let said = mask::with(|m| m.message.clone());
+    rep.note("clipboard sentence", said.clone());
+    // Read back *before* anything is put away. The restore is itself a write, and every
+    // write opens with `EmptyClipboard`, so grading afterwards would grade the user's own
+    // text against the selection - which is exactly the reading this leg produced on its
+    // first walk of a real clipboard: `copy_out=true`, the product said 已复制, and 0 px
+    // of picture came back because the picture had already been replaced.
+    let formats_after = platform_windows::clip::formats().unwrap_or_default();
+    let came_back = platform_windows::clip::read()
+        .ok()
+        .and_then(|c| c.image_bytes);
+    rep.note(
+        "clipboard after",
+        format!(
+            "{} bytes of image, {} format(s): {}",
+            came_back.as_ref().map_or(0, |b| b.len()),
+            formats_after.len(),
+            formats_after.join(",")
+        ),
+    );
+    let read_back = came_back.map(|bytes| falcon_core::encode::decode(&bytes));
+    // Restored whether or not the copy succeeded: `write_formats` empties the clipboard
+    // before it publishes, so a write that failed half-way had already taken the user's
+    // contents with it. Where nothing was taken - either pre-clipboard rung - emptying an
+    // already empty clipboard is a no-op with the same name.
+    let back = crate::state::put_back(&Some(before));
+    let (mut ok, mut total, mut bad, mut whole, mut gone) =
+        (0usize, 0usize, Vec::new(), false, 0usize);
+    if let (Some(Ok(frame)), Some(want)) = (&read_back, shipped) {
+        total = frame.width as usize * frame.height as usize;
+        if frame.width == want.width && frame.height == want.height {
+            whole = true;
+            for y in 0..frame.height {
+                for x in 0..frame.width {
+                    // Three channels, not four: `CF_DIB` carries no alpha, so what a paste
+                    // target reads is the RGB the DIB holds, and the alpha the PNG path
+                    // re-adds is 255 everywhere. That is not a harmless loss - a pixel the
+                    // 擦除到透明 档 erased has no colour to lose, but the RGB underneath it
+                    // is the ink's own, and it is what arrives. Counted here and quoted in
+                    // the row, so a full-mark comparison does not read as though
+                    // transparency survived the trip.
+                    let (a, b) = (frame.get(x, y), want.get(x, y));
+                    if b[3] == 0 {
+                        gone += 1;
+                    }
+                    if same(a, b) {
+                        ok += 1;
+                    } else if bad.len() < NAMED {
+                        bad.push(format!("{x},{y}: clipboard={a:?} shipped={b:?}"));
+                    }
+                }
+            }
+        }
+    }
+    let verdict = match (&read_back, shipped) {
+        (Some(Ok(_)), Some(_)) => Check::from(done && whole && bad.is_empty()),
+        // The product said 已复制 and there is no picture to read, or the bytes it put
+        // there are not a picture this app can decode: either way the leg's claim died at
+        // this rung and not at the comparison above.
+        _ => Check::Fail,
+    };
+    rep.row(
+        "clipboard copy",
+        verdict,
+        format!(
+            "copy_out={done}, {} of {total} px of the selection came back as shipped, size \
+             matches={whole}, first mismatch: {}; the product's own sentence was {said:?}{}",
+            ok,
+            if bad.is_empty() {
+                "none".to_string()
+            } else {
+                bad.join(" | ")
+            },
+            if total == 0 {
+                // The count alone does not say whether the write missed, the read missed,
+                // or the bytes are a picture this decoder rejects; the format list is the
+                // one reading that separates those three.
+                format!(
+                    ", and the clipboard held {} at the moment it was read back",
+                    formats_after.join(",")
+                )
+            } else if gone > 0 {
+                format!(
+                    ", of which {gone} px are transparent in the document and reached the \
+                     clipboard as the colour under them"
+                )
+            } else {
+                String::new()
+            }
+        ),
+    );
+    rep.row(
+        "clipboard restored",
+        Check::from(back.is_ok()),
+        back.unwrap_or_else(|e| e),
+    );
+}
+
 pub fn measure() -> (Check, String) {
     let mut rep = Report::new();
     let Some(p) = plan().lock().unwrap_or_else(PoisonError::into_inner).take() else {
@@ -1635,6 +2035,23 @@ pub fn measure() -> (Check, String) {
         .filter(|t| t.title.starts_with(mask_check::TITLE))
         .collect();
     let slots = mask::with(|m| m.slots.clone());
+
+    // The picture the product would hand over right now, taken once for the whole run:
+    // [`crate::annotate::Layer::deliver`] re-stitches from the per-screen renders on
+    // every call, and a delivery row that called it per screen could otherwise be
+    // grading two frames that differ from each other.
+    let shipped = mask::with(|m| m.ink.deliver());
+    let uncovered = mask::with(|m| m.ink.uncovered());
+    rep.note(
+        "shipped",
+        match &shipped {
+            Some(f) => format!(
+                "{}×{} frame, {uncovered} px of {:?} supplied by no canvas",
+                f.width, f.height, p.hole
+            ),
+            None => "the selection stitched no frame at all".to_string(),
+        },
+    );
 
     // Every key the flow handed Qt: one frozen frame per screen, and one ink texture
     // per publish. The release row checks all of them, because a leak here is a
@@ -1788,6 +2205,41 @@ pub fn measure() -> (Check, String) {
             );
         }
 
+        // What leaves the process, pixel for pixel, against the render it was cut from.
+        // The two bitmaps are both made here, so the comparison is exact - see
+        // [`stitched`] for why an exactness test of a frame built out of itself is the
+        // only place a stitch's own arithmetic can be caught.
+        let export = mask::with(|m| m.ink.flatten(&slot.name));
+        match (p.hole.intersection(&slot.bounds), &shipped, export) {
+            (Some(part), Some(frame), Some(export)) => {
+                let s = stitched(frame, &export, part, p.hole, slot.bounds);
+                rep.row(
+                    &format!("shipped == export of {tag}"),
+                    s.verdict(),
+                    s.line(),
+                );
+            }
+            (None, _, _) => rep.row(
+                &format!("shipped == export of {tag}"),
+                Check::Blocked,
+                "the hole reaches none of this canvas, so this screen supplies none of the \
+                 picture"
+                    .to_string(),
+            ),
+            (Some(_), None, _) => rep.row(
+                &format!("shipped == export of {tag}"),
+                Check::Fail,
+                "the selection stitched no frame at all".to_string(),
+            ),
+            (Some(_), Some(_), None) => rep.row(
+                &format!("shipped == export of {tag}"),
+                Check::Fail,
+                "the canvas the hole is on exported no frame, so the stitch had nothing to \
+                 paste"
+                    .to_string(),
+            ),
+        }
+
         for (label, points, want, tenths) in [
             ("ink box", rect_band(p.rect), GREEN, INK_PASS),
             ("ink stroke", path_band(&p.zig), GREEN, INK_PASS),
@@ -1898,12 +2350,72 @@ pub fn measure() -> (Check, String) {
             let (verdict, detail) = ratio_row(values.len(), median(values), want, &sides);
             rep.row(&format!("{label} of {tag} (ink up)"), verdict, detail);
         }
+        // The delivery as the desktop shows it. Every row above this one grades a stroke
+        // against the screen; none of them has ever graded the *picture* against it, and
+        // the picture is what §5.5.2 hands to another application.
+        match (shipped.as_ref(), p.hole.intersection(&slot.bounds)) {
+            (Some(frame), Some(part)) => {
+                let hits = shipped_on_screen(
+                    win.phys,
+                    &got,
+                    frame,
+                    frozen,
+                    &p.hole,
+                    part,
+                    slot.scale.ratio(),
+                );
+                rep.row(
+                    &format!("shipped on screen of {tag}"),
+                    hits.verdict(SHIP_PASS),
+                    hits.line(),
+                );
+            }
+            (None, _) => rep.row(
+                &format!("shipped on screen of {tag}"),
+                Check::Fail,
+                "the selection stitched no frame, so there is no picture this screen could \
+                 be showing"
+                    .to_string(),
+            ),
+            (_, None) => rep.row(
+                &format!("shipped on screen of {tag}"),
+                Check::Blocked,
+                "the hole reaches none of this canvas, so this window photographs none of \
+                 the delivery"
+                    .to_string(),
+            ),
+        }
         mask_check::flag_column(&mut rep, win);
         rep.note(
             &format!("swaps of {tag}"),
             format!("{} frame(s), first at {:?}", slot.swaps, slot.first_swap_ms),
         );
     }
+
+    // The selection's own completeness, which is not either delivery row's question: a
+    // hole that left the captured desktop ships *something* for every pixel it covers and
+    // nothing for the rest, and both of the comparisons above are right about the part
+    // they can see. A drag can leave the desktop on a machine with one monitor, so this is
+    // a row and not an assumption.
+    rep.row(
+        "shipped covers the hole",
+        Check::from(uncovered == 0 && shipped.is_some()),
+        format!(
+            "{uncovered} of {} px of {:?} came from no canvas{}",
+            p.hole.area(),
+            p.hole,
+            if shipped.is_some() {
+                String::new()
+            } else {
+                ", and no frame was stitched at all".to_string()
+            }
+        ),
+    );
+
+    // The one leg of this gauge that touches something outside the process. It runs last
+    // among the delivery rows and before the mask comes down, because it is the leg that
+    // needs the selection, the ink and the freeze all still standing.
+    clipboard_rows(&mut rep, shipped.as_ref());
 
     let (mask_problems, ink_problems) =
         mask::with(|m| (m.problems.clone(), m.ink.problems.clone()));
@@ -1929,6 +2441,33 @@ pub fn measure() -> (Check, String) {
             "{} of {} still in Qt's process after close",
             left.len(),
             keys.len()
+        ),
+    );
+    // §10 第 33 项 ①, graded rather than assumed. This script teaches the pens it measures
+    // and the flow it drives ends the way the product's does, so the run writes a settings
+    // file - and §5.7.1 promises that file to the *user*, whose last pen it is supposed to
+    // be. [`plant`] pins the writes into the temp dir; a pin somebody later deletes is a
+    // defect that runs once per measurement and never says so, which is what this row is
+    // for. Read after `close`, because `close` is what writes.
+    let (saves, read_from, write_to) =
+        crate::settings::with(|s| (s.saves, s.read_from.clone(), s.write_to.clone()));
+    let pinned = write_to != read_from && write_to.starts_with(std::env::temp_dir());
+    rep.row(
+        "config writes pinned",
+        match (saves, pinned) {
+            (0, _) => Check::Blocked,
+            (_, true) => Check::Pass,
+            (_, false) => Check::Fail,
+        },
+        format!(
+            "{saves} write(s): read from {}, wrote to {}{}",
+            read_from.display(),
+            write_to.display(),
+            match (saves, pinned) {
+                (0, _) => " - nothing moved, so the pin was never exercised".to_string(),
+                (_, true) => String::new(),
+                (_, false) => " - which is the file the user sets their pens in".to_string(),
+            }
         ),
     );
     rep.finish("ink check")
@@ -2859,6 +3398,204 @@ mod tests {
             .line(),
             "43/43 of 46 planted pixels agree, 3 off this canvas, first mismatch: \
              16,50: layer=[0, 232, 0, 255] export=[0, 232, 0, 0]"
+        );
+    }
+
+    /// One screen's contribution to a delivery, cut and pasted the way
+    /// [`crate::annotate::Layer::deliver`] does it, so the tests below plant a stitch
+    /// rather than a whole flow.
+    fn stitch(export: &Frame, part: PhysRect, hole: PhysRect, canvas: PhysRect, dx: i32) -> Frame {
+        let cut = export
+            .crop(&PhysRect::new(
+                part.x - canvas.x,
+                part.y - canvas.y,
+                part.w,
+                part.h,
+            ))
+            .expect("crop this screen's share");
+        let mut out = Frame::new(hole.w, hole.h).expect("frame");
+        out.paste(&cut, PhysPoint::new(part.x - hole.x + dx, part.y - hole.y))
+            .expect("paste it at its own corner");
+        out
+    }
+
+    #[test]
+    fn a_stitch_one_pixel_out_of_place_is_invisible_to_every_row_above_it() {
+        let (hole, canvas) = (
+            PhysRect::new(20, 30, 100, 60),
+            PhysRect::new(0, 0, 200, 200),
+        );
+        let part = hole
+            .intersection(&canvas)
+            .expect("the hole is on this canvas");
+        let mut export = Frame::filled(200, 200, GREY).expect("frame");
+        export.fill_rect(&PhysRect::new(40, 50, 20, 10), GREEN);
+
+        let right = stitch(&export, part, hole, canvas, 0);
+        let s = stitched(&right, &export, part, hole, canvas);
+        assert_eq!(
+            (s.ok, s.usable(), s.want),
+            (
+                part.area() as usize,
+                part.area() as usize,
+                part.area() as usize
+            ),
+            "the row's own arithmetic: {} added up to {}",
+            s.line(),
+            part.area()
+        );
+        assert_eq!(s.verdict(), Check::Pass);
+
+        // One pixel of the wrong space, which is what a `shift` applied twice - or not at
+        // all - leaves behind, and what P22's clip bug looked like from the outside: a
+        // correct render shipped to the wrong place.
+        let off_by_one = stitch(&export, part, hole, canvas, 1);
+        let bad = stitched(&off_by_one, &export, part, hole, canvas);
+        assert_eq!(bad.verdict(), Check::Fail);
+        assert_eq!(bad.bad.len(), NAMED, "{}", bad.line());
+
+        // The control, and the reason this row exists: the canvas and a whole-canvas render
+        // of the *same document* still agree byte for byte, because the defect is in the
+        // frame that leaves the process and `layer == export` never looks at that one.
+        let at: Vec<PhysPoint> = (0..40).map(|i| PhysPoint::new(20 + i * 2, 55)).collect();
+        assert_eq!(
+            sync_read(&at, canvas, &export, &export).verdict(),
+            Check::Pass,
+            "a row that compares two renders of one canvas cannot see a wrong stitch"
+        );
+
+        // And a shipped frame that reaches almost none of the share it is compared with is
+        // a refusal, not the agreement of the one pixel it does reach: `usable` is where
+        // that is decided, before any count of agreements gets a chance to look like a
+        // pass.
+        let stub = Frame::new(1, 1).expect("frame");
+        let none = stitched(&stub, &export, part, hole, canvas);
+        assert_eq!(
+            (none.off, none.usable(), none.verdict()),
+            (part.area() as usize - 1, 1, Check::Blocked),
+            "{}",
+            none.line()
+        );
+    }
+
+    #[test]
+    fn the_picture_on_the_screen_is_graded_against_the_delivery_and_not_against_itself() {
+        let snap = desk_sized(400, 400, GREY);
+        let (cover, hole) = (
+            PhysRect::new(0, 0, 400, 400),
+            PhysRect::new(50, 50, 300, 300),
+        );
+        let grey = Frame::filled(300, 300, GREY).expect("frame");
+        let green = Frame::filled(300, 300, GREEN).expect("frame");
+        let desktop = Frame::filled(400, 400, GREY).expect("frame");
+        let ink = |seen: &Frame| shipped_on_screen(cover, seen, &green, &snap, &hole, hole, 1.0);
+
+        // Delivered: the window shows the picture the product says it will ship.
+        let mut shown = desktop.clone();
+        shown.fill_rect(&hole, GREEN);
+        let h = ink(&shown);
+        assert!(h.usable() >= MIN_USABLE, "{}", h.line());
+        assert_eq!(h.verdict(SHIP_PASS), Check::Pass);
+
+        // The overlay painted nothing, so the screen is the desktop and every sample this
+        // row can grade is a sample of the ink missing.
+        let h = ink(&desktop);
+        assert_eq!((h.ok, h.verdict(SHIP_PASS)), (0, Check::Fail));
+        assert!(h.plain >= MIN_USABLE, "{}", h.line());
+
+        // Both candidates the same colour, which is most of a real selection: refused, and
+        // a refusal that leaves nothing to grade is not a pass. Without this rung the row
+        // would read 2000/2000 on a desktop whose mask had never painted.
+        let h = shipped_on_screen(cover, &desktop, &grey, &snap, &hole, hole, 1.0);
+        assert_eq!(
+            (h.flat, h.usable(), h.verdict(SHIP_PASS)),
+            (h.want, 0, Check::Blocked)
+        );
+
+        // A black expectation divides nothing, whatever the screen shows.
+        let black = Frame::filled(300, 300, [4, 4, 4, 255]).expect("frame");
+        let h = shipped_on_screen(cover, &desktop, &black, &snap, &hole, hole, 1.0);
+        assert!(h.dark > 0 && h.usable() == 0, "{}", h.line());
+        assert_eq!(h.verdict(SHIP_PASS), Check::Blocked);
+
+        // Partway to the ink is still a miss, and leans a named way; a pixel that is
+        // neither candidate is a different finding and cannot borrow the first one's pass.
+        let mut near = desktop.clone();
+        near.fill_rect(&hole, [50, 225, 50, 255]);
+        let h = ink(&near);
+        assert_eq!(
+            (h.ok, h.blended > 0, h.verdict(SHIP_PASS)),
+            (0, true, Check::Fail)
+        );
+        let mut orphan = desktop.clone();
+        orphan.fill_rect(&hole, ORPHAN);
+        let h = ink(&orphan);
+        assert!(h.unexplained >= MIN_USABLE, "{}", h.line());
+        assert_eq!(h.verdict(SHIP_PASS), Check::Fail);
+
+        // A window on a piece of desktop this run never froze answers nothing.
+        let far = PhysRect::new(450, 50, 300, 300);
+        let h = shipped_on_screen(
+            PhysRect::new(400, 0, 400, 400),
+            &desktop,
+            &green,
+            &snap,
+            &far,
+            far,
+            1.0,
+        );
+        assert_eq!(
+            (h.off, h.usable(), h.verdict(SHIP_PASS)),
+            (h.want, 0, Check::Blocked)
+        );
+    }
+
+    /// A pixel the 擦除到透明 档 erased reaches the delivery as the ink's colour under an
+    /// alpha of 0, and the screen has nothing to show but what is underneath. An RGB
+    /// comparison there is not a failed grade - it is a question that has no answer - and
+    /// the first live walk of [`shipped_on_screen`] proved that by losing exactly its
+    /// whole 橡皮 band to `bare desktop`. Refused, and refused in a way that cannot be
+    /// used to hide the pixels next to it.
+    #[test]
+    fn a_transparent_pixel_of_the_delivery_is_refused_and_never_blamed() {
+        let snap = desk_sized(400, 400, GREY);
+        let hole = PhysRect::new(50, 50, 300, 300);
+        let cover = PhysRect::new(0, 0, 400, 400);
+        let desktop = Frame::filled(400, 400, GREY).expect("frame");
+        let green = Frame::filled(300, 300, GREEN).expect("frame");
+        let erased_pixel = [GREEN[0], GREEN[1], GREEN[2], 0u8];
+        let erased = Frame::filled(300, 300, erased_pixel).expect("frame");
+
+        // Nothing but refusals: the band is the whole picture here, and no bucket that
+        // costs the row a point gets a sample.
+        let h = shipped_on_screen(cover, &desktop, &erased, &snap, &hole, hole, 1.0);
+        assert_eq!(
+            (h.plain, h.blended, h.unexplained, h.usable()),
+            (0, 0, 0, 0),
+            "{}",
+            h.line()
+        );
+        assert_eq!((h.flat, h.verdict(SHIP_PASS)), (h.want, Check::Blocked));
+
+        // And the refusal cannot eat a pixel it has no business refusing: half of the
+        // document erased, half still ink, and the inked half is graded on its own merits
+        // rather than carried by the refusal next to it.
+        let mut mixed = green.clone();
+        mixed.fill_rect(&PhysRect::new(0, 0, 150, 300), erased_pixel);
+        let mut half = desktop.clone();
+        half.fill_rect(&PhysRect::new(200, 50, 150, 300), GREEN);
+        let h = shipped_on_screen(cover, &half, &mixed, &snap, &hole, hole, 1.0);
+        assert!(h.usable() >= MIN_USABLE, "{}", h.line());
+        assert_eq!(
+            (
+                h.plain,
+                h.unexplained,
+                h.ok == h.usable(),
+                h.verdict(SHIP_PASS)
+            ),
+            (0, 0, true, Check::Pass),
+            "{}",
+            h.line()
         );
     }
 }

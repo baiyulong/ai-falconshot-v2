@@ -1494,6 +1494,66 @@ impl Layer {
         .ok()
     }
 
+    /// §5.5's 成图: the picture the selection takes, stitched from every screen that
+    /// has a share of it.
+    ///
+    /// Two spaces meet in the four lines below and both of them have broken this
+    /// module before (§9.1 ①): `hole` is desktop pixels, while a `flatten` is one
+    /// screen's own pixels from its own corner. So the cut is an intersection taken in
+    /// desktop space and *then* shifted into the screen's, which is what lets a hole
+    /// that straddles a seam come out of two canvases instead of one stretched one.
+    ///
+    /// It reads `flatten` and not [`Layer::layer_of`] on purpose: the incremental
+    /// canvas only knows the rectangles it was asked to repaint, and what leaves the
+    /// process has to be the whole document as it now stands.
+    pub fn deliver(&self) -> Option<Frame> {
+        if self.hole.is_empty() || self.canvases.is_empty() {
+            return None;
+        }
+        let mut out = Frame::new(self.hole.w, self.hole.h).ok()?;
+        for c in &self.canvases {
+            let Some(part) = self.hole.intersection(&c.bounds) else {
+                continue;
+            };
+            let full = self.flatten(&c.name)?;
+            let cut = full
+                .crop(&PhysRect::new(
+                    part.x - c.bounds.x,
+                    part.y - c.bounds.y,
+                    part.w,
+                    part.h,
+                ))
+                .ok()?;
+            out.paste(
+                &cut,
+                PhysPoint::new(part.x - self.hole.x, part.y - self.hole.y),
+            )?;
+        }
+        Some(out)
+    }
+
+    /// How much of the selection no canvas covers: the pixels [`Layer::deliver`]
+    /// would hand out as untouched black. `0` is the normal answer, and a non-zero one
+    /// is a hole that left the captured desktop - the row that ships the picture prints
+    /// this rather than assuming the frame is whole.
+    ///
+    /// Screens tile a desktop without overlapping it, so the shares add up. A mirrored
+    /// desktop would break that assumption by counting one area twice, which is why this
+    /// saturates instead of subtracting: the worst case then reads as "fully covered",
+    /// not as an underflow.
+    pub fn uncovered(&self) -> u64 {
+        if self.hole.is_empty() {
+            return 0;
+        }
+        let covered: u64 = self
+            .canvases
+            .iter()
+            .filter_map(|c| self.hole.intersection(&c.bounds))
+            .map(|part| part.area())
+            .sum();
+        self.hole.area().saturating_sub(covered)
+    }
+
     /// A whole-canvas repaint, for the cases where the document changed in a way no
     /// dirty rect describes (an abandoned draft).
     fn paint_last(&mut self) {
@@ -3782,5 +3842,134 @@ mod tests {
         l.apply_annotation_defaults(&ann);
         assert_eq!(l.font_family(), Style::default().font_family);
         assert!(l.problems.is_empty(), "{:?}", l.problems);
+    }
+
+    /// The colour question the delivery rows ask: the pen is a hue, not a byte, so a
+    /// channel that leads the other two by 40 is what "this pixel is the box" means here.
+    fn leads(px: [u8; 4], hot: usize, cold: [usize; 2]) -> bool {
+        px[3] == 255 && px[hot] as i32 - px[cold[0]].max(px[cold[1]]) as i32 > 40
+    }
+
+    #[test]
+    fn the_picture_that_leaves_is_the_selection_not_the_screen() {
+        // A hole that starts at (50,40) of a 320x200 screen. The frame that ships has
+        // to be the hole's own 120x80 and not the canvas, and its (0,0) has to be the
+        // desktop pixel the hole's corner sits on - which is the one place a missing
+        // shift shows up as a colour rather than a size.
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 320, 200))], [90, 90, 90, 255]);
+        l.set_hole(PhysRect::new(50, 40, 120, 80));
+        l.set_color([255, 0, 0, 255]);
+        l.select_tool(code_of(Some(Kind::Rect)));
+        assert!(l.press(PhysPoint::new(70, 60)));
+        l.drag(PhysPoint::new(110, 90));
+        assert!(l.release());
+
+        let out = l.deliver().expect("a hole inside one screen has a picture");
+        assert_eq!(
+            (out.width, out.height),
+            (120, 80),
+            "the crop is not the hole"
+        );
+        assert_eq!(l.uncovered(), 0, "a hole on one screen covers itself");
+
+        // The box's own corner, in the shipped frame: desktop (70,60) is hole-local
+        // (20,20).
+        assert!(
+            leads(out.get(20, 20), 0, [1, 2]),
+            "the ink did not travel: {:?}",
+            out.get(20, 20)
+        );
+        // And the corner of the frame is the desktop pixel under the hole's corner, not
+        // the canvas's - the shift the export already had to learn (§9.1 ①).
+        let export = l.flatten("m0").unwrap();
+        assert_eq!(out.get(0, 0), export.get(50, 40));
+        assert_eq!(out.get(119, 79), export.get(169, 119));
+    }
+
+    #[test]
+    fn a_selection_across_the_seam_is_two_screens_and_not_one_stretch() {
+        // The pair the P22 bug lived on: two 640x320 screens whose desktop starts at
+        // x = -1280. The hole straddles their seam, and each screen carries a box of a
+        // different colour next to it. Stitching one canvas and stretching it to the
+        // hole's width cannot pass this, because the two sides ask for different hues
+        // and the column that carries the seam has to come from the right screen.
+        let left = PhysRect::new(-1280, 0, 640, 320);
+        let right = PhysRect::new(-640, 0, 640, 320);
+        let mut l = screens(&[("left", left), ("right", right)], [90, 90, 90, 255]);
+        let hole = PhysRect::new(-1000, 50, 900, 200);
+        l.set_hole(hole);
+
+        // Green ends one pixel before the seam, red starts one pixel after it.
+        l.set_color([0, 255, 0, 255]);
+        l.select_tool(code_of(Some(Kind::Rect)));
+        assert!(l.press(PhysPoint::new(-700, 80)));
+        l.drag(PhysPoint::new(-641, 120));
+        assert!(l.release());
+        l.set_color([255, 0, 0, 255]);
+        assert!(l.press(PhysPoint::new(-639, 80)));
+        l.drag(PhysPoint::new(-580, 120));
+        assert!(l.release());
+        assert_eq!(l.objects(), 2);
+
+        let out = l.deliver().expect("a hole over two screens has a picture");
+        assert_eq!((out.width, out.height), (900, 200));
+        assert_eq!(l.uncovered(), 0, "the seam is covered twice over");
+
+        // Desktop -700 (green box's own corner) is hole-local 300 and desktop -639
+        // (red's) is 361 - two different screens, two different hues, both inside one
+        // 900-wide frame. A single stretched canvas cannot produce that pairing.
+        assert!(
+            leads(out.get(300, 30), 1, [0, 2]),
+            "the left screen's share is not green: {:?}",
+            out.get(300, 30)
+        );
+        let left_export = l.flatten("left").unwrap();
+        assert_eq!(
+            out.get(0, 0),
+            left_export.get(280, 50),
+            "the frame starts on the wrong column of the wrong screen"
+        );
+        let right_export = l.flatten("right").unwrap();
+        assert_eq!(
+            out.get(360, 30),
+            right_export.get(0, 80),
+            "the seam column is not the right screen's own first column"
+        );
+        assert!(
+            leads(out.get(361, 30), 0, [1, 2]),
+            "the right screen's share is not red: {:?}",
+            out.get(361, 30)
+        );
+    }
+
+    #[test]
+    fn the_part_of_the_selection_no_screen_covers_is_counted_not_assumed() {
+        // A 100x100 hole on a 200x100 canvas has the right half of it on no screen at
+        // all. The mask clamps a selection to the desktop, so this is not where a user
+        // lands - it is where the number the delivery row prints comes from, and the
+        // row has to be able to say "half of this picture is nothing" rather than ship
+        // it silently.
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 200, 100))], [90, 90, 90, 255]);
+        l.set_hole(PhysRect::new(150, 50, 100, 100));
+        assert_eq!(l.uncovered(), 100 * 100 - 50 * 50);
+
+        let out = l.deliver().expect("a partial hole still has a frame");
+        assert_eq!((out.width, out.height), (100, 100));
+        // The covered corner is the screen's own pixel, and the uncovered one is what
+        // an empty frame is: nothing painted.
+        assert_eq!(out.get(0, 0), [90, 90, 90, 255]);
+        assert_eq!(out.get(60, 60), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn nothing_selected_ships_nothing() {
+        // `deliver` on an empty hole is `None`, not a 0x0 frame: the caller answers the
+        // user with a sentence, and a zero-sized bitmap would be a clipboard write that
+        // succeeds at nothing.
+        let mut l = screens(&[("m0", PhysRect::new(0, 0, 100, 100))], [90, 90, 90, 255]);
+        assert!(l.deliver().is_none());
+        assert_eq!(l.uncovered(), 0);
+        l.set_hole(PhysRect::new(10, 10, 20, 20));
+        assert!(l.deliver().is_some());
     }
 }

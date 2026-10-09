@@ -162,6 +162,17 @@ impl Settings {
         )
     }
 
+    /// Send this process's later writes somewhere else, and say where.
+    ///
+    /// The read is not touched: `read_from` is still the file this copy came from, and
+    /// `write_back`'s "did anything move?" is still decided against what that file
+    /// says. Only the destination changes, which is what makes `saves=` a count of
+    /// writes the product would really have made.
+    pub fn pin_writes(&mut self, path: &Path) -> PathBuf {
+        self.write_to = path.to_path_buf();
+        self.write_to.clone()
+    }
+
     /// What had to be corrected and what the machine refused - empty on a clean first
     /// run, which is why the caller prints it only when there is something to say.
     pub fn notes(&self) -> Vec<String> {
@@ -204,6 +215,20 @@ pub fn apply_to(layer: &mut Layer) -> usize {
 /// The flow is over: keep what the layer learned, and write if that moved anything.
 pub fn write_back(layer: &Layer) -> Option<u64> {
     with(|s| s.write_back(layer))
+}
+
+/// Send this process's later writes somewhere else, and say where.
+///
+/// The `--ink` leg needs it. That gauge teaches the pens it is about to measure -
+/// `select_tool`, `set_color`, the widths - and then ends the flow the way the product
+/// does, which reaches [`Settings::write_back`]. Left alone, the run that checks the
+/// green 矩形 leaves the user's own `config.toml` holding a green 矩形: §5.7.1 promises
+/// that file the *user's* last pen, and §9.1 第十五条 is exactly this debt - a gauge
+/// that walks the product's door takes the product's side effect with it.
+///
+/// See [`Settings::pin_writes`] for what does and does not move.
+pub fn pin_writes(path: &Path) -> PathBuf {
+    with(|s| s.pin_writes(path))
 }
 
 #[cfg(test)]
@@ -425,6 +450,46 @@ mod tests {
         assert_eq!(pinned.write_to, path);
         std::fs::remove_dir_all(&read_dir).ok();
         std::fs::remove_dir_all(&data_dir).ok();
+    }
+
+    #[test]
+    fn a_write_pinned_for_a_gauge_leaves_the_file_it_read_alone() {
+        // §10 第 33 项 ①, in the shape the `--ink` leg leaves it in: read the user's
+        // file, teach it a pen through the product's own `write_back`, and the user's
+        // file must still be the bytes it was.
+        //
+        // Opened with a pin first (`Some(&read)`) rather than without one, because
+        // `pinned=None` means "ask the file where its data lives" and an empty
+        // `advanced.data_dir` answers with the real `%APPDATA%` - see `pinned` above.
+        // The pin then moves to the gauge's path, which is the whole of what the gauge
+        // does.
+        let dir = sandbox("pinned-write");
+        let read = file_in(&dir);
+        std::fs::write(&read, "[annotation]\nstroke_width = 5\n").expect("seed");
+        let before = std::fs::read(&read).expect("seeded bytes");
+
+        let mut s = Settings::open(&read, Some(&read));
+        let pin = dir.join("gauge").join(FILE_NAME);
+        assert_eq!(s.pin_writes(&pin), pin);
+        assert_eq!(s.read_from, read, "the read followed the write");
+
+        let mut layer = Layer::default();
+        teach(&mut layer, Kind::Marker, [1, 1, 1, 255], 3);
+        s.write_back(&layer)
+            .expect("a pen moved, so a write happens");
+
+        assert!(pin.exists(), "the write never reached the pin");
+        assert_eq!(s.saves, 1);
+        assert_eq!(
+            std::fs::read(&read).expect("the file it read"),
+            before,
+            "the gauge rewrote the file it was only supposed to read"
+        );
+        // And the redirect is the *only* thing the pin changed: the line still names
+        // the user's file as where this copy came from.
+        assert!(s.line().contains(&format!("from={}", read.display())));
+        assert!(s.line().contains(&format!("write_to={}", pin.display())));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -138,6 +138,12 @@ pub mod qobject {
         /// the buttons have never clicked.
         #[qproperty(bool, eraser_tool)]
         #[qproperty(bool, erase_transparent)]
+        /// §5.5.2's answer to the last 复制: the pixel count when the picture got
+        /// through, and who was holding the clipboard when it did not. Rust owns the
+        /// sentence (`MaskState::message`) because the writing owns it, and it arrives
+        /// through `reload` like everything else here, so a toolbar that shows this is
+        /// showing the same moment it shows the hole.
+        #[qproperty(QString, message)]
         type MaskView = super::MaskViewRust;
 
         /// Which screen this window is. Called by the `Instantiator` after creation,
@@ -321,6 +327,14 @@ pub mod qobject {
         #[cxx_name = "clearInk"]
         fn clear_ink(self: Pin<&mut Self>) -> bool;
 
+        /// §5.5.2's 复制, from the toolbar's cell or from `Ctrl+C`: the selection with
+        /// its ink onto the clipboard. `true` is "it is on the clipboard", and either
+        /// way [`crate::mask::MaskState::copy_out`] has left a sentence in `message`
+        /// for the toolbar to show - which is also why this does not close the mask.
+        #[qinvokable]
+        #[cxx_name = "copySelection"]
+        fn copy_selection(self: Pin<&mut Self>) -> bool;
+
         /// The tool buttons' labels, in [`crate::annotate::TOOLS`]' order. Read once
         /// by the toolbar's `Component.onCompleted`: the list is Rust's, so a tool
         /// renamed in one place cannot be a different tool in the other.
@@ -385,6 +399,7 @@ pub struct MaskViewRust {
     pen_family: QString,
     eraser_tool: bool,
     erase_transparent: bool,
+    message: QString,
 }
 
 impl qobject::MaskView {
@@ -406,7 +421,7 @@ impl qobject::MaskView {
     /// key both times, because the second flush has nothing new to say.
     pub fn reload(mut self: Pin<&mut Self>) {
         let index = *self.index();
-        let (view, shader, label, selected, ink) = mask::with(|m| {
+        let (view, shader, label, selected, ink, message) = mask::with(|m| {
             m.ink.flush();
             let label = m
                 .slot(index.max(0) as usize)
@@ -445,6 +460,7 @@ impl qobject::MaskView {
                     m.ink.eraser_tool(),
                     m.ink.erase_transparent(),
                 ),
+                m.message.clone(),
             )
         });
 
@@ -525,6 +541,7 @@ impl qobject::MaskView {
         self.as_mut().set_text_w(view.typing.w as i32);
         self.as_mut().set_text_h(view.typing.h as i32);
         self.as_mut().set_text_font(view.font_dip as i32);
+        self.as_mut().set_message(QString::from(&*message));
     }
 
     pub fn note_shader_status(self: Pin<&mut Self>, status: i32) {
@@ -709,6 +726,16 @@ impl qobject::MaskView {
 
     pub fn clear_ink(mut self: Pin<&mut Self>) -> bool {
         let done = mask::with(|m| m.ink.clear_ink());
+        self.as_mut().reload();
+        done
+    }
+
+    /// §5.5.2's 复制. The `reload` is not for the caller's benefit - the cell that was
+    /// clicked has nothing to redraw - it is for `message`, which every window reads
+    /// out of the one mask state, and for the sentence to be on screen at all the
+    /// toolbar has to re-read it after the write rather than before.
+    pub fn copy_selection(mut self: Pin<&mut Self>) -> bool {
+        let done = mask::with(|m| m.copy_out());
         self.as_mut().reload();
         done
     }

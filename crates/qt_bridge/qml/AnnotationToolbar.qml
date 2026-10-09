@@ -43,6 +43,12 @@ Rectangle {
     /// default, so the row says what the pen actually is the first time it appears.
     readonly property var font_sizes: [12, 18, 28]
 
+    /// Whether the last 复制 got through, kept for one thing only: the colour of the
+    /// sentence Rust wrote beside it. It is this panel's own answer to the call this
+    /// panel made, not a second copy of a Rust fact, which is why it is a property of
+    /// the bar rather than a `MaskView` one.
+    property bool copied: false
+
     color: "#f0232326"
     border.color: "#55555c"
     border.width: 1
@@ -86,6 +92,19 @@ Rectangle {
         // these windows from the model, and doing that from inside a handler that is
         // still running on one of them is a use-after-free QML will not warn about.
         Qt.callLater(() => session.endMask())
+    }
+
+    /// §5.5.2's 复制, from this cell or from `Ctrl+C` - both come through here, so
+    /// there is one gesture with one owner rather than two paths that can disagree
+    /// about what a copy does to the flow.
+    ///
+    /// It does not close the mask, whatever the outcome: see
+    /// [`crate::mask::MaskState::copy_out`]. `grabbed()` fires either way, because the
+    /// sentence is on the one mask state both windows read and the toolbar has to
+    /// re-read it after the write rather than before.
+    function copy() {
+        bar.copied = bar.view.copySelection()
+        bar.grabbed()
     }
 
     // One button. `tapped` is the only thing a delegate has to say; everything the
@@ -505,9 +524,14 @@ Rectangle {
             }
         }
 
-        // Edits, then the two ways out. 确认选区 is the same thing Enter already
+        // Edits, then the ways out. 确认选区 is the same thing Enter already
         // does; the crop-and-new-pin that §5.7 asks for after it is M4b, which is why
         // this says 选区 and not 完成.
+        //
+        // 复制 is the first of the three that actually leaves the program with
+        // something (§5.5.2), and it is greyed off with the selection rather than left
+        // clickable, because a copy with nothing selected is a refusal the user has to
+        // be handed a sentence for. `Ctrl+C` still reaches Rust's own answer.
         Row {
             spacing: 2
 
@@ -544,6 +568,12 @@ Rectangle {
             Item { width: 8; height: 1 }
 
             Cell {
+                label: "复制"
+                usable: bar.view.selected
+                onTapped: bar.copy()
+            }
+
+            Cell {
                 label: "确认选区"
                 usable: bar.view.selected
                 onTapped: bar.commit()
@@ -552,6 +582,18 @@ Rectangle {
             Cell {
                 label: "取消"
                 onTapped: bar.cancel()
+            }
+
+            // What the last 复制 did, in Rust's words. Visible only once there is
+            // something to say: an empty label would take width from a sentence that
+            // is not there, and the row would sit one cell further left than it did.
+            Text {
+                visible: bar.view.message.length > 0
+                anchors.verticalCenter: parent.verticalCenter
+                leftPadding: 8
+                text: bar.view.message
+                font.pixelSize: 12
+                color: bar.copied ? "#8e8e96" : "#ff9f0a"
             }
         }
     }

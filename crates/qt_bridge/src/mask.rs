@@ -134,6 +134,14 @@ pub struct MaskState {
     /// Pixels handed to Qt, and how long that took - the part of the 150 ms
     /// promise that is this module's to keep.
     pub pixels_ms: Option<u64>,
+    /// What the last delivery attempt said, in the user's own language, and `""`
+    /// when the flow has nothing to report.
+    ///
+    /// It lives in Rust rather than in a return value for the same reason the hole
+    /// does: two mask windows read this one state, so a sentence only the clicked
+    /// window knew is a sentence the other screen never shows. It is cleared by
+    /// `open`, so a fresh capture cannot start out wearing the last one's answer.
+    pub message: String,
     /// Bumped by every `open`, so a second capture in the same process gets keys
     /// nobody has asked for yet. A constant revision would reuse the previous
     /// frame's key, and `Image.cache: false` only re-requests when the URL changes:
@@ -156,6 +164,7 @@ impl MaskState {
         self.shader = shader;
         self.hole = Self::default_hole(snap);
         self.pixels_ms = None;
+        self.message.clear();
 
         let started = Instant::now();
         let screens = shim::screens();
@@ -484,6 +493,48 @@ impl MaskState {
 
     pub fn has_selection(&self) -> bool {
         !self.hole.is_empty()
+    }
+
+    /// §5.5.2's 复制: the annotated selection onto the clipboard, with a sentence
+    /// beside it either way.
+    ///
+    /// Three rungs, in this order, because each costs what the one above it says is
+    /// worth paying. Nothing selected is the user's own doing and needs no probe. The
+    /// probe (`clip::usable`) runs before any pixel is moved, because a clipboard
+    /// another process owns is an environment fact the user can act on - and PRD §7.2
+    /// asks for the holder's name rather than "Access is denied". Only then does the
+    /// write happen, through [`crate::annotate::Layer::deliver`], which is the one
+    /// place a selection is stitched: what lands on the clipboard here is byte-for-byte
+    /// what §5.5.4's 保存 will write to a file.
+    ///
+    /// This does **not** end the flow. The PRD stops at "系统将图片写入剪贴板"
+    /// (§5.5.2 step 3), and closing has a cost this project is not entitled to pay on
+    /// the user's behalf: the freeze, the ink and the message all go with the mask, so
+    /// a copy that closed the overlay would take its own answer with it. Ending the
+    /// capture is 取消's and, from M4b, 完成的.
+    pub fn copy_out(&mut self) -> bool {
+        if !self.has_selection() {
+            self.message = "还没有选区：先把要复制的范围拖出来。".to_string();
+            return false;
+        }
+        let Some(frame) = self.ink.deliver() else {
+            self.message = "选区的画面拼不出来：截图还在，可以再复制一次。".to_string();
+            return false;
+        };
+        if let Err(e) = platform_windows::clip::usable() {
+            self.message = format!("{e}。截图还在，可以先关掉占用它的程序再复制。");
+            return false;
+        }
+        match platform_windows::clip::write_image(&frame) {
+            Ok(()) => {
+                self.message = format!("已复制 {}×{} 像素。", frame.width, frame.height);
+                true
+            }
+            Err(e) => {
+                self.message = format!("{e}。截图还在，可以再复制一次。");
+                false
+            }
+        }
     }
 
     /// §5.7.11's 文本, §5.7.5's 折线 and §5.7.13's 放大 finishers, in that order, in
@@ -1139,6 +1190,38 @@ mod tests {
         assert_eq!(m.commit(), None);
         m.set_hole(PhysRect::new(10, 20, 30, 40));
         assert_eq!(m.commit(), Some(PhysRect::new(10, 20, 30, 40)));
+    }
+
+    /// The two rungs of 复制 that answer *before* the clipboard is touched, and the
+    /// sentences that say which one answered.
+    ///
+    /// This is the headless half of §9.1 第十条: the gauge's own copy row walks the
+    /// real clipboard and then puts the user's old contents back, so the refusals
+    /// underneath the write - no selection, no picture - are branches it can only
+    /// reach by accident. Here they are the whole test, and neither of them may open
+    /// the clipboard: a test that wrote to the user's clipboard to prove it can
+    /// decline would be a bad trade.
+    #[test]
+    fn copying_answers_with_a_sentence_before_it_opens_the_clipboard() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert!(!m.copy_out());
+        assert!(
+            m.message.contains("还没有选区"),
+            "an empty hole said {:?}",
+            m.message
+        );
+
+        // A hole the user drew, on a layer that was never given frames: the answer is
+        // a different sentence, which is what tells the gauge's row - and a user -
+        // that this is the stitching, not the selection, that came up empty.
+        m.set_hole(PhysRect::new(10, 20, 30, 40));
+        assert!(!m.copy_out());
+        assert!(
+            m.message.contains("拼不出来"),
+            "a hole with no frames said {:?}",
+            m.message
+        );
     }
 
     /// §5.3.9: arrows, with the step and the modifier this project chose (the PRD
