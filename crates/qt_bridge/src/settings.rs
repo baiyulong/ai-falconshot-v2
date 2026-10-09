@@ -21,6 +21,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
 use falcon_core::config::{config_path, Config, LoadSource};
+use falcon_core::encode::EncodeOptions;
 
 use crate::annotate::Layer;
 
@@ -118,6 +119,22 @@ impl Settings {
         pens.len()
     }
 
+    /// §5.5.5's two export knobs, in the shape the encoder takes them.
+    ///
+    /// Read at the mask's `open`, next to the pens, for the reason the pens are read
+    /// there: the file is touched before the user has a picture to save, so 另存为 is
+    /// never the first thing to cost a load. `quality` is `u32` in the file and `u8`
+    /// to the encoder, and the file's own sanitising already keeps it inside 1..=100 -
+    /// clamped again here because a `Config` built in memory is not sanitised, and a
+    /// silently truncated `200` would be a JPG written at quality 200's low cousin.
+    pub fn export_opts(&self) -> EncodeOptions {
+        EncodeOptions {
+            format: self.config.output.format,
+            quality: self.config.output.jpeg_quality.clamp(1, 100) as u8,
+            ..Default::default()
+        }
+    }
+
     /// What the layer learned, back into the config. `None` when nothing moved, and
     /// nothing is written then: a screenshot that never touched a pen must not
     /// rewrite the file.
@@ -212,6 +229,11 @@ pub fn apply_to(layer: &mut Layer) -> usize {
     with(|s| s.apply_to(layer))
 }
 
+/// §5.5.5's format and JPG quality, handed over as the mask opens.
+pub fn export() -> EncodeOptions {
+    with(|s| s.export_opts())
+}
+
 /// The flow is over: keep what the layer learned, and write if that moved anything.
 pub fn write_back(layer: &Layer) -> Option<u64> {
     with(|s| s.write_back(layer))
@@ -236,6 +258,7 @@ mod tests {
     use super::*;
     use falcon_core::annotation::model::Kind;
     use falcon_core::config::FILE_NAME;
+    use falcon_core::encode::Format;
 
     /// A directory under the OS temp dir, one per test. `%APPDATA%` is not a test
     /// fixture, and none of these reach it: every `Settings` here is opened against
@@ -281,6 +304,34 @@ mod tests {
         layer.select_tool(code_of(kind));
         layer.set_color(rgba);
         layer.set_width(width);
+    }
+
+    /// §5.5.5's two export knobs, out of the file rather than out of a default.
+    ///
+    /// A save that ignored `format` would write PNG under a user who set BMP, and one
+    /// that ignored `jpeg_quality` would write quality 92 under a user who set 40; both
+    /// are silent, which is why they are asserted here rather than left to a gauge that
+    /// reads the file back and finds a picture either way. The two clamps are the other
+    /// half: a `Config` built in memory has not been sanitised, and the encoder's `u8`
+    /// would wrap 1000 into 232 without this line.
+    #[test]
+    fn export_knobs_come_from_the_file() {
+        let dir = sandbox("export");
+        let path = file_in(&dir);
+        let mut cfg = Config::default();
+        cfg.output.format = Format::Bmp;
+        cfg.output.jpeg_quality = 40;
+        std::fs::write(&path, cfg.export_text().unwrap()).expect("seed");
+        let s = Settings::open(&path, Some(&path));
+        let opt = s.export_opts();
+        assert_eq!(opt.format, Format::Bmp);
+        assert_eq!(opt.quality, 40);
+
+        let mut raw = pinned(&dir);
+        raw.config.output.jpeg_quality = 1_000;
+        assert_eq!(raw.export_opts().quality, 100);
+        raw.config.output.jpeg_quality = 0;
+        assert_eq!(raw.export_opts().quality, 1);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Dialogs
 import dev.falconshot 1.0
 
 // §5.7's annotation toolbar, as a panel that floats next to the selection.
@@ -43,11 +44,11 @@ Rectangle {
     /// default, so the row says what the pen actually is the first time it appears.
     readonly property var font_sizes: [12, 18, 28]
 
-    /// Whether the last 复制 got through, kept for one thing only: the colour of the
-    /// sentence Rust wrote beside it. It is this panel's own answer to the call this
-    /// panel made, not a second copy of a Rust fact, which is why it is a property of
-    /// the bar rather than a `MaskView` one.
-    property bool copied: false
+    /// Whether the last thing that left the program - 复制 or 保存 - got through. Kept
+    /// for one thing only: the colour of the sentence Rust wrote beside it. It is this
+    /// panel's own answer to the call this panel made, not a second copy of a Rust fact,
+    /// which is why it is a property of the bar rather than a `MaskView` one.
+    property bool delivered: false
 
     color: "#f0232326"
     border.color: "#55555c"
@@ -103,8 +104,26 @@ Rectangle {
     /// sentence is on the one mask state both windows read and the toolbar has to
     /// re-read it after the write rather than before.
     function copy() {
-        bar.copied = bar.view.copySelection()
+        bar.delivered = bar.view.copySelection()
         bar.grabbed()
+    }
+
+    /// §5.5.5's 另存为, from this cell or from `Ctrl+S`: the dialog is opened, and the
+    /// answer comes back through [`Self.delivered`] when the user names a file.
+    ///
+    /// Nothing is decided here about *which* format - the extension the user typed is
+    /// the format, and a name without one becomes the configured default in Rust. The
+    /// prompt that §5.4.5 and §5.5.5 ask for when that format cannot hold the
+    /// selection's transparency is Rust's sentence too, for the same reason the size of
+    /// a copy is: two panels that each read the picture and each decided what to say
+    /// about it would say two different things.
+    ///
+    /// `saveAs` is named unqualified because it is a document-scope id, not a member of
+    /// this Rectangle: `bar.saveAs` is a name qmllint reports as
+    /// `Member "saveAs" not found on type "Rectangle"`, and every other id reference in
+    /// this file is written the short way for the same reason.
+    function save() {
+        saveAs.open()
     }
 
     // One button. `tapped` is the only thing a delegate has to say; everything the
@@ -528,10 +547,10 @@ Rectangle {
         // does; the crop-and-new-pin that §5.7 asks for after it is M4b, which is why
         // this says 选区 and not 完成.
         //
-        // 复制 is the first of the three that actually leaves the program with
-        // something (§5.5.2), and it is greyed off with the selection rather than left
-        // clickable, because a copy with nothing selected is a refusal the user has to
-        // be handed a sentence for. `Ctrl+C` still reaches Rust's own answer.
+        // 复制 and 保存 are the two that actually leave the program with something
+        // (§5.5.2, §5.5.5), and they are greyed off with the selection rather than left
+        // clickable, because a delivery with nothing selected is a refusal the user has
+        // to be handed a sentence for. `Ctrl+C` and `Ctrl+S` still reach Rust's answer.
         Row {
             spacing: 2
 
@@ -573,6 +592,15 @@ Rectangle {
                 onTapped: bar.copy()
             }
 
+            // §5.5.5: the same stitched picture, to a file. Greyed with the selection
+            // for the reason 复制 is - a save with nothing selected is a refusal the
+            // user has to be handed a sentence for, not a dialog.
+            Cell {
+                label: "保存"
+                usable: bar.view.selected
+                onTapped: bar.save()
+            }
+
             Cell {
                 label: "确认选区"
                 usable: bar.view.selected
@@ -584,7 +612,7 @@ Rectangle {
                 onTapped: bar.cancel()
             }
 
-            // What the last 复制 did, in Rust's words. Visible only once there is
+            // What the last 复制 or 保存 did, in Rust's words. Visible only once there is
             // something to say: an empty label would take width from a sentence that
             // is not there, and the row would sit one cell further left than it did.
             Text {
@@ -593,8 +621,23 @@ Rectangle {
                 leftPadding: 8
                 text: bar.view.message
                 font.pixelSize: 12
-                color: bar.copied ? "#8e8e96" : "#ff9f0a"
+                color: bar.delivered ? "#8e8e96" : "#ff9f0a"
             }
+        }
+    }
+
+    // §5.5.5 step 2-4. The dialog decides the name and the extension, and
+    // `saveSelection` reads the extension to pick the encoder, so the filter list below
+    // is the list of formats this app writes from the mask - the same floor §5.5.5's
+    // "至少支持 PNG、JPG、BMP" asks for, and the same three the pin menu offers.
+    FileDialog {
+        id: saveAs
+        title: "另存为"
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["PNG 图片 (*.png)", "JPG 图片 (*.jpg)", "BMP 图片 (*.bmp)"]
+        onAccepted: {
+            bar.delivered = bar.view.saveSelection(saveAs.selectedFile.toLocalFile())
+            bar.grabbed()
         }
     }
 }

@@ -26,6 +26,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
 use falcon_core::capture::ScreenSnapshot;
+use falcon_core::encode;
 use falcon_core::geometry::{
     handle_at, nudge, nudge_edge, resize, Handle, PhysPoint, PhysRect, Scale, DEFAULT_HIT_SLOP,
 };
@@ -142,6 +143,15 @@ pub struct MaskState {
     /// window knew is a sentence the other screen never shows. It is cleared by
     /// `open`, so a fresh capture cannot start out wearing the last one's answer.
     pub message: String,
+    /// §5.5.5's export knobs, taken at `open` for the same reason the pens are: the
+    /// settings file is read while the mask is being put up, not in front of a user
+    /// who has already waited for a save. `format` is what a name typed without an
+    /// extension becomes, and `quality` is what JPG is written at.
+    ///
+    /// `Default` is `{Png, 92, true}`, which is what a first run reads out of the file
+    /// anyway - so a test that never calls `open` saves at the same numbers a user
+    /// with no `config.toml` does, rather than at quality 0.
+    pub export: encode::EncodeOptions,
     /// Bumped by every `open`, so a second capture in the same process gets keys
     /// nobody has asked for yet. A constant revision would reuse the previous
     /// frame's key, and `Image.cache: false` only re-requests when the URL changes:
@@ -218,6 +228,7 @@ impl MaskState {
         // it would be thrown away by the reset. This is the one place the hot key
         // touches the file, and it costs what `[settings] apply=` reports.
         crate::settings::apply_to(&mut self.ink);
+        self.export = crate::settings::export();
         self.ink.set_hole(self.hole);
         self.virtual_bounds = snap.virtual_bounds;
         self.shown = true;
@@ -532,6 +543,114 @@ impl MaskState {
             }
             Err(e) => {
                 self.message = format!("{e}。截图还在，可以再复制一次。");
+                false
+            }
+        }
+    }
+
+    /// §5.5.5's 另存为: the annotated selection to a file, in the format the name the
+    /// user typed says, through the dialog step 2 of that section asks for.
+    ///
+    /// The first three rungs are [`Self::copy_out`]'s, in the same order and for the
+    /// same reasons - nothing selected is the user's own doing and needs no probe, and
+    /// a selection that cannot be stitched is a refusal that has to be said *before*
+    /// anything is written, not a file that turns out to be nothing. What is new is
+    /// only what happens to the bytes: [`falcon_core::encode`] rather than
+    /// `QImage::save` - P5's rule for every byte this app puts in a file - and
+    /// `encode::save`'s own tmp+rename, because half a PNG on disk is worse than a
+    /// refusal (PRD §8.3). The frame that goes in is the one `deliver()` stitched, so
+    /// what 复制 put on the clipboard and what 保存 put on disk are the same picture
+    /// rather than two answers to the same selection.
+    ///
+    /// A name without an extension is not a refusal: the dialog was showing the filter
+    /// for PNG while the user typed `foo`, so `foo` means §5.5.5's configured format,
+    /// and the file that appears is `foo.png`.
+    ///
+    /// The fourth sentence is the reason this round exists. Three rows of the PRD ask
+    /// for it - §5.5.5 line 506 ("包含透明背景时，应推荐 PNG"), §5.4.5's line 447
+    /// ("不支持透明度的输出格式应提醒用户背景将被填充") and §5.5.6's line 521 - and all
+    /// three are true of the same write, because `flatten_on_lossy` paints those pixels
+    /// white and the file is then not the picture the user was looking at. The count
+    /// travels with the sentence: "有透明区域" alone is boilerplate, and P33 measured
+    /// what one selection's eraser actually costs (`11684 px`), so the number is the
+    /// difference between a prompt and a shrug.
+    ///
+    /// The write still happens. The extension was the user's own choice in a file
+    /// dialog, this mask has one message line and no modal, and refusing a legitimate
+    /// format is a worse reading of "应提醒" than doing the thing and naming what it
+    /// cost. A pre-write confirm rung - the other way to read those lines - is a
+    /// decision this round records rather than makes.
+    ///
+    /// Like 复制, this does not end the flow: the freeze, the ink and the sentence all
+    /// go with the mask, and a save that closed the overlay would take the picture the
+    /// user may still want to copy with it.
+    pub fn save_out(&mut self, path: &str) -> bool {
+        if !self.has_selection() {
+            self.message = "还没有选区：先把要保存的范围拖出来。".to_string();
+            return false;
+        }
+        let Some(frame) = self.ink.deliver() else {
+            self.message = "选区的画面拼不出来：截图还在，可以再保存一次。".to_string();
+            return false;
+        };
+        let typed = std::path::Path::new(path);
+        let (target, format) = match typed.extension() {
+            Some(ext) => (
+                typed.to_path_buf(),
+                encode::Format::from_ext(&ext.to_string_lossy()),
+            ),
+            None => {
+                let mut named = typed.as_os_str().to_os_string();
+                named.push(".");
+                named.push(self.export.format.ext());
+                (std::path::PathBuf::from(named), Some(self.export.format))
+            }
+        };
+        let Some(format) = format else {
+            self.message = format!("{path} 不是本程序会写的格式：用 .png、.jpg 或 .bmp。");
+            return false;
+        };
+        // Counted before the write, from the frame that is about to be encoded: asking
+        // the file afterwards would be asking a JPG whether it kept an alpha channel.
+        let filled = if format.supports_alpha() || !frame.has_transparency() {
+            0
+        } else {
+            frame
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|p| p[3] != 255)
+                .count()
+        };
+        let opt = encode::EncodeOptions {
+            format,
+            ..self.export
+        };
+        match encode::save(&frame, &target, &opt) {
+            Ok(()) => {
+                // The selection's size, not the file's: `encode` rescales an ICO down to
+                // 256 before it writes, and a success sentence that quoted the frame
+                // would be quoting a picture the file is not. What the user selected is
+                // true of every format, and is the number they recognise.
+                self.message = format!(
+                    "已保存到 {}（选区 {}×{} 像素）。{}",
+                    target.display(),
+                    frame.width,
+                    frame.height,
+                    if filled == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            "选区里有 {filled} px 透明，{} 存不下，已填成白色；要保留透明请存成 PNG。",
+                            format.label()
+                        )
+                    }
+                );
+                true
+            }
+            Err(e) => {
+                self.message = format!("{e}。截图还在，可以再保存一次。");
                 false
             }
         }
@@ -1222,6 +1341,157 @@ mod tests {
             "a hole with no frames said {:?}",
             m.message
         );
+    }
+
+    /// A directory under the OS temp dir, emptied first: a file the previous run of
+    /// this test left behind would grade this one's write without being written by it.
+    fn sandbox(name: &str) -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("falconshot-save-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("sandbox");
+        dir
+    }
+
+    /// A mask state whose layer can really stitch a frame. [`annotate::Layer::begin`]
+    /// is the only way a canvas exists without Qt, and nothing in it reaches the image
+    /// provider. The freeze is `Frame::new` - all zero, so every pixel of the selection
+    /// is alpha 0, which is the one condition the transparency prompt is about and does
+    /// not need an eraser, a pen or a screen to arrange.
+    fn savable(hole: PhysRect) -> MaskState {
+        let bounds = PhysRect::new(0, 0, 640, 480);
+        let snap = snapshot(vec![monitor("m0", 0, 0, 640, 480, 1.0, true)]);
+        let mut m = state_with(vec![slot(0, bounds, 1.0)], PhysRect::default());
+        m.ink.begin(&snap, &m.slots);
+        m.virtual_bounds = bounds;
+        m.set_hole(hole);
+        m
+    }
+
+    /// The rungs of 另存为 that answer before a byte is written, and the refusal that
+    /// does not leave a file behind.
+    ///
+    /// The headless half of §9.1 第十条 again: the gauge's save legs walk a real file on
+    /// a real desktop, so "nothing selected", "nothing stitched" and "a name this app
+    /// cannot write" are branches it reaches only by accident. Here they are the whole
+    /// test. The `!exists()` assertions are what makes it worth having - a refusal that
+    /// wrote an empty or half file would still return `false` and still read as a
+    /// refusal, while leaving the user a picture that is not a picture.
+    #[test]
+    fn saving_refuses_without_writing_anything() {
+        let dir = sandbox("refuse");
+        let png = dir.join("selection.png");
+
+        let mut m = state_with(
+            vec![slot(0, PhysRect::new(0, 0, 640, 480), 1.0)],
+            PhysRect::default(),
+        );
+        assert!(!m.save_out(&png.to_string_lossy()));
+        assert!(
+            m.message.contains("还没有选区"),
+            "an empty hole said {:?}",
+            m.message
+        );
+        assert!(!png.exists(), "a refusal wrote a file");
+
+        // A hole the user drew, on a layer that was never given frames.
+        m.hole = PhysRect::new(10, 20, 100, 80);
+        assert!(!m.save_out(&png.to_string_lossy()));
+        assert!(
+            m.message.contains("拼不出来"),
+            "a hole with no frames said {:?}",
+            m.message
+        );
+        assert!(!png.exists(), "the second refusal wrote a file");
+
+        // A name that is not a format, on a state that could have written it: refused
+        // after the frame exists, which is the order that lets the sentence name the
+        // formats rather than the state.
+        let mut m = savable(PhysRect::new(10, 20, 100, 80));
+        let odd = dir.join("selection.qqq");
+        assert!(!m.save_out(&odd.to_string_lossy()));
+        assert!(
+            m.message.contains("不是本程序会写的格式"),
+            "an unknown extension said {:?}",
+            m.message
+        );
+        assert!(!odd.exists(), "the refused name appeared on disk");
+        assert!(
+            !dir.join("selection.qqq.tmp").exists(),
+            "a tmp file was left"
+        );
+    }
+
+    /// PRD 506 ("包含透明背景时，应推荐 PNG") and 447 ("不支持透明度的输出格式应提醒用户
+    /// 背景将被填充"), read against the same selection: PNG keeps what the document has,
+    /// JPG does not - and says so, with the number of pixels it threw away.
+    #[test]
+    fn saving_says_what_a_format_without_alpha_threw_away() {
+        let dir = sandbox("transparency");
+        let hole = PhysRect::new(10, 20, 100, 80);
+        let mut m = savable(hole);
+        let shipped = m
+            .ink
+            .deliver()
+            .expect("a hole inside one canvas has a picture");
+        let total = (hole.w * hole.h) as usize;
+
+        let png = dir.join("selection.png");
+        assert!(m.save_out(&png.to_string_lossy()), "{:?}", m.message);
+        assert!(m.message.contains("已保存到"), "{:?}", m.message);
+        assert!(
+            !m.message.contains("透明"),
+            "PNG was told it lost transparency: {:?}",
+            m.message
+        );
+        let back = encode::decode(&std::fs::read(&png).expect("the png is there")).expect("png");
+        assert_eq!(back.width, shipped.width);
+        assert_eq!(back.height, shipped.height);
+        assert_eq!(
+            back.pixels, shipped.pixels,
+            "PNG did not keep the alpha the document had"
+        );
+
+        let jpg = dir.join("selection.jpg");
+        assert!(m.save_out(&jpg.to_string_lossy()), "{:?}", m.message);
+        assert!(
+            m.message.contains(&format!("{total} px 透明")),
+            "the prompt did not name the size of what it filled: {:?}",
+            m.message
+        );
+        assert!(m.message.contains("填成白色"), "{:?}", m.message);
+        assert!(m.message.contains("PNG"), "{:?}", m.message);
+        let back = encode::decode(&std::fs::read(&jpg).expect("the jpg is there")).expect("jpg");
+        assert!(
+            back.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255),
+            "JPG kept an alpha channel, so the sentence lied"
+        );
+    }
+
+    /// §5.5.5's dialog is showing a format while the user types a bare name: the
+    /// configured format wins, and the file that appears is the one the sentence names.
+    ///
+    /// BMP is the format under test, not JPG, because the prompt must key off "this
+    /// format has no alpha" rather than off the one format the PRD happens to name.
+    #[test]
+    fn a_bare_name_becomes_the_configured_format() {
+        let dir = sandbox("bare");
+        let mut m = savable(PhysRect::new(10, 20, 100, 80));
+        m.export.format = encode::Format::Bmp;
+        let bare = dir.join("selection");
+        assert!(m.save_out(&bare.to_string_lossy()), "{:?}", m.message);
+        let written = dir.join("selection.bmp");
+        assert!(written.exists(), "the bare name did not become {written:?}");
+        assert!(
+            !bare.exists(),
+            "the name without an extension was written too"
+        );
+        assert!(
+            m.message.contains("selection.bmp"),
+            "the sentence named {:?}",
+            m.message
+        );
+        assert!(m.message.contains("透明"), "{:?}", m.message);
     }
 
     /// §5.3.9: arrows, with the step and the modifier this project chose (the PRD

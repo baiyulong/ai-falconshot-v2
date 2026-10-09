@@ -335,6 +335,15 @@ pub mod qobject {
         #[cxx_name = "copySelection"]
         fn copy_selection(self: Pin<&mut Self>) -> bool;
 
+        /// §5.5.5's 另存为: the same stitched frame 复制 puts on the clipboard, written
+        /// to the path the file dialog chose. `true` is "the file is there", and as with
+        /// [`crate::mask::MaskState::copy_out`] the sentence - including the one about
+        /// transparency the format cannot hold - is in `message` either way, so this
+        /// neither closes the mask nor needs a second answer in QML.
+        #[qinvokable]
+        #[cxx_name = "saveSelection"]
+        fn save_selection(self: Pin<&mut Self>, path: &QString) -> bool;
+
         /// The tool buttons' labels, in [`crate::annotate::TOOLS`]' order. Read once
         /// by the toolbar's `Component.onCompleted`: the list is Rust's, so a tool
         /// renamed in one place cannot be a different tool in the other.
@@ -736,6 +745,16 @@ impl qobject::MaskView {
     /// toolbar has to re-read it after the write rather than before.
     pub fn copy_selection(mut self: Pin<&mut Self>) -> bool {
         let done = mask::with(|m| m.copy_out());
+        self.as_mut().reload();
+        done
+    }
+
+    /// §5.5.2's 另存为. `to_string` rather than a borrowed `&str` because the path is
+    /// Qt's to keep: `MaskState::save_out` hands it to `std::path`, which wants an
+    /// owned name on a Windows drive that may not be one this process can read.
+    pub fn save_selection(mut self: Pin<&mut Self>, path: &QString) -> bool {
+        let target = path.to_string();
+        let done = mask::with(|m| m.save_out(&target));
         self.as_mut().reload();
         done
     }

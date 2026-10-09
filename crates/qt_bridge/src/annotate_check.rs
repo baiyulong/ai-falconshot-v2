@@ -35,6 +35,16 @@
 //!   is exactly what 擦除到透明 produces, so a canvas that dropped a pixel the export kept
 //!   is invisible to it by construction. The new row grades that way round and the other
 //!   one too.
+//! * **the last two legs leave the process.** 复制 writes to the machine's own clipboard
+//!   and puts the user's contents back; 另存为 writes two files under the OS temp dir and
+//!   reads them back. Neither one samples a photograph, because neither one is about the
+//!   screen: the claim each can support is that the bytes which came back are the bytes
+//!   [`crate::annotate::Layer::deliver`] stitched - to the byte for the PNG and the
+//!   clipboard, and in the one respect that matters for the JPG, whose entire contract is
+//!   that the alpha the document had is gone and the user was told the number. Both run
+//!   after every screen row and before the mask comes down, while the selection, the ink
+//!   and the freeze still exist - and both can pass inside a run whose screen rows are
+//!   BLOCKED by a desktop too dark to read, which is the reason they are separate rows.
 //!
 //! The colour tests are relational (one channel must lead the other two) rather than
 //! exact, because composition and antialiasing are allowed to round a pixel; the ghost
@@ -2007,6 +2017,172 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
     );
 }
 
+/// §5.5.5's 另存为, walked on the machine's own disk.
+///
+/// Both rows are about the file rather than about the screen: what came back out of the
+/// PNG is what [`crate::annotate::Layer::deliver`] stitched, to the byte and including
+/// the alpha the document had, and what came back out of the JPG has no alpha left to
+/// lose - which is the second half of the same feature, because the sentence the user is
+/// owed (§5.4.5's line 447, §5.5.5's line 506) is a claim about exactly those pixels.
+/// The count in it is recomputed here from the shipped frame rather than trusted from
+/// the product's own arithmetic: a prompt that names 0 px when the document had 11684 is
+/// the defect this leg exists to catch.
+///
+/// JPG's *colour* is not graded. The encoder is `falcon_core::encode`'s and carries its
+/// own round-trip tests; the mean drift is printed as a reading, so a run can be
+/// compared against the one before it without a threshold this project never chose.
+///
+/// Nothing here depends on the screen, which is why the leg is worth having on a machine
+/// whose desktop is too dark for the rows above: the two rows can pass inside a run that
+/// reads BLOCKED overall. Files go under the OS temp dir and are removed before the
+/// write, because a file the previous run left behind would be graded as this run's
+/// answer to a write that never happened.
+fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
+    let Some(want) = shipped else {
+        rep.row(
+            "saved png",
+            Check::Fail,
+            "nothing was stitched, so there was no picture to save".to_string(),
+        );
+        rep.row(
+            "saved jpg",
+            Check::Fail,
+            "the same frame was missing for this leg too".to_string(),
+        );
+        return;
+    };
+    let mut dir = std::env::temp_dir();
+    dir.push("falconshot-save-gauge");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        rep.row(
+            "saved png",
+            Check::Blocked,
+            format!("{} could not be made ready ({e})", dir.display()),
+        );
+        rep.row(
+            "saved jpg",
+            Check::Blocked,
+            "the same directory".to_string(),
+        );
+        return;
+    }
+    let png = dir.join("selection.png");
+    let jpg = dir.join("selection.jpg");
+    for stale in [&png, &jpg] {
+        let _ = std::fs::remove_file(stale);
+    }
+    let total = want.width as usize * want.height as usize;
+    let gone = want
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[3] != 255)
+        .count();
+
+    // ---- PNG: the lossless half, graded losslessly.
+    let done_png = mask::with(|m| m.save_out(&png.to_string_lossy()));
+    let said_png = mask::with(|m| m.message.clone());
+    rep.note("saved png sentence", said_png.clone());
+    let back_png = std::fs::read(&png)
+        .ok()
+        .map(|bytes| (bytes.len(), falcon_core::encode::decode(&bytes)));
+    let mut same = 0usize;
+    let mut opaque_lost = 0usize;
+    if let Some((_, Ok(frame))) = &back_png {
+        if frame.width == want.width && frame.height == want.height {
+            for (a, b) in frame
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(want.pixels.as_chunks::<4>().0.iter())
+            {
+                if a == b {
+                    same += 1;
+                }
+                // The one thing a PNG may not do to this picture: answer an alpha the
+                // document has with a different one.
+                if b[3] != a[3] {
+                    opaque_lost += 1;
+                }
+            }
+        }
+    }
+    rep.row(
+        "saved png",
+        Check::from(
+            done_png
+                && back_png.as_ref().is_some_and(|(_, r)| r.is_ok())
+                && same == total
+                && said_png.contains("已保存到"),
+        ),
+        format!(
+            "save_out={done_png}, {} of {total} px of the stitched frame came back byte for \
+             byte, {} with a different alpha, the file is {} bytes and the product's own \
+             sentence was {said_png:?}",
+            same,
+            opaque_lost,
+            back_png.as_ref().map_or(0, |(n, _)| *n),
+        ),
+    );
+
+    // ---- JPG: the format that cannot keep it, and the sentence that has to say so.
+    let done_jpg = mask::with(|m| m.save_out(&jpg.to_string_lossy()));
+    let said_jpg = mask::with(|m| m.message.clone());
+    rep.note("saved jpg sentence", said_jpg.clone());
+    let back_jpg = std::fs::read(&jpg)
+        .ok()
+        .map(|bytes| (bytes.len(), falcon_core::encode::decode(&bytes)));
+    let (mut flat, mut drift, mut size_ok) = (0usize, 0u64, false);
+    if let Some((_, Ok(frame))) = &back_jpg {
+        size_ok = frame.width == want.width && frame.height == want.height;
+        if size_ok {
+            for (a, b) in frame
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(want.pixels.as_chunks::<4>().0.iter())
+            {
+                if a[3] == 255 {
+                    flat += 1;
+                }
+                for c in 0..3 {
+                    drift += (a[c] as i32 - b[c] as i32).unsigned_abs() as u64;
+                }
+            }
+        }
+    }
+    // The prompt itself, as a graded condition rather than as text: what the document
+    // actually lost, and what the user was told it lost, have to be the same number.
+    let told = if gone == 0 {
+        !said_jpg.contains("透明")
+    } else {
+        said_jpg.contains(&format!("{gone} px 透明"))
+    };
+    rep.row(
+        "saved jpg",
+        Check::from(
+            done_jpg
+                && back_jpg.as_ref().is_some_and(|(_, r)| r.is_ok())
+                && size_ok
+                && flat == total
+                && told,
+        ),
+        format!(
+            "save_out={done_jpg}, {} of {total} px read back opaque (a JPG has no other \
+             answer), size matches={size_ok}, the file is {} bytes, the document had {gone} \
+             px with alpha below 255 and the sentence named that number={told}, mean \
+             per-channel drift {} (printed, not graded); the product's own sentence was {:?}",
+            flat,
+            back_jpg.as_ref().map_or(0, |(n, _)| *n),
+            drift / (total.max(1) as u64 * 3),
+            said_jpg,
+        ),
+    );
+}
+
 pub fn measure() -> (Check, String) {
     let mut rep = Report::new();
     let Some(p) = plan().lock().unwrap_or_else(PoisonError::into_inner).take() else {
@@ -2412,10 +2588,13 @@ pub fn measure() -> (Check, String) {
         ),
     );
 
-    // The one leg of this gauge that touches something outside the process. It runs last
-    // among the delivery rows and before the mask comes down, because it is the leg that
-    // needs the selection, the ink and the freeze all still standing.
+    // The two legs of this gauge that touch something outside the process, and the only
+    // two that need the selection, the ink and the freeze all still standing. 复制 first
+    // because it is the one that has to put the user's clipboard back; 另存为 after it,
+    // because its rows quote the product's own sentence and `copy_out` has just
+    // overwritten that field.
     clipboard_rows(&mut rep, shipped.as_ref());
+    save_rows(&mut rep, shipped.as_ref());
 
     let (mask_problems, ink_problems) =
         mask::with(|m| (m.problems.clone(), m.ink.problems.clone()));
