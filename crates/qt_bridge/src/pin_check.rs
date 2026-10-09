@@ -148,23 +148,25 @@ pub(crate) struct LegTiming {
     pub min: u64,
 }
 
+/// The four stamps one leg speaks, by name, and nothing else. This is the only thing the
+/// two doors differ in - which is why it is one argument and the schedule it is measured
+/// against is four: each door hands its own `delay`/`waits`/`grace`/`min`, so the line
+/// quotes the wait *that* door asked for rather than a number this module guessed.
+pub(crate) struct LegStamps {
+    pub arm: &'static str,
+    pub leg: &'static str,
+    pub done: &'static str,
+    pub end: &'static str,
+}
+
 impl LegTiming {
     /// Read the four intervals out of `state`, by stamp name.
-    pub(crate) fn read(
-        arm: &str,
-        leg: &str,
-        done: &str,
-        end: &str,
-        delay: i32,
-        waits: i32,
-        grace: i32,
-        min: i32,
-    ) -> Self {
+    pub(crate) fn read(stamps: &LegStamps, delay: i32, waits: i32, grace: i32, min: i32) -> Self {
         Self {
-            start: state::between(arm, leg),
-            own: state::between(leg, done),
-            tail: state::between(done, end),
-            total: state::between(arm, end),
+            start: state::between(stamps.arm, stamps.leg),
+            own: state::between(stamps.leg, stamps.done),
+            tail: state::between(stamps.done, stamps.end),
+            total: state::between(stamps.arm, stamps.end),
             delay: delay as u64,
             waits: waits as u64,
             grace: grace as u64,
@@ -573,10 +575,12 @@ pub fn measure() -> (Check, String) {
     rep.note(
         "量具计时",
         LegTiming::read(
-            "pin arm",
-            "pin leg",
-            "pin done",
-            "pin end",
+            &LegStamps {
+                arm: "pin arm",
+                leg: "pin leg",
+                done: "pin done",
+                end: "pin end",
+            },
             LEG_DELAY_MS,
             LEG_WAITS,
             STARTUP_GRACE_MS,
@@ -701,6 +705,20 @@ pub fn measure() -> (Check, String) {
             } else {
                 "没点成，这一格问不了"
             }
+        ),
+    );
+    // The other half of §10 第 39 项 ①'s asymmetry: the mask door has had this grade since
+    // P38, while on this one the reading (`dlg-after`) travelled in the transcript as a note
+    // only - so "the click closed the door" and "the leg closed it for her" were both
+    // recorded and neither was judged. `dlg-dismiss` is the leg admitting it did the job the
+    // click was supposed to have done.
+    rep.row(
+        "pin dialog closed",
+        Check::from(said(&lines, "dlg-after") == Some("false") && !keys.contains(&"dlg-dismiss")),
+        format!(
+            "点完之后 visible {:?}，量具代关={}",
+            said(&lines, "dlg-after"),
+            keys.contains(&"dlg-dismiss")
         ),
     );
     // The pair that P37 measured, kept as a reading rather than a grade: what a call

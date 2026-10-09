@@ -188,6 +188,22 @@ Rectangle {
         saveAs.currentFile = bar.dlgUrl(stem)
         gaugeSay("dlg-folder", String(saveAs.currentFolder))
         gaugeSay("dlg-name", String(saveAs.currentFile))
+        // The click's before-half has to be a sentence, not silence. P38 read
+        // `accept-was ""` here - a true reading, and an empty one, so the graded pair
+        // measured "from nothing to 已保存到" and could not tell an `onAccepted` that wrote
+        // the product's sentence from one that merely happened to be the first to write
+        // anything. So the leg asks the product to refuse a save first: `saveSelection` →
+        // `MaskState::save_out` → `save::write` → `Refusal::BadName` writes
+        // `MaskState::message` in the product's own words, and `gaugeSay` only ever reads it.
+        //
+        // An extension this program cannot write is the refusal chosen, not an unwritable
+        // directory: this run's first attempt named a directory this run never made and the
+        // save *succeeded*, because `core::encode::save` makes the parent before writing. A
+        // refused name leaves nothing on disk and its sentence carries no operating-system
+        // wording, so "the product wrote this" is readable off the sentence itself.
+        const refused = String(bar.gauge[0]) + "/" + String(bar.gauge[1]) + ".not-a-format"
+        bar.view.saveSelection(bar.dlgUrl(refused))
+        gaugeSay("pre-save", bar.view.message)
         bar.dlgLeg = true
         saveAs.open()
         // Read in the turn that asked for it, and again from the phase that presses:

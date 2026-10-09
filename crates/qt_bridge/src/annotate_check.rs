@@ -2327,6 +2327,25 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
 
 /// The same act at the mask's own door, closed by a click rather than by this file.
 ///
+/// The before-half of the click's sentence pair, judged on its own so the rule below is a
+/// name a test can hit (§10 第 39 项 ①, and the same reach as 第 39 项 ⑥'s `refusals`).
+/// An empty `accept-was` proves only that the click was the first thing ever to write this
+/// window's message - which is not the claim `onAccepted` works, since a handler that
+/// writes the sentence and one that merely arrives first both look the same from silence.
+/// So the leg asks the product for a refusal first and reads the message back under
+/// `pre-save`: the pair counts only when the two agree, are not empty, and are not the
+/// success sentence itself.
+///
+/// What makes this a reading rather than a tautology is one layer down and not checkable
+/// here: `gaugeSay` has exactly one destination - the report channel - so the only writer of
+/// the string both keys carry is `MaskState::save_out`, reached by `bar.view.saveSelection`.
+pub(crate) fn before_is_products_own(was: Option<&str>, pre: Option<&str>) -> bool {
+    match (was, pre) {
+        (Some(w), Some(p)) => w == p && !w.is_empty() && !w.starts_with("已保存到"),
+        _ => false,
+    }
+}
+
 /// The two rows above call [`crate::mask::MaskState::save_out`] with a name this run
 /// chose, which proves the encoder and nothing about the dialog: no `FileDialog` was opened,
 /// so `AnnotationToolbar.qml`'s `onAccepted` never ran, and §10 第 38 项 ① is exactly the
@@ -2356,10 +2375,12 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
     rep.note(
         "mask 量具计时",
         pin_check::LegTiming::read(
-            "mask arm",
-            "mask leg",
-            "mask done",
-            "mask end",
+            &pin_check::LegStamps {
+                arm: "mask arm",
+                leg: "mask leg",
+                done: "mask done",
+                end: "mask end",
+            },
             DIALOG_DELAY_MS,
             DIALOG_LEG_WAITS,
             DIALOG_STARTUP_GRACE_MS,
@@ -2391,11 +2412,11 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
         format!("{:?}", said(&lines, "dlg-push-log")),
     );
 
-    let (was, now) = (
-        said(&lines, "accept-was").unwrap_or("<没有读数>"),
-        said(&lines, "accept").unwrap_or("<没有读数>"),
-    );
-    let fired = now.starts_with("已保存到") && now != was;
+    let was = said(&lines, "accept-was");
+    let now = said(&lines, "accept").unwrap_or("<没有读数>");
+    let pre = said(&lines, "pre-save");
+    let shown = was.unwrap_or("<没有读数>");
+    let fired = before_is_products_own(was, pre) && now.starts_with("已保存到") && now != shown;
     rep.row(
         "mask dialog accept",
         if fired {
@@ -2406,12 +2427,13 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
             Check::Blocked
         },
         format!(
-            "真点击前后 message {was:?} -> {now:?}；信号 {:?}（{}）",
+            "真点击前后 message {shown:?} -> {now:?}；前态那句读自被拒的那次 saveSelection 之后的 {:?}；信号 {:?}（{}）",
+            pre.unwrap_or("<没有读数>"),
             said(&lines, "dlg-accepted"),
             if fired {
                 "onAccepted 是那一下点击跑起来的"
             } else if pin_check::real_click(push) {
-                "点了，但 onAccepted 没跑"
+                "点了，但 onAccepted 没跑或前态不是产品那句"
             } else {
                 "没点成，这一格问不了"
             }
@@ -3090,6 +3112,41 @@ mod tests {
     use super::*;
     use falcon_core::capture::{FrozenMonitor, MonitorInfo};
     use falcon_core::geometry::Scale;
+
+    /// §10 第 39 项 ①: the click's before-half has to be a sentence, and a sentence this
+    /// gauge dictated does not count. The two keys are the same property read at two
+    /// moments - straight after the refused save, and again when a button is looked for -
+    /// so a run that says one thing under each is a run whose message moved underneath it.
+    #[test]
+    fn an_empty_before_half_is_not_a_sentence_the_door_already_had() {
+        // Silence, in both shapes: never read, and read as empty.
+        assert!(!before_is_products_own(None, None));
+        assert!(!before_is_products_own(Some(""), Some("")));
+        // One of the two reads missing is the leg not asking for the refusal at all.
+        assert!(!before_is_products_own(
+            Some("保存失败：路径不存在。截图还在，可以再保存一次。"),
+            None
+        ));
+        assert!(!before_is_products_own(
+            None,
+            Some("保存失败：路径不存在。截图还在，可以再保存一次。")
+        ));
+        // The success sentence cannot be its own before-half: that is the click counted as
+        // the evidence that the door was already open.
+        assert!(!before_is_products_own(
+            Some("已保存到 c.png"),
+            Some("已保存到 c.png")
+        ));
+        // Two different texts under the two keys is the gauge talking, not the product.
+        assert!(!before_is_products_own(
+            Some("已保存到 a.png"),
+            Some("保存失败：b")
+        ));
+        assert!(before_is_products_own(
+            Some("保存失败：路径不存在。截图还在，可以再保存一次。"),
+            Some("保存失败：路径不存在。截图还在，可以再保存一次。")
+        ));
+    }
 
     /// A band that read on the dark desktop of R20's third run: 16 of 165 samples
     /// visible, and every one of those was the expected ink.
