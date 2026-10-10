@@ -1173,6 +1173,40 @@ fn painting_silence(tag: &str, why: &str) -> Vec<(String, Check, String)> {
     rows
 }
 
+/// Everything one slot owes the report when its read-back leg cannot run at all: the eight
+/// graded rows that would have sampled the bitmap, and the eight companion rows
+/// [`painting_silence`] names.
+///
+/// One function rather than two copies, because 第 48 项 ⑯ is precisely about the copies
+/// drifting. The `window {tag}` branch used to print its one `Fail` and stop, while the
+/// `PrintWindow` branch printed sixteen rows for the same failure to reach the screen - so
+/// a round with no window had the *smaller* row count, and the absence was announced only by
+/// the branch that was not missing anything. A reader comparing two archives would have read
+/// the shorter one as a quieter defect.
+///
+/// The two reasons stay two strings: `why_blocked` is what the leg did, `why_silence` is what
+/// the graded rows therefore never got. Merging them would put the window branch's sentence
+/// inside the bitmap branch's rows.
+///
+/// The eight here are eight, not "every row a healthy slot emits": `shipped on screen of {tag}`
+/// reads this same bitmap and is still not in the list, so the two branches are equal to each
+/// other while both stay one row short of the healthy loop. 第 49 项 ① carries that row.
+fn slot_silence(rep: &mut Report, tag: &str, why_blocked: &str, why_silence: &str) {
+    for row in PAINTING_ROWS
+        .iter()
+        .chain(["zoom copy", "no ghost", "dim", "hole"].iter())
+    {
+        rep.row(
+            &format!("{row} of {tag}"),
+            Check::Blocked,
+            why_blocked.to_string(),
+        );
+    }
+    for (label, grade, detail) in painting_silence(tag, why_silence) {
+        rep.row(&label, grade, detail);
+    }
+}
+
 /// Grade one stroke's band against the read-back bitmap. `cover` is what the bitmap is
 /// a photograph of, in device pixels; the arithmetic from a desk point to a *bitmap*
 /// pixel is spelled out, because a bitmap that came back at the wrong resolution must
@@ -3967,33 +4001,31 @@ pub fn measure() -> (Check, String) {
                 Check::Fail,
                 format!("no top-level titled {want_title}"),
             );
+            // 第 48 项 ⑯: this Fail is not the whole of what the round has to say. The slot
+            // still owes the eight rows that would have sampled its bitmap and the eight that
+            // answer "did the round ask" - and it owes them *because* there is no window, not
+            // in addition to it. `continue` after the Fail left the shorter archive to be read
+            // as the quieter failure.
+            slot_silence(
+                &mut rep,
+                &tag,
+                &format!("no top-level titled {want_title}, so there is no window to photograph"),
+                "这一轮连这个标题的顶层窗都没有，所以四行 painting 连样本都没有",
+            );
             continue;
         };
         let Some(got) = platform_windows::print::print_window(win.hwnd, win.phys.w, win.phys.h, 2)
         else {
-            // Every row of this slot that reads the read-back bitmap: the four painting rows
-            // come from [`PAINTING_ROWS`] rather than from a fresh literal, so the eight
-            // companion rows below and these eight graded ones cannot disagree about which
-            // painting rows exist.
-            for row in PAINTING_ROWS
-                .iter()
-                .chain(["zoom copy", "no ghost", "dim", "hole"].iter())
-            {
-                rep.row(
-                    &format!("{row} of {tag}"),
-                    Check::Blocked,
-                    "PrintWindow(flag 2) produced no bitmap for this window".to_string(),
-                );
-            }
-            // 第 43 项 ⑦: the eight graded rows above are not the whole of what this branch
-            // stopped saying. Each painting row also answers "did the round ask" and "could
-            // the screen answer", and those two went missing here entirely.
-            for (label, grade, detail) in painting_silence(
+            // Every row of this slot that reads the read-back bitmap, and the two companion
+            // cells per painting row that 第 43 项 ⑦ named - through the same emitter the
+            // no-window branch above uses, so the two cannot disagree about how many rows a
+            // round that never reached the screen owes.
+            slot_silence(
+                &mut rep,
                 &tag,
+                "PrintWindow(flag 2) produced no bitmap for this window",
                 "这一档的 PrintWindow(flag 2) 没有还回位图，所以四行 painting 连样本都没有",
-            ) {
-                rep.row(&label, grade, detail);
-            }
+            );
             continue;
         };
         let Some(frozen) = &snap else {
@@ -4650,6 +4682,71 @@ mod tests {
         }
         assert_ne!(no_bitmap[0].2, no_freeze[0].2, "两条分支共用了一句来路");
         assert!(no_freeze[0].2.ends_with("遮罩没冻住"), "{}", no_freeze[0].2);
+    }
+
+    /// 第 48 项 ⑯：两格"没问到屏幕"的分支必须发同一批行。本轮之前 `window {tag}` 那一支发完
+    /// 一枚 Fail 就 `continue`，而 `PrintWindow` 那一支发十六行 —— 于是"连窗都没有"的那一份档
+    /// 比"有窗而摄不到"的那一份**更短**，读档的人会把更严重的失败读成更安静的那一个。这里钉
+    /// 三件事：两支各发满十六行（八 graded + 八 silence）；行数由 `Report` 自己数出来而不是
+    /// 抄进某句话里（第 46 项 ④ 同一条）；以及十六行里每一格**只发一次** —— 最后这条是"接进去
+    /// 以后仍然只发一次"所能给出的最强证明，因为它不需要桌面配合，也不留一扇别人的窗。
+    #[test]
+    fn the_branch_that_blames_the_window_owes_the_same_rows_as_the_one_that_blames_the_bitmap() {
+        let tag = "m1-display1";
+        let graded_rows = PAINTING_ROWS.len() + 4; // 四行 painting + zoom copy/no ghost/dim/hole
+        let want = graded_rows + PAINTING_ROWS.len() * 2;
+        let no_window_why = "no top-level titled X, so there is no window to photograph";
+        let no_window_said = "这一轮连这个标题的顶层窗都没有，所以四行 painting 连样本都没有";
+
+        let mut no_window = Report::new();
+        slot_silence(&mut no_window, tag, no_window_why, no_window_said);
+        let mut no_bitmap = Report::new();
+        slot_silence(
+            &mut no_bitmap,
+            tag,
+            "PrintWindow(flag 2) produced no bitmap for this window",
+            "这一档的 PrintWindow(flag 2) 没有还回位图，所以四行 painting 连样本都没有",
+        );
+        assert_eq!(no_window.row_count(), want, "缺窗那一支发的行数");
+        assert_eq!(no_bitmap.row_count(), want, "缺位图那一支发的行数");
+
+        let (verdict, text) = no_window.finish("slot");
+        assert_eq!(verdict, Check::Blocked, "十六行 Blocked 不该给出 Pass");
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines.iter().filter(|l| l.ends_with(no_window_why)).count(),
+            graded_rows,
+            "{text}"
+        );
+        for row in PAINTING_ROWS
+            .iter()
+            .chain(["zoom copy", "no ghost", "dim", "hole"].iter())
+        {
+            // graded 的标签是 silence 标签的前缀，所以只 `starts_with` 不够：第 47 项 ① 那一族
+            // 在这一格的反面 —— 这里要让两种行各自数得出一次。
+            let hits = lines
+                .iter()
+                .filter(|l| l.starts_with(&format!("{row} of {tag}")) && l.ends_with(no_window_why))
+                .count();
+            assert_eq!(hits, 1, "{row} of {tag} 在缺窗那一支发了 {hits} 次：{text}");
+        }
+        for label in PAINTING_ROWS {
+            for suffix in [" asked", " readable"] {
+                let want_label = format!("{label} of {tag}{suffix}");
+                let hits = lines
+                    .iter()
+                    .filter(|l| l.starts_with(&want_label) && l.ends_with(no_window_said))
+                    .count();
+                assert_eq!(hits, 1, "{want_label} 发重了或没发：{text}");
+            }
+        }
+        // 结构共用而句子各自：缺窗的那一份不许替缺位图的那一份说话。
+        let (_, other) = no_bitmap.finish("slot");
+        assert!(!text.contains("PrintWindow(flag 2)"), "{text}");
+        assert!(
+            other.contains("PrintWindow(flag 2) produced no bitmap"),
+            "{other}"
+        );
     }
 
     /// ② 的另一半，也是这一格唯一会烂掉的那半：解释写成一个坐标，不写成一句关于会话的话。
