@@ -1133,6 +1133,46 @@ fn readable_row(
     }
 }
 
+/// The four rows whose grade is the pair of sentences above, in the order the script plants
+/// them. One list, not a copy per branch: the two degenerate branches each used to carry
+/// their own inline list of labels, which is the shape 第 43 项 ⑦ is about - a fifth painting
+/// row added to the healthy loop would simply have no companion rows on a bad round, and
+/// nothing downstream would say so.
+const PAINTING_ROWS: [&str; 4] = ["ink box", "ink stroke", "ink polyline", "ink text"];
+
+/// The eight companion rows for a round that never got to ask the screen (第 43 项 ⑦).
+///
+/// Before this, a round whose pixels never arrived stopped at the graded rows: `这一轮压根没问`
+/// is a sentence [`asked_row`] exists to say, and the two branches that could not produce it
+/// were exactly the branches that needed it most. Absence with no name in it left a row count
+/// as the only witness, and 第 43 项 established that a count is not a guardrail.
+///
+/// Returned as rows rather than pushed into the report, for the reason ⑭ gives `refusals`: a
+/// branch only reachable when the desktop declines is not checkable by running it, so the
+/// check has to be a call.
+///
+/// `centre` is `""` and stays unused: [`readable_row`] returns from its `planted == 0` arm
+/// before it quotes a coordinate, which is the whole point of that arm - there is no position
+/// on a screen this round was never told to look at.
+fn painting_silence(tag: &str, why: &str) -> Vec<(String, Check, String)> {
+    let mut rows = Vec::with_capacity(PAINTING_ROWS.len() * 2);
+    for label in PAINTING_ROWS {
+        let (asked_check, asked_said) = asked_row(0);
+        rows.push((
+            format!("{label} of {tag} asked"),
+            asked_check,
+            format!("{asked_said}——{why}"),
+        ));
+        let (read_check, read_said) = readable_row(0, 0, 0, 0, 0, "");
+        rows.push((
+            format!("{label} of {tag} readable"),
+            read_check,
+            format!("{read_said}——{why}"),
+        ));
+    }
+    rows
+}
+
 /// Grade one stroke's band against the read-back bitmap. `cover` is what the bitmap is
 /// a photograph of, in device pixels; the arithmetic from a desk point to a *bitmap*
 /// pixel is spelled out, because a bitmap that came back at the wrong resolution must
@@ -2663,25 +2703,51 @@ fn quick_rows(rep: &mut Report, dir: &Path, mask_png: &Path, said_png: &str) {
     let lines = mask_with(|l| l.clone());
     let cell = said(&lines, "q-cell");
     let census_cell = said(&lines, "q-census").unwrap_or("");
+    // §10 第 47 项 ④'s lineage half: this door's claim is "I open no dialog", so a census
+    // that counts one has to say *whose* window it counted. The dialog phase's own three
+    // readings ride in the same transcript, and when that phase left a door standing, the
+    // quiet leg is not the one that opened it - which is exactly the reading 第 46 项 ⑥ asked
+    // for and could not make, because the census was graded as this leg's own failure.
+    let (hy_check, hy_said) = pin_check::dialog_hygiene(
+        said(&lines, "dlg-shown"),
+        said(&lines, "dlg-after"),
+        said(&lines, "dlg-dismiss").is_some(),
+        said(&lines, "dlg-rejected").is_some(),
+    );
+    let stale = pin_check::census_blames_earlier_phase(
+        census_cell,
+        hy_check,
+        said(&lines, "dlg-shown").is_some(),
+    );
+    let lineage = |quiet: bool| -> String {
+        if quiet {
+            "普查说这一趟本进程名下没有对话框，本段那句话成立".to_string()
+        } else if stale {
+            format!("普查数到一枚对话框，而它归对话框那一段（本段卫生行读作 {hy_check:?}：{hy_said}）—— 这一格本轮判不了快速保存，记 Blocked 而不是替上一段挨红")
+        } else {
+            "普查数到一枚对话框，而没有别的段认领它".to_string()
+        }
+    };
     let (told, msg) = match cell {
         Some(v) => v.split_once('|').unwrap_or((v, "")),
         None => ("", ""),
     };
     let by_cell = landed_path(msg);
     let head_cell = by_cell.as_ref().and_then(|p| crate::save::written_as(p));
+    let quiet_cell = census_says_no_dialog(census_cell);
     rep.row(
         "quick save via qml cell",
         match cell {
             None => Check::Blocked,
+            Some(_) if !quiet_cell && stale => Check::Blocked,
             Some(_) => Check::from(
-                told == "true"
-                    && head_cell == Some(falcon_core::encode::Format::Png)
-                    && census_says_no_dialog(census_cell),
+                told == "true" && head_cell == Some(falcon_core::encode::Format::Png) && quiet_cell,
             ),
         },
         format!(
             "面板那句 {msg:?}（要求 delivered=true 且那个文件头四字节是 PNG，读出 {head_cell:?}）；\
-             它自己那份窗口普查 {census_cell:?}（要求 pushed=no 且 dialogs=0）"
+             它自己那份窗口普查 {census_cell:?}（要求 pushed=no 且 dialogs=0）—— {}",
+            lineage(quiet_cell)
         ),
     );
 
@@ -2728,15 +2794,17 @@ fn quick_rows(rep: &mut Report, dir: &Path, mask_png: &Path, said_png: &str) {
             .as_ref()
             .is_some_and(|p| !seen.contains(&p.display().to_string()));
         let stepped = matches!((prior, serial), (Some(a), Some(b)) if b == a + 1);
+        let quiet = census_says_no_dialog(census_cell);
         let verdict = match line {
             None => Check::Blocked,
+            Some(_) if !quiet && stale => Check::Blocked,
             Some(_) => Check::from(
                 told == "true"
                     && exists
                     && fresh
                     && stepped
                     && head == Some(falcon_core::encode::Format::Png)
-                    && census_says_no_dialog(census_cell),
+                    && quiet,
             ),
         };
         let (was_key, was_serial) = (&last_key, &prior);
@@ -2747,7 +2815,8 @@ fn quick_rows(rep: &mut Report, dir: &Path, mask_png: &Path, said_png: &str) {
                 "{how}：那一句 {msg:?}（要求 delivered/返回值=true、盘上有={exists}、头四字节是 PNG 读出 {head:?}、\
                  号是上一条 {was_key} 的 {was_serial:?} 的下一条 {serial:?}（+1={stepped}）、且不是别人的那一份（新名字={fresh}）；\
                  它与 {was_key} 共用腿末那一次普查 {census_cell:?}（要求 pushed=no 且 dialogs=0），\
-                 这条腿自己不另取一次普查——缺席则记 Blocked 而不是绿",
+                 这条腿自己不另取一次普查——缺席则记 Blocked 而不是绿；普查那枚数到的窗 {}",
+                lineage(quiet),
             ),
         );
         if let Some(p) = &path {
@@ -3207,11 +3276,16 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
 
     let push = said(&lines, "dlg-push").unwrap_or("");
     let shown = pin_check::push_row_text(push);
+    // How many waits the press needed, and what each of the earlier ones saw.
     let tries = said(&lines, "dlg-push-tries").unwrap_or("<没有读数>");
+    let asked = pin_check::ask(said(&lines, "dlg-push"));
     rep.row(
         "mask dialog pushed",
-        Check::from(pin_check::real_click(push)),
-        format!("{shown}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）"),
+        pin_check::ask_check(asked),
+        format!(
+            "{shown}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）；三态读作：{}",
+            pin_check::ask_said(asked)
+        ),
     );
     rep.note(
         "mask push 每次尝试",
@@ -3227,22 +3301,23 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
         "mask dialog accept",
         if fired {
             Check::Pass
-        } else if pin_check::real_click(push) {
+        } else if asked == pin_check::Ask::Pressed {
             Check::Fail
         } else {
             Check::Blocked
         },
         format!(
-            "真点击前后 message {shown:?} -> {now:?}；前态那句读自被拒的那次 saveSelection 之后的 {:?}；信号 {:?}（{}）",
+            "真点击前后 message {shown:?} -> {now:?}；前态那句读自被拒的那次 saveSelection 之后的 {:?}；信号 {:?}（{}；{}）",
             pre.unwrap_or("<没有读数>"),
             said(&lines, "dlg-accepted"),
             if fired {
                 "onAccepted 是那一下点击跑起来的"
-            } else if pin_check::real_click(push) {
+            } else if asked == pin_check::Ask::Pressed {
                 "点了，但 onAccepted 没跑或前态不是产品那句"
             } else {
-                "没点成，这一格问不了"
-            }
+                "这一格问不了"
+            },
+            pin_check::ask_said(asked)
         ),
     );
 
@@ -3251,14 +3326,45 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
     // `reject()` a dialog it still sees, so a `dlg-dismiss` line here is the run admitting
     // the click did not finish the job. The filter the shell settled on rides along, since
     // this is the one file in the report whose name was not decided before the click.
+    //
+    // §10 第 47 项 ④: a press the desktop never answered left nothing standing, and grading
+    // that as the gauge closing a door is what turned one refused press into four FAILs and
+    // a SKIP in 第 46 项 ⑥'s pass-c cascade. The three readings now split before the column does.
+    let (hy_check, hy_said) = pin_check::dialog_hygiene(
+        said(&lines, "dlg-shown"),
+        said(&lines, "dlg-after"),
+        keys.contains(&"dlg-dismiss"),
+        said(&lines, "dlg-rejected").is_some(),
+    );
     rep.row(
         "mask dialog closed",
-        Check::from(said(&lines, "dlg-after") == Some("false") && !keys.contains(&"dlg-dismiss")),
+        if hy_check == Check::Blocked {
+            hy_check
+        } else if said(&lines, "dlg-after") == Some("false") && !keys.contains(&"dlg-dismiss") {
+            Check::Pass
+        } else {
+            Check::Fail
+        },
         format!(
-            "点完之后 visible {:?}，量具代关={}，选中的滤镜 {:?}",
+            "点完之后 visible {:?}，量具代关={}，选中的滤镜 {:?}（未问 / 桌面不肯答 / 产品答错 三态读作：{}）",
             said(&lines, "dlg-after"),
             keys.contains(&"dlg-dismiss"),
-            said(&lines, "dlg-filter")
+            said(&lines, "dlg-filter"),
+            if hy_check == Check::Blocked {
+                hy_said.as_str()
+            } else {
+                pin_check::ask_said(asked)
+            }
+        ),
+    );
+    rep.row(
+        "mask dialog hygiene",
+        hy_check,
+        format!(
+            "{hy_said}；本段的三次读数 dlg-shown {:?} / dlg-after {:?} / dlg-rejected {:?}",
+            said(&lines, "dlg-shown"),
+            said(&lines, "dlg-after"),
+            said(&lines, "dlg-rejected")
         ),
     );
 
@@ -3369,7 +3475,12 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
     let id = match state::with(|s| s.add(want.clone(), PhysPoint::new(10, 10))) {
         Ok(id) => id,
         Err(e) => {
-            for label in ["pin saved png", "pin saved jpg", "jpeg quality knob"] {
+            for label in [
+                "pin saved png",
+                "pin saved jpg",
+                "pin pre-save notice",
+                "jpeg quality knob",
+            ] {
                 rep.row(
                     label,
                     Check::Fail,
@@ -3381,6 +3492,22 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
     };
 
     let said_png = state::with(|s| s.save_image(id, &pin_png.to_string_lossy(), ""));
+
+    // ---- 写之前那一档（§10 第 47 项 ②，PRD 447 的"应提醒用户背景**将**被填充"落到贴图上的一半）。
+    // 问的是**顺序**而不是文字，所以这条腿先叫 `remind_before_save`，当场确认 jpg 还没落盘（提醒
+    // 自己也不许落），再让门真写一次。PNG 档先无话可说一次：空串是"这一档不丢透明"，不是"没提醒"。
+    let gone = want
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[3] != 255)
+        .count();
+    let pre_png = state::with(|s| s.remind_before_save(id, &pin_png.to_string_lossy(), ""));
+    let pre_said = state::with(|s| s.remind_before_save(id, &pin_jpg.to_string_lossy(), ""));
+    let pre_clean = !pin_jpg.exists();
+    let pre_cell = state::with(|s| s.pre_notice.clone());
+
     let said_jpg = state::with(|s| s.save_image(id, &pin_jpg.to_string_lossy(), ""));
     let both = |a: &Path, b: &Path| {
         let (x, y) = (std::fs::read(a).ok(), std::fs::read(b).ok());
@@ -3409,14 +3536,8 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
     );
 
     // ---- JPG: the lossy half, where the flattening used to happen in silence.
+    // (`gone` comes from the leg above - the写前 arm needs it before the write does.)
     let (same_jpg, mask_len, pin_len) = both(mask_jpg, &pin_jpg);
-    let gone = want
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .filter(|p| p[3] != 255)
-        .count();
     let told = match &said_jpg {
         Ok(said) if gone == 0 => !said.contains("透明"),
         Ok(said) => said.contains(&format!("贴图里有 {gone} px 透明")) && said.contains("填成白色"),
@@ -3433,18 +3554,37 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
         ),
     );
 
-    // ---- 贴图的另存为没有写前那一档（第 46 项 ① 欠的一半，说在这一格里而不是消失）。
-    // `state::save_image(&self, …)` 借不到 `&mut`，而提醒要写的正是窗口那一格；本轮没有为了
-    // 让这一格变绿而改掉上面那句已评分的事后措辞（§9.1：既有行的字是别趟归档可比对的量），
-    // 也没有给它加 interior mutability 把"没走的路"写成"走过了"。于是它记 Blocked，结转。
+    // ---- 这一档自此有写前那一半了（第 46 项 ③ 欠的、第 47 项 ② 结的）。三个要求各自可烂，
+    // 与遮罩那三扇门同一条判据：说于落盘之前、窗口那一格与返回值同字、时态真的换过（最后一条
+    // 把"提醒"与"事后追述"分开 —— 否则事后那句本身就是它的假样本）。
+    let post_jpg = said_jpg.as_deref().unwrap_or("").to_string();
+    let pre_tense = pre_said.replace("将被填成白色", "已填成白色");
+    let only_tense = gone > 0 && !pre_said.is_empty() && post_jpg.ends_with(&pre_tense);
     rep.row(
         "pin pre-save notice",
-        Check::Blocked,
+        Check::from(
+            pre_clean
+                && pre_cell == pre_said
+                && pre_png.is_empty()
+                && said_jpg.is_ok()
+                && if gone == 0 {
+                    pre_said.is_empty()
+                } else {
+                    pre_said.contains(&format!("贴图里有 {gone} px 透明"))
+                        && pre_said.contains("将被填成白色")
+                        && pre_said.contains("存成 PNG")
+                        && only_tense
+                },
+        ),
         format!(
-            "这扇门本轮没有写前提醒：{gone} px 的事后那句上面已经说过，而写前那一句要从 \
-             `state::save_image` 里读一个 `&mut self` 的位置——PRD 447 的\"应提醒\"在这里只有 \
-             事后那一半。遮罩的三扇门（另存为 / 快速保存 / 存完再钉图）本轮各有一条，见 \
-             pre-save notice 那格"
+            "提醒说于 {} 落盘之前（当时不在盘上={pre_clean}，提醒自己也不写文件），窗口那一格 \
+             pre_notice 与返回值同字（{pre_cell:?}）；PNG 档先无话（{pre_png:?}）；文档丢了 {gone} px，\
+             JPG 档要求说出 {gone} px、\"将被填成白色\"、并把时态换回\"已填\"后逐字节接在事后那句 \
+             {post_jpg:?} 的句尾（只差时态={only_tense}）。这一格是提醒不是确认：写照常发生 \
+             （save_image={}）。**这一格仍未被画到屏幕上**：贴图侧连 session.status 都没有一枚 widget，\
+             所以 pre_notice 现在是一格可判而暂不可见的属性，结转第 48 项",
+            pin_jpg.display(),
+            said_jpg.is_ok()
         ),
     );
 
@@ -3831,21 +3971,28 @@ pub fn measure() -> (Check, String) {
         };
         let Some(got) = platform_windows::print::print_window(win.hwnd, win.phys.w, win.phys.h, 2)
         else {
-            for row in [
-                "ink box",
-                "ink stroke",
-                "ink polyline",
-                "ink text",
-                "zoom copy",
-                "no ghost",
-                "dim",
-                "hole",
-            ] {
+            // Every row of this slot that reads the read-back bitmap: the four painting rows
+            // come from [`PAINTING_ROWS`] rather than from a fresh literal, so the eight
+            // companion rows below and these eight graded ones cannot disagree about which
+            // painting rows exist.
+            for row in PAINTING_ROWS
+                .iter()
+                .chain(["zoom copy", "no ghost", "dim", "hole"].iter())
+            {
                 rep.row(
                     &format!("{row} of {tag}"),
                     Check::Blocked,
                     "PrintWindow(flag 2) produced no bitmap for this window".to_string(),
                 );
+            }
+            // 第 43 项 ⑦: the eight graded rows above are not the whole of what this branch
+            // stopped saying. Each painting row also answers "did the round ask" and "could
+            // the screen answer", and those two went missing here entirely.
+            for (label, grade, detail) in painting_silence(
+                &tag,
+                "这一档的 PrintWindow(flag 2) 没有还回位图，所以四行 painting 连样本都没有",
+            ) {
+                rep.row(&label, grade, detail);
             }
             continue;
         };
@@ -3855,6 +4002,12 @@ pub fn measure() -> (Check, String) {
                 Check::Blocked,
                 "the freeze is gone; nothing to compare against".to_string(),
             );
+            for (label, grade, detail) in painting_silence(
+                &tag,
+                "遮罩没冻住，这一档连对照的桌面帧都没有：上面那八行 graded 也没有发出来",
+            ) {
+                rep.row(&label, grade, detail);
+            }
             continue;
         };
         // The desktop's own reading, quoted by every `readable` row of this slot. §10 第 42
@@ -3990,9 +4143,14 @@ pub fn measure() -> (Check, String) {
         }
 
         for (label, points, want, tenths) in [
-            ("ink box", rect_band(p.rect), GREEN, INK_PASS),
-            ("ink stroke", path_band(&p.zig), GREEN, INK_PASS),
-            ("ink polyline", path_band(&p.poly), GREEN, INK_PASS),
+            // The first three of [`PAINTING_ROWS`], in that order, because they are the three
+            // bands this script plants in this order; the fourth is the text strip the `match`
+            // below grades. Naming them from the array rather than from a fresh literal is what
+            // makes 第 43 项 ⑦'s degenerate rows the *same* rows: two lists would be two answers
+            // to "which painting rows exist", and only one of them would drift.
+            (PAINTING_ROWS[0], rect_band(p.rect), GREEN, INK_PASS),
+            (PAINTING_ROWS[1], path_band(&p.zig), GREEN, INK_PASS),
+            (PAINTING_ROWS[2], path_band(&p.poly), GREEN, INK_PASS),
         ] {
             let hits = band(win.phys, &got, frozen, &points, want, true);
             rep.row(
@@ -4020,12 +4178,13 @@ pub fn measure() -> (Check, String) {
         // anywhere other than under the click that opened it is a strip that reads back
         // as the frozen desktop, and no headless test can tell those two apart because
         // both of them ask `box_at` the same question and take the same answer.
+        let text_row = PAINTING_ROWS[3];
         match p.text {
             Some(strip) => {
                 let fp = footprint(win.phys, &got, frozen, strip);
-                rep.row(&format!("ink text of {tag}"), fp.verdict(), fp.line());
+                rep.row(&format!("{text_row} of {tag}"), fp.verdict(), fp.line());
                 let (c, l) = asked_row(fp.planted);
-                rep.row(&format!("ink text of {tag} asked"), c, l);
+                rep.row(&format!("{text_row} of {tag} asked"), c, l);
                 let (c, l) = readable_row(
                     fp.planted,
                     fp.usable(),
@@ -4034,7 +4193,7 @@ pub fn measure() -> (Check, String) {
                     fp.preexisting,
                     &centre,
                 );
-                rep.row(&format!("ink text of {tag} readable"), c, l);
+                rep.row(&format!("{text_row} of {tag} readable"), c, l);
                 rep.note(
                     &format!("text strip of {tag}"),
                     format!("{strip:?} typed {TEXT:?}"),
@@ -4042,7 +4201,7 @@ pub fn measure() -> (Check, String) {
             }
             None => {
                 rep.row(
-                    &format!("ink text of {tag}"),
+                    &format!("{text_row} of {tag}"),
                     Check::Blocked,
                     "the selection is too small for a text strip that clears the bands the \
                      other rows grade, so none of this pen's colour was planted to count"
@@ -4052,9 +4211,9 @@ pub fn measure() -> (Check, String) {
                 // desktop declining, and `readable` says so in its own words instead of
                 // letting the graded row's `SKIP` stand for both halves at once.
                 let (c, l) = asked_row(0);
-                rep.row(&format!("ink text of {tag} asked"), c, l);
+                rep.row(&format!("{text_row} of {tag} asked"), c, l);
                 let (c, l) = readable_row(0, 0, 0, 0, 0, &centre);
-                rep.row(&format!("ink text of {tag} readable"), c, l);
+                rep.row(&format!("{text_row} of {tag} readable"), c, l);
             }
         }
 
@@ -4441,6 +4600,56 @@ mod tests {
         let lines: [&str; 3] = [asked.1.as_str(), unreadable.1.as_str(), unasked.1.as_str()];
         let distinct: HashSet<&str> = lines.iter().copied().collect();
         assert_eq!(distinct.len(), 3, "三条拒绝共用了一句措辞：{lines:?}");
+    }
+
+    /// 第 43 项 ⑦ 补的那一格。两条退化路径以前只发 graded 行，这八行评分行整族在归档里**缺席**
+    /// —— 而"这一轮压根没问"恰恰是缺席的那一句自己最该被说出来：一轮连像素都没拿到的跑级，
+    /// 除了行数之外没有任何证人，而第 43 项已经立过行数不是护栏。所以这里钉四件事：行数、
+    /// 标签形状（与 healthy 路径同一个 `{label} of {tag} asked`，且结构与 graded 行不同名，
+    /// 这是第 47 项 ① 那条口径在本门的另一面）、两条分支的来路互不相同、以及没有坐标可引时
+    /// 句子不许伪造一个。
+    #[test]
+    fn a_round_that_never_got_pixels_still_names_its_scoring_rows() {
+        let tag = "m1-display1";
+        let no_bitmap = painting_silence(tag, "PrintWindow(flag 2) 没有还回位图");
+        let no_freeze = painting_silence(tag, "遮罩没冻住");
+        assert_eq!(no_bitmap.len(), PAINTING_ROWS.len() * 2);
+        assert_eq!(no_freeze.len(), no_bitmap.len());
+
+        let labels: Vec<String> = no_bitmap.iter().map(|(l, _, _)| l.clone()).collect();
+        let distinct: HashSet<&String> = labels.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            labels.len(),
+            "两格共用了一个标签：{labels:?}"
+        );
+        for label in PAINTING_ROWS {
+            for suffix in [" asked", " readable"] {
+                let want = format!("{label} of {tag}{suffix}");
+                assert!(labels.contains(&want), "{want} 没被发出来：{labels:?}");
+            }
+            // ① 的另一面：评分行的标签必须是 graded 那一行的**延长**，不是它的别名。同名的一
+            // 行会让"第一次出现者胜"的口径把一次绿读成一枚 `-`。
+            assert!(!labels.contains(&format!("{label} of {tag}")), "{labels:?}");
+        }
+
+        for (label, grade, detail) in &no_bitmap {
+            assert_eq!(*grade, Check::Blocked, "{label} 没问过却给了判定");
+            assert!(
+                detail.contains("压根没问") || detail.contains("没向屏幕要过像素"),
+                "{label} 那句不是这一族的说法：{detail}"
+            );
+            assert!(
+                detail.ends_with("PrintWindow(flag 2) 没有还回位图"),
+                "{detail}"
+            );
+            assert!(
+                !detail.contains("pixel@centre"),
+                "{detail} 引了一个没有的坐标"
+            );
+        }
+        assert_ne!(no_bitmap[0].2, no_freeze[0].2, "两条分支共用了一句来路");
+        assert!(no_freeze[0].2.ends_with("遮罩没冻住"), "{}", no_freeze[0].2);
     }
 
     /// ② 的另一半，也是这一格唯一会烂掉的那半：解释写成一个坐标，不写成一句关于会话的话。

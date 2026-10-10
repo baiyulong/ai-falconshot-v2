@@ -96,6 +96,87 @@ fn exe_stamp() -> String {
     format!("exe={} B @{when}s", meta.len())
 }
 
+/// Every way this binary can be asked to measure something and be handed an argument it
+/// cannot act on, collected as sentences.
+///
+/// Returned rather than printed, for the reason 第 47 项 ⑭ names: while this lived inline in
+/// `main`, the only way to ask any of it was to run the binary and read its exit code - so
+/// the predicate that decides whether a run produces evidence at all had no test, and a
+/// seventh door would have joined by being bolted onto the end of a stretch nobody could
+/// check. `gauge_mode` is the product's own `MaskState::gauge_run`, passed in rather than
+/// called, so this list cannot quietly become a second copy of the thing it reports on.
+fn refusals(args: &[String], gauge_mode: bool) -> Vec<String> {
+    let flag = |name: &str| args.iter().any(|a| a == name);
+    let after = |name: &str| -> Option<i32> {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .and_then(|v| v.parse().ok())
+    };
+
+    let mut orphans: Vec<String> = Vec::new();
+    if flag("--mask-soft") && !flag("--mask") && !flag("--ink") {
+        orphans.push("--mask-soft 需要和 --mask <ms>（或 --ink <ms>）一起用".to_string());
+    }
+    if (flag("--clipboard") || flag("--capture")) && !flag("--selftest") {
+        orphans.push("--clipboard / --capture 是 --selftest 的附加档".to_string());
+    }
+    if after("--warm-rounds").unwrap_or(0) > 0 && !flag("--mask") && !flag("--ink") {
+        orphans.push("--warm-rounds 需要和 --mask <ms> 一起用".to_string());
+    }
+    // These modes are named by a flag *and* a number, and the number is the one that
+    // decides whether the mode runs at all: `after` answers `None` for a missing or
+    // unparseable `<ms>`, and every `if x_ms.is_some()` in `main` then skips itself. What
+    // runs instead is `app.exec()` waiting for a human to close a window, printing
+    // nothing - and because Rust's stdout is line-buffered, that is a zero-byte log
+    // from a live process, which is indistinguishable from a gauge that hung. A run
+    // whose evidence looks exactly like a defect is worse than a crash, so the
+    // mis-invocation is refused in the same voice as the orphans above.
+    //
+    // `--reveal` joins this list without joining `GAUGE_FLAGS`: it runs no gauge (it is
+    // kept out of that array precisely because it leaves an Explorer window on the user's
+    // desktop), but it is named by a flag and a number and degrades the same way. Before
+    // ⑭ it had its own hand-written arm, which is the shape that lets a new door be
+    // refused by one path and not by the other.
+    let mut numbered: Vec<&str> = mask::GAUGE_FLAGS.to_vec();
+    numbered.push("--reveal");
+    let mut missing_ms = Vec::new();
+    for name in numbered {
+        if flag(name) && after(name).is_none() {
+            missing_ms.push(name);
+        }
+    }
+    if !missing_ms.is_empty() {
+        orphans.push(format!(
+            "{} 少了毫秒数（例如 `{} 1500`）：不带数字时这一档什么都不跑，只会退化成一次等真人的产品 GUI 会话",
+            missing_ms.join(" / "),
+            missing_ms[0]
+        ));
+    }
+    // A combination rather than a mis-spelling, and refused for the same reason a
+    // missing `<ms>` is: the reading would belong to neither mode. The mask covers
+    // every screen with its own window, so `pin window` - which picks the top-level
+    // that overlaps the pin's rect - would be measuring the wrong window, and
+    // `--mask` closes the freeze it is scored against.
+    if flag("--pin") && (flag("--mask") || flag("--ink")) {
+        orphans.push(
+            "--pin 不能和 --mask / --ink 一起用：遮罩的窗会盖住贴图，那几格读的就不是这块窗了"
+                .to_string(),
+        );
+    }
+    // 这一条不是拼错，是把那一档要量的东西关掉：`gauge_run` 是 argv 前缀匹配，所以
+    // `--reveal --mask 1500` 里那一步 `select` 会被结构性地拒，于是这一档报的是自己没跑，
+    // 而不是产品拒绝。要么单独点它，要么什么都别点。
+    if flag("--reveal") && gauge_mode {
+        orphans.push(
+            "--reveal 不能和 --probe / --r13 / --mask / --ink / --pin 一起用：那些前缀会让 \
+             gauge_run 在 select 之前就把这一步拒掉，那一趟读到的只是腿没跑"
+                .to_string(),
+        );
+    }
+    orphans
+}
+
 fn main() {
     // The clock the cold-path split is measured from, stamped before Qt says
     // anything at all. See `state::stamp`.
@@ -133,63 +214,11 @@ fn main() {
     // interactive app and ran until the process was killed - with an empty log,
     // because the app prints no report of its own. A mis-invocation is a measurement
     // that cannot be taken, which is the third verdict, not a crash and not a pass.
-    let mut orphans: Vec<String> = Vec::new();
-    if flag("--mask-soft") && !flag("--mask") && !flag("--ink") {
-        orphans.push("--mask-soft 需要和 --mask <ms>（或 --ink <ms>）一起用".to_string());
-    }
-    if (flag("--clipboard") || flag("--capture")) && !flag("--selftest") {
-        orphans.push("--clipboard / --capture 是 --selftest 的附加档".to_string());
-    }
-    if after("--warm-rounds").unwrap_or(0) > 0 && !flag("--mask") && !flag("--ink") {
-        orphans.push("--warm-rounds 需要和 --mask <ms> 一起用".to_string());
-    }
-    // Five modes are named by a flag *and* a number, and the number is the one that
-    // decides whether the mode runs at all: `after` answers `None` for a missing or
-    // unparseable `<ms>`, and every `if x_ms.is_some()` below then skips itself. What
-    // runs instead is `app.exec()` waiting for a human to close a window, printing
-    // nothing - and because Rust's stdout is line-buffered, that is a zero-byte log
-    // from a live process, which is indistinguishable from a gauge that hung. A run
-    // whose evidence looks exactly like a defect is worse than a crash, so the
-    // mis-invocation is refused in the same voice as the orphans above.
-    let mut missing_ms = Vec::new();
-    for name in mask::GAUGE_FLAGS {
-        if flag(name) && after(name).is_none() {
-            missing_ms.push(name);
-        }
-    }
-    if !missing_ms.is_empty() {
-        orphans.push(format!(
-            "{} 少了毫秒数（例如 `{} 1500`）：不带数字时这一档什么都不跑，只会退化成一次等真人的产品 GUI 会话",
-            missing_ms.join(" / "),
-            missing_ms[0]
-        ));
-    }
-    // A combination rather than a mis-spelling, and refused for the same reason a
-    // missing `<ms>` is: the reading would belong to neither mode. The mask covers
-    // every screen with its own window, so `pin window` - which picks the top-level
-    // that overlaps the pin's rect - would be measuring the wrong window, and
-    // `--mask` closes the freeze it is scored against.
-    if flag("--pin") && (flag("--mask") || flag("--ink")) {
-        orphans.push(
-            "--pin 不能和 --mask / --ink 一起用：遮罩的窗会盖住贴图，那几格读的就不是这块窗了"
-                .to_string(),
-        );
-    }
-    // 这一条不是拼错，是把那一档要量的东西关掉：`gauge_run` 是 argv 前缀匹配，所以
-    // `--reveal --mask 1500` 里那一步 `select` 会被结构性地拒，于是这一档报的是自己没跑，
-    // 而不是产品拒绝。要么单独点它，要么什么都别点。
-    if flag("--reveal") && mask::MaskState::gauge_run() {
-        orphans.push(
-            "--reveal 不能和 --probe / --r13 / --mask / --ink / --pin 一起用：那些前缀会让 \
-             gauge_run 在 select 之前就把这一步拒掉，那一趟读到的只是腿没跑"
-                .to_string(),
-        );
-    }
-    // 同一族的另一种走法：`--reveal` 不在 GAUGE_FLAGS 里，上面那个循环看不见它，而不带毫秒数
-    // 时它和那些门一样什么都不跑——退化成一次等真人关窗的 GUI 会话，日志 0 字节。
-    if flag("--reveal") && after("--reveal").is_none() {
-        orphans.push("--reveal 少了毫秒数（例如 `--reveal 1500`）".to_string());
-    }
+    //
+    // `gauge_mode` is passed in rather than read inside because it is the product's own
+    // answer (`MaskState::gauge_run`), not a copy this function could drift from - and a
+    // copy is exactly what 第 47 项 ⑭ is here to stop.
+    let orphans = refusals(&args, mask::MaskState::gauge_run());
     if !orphans.is_empty() {
         println!("[falconshot] {}", orphans.join("；"));
         std::process::exit(3);
@@ -598,7 +627,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::exe_stamp;
+    use super::{exe_stamp, refusals};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// The field's only job is to make a log attributable to a build, and the way it
@@ -632,5 +661,94 @@ mod tests {
             .unwrap()
             .as_secs();
         assert!(seconds <= now + 60, "{stamp:?} 的 mtime 在未来");
+    }
+
+    fn argv(words: &[&str]) -> Vec<String> {
+        words.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The 第 47 项 ⑭ debt was not that the refusals were wrong but that they could not be
+    /// asked: they lived in `main`, so checking one meant running the binary, which means a
+    /// desktop, a timer and a log - and the question worth asking has no witness in any of
+    /// those. It is *completeness*. A door that needs a number and is not on the list is not
+    /// a wrong verdict, it is the zero-byte log from a live process that 第 41 项 closed out,
+    /// reopened one flag at a time.
+    ///
+    /// So each door is asked twice. The number case must come back empty: a refusal that
+    /// fires on a correct invocation is how a gauge stops running while its ladder still
+    /// reports exit 3 as "the desktop's fault". The bare case must name that door in its own
+    /// sentence, because a shared sentence about some other flag is how a mis-typed call
+    /// gets archived against the wrong mode.
+    #[test]
+    fn every_door_that_needs_a_number_says_so_when_it_has_none() {
+        let mut doors: Vec<&str> = crate::mask::GAUGE_FLAGS.to_vec();
+        doors.push("--reveal");
+        assert_eq!(
+            doors.len(),
+            6,
+            "本轮的门是六枚：多一枚少一枚都要先改这条再改代码"
+        );
+
+        for name in doors {
+            let with = refusals(&argv(&[name, "1500"]), false);
+            assert!(with.is_empty(), "{name} 带着毫秒数仍被拒：{with:?}");
+
+            let bare = refusals(&argv(&[name]), false);
+            assert_eq!(bare.len(), 1, "{name} 不带数字只该有一句拒绝：{bare:?}");
+            assert!(
+                bare[0].contains(name),
+                "{name} 没在自己的那句里被点名：{}",
+                bare[0]
+            );
+            assert!(
+                bare[0].contains("少了毫秒数"),
+                "{name} 那句不是同一族的说法：{}",
+                bare[0]
+            );
+        }
+    }
+
+    /// The other arms, each in both directions, plus the one invocation that must never be
+    /// refused at all: no arguments is the product, not a mis-measurement. Exiting 3 on that
+    /// would take the interactive app down with the gauge's guardrail.
+    #[test]
+    fn a_mis_tuned_invocation_is_refused_before_the_first_window() {
+        assert!(refusals(&argv(&[]), false).is_empty());
+        assert!(refusals(&argv(&["--selftest", "--clipboard", "--capture"]), false).is_empty());
+        assert!(refusals(
+            &argv(&["--mask", "1500", "--mask-soft", "--warm-rounds", "3"]),
+            false
+        )
+        .is_empty());
+
+        let soft = refusals(&argv(&["--mask-soft"]), false);
+        assert_eq!(soft.len(), 1, "{soft:?}");
+        assert!(soft[0].contains("--mask-soft"), "{}", soft[0]);
+
+        let clip = refusals(&argv(&["--clipboard"]), false);
+        assert!(clip.iter().any(|s| s.contains("--selftest")), "{clip:?}");
+        let cap = refusals(&argv(&["--capture"]), false);
+        assert_eq!(cap.len(), 1, "{cap:?}");
+
+        let warm = refusals(&argv(&["--warm-rounds", "3"]), false);
+        assert_eq!(warm.len(), 1, "{warm:?}");
+        assert!(warm[0].contains("--warm-rounds"), "{}", warm[0]);
+
+        // The combination that reads neither mode, named by both of its flags.
+        let clash = refusals(&argv(&["--pin", "1500", "--mask", "1500"]), true);
+        assert!(
+            clash
+                .iter()
+                .any(|s| s.contains("--pin") && s.contains("--mask")),
+            "{clash:?}"
+        );
+
+        // `--reveal` is refused by the *product's* answer, not by this list's own reading of
+        // argv: the boolean is what `gauge_run` said, and a reveal door with a gauge prefix in
+        // front of it reports "the leg did not run" rather than a refusal.
+        assert!(refusals(&argv(&["--reveal", "1500"]), true)
+            .iter()
+            .any(|s| s.contains("gauge_run")));
+        assert!(refusals(&argv(&["--reveal", "1500"]), false).is_empty());
     }
 }

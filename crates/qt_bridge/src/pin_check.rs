@@ -665,6 +665,127 @@ pub(crate) fn real_click(report: &str) -> bool {
         && report.contains("bid=1 ")
 }
 
+/// Which of the three questions a press leg actually answered (§10 第 47 项 ④).
+///
+/// The column has three verdicts and this has four shapes, so two of them share
+/// [`Check::Blocked`] - what they may never share again is the sentence. Until P47 a leg
+/// that never spoke and a desktop that would not make a `#32770` both arrived as
+/// [`real_click`]'s `false`, i.e. as *the product answering wrong*, which is how one refused
+/// press printed four FAILs in a row (第 46 项 ⑥'s pass-c cascade) while that same report's
+/// own census said `dialogs=0` - the count that says nobody had a window to press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ask {
+    /// The leg never spoke. This run did not ask the question.
+    Unasked,
+    /// Asked, and this process had no pressable save dialog - the desktop's answer.
+    Refused,
+    /// A press went out, but not at this process's save dialog's `IDOK`: answered wrong.
+    Mispressed,
+    /// `pushed=yes` on a `#32770` whose default button carried `IDOK`.
+    Pressed,
+}
+
+/// [`Ask`] read off one report, where `None` means the leg is absent rather than silent.
+pub(crate) fn ask(push: Option<&str>) -> Ask {
+    match push {
+        None => Ask::Unasked,
+        Some(r) if r.starts_with("pushed=yes ") => {
+            if real_click(r) {
+                Ask::Pressed
+            } else {
+                Ask::Mispressed
+            }
+        }
+        Some(_) => Ask::Refused,
+    }
+}
+
+/// The verdict a shape is allowed to reach, said once so the two doors' press rows cannot
+/// drift into two readings of one census.
+pub(crate) fn ask_check(a: Ask) -> Check {
+    match a {
+        Ask::Pressed => Check::Pass,
+        Ask::Mispressed => Check::Fail,
+        Ask::Unasked | Ask::Refused => Check::Blocked,
+    }
+}
+
+/// Which of the three the column is saying, for the row's own text.
+pub(crate) fn ask_said(a: Ask) -> &'static str {
+    match a {
+        Ask::Unasked => "未问：那一腿本轮没有发声",
+        Ask::Refused => "问了，桌面不肯答：本进程名下没有可按的 #32770",
+        Ask::Mispressed => "按了，但按的不是本进程那扇保存对话框的默认按钮 —— 这一格是产品答错",
+        Ask::Pressed => "按到了本进程那扇 #32770 的默认按钮",
+    }
+}
+
+/// Whether the dialog phase left its own door standing, graded from the three readings its
+/// legs already take (第 47 项 ④'s hygiene half).
+///
+/// The claim is narrow on purpose: `dlg-after` is read *before* the phase's own `reject()`
+/// and `dlg-rejected` is that reject's confession, so this says "the sweep was asked and the
+/// door answered it", not "the native window is gone". The native witness for that would be a
+/// census that counts without pressing, and this run does not have one (结转第 48 项).
+pub(crate) fn dialog_hygiene(
+    shown: Option<&str>,
+    after: Option<&str>,
+    dismissed: bool,
+    rejected: bool,
+) -> (Check, String) {
+    match (shown, after) {
+        (None, _) => (
+            Check::Blocked,
+            "未问：这一档本轮没有把对话框开到屏幕上过（dlg-shown 没有读数）".to_string(),
+        ),
+        (_, None) => (
+            Check::Blocked,
+            "未问：对话框开了，但关上的那一格没读（dlg-after 没有读数）".to_string(),
+        ),
+        (_, Some("false")) if !dismissed => (
+            Check::Pass,
+            "点击自己就把门关了，本段没有窗要撤（dlg-after=false）".to_string(),
+        ),
+        (_, Some("false")) => (
+            Check::Fail,
+            "点完之后 visible=false，本段却又 reject() 了一次 —— 撤的是已经不在的那扇，这两句读数自相矛盾".to_string(),
+        ),
+        (_, Some("true")) if dismissed && rejected => (
+            Check::Pass,
+            "点击没关成，本段自己 reject() 且门应了（dlg-rejected 有读数）".to_string(),
+        ),
+        (_, Some("true")) if dismissed => (
+            Check::Fail,
+            "本段 reject() 了而门没应（没有 dlg-rejected 读数）—— 这一档留下的窗要由下一段代为认领".to_string(),
+        ),
+        (_, Some("true")) => (
+            Check::Fail,
+            "点完之后 visible=true 而本段没有 reject() —— 自家的窗留给下一段了".to_string(),
+        ),
+        // The reading exists and is neither of the two this predicate knows. Saying that is
+        // the honest answer; folding it into the arm above would report a window this run
+        // never measured as one it did.
+        (_, Some(other)) => (
+            Check::Fail,
+            format!("dlg-after 读回 {other:?}，既不是 \"true\" 也不是 \"false\" —— 本判据不认识这一格读数"),
+        ),
+    }
+}
+
+/// Whether a census taken *after* the dialog phase can blame what it counted on that phase.
+///
+/// This is the half of 第 46 项 ⑥ a verdict column can carry without a new instrument: a
+/// quick door's claim is "I open no dialog", and when its census answers `dialogs=1` the row
+/// has to say whose hygiene it is grading. If the dialog phase left a door standing, the
+/// quiet door is not the one that opened it.
+pub(crate) fn census_blames_earlier_phase(
+    census: &str,
+    hygiene: Check,
+    dialog_phase_ran: bool,
+) -> bool {
+    dialog_phase_ran && hygiene != Check::Pass && census.contains("dialogs=1")
+}
+
 /// The value QML reported under one key, or `None` when that leg never spoke.
 ///
 /// The key is matched as a whole field rather than as a prefix, so a future `png2`
@@ -1229,10 +1350,14 @@ pub fn measure() -> (Check, String) {
     // difference between a press that was earned and one that was lucky, and the reasons
     // are what say whether the cap was reached rather than the window found.
     let tries = said(&lines, "dlg-push-tries").unwrap_or("<没有读数>");
+    let asked = ask(said(&lines, "dlg-push"));
     rep.row(
         "pin dialog pushed",
-        Check::from(real_click(push)),
-        format!("{shown}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）"),
+        ask_check(asked),
+        format!(
+            "{shown}（{tries} 次尝试；要求 pushed=yes、class=[#32770]、bid=1）；三态读作：{}",
+            ask_said(asked)
+        ),
     );
     rep.note(
         "push 每次尝试",
@@ -1256,7 +1381,7 @@ pub fn measure() -> (Check, String) {
         "pin dialog accept",
         if fired {
             Check::Pass
-        } else if real_click(push) {
+        } else if asked == Ask::Pressed {
             // The click happened and the sentence did not change: that is the door
             // failing to open, not a question this run is unable to ask.
             Check::Fail
@@ -1264,15 +1389,16 @@ pub fn measure() -> (Check, String) {
             Check::Blocked
         },
         format!(
-            "真点击前后 status {shown:?} -> {now:?}；前态那句读自被拒的那次 savePin 之后的 {:?}（{}）",
+            "真点击前后 status {shown:?} -> {now:?}；前态那句读自被拒的那次 savePin 之后的 {:?}（{}；{}）",
             pre.unwrap_or("<没有读数>"),
             if fired {
                 "onAccepted 是那一下点击跑起来的"
-            } else if real_click(push) {
+            } else if asked == Ask::Pressed {
                 "点了，但 onAccepted 没跑或前态不是产品那句"
             } else {
-                "没点成，这一格问不了"
-            }
+                "这一格问不了"
+            },
+            ask_said(asked)
         ),
     );
     // The other half of §10 第 39 项 ①'s asymmetry: the mask door has had this grade since
@@ -1280,13 +1406,46 @@ pub fn measure() -> (Check, String) {
     // only - so "the click closed the door" and "the leg closed it for her" were both
     // recorded and neither was judged. `dlg-dismiss` is the leg admitting it did the job the
     // click was supposed to have done.
+    //
+    // §10 第 47 项 ④ gives this row its third reading: a press the desktop never answered
+    // cannot leave a door standing, and grading that as the gauge closing a door was one of
+    // the four FAILs in 第 46 项 ⑥'s cascade.
+    let (hy_check, hy_said) = dialog_hygiene(
+        said(&lines, "dlg-shown"),
+        said(&lines, "dlg-after"),
+        keys.contains(&"dlg-dismiss"),
+        said(&lines, "dlg-rejected").is_some(),
+    );
     rep.row(
         "pin dialog closed",
-        Check::from(said(&lines, "dlg-after") == Some("false") && !keys.contains(&"dlg-dismiss")),
+        if hy_check == Check::Blocked {
+            hy_check
+        } else if said(&lines, "dlg-after") == Some("false") && !keys.contains(&"dlg-dismiss") {
+            Check::Pass
+        } else {
+            Check::Fail
+        },
         format!(
-            "点完之后 visible {:?}，量具代关={}",
+            "点完之后 visible {:?}，量具代关={}（未问 / 桌面不肯答 / 产品答错 三态读作：{}）",
             said(&lines, "dlg-after"),
-            keys.contains(&"dlg-dismiss")
+            keys.contains(&"dlg-dismiss"),
+            if hy_check == Check::Blocked {
+                hy_said.as_str()
+            } else {
+                ask_said(asked)
+            }
+        ),
+    );
+    // The hygiene claim of its own row: whose window this phase left, said before the next
+    // phase's census has to answer for it.
+    rep.row(
+        "pin dialog hygiene",
+        hy_check,
+        format!(
+            "{hy_said}；本段的三次读数 dlg-shown {:?} / dlg-after {:?} / dlg-rejected {:?}",
+            said(&lines, "dlg-shown"),
+            said(&lines, "dlg-after"),
+            said(&lines, "dlg-rejected")
         ),
     );
     // The pair that P37 measured, kept as a reading rather than a grade: what a call
@@ -1525,8 +1684,9 @@ pub fn measure() -> (Check, String) {
 #[cfg(test)]
 mod tests {
     use super::{
-        file_pin_rows, leg_order, qml_leg_keys, real_click, said, same_file, unasked_rows, Check,
-        PhysRect, FILE_PIN_ROWS, PIN_SCHEDULE,
+        ask, ask_check, ask_said, census_blames_earlier_phase, dialog_hygiene, file_pin_rows,
+        leg_order, qml_leg_keys, real_click, said, same_file, unasked_rows, Ask, Check, PhysRect,
+        FILE_PIN_ROWS, PIN_SCHEDULE,
     };
     use std::path::Path;
 
@@ -1778,5 +1938,120 @@ mod tests {
         assert_eq!(below_two.len(), 1, "{below_two:?}");
         assert_eq!(below_two[0].1, "pin window pixels");
         assert!(unasked_rows(2, "下面没有格了").is_empty());
+    }
+
+    /// §10 第 47 项 ④'s grading half, headless. Every string below is shaped by one of
+    /// `pinPushDialogButton()`'s four returns, because the verdict column hands its three
+    /// answers out by reading those strings and nothing else - so a shim that reworded itself
+    /// past this test would be silently re-choosing who gets blamed.
+    ///
+    /// The split is 第 46 项 ⑥'s own shape: one refused press printed four FAILs in a row,
+    /// which reads as "the pin is broken", while that same report's `dialogs=0` says nobody had
+    /// a window to press. So a refusal may never reach `Fail`, and the two shapes that share
+    /// `Blocked` must still be told apart by their sentence - `Check` has three variants, and
+    /// this has four shapes, which is exactly why the sentence carries the difference.
+    #[test]
+    fn a_press_leg_says_which_of_the_three_it_asked() {
+        let no_dialog = "pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 \
+                         mine_tops=3 mine_visible=2 foreign_dialogs=0 mine=[-]";
+        let no_ok_button = "pushed=no reason=no-enabled-idok-button dialogs=1 desc=4 buttons=3 \
+                            title=[另存为]";
+        let wrong_window = "pushed=yes dialog=0x1234 class=[Button] title=[OK] dialogs=1 desc=4 \
+                            buttons=3 button=0x5678 btitle=[OK] bid=1 ret=0 visible_after=0";
+        let wrong_button = "pushed=yes dialog=0x1234 class=[#32770] title=[另存为] dialogs=1 \
+                            desc=4 buttons=3 button=0x5678 btitle=[取消] bid=2 ret=0 \
+                            visible_after=1";
+        let pressed = "pushed=yes dialog=0x1234 class=[#32770] title=[另存为] dialogs=1 desc=4 \
+                       buttons=3 button=0x5678 btitle=[保存] bid=1 ret=0 visible_after=0";
+
+        assert_eq!(ask(None), Ask::Unasked);
+        assert_eq!(ask(Some(no_dialog)), Ask::Refused, "{no_dialog}");
+        assert_eq!(ask(Some(no_ok_button)), Ask::Refused, "{no_ok_button}");
+        assert_eq!(ask(Some(wrong_window)), Ask::Mispressed, "{wrong_window}");
+        assert_eq!(ask(Some(wrong_button)), Ask::Mispressed, "{wrong_button}");
+        assert_eq!(ask(Some(pressed)), Ask::Pressed, "{pressed}");
+
+        // The verdict each shape is allowed to reach - the two blocked ones are the whole
+        // finding, and the mis-press is the only shape that may call the product wrong.
+        assert_eq!(ask_check(Ask::Unasked), Check::Blocked);
+        assert_eq!(ask_check(Ask::Refused), Check::Blocked);
+        assert_eq!(ask_check(Ask::Mispressed), Check::Fail);
+        assert_eq!(ask_check(Ask::Pressed), Check::Pass);
+
+        // 第 46 项 ⑥ pinned as a one-liner: the report that said `dialogs=0` used to be a red
+        // row, and it must not become one again by way of any helper this file grows.
+        assert!(!real_click(no_dialog));
+        assert_ne!(ask_check(ask(Some(no_dialog))), Check::Fail);
+        assert!(no_dialog.contains("dialogs=0"));
+
+        // Two shapes, one verdict, and they may not have one sentence either.
+        let unasked_said = ask_said(Ask::Unasked);
+        let refused_said = ask_said(Ask::Refused);
+        assert!(unasked_said.contains("未问") && refused_said.contains("桌面不肯答"));
+        assert_ne!(unasked_said, refused_said);
+        assert!(ask_said(Ask::Mispressed).contains("产品答错"));
+        assert!(ask_said(Ask::Pressed).contains("按到了"));
+
+        // `ask` reads the same prefix `real_click` does, so the two can never disagree about
+        // whether a leg claimed to have pressed at all: bare `pushed=yes` is not a claim.
+        assert_eq!(ask(Some("pushed=yes")), ask(Some("pushed=no reason=x")));
+    }
+
+    /// The other half of 第 47 项 ④: whether the dialog phase took its own door back in.
+    ///
+    /// All eight readings the legs can hand over are graded here, including the one this
+    /// predicate does not know - an unknown `dlg-after` failing loudly is the alternative to
+    /// reporting a window this run never measured as one it did.
+    #[test]
+    fn the_dialog_phase_answers_for_its_own_door() {
+        let grade = |shown: Option<&str>, after: Option<&str>, dismissed, rejected| {
+            let (check, said) = dialog_hygiene(shown, after, dismissed, rejected);
+            (check, said)
+        };
+
+        let (check, said) = grade(None, Some("false"), false, false);
+        assert_eq!(check, Check::Blocked, "{said}");
+        assert!(said.contains("未问"), "{said}");
+
+        let (check, said) = grade(Some("true"), None, false, false);
+        assert_eq!(check, Check::Blocked, "{said}");
+        assert!(said.contains("未问"), "{said}");
+
+        // The click closed it: nothing to sweep, and nothing to blame the next phase for.
+        let (check, said) = grade(Some("true"), Some("false"), false, false);
+        assert_eq!(check, Check::Pass, "{said}");
+
+        // Closed by the click *and* rejected afterwards - the two readings cannot both hold.
+        let (check, said) = grade(Some("true"), Some("false"), true, true);
+        assert_eq!(check, Check::Fail, "{said}");
+        assert!(said.contains("自相矛盾"), "{said}");
+
+        let (check, said) = grade(Some("true"), Some("true"), true, true);
+        assert_eq!(check, Check::Pass, "{said}");
+
+        // Rejected but the door did not confess: the window is still out there and now has a
+        // name, which is the sentence the next phase's census needs to attribute itself.
+        let (check, said) = grade(Some("true"), Some("true"), true, false);
+        assert_eq!(check, Check::Fail, "{said}");
+        assert!(said.contains("下一段代为认领"), "{said}");
+
+        let (check, said) = grade(Some("true"), Some("true"), false, false);
+        assert_eq!(check, Check::Fail, "{said}");
+        assert!(said.contains("自家的窗"), "{said}");
+
+        let (check, said) = grade(Some("true"), Some("yes"), false, false);
+        assert_eq!(check, Check::Fail, "{said}");
+        assert!(said.contains("不认识"), "{said}");
+
+        // The quick door's "I open no dialog" claim, blamed on whoever left the window.
+        let left = "pushed=no reason=no-visible-#32770-of-this-pid dialogs=1 mine_tops=3";
+        let whole = "pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=3";
+        let (opening, _) = grade(Some("true"), Some("true"), false, false);
+        assert!(census_blames_earlier_phase(left, opening, true));
+        assert!(!census_blames_earlier_phase(left, Check::Pass, true));
+        assert!(!census_blames_earlier_phase(whole, opening, true));
+        // The dialog phase never ran, so there is no earlier phase to point at - the row that
+        // counts has to keep the blame itself rather than hand it to a phase that did not exist.
+        assert!(!census_blames_earlier_phase(left, opening, false));
     }
 }

@@ -64,6 +64,12 @@ pub struct PinState {
     /// What went wrong loudly enough that a run has to report it, kept so
     /// `--selftest` can assert on an empty list instead of on stdout.
     pub problems: Vec<String>,
+    /// PRD 447's reminder, said by [`Self::remind_before_save`] and by
+    /// [`Self::save_image`]'s first rung - always the sentence about a write that has
+    /// not happened yet, so it never carries the result of one. The mask's own copy of
+    /// this slot is `MaskState::pre_notice`; the two are the same string by
+    /// construction because both come out of [`crate::save::reminder`].
+    pub pre_notice: String,
 }
 
 impl PinState {
@@ -243,6 +249,30 @@ impl PinState {
         done
     }
 
+    /// [`Self::remind_before_save`]'s wording without the assignment: what this encoder is
+    /// about to cost this pin, in the future tense PRD 447 asks for.
+    ///
+    /// The empty string is one answer with three comings - a format that carries alpha, a
+    /// pin that was never drawn, and a name that decides no format - which is why it reads
+    /// as "this door loses no transparency" and never as "no reminder was due". The
+    /// sentence itself has one owner ([`crate::save::reminder`]) and reaches the mask's
+    /// three doors unchanged, because only the subject differs: 贴图, not 选区.
+    fn remind_with(&self, id: PinId, path: &str, chosen: &str, export: &EncodeOptions) -> String {
+        self.with_rendered(id, |frame| {
+            crate::save::reminder(frame, path, chosen, export, "贴图").unwrap_or_default()
+        })
+        .unwrap_or_default()
+    }
+
+    /// [`Self::save_image`]'s first rung on its own, so the order is *callable*: a gauge
+    /// can ask what this door said at the moment the file it warns about was not on disk
+    /// yet. It writes nothing, and the write that follows it is the product's own
+    /// [`Self::save_image`] - a reminder is not a confirmation.
+    pub fn remind_before_save(&mut self, id: PinId, path: &str, chosen: &str) -> String {
+        self.pre_notice = self.remind_with(id, path, chosen, &crate::settings::export());
+        self.pre_notice.clone()
+    }
+
     /// §5.9.17 - the pin out to a file, through the same owner the mask's 另存为 uses
     /// ([`crate::save`]), so the two doors read `[output] jpeg_quality`, answer in the
     /// same Chinese sentence and name the pixels a format without alpha threw away.
@@ -251,8 +281,15 @@ impl PinState {
     /// dialog was showing (`chosen`), and only when that offers nothing the configured
     /// one - which is the half P35 fixed, widened by §10 第 40 项 ② because PRD §5.5.5
     /// has the user choosing 格式 in that dialog too.
-    pub fn save_image(&self, id: PinId, path: &str, chosen: &str) -> Result<String, String> {
+    ///
+    /// The first rung is [`Self::remind_before_save`]'s, in the same order and for the same
+    /// reason as the mask's `save_out`: PRD 447 says 背景**将**被填充, and
+    /// [`crate::save::write`] turns that into 已填成白色 the moment it returns. §10 第 46 项
+    /// ③ registered this door as the one that only had the after half; this is the before
+    /// half, and the write still happens.
+    pub fn save_image(&mut self, id: PinId, path: &str, chosen: &str) -> Result<String, String> {
         let export = crate::settings::export();
+        self.pre_notice = self.remind_with(id, path, chosen, &export);
         let Some(done) = self.with_rendered(id, |frame| {
             match crate::save::write(frame, path, &export, "贴图", chosen) {
                 Ok(said) => Ok(said),
@@ -1303,7 +1340,7 @@ pub fn capture_selftest() -> (Check, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{not_drawn, read_refusal};
+    use super::{not_drawn, read_refusal, Frame, PinState};
     use falcon_core::encode::EncodeError;
 
     /// PRD 910's two shapes are one error to the decoder - both a damaged file and an
@@ -1369,5 +1406,90 @@ mod tests {
             "{said}"
         );
         assert!(!said.contains("io: "), "{said}");
+    }
+
+    /// A directory under the temp root that no earlier leg of this test left behind.
+    /// Same shape as `mask::tests::sandbox`, and only there to keep two doors' files from
+    /// reading each other's leftovers.
+    fn sandbox(name: &str) -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("falconshot-pin-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("sandbox");
+        dir
+    }
+
+    /// §10 第 47 项 ②: the pin door's half of what 第 46 项 ① proved of the mask door.
+    /// PRD 447 says the user **应提醒**背景**将**被填充, so the judgment is about
+    /// *order*: at the moment the sentence is spoken, the file must not exist yet, and the
+    /// sentence itself must not create it. The second half is that the two sentences
+    /// differ only in tense - one user, one door, no two ways of saying it.
+    ///
+    /// This does not go through [`PinState::add`]: `sync` hands the texture to Qt's image
+    /// provider and there is no `QGuiApplication` under `cargo test`. The frame is placed
+    /// straight into `rendered`, which *is* "how this pin currently shows itself" and is
+    /// the one slot both the reminder and the save read - so the ordering under test is
+    /// the ordering the product has, while the pixels→texture leg stays the gauge's
+    /// (`pin saved png`, which compares the pin's bytes against the mask's).
+    #[test]
+    fn the_pin_door_says_it_before_the_file_exists() {
+        let dir = sandbox("pre-notice");
+        let mut s = PinState::default();
+        s.rendered.insert(1, Frame::new(8, 4).expect("frame"));
+        let total = 8 * 4;
+
+        let png = dir.join("pin.png");
+        assert!(
+            s.remind_before_save(1, &png.to_string_lossy(), "")
+                .is_empty(),
+            "PNG was told it loses pixels"
+        );
+        assert_eq!(s.pre_notice, "");
+        assert!(!png.exists(), "a reminder wrote a file");
+
+        let jpg = dir.join("pin.jpg");
+        let pre = s.remind_before_save(1, &jpg.to_string_lossy(), "");
+        assert!(pre.contains(&format!("贴图里有 {total} px 透明")), "{pre}");
+        assert!(pre.contains("将被填成白色"), "{pre}");
+        assert!(pre.contains("存成 PNG"), "{pre}");
+        assert!(!jpg.exists(), "the reminder itself wrote {jpg:?}");
+        assert_eq!(s.pre_notice, pre, "窗口那一格与返回值不是同一句");
+
+        let said = s.save_image(1, &jpg.to_string_lossy(), "");
+        assert!(
+            jpg.exists(),
+            "the write did not follow the notice: {said:?}"
+        );
+        let post = pre.replace("将被填成白色", "已填成白色");
+        let said = said.expect("the notice was followed by a refusal");
+        assert!(
+            said.ends_with(&post),
+            "两句话差的不止时态：前 {pre:?} 后 {said:?}"
+        );
+
+        // A name this app cannot give a format answers nothing, and takes the earlier
+        // sentence off the window instead of leaving a JPG warning about a PNG.
+        let odd = dir.join("pin.qqq");
+        assert!(s
+            .remind_before_save(1, &odd.to_string_lossy(), "")
+            .is_empty());
+        assert_eq!(
+            s.pre_notice, "",
+            "a refused name kept a stale notice on the window"
+        );
+        assert!(!odd.exists());
+
+        // The same holds for a pin that never drew: the refusal is the window's answer,
+        // not last write's.
+        s.pre_notice = "a notice from somewhere else".to_string();
+        assert!(s
+            .remind_before_save(99, &jpg.to_string_lossy(), "")
+            .is_empty());
+        assert_eq!(
+            s.pre_notice, "",
+            "an undrawn pin kept someone else's notice"
+        );
+        assert!(s.save_image(99, &jpg.to_string_lossy(), "").is_err());
+        assert_eq!(s.pre_notice, "", "a refused save left a notice behind");
     }
 }

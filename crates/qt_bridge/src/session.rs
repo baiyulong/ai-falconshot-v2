@@ -84,6 +84,12 @@ pub mod qobject {
         /// below answer with a string: §5.9.13 asks for a brief on-screen hint,
         /// and a hint has to say what actually happened rather than nothing.
         #[qproperty(QString, status)]
+        /// The same slot the mask's toolbar binds to as `pre_notice`: what a format
+        /// without alpha is about to do to this pin, in the future tense, and empty when
+        /// nothing is being lost. Kept off `status` because `status` is one line and the
+        /// pair has to survive together - PRD 447 asks for the warning, §5.9.13 for the
+        /// result, and a door that overwrites one with the other can only report half.
+        #[qproperty(QString, pre_notice)]
         /// Rounds the `--mask` gauge still owes, after the first one. A qproperty and
         /// not a plain read because a QML `Timer`'s `running` has to *re-evaluate*
         /// when it hits zero - an invokable the binding calls once would keep firing.
@@ -210,6 +216,7 @@ pub struct SessionRust {
     count: i32,
     mask_count: i32,
     status: QString,
+    pre_notice: QString,
     warm_left: i32,
     warm_step: i32,
 }
@@ -319,6 +326,12 @@ impl qobject::Session {
     ) -> QString {
         let target = path.to_string();
         let chosen = filter.to_string();
+        // §10 第 47 项 ② - the reminder goes up *before* the write, while the file the
+        // sentence warns about is still not on disk. `save_image` fills the same cell as
+        // its own first rung; going through it here too is what keeps the window's slot
+        // and the door's sentence one string instead of two spellings of a promise.
+        let pre = state::with(|s| s.remind_before_save(id as u64, &target, &chosen));
+        self.as_mut().set_pre_notice(QString::from(&*pre));
         let message = match state::with(|s| s.save_image(id as u64, &target, &chosen)) {
             Ok(done) => done,
             Err(e) => format!("保存失败：{e}"),
