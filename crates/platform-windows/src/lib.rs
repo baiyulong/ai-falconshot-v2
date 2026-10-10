@@ -10,6 +10,7 @@ pub mod clock;
 pub mod desktop;
 pub mod print;
 pub mod proc;
+pub mod reveal;
 pub mod win;
 
 /// The font here is DirectWrite's, and the MVP is Windows-only. Same arrangement as

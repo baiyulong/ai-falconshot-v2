@@ -145,7 +145,7 @@ fn main() {
     // whose evidence looks exactly like a defect is worse than a crash, so the
     // mis-invocation is refused in the same voice as the orphans above.
     let mut missing_ms = Vec::new();
-    for name in ["--probe", "--r13", "--mask", "--ink", "--pin"] {
+    for name in mask::GAUGE_FLAGS {
         if flag(name) && after(name).is_none() {
             missing_ms.push(name);
         }

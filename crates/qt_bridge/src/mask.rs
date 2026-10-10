@@ -36,6 +36,13 @@ use crate::annotate;
 use crate::capture;
 use crate::mask_view::shim;
 
+/// The five modes that run a gauge rather than a user. `main.rs` refuses one without its
+/// number, and [`MaskState::gauge_run`] recognises all of them - and the two readers must
+/// not be two copied lists, because a sixth mode added to the first while the second still
+/// names five would open an Explorer window no probe can close, silently, on a machine the
+/// user is sitting at.
+pub(crate) const GAUGE_FLAGS: [&str; 5] = ["--probe", "--r13", "--mask", "--ink", "--pin"];
+
 /// How far the desktop is pushed toward black outside the selection. One number,
 /// because QML draws it, the shader multiplies by it and `--mask` asserts a
 /// readback against `1 - DIM` - three places that have to disagree by design.
@@ -167,6 +174,28 @@ pub struct MaskState {
     /// run that hardcoded `quick-001` would go red the moment another leg pressed the
     /// door first, and the sequence is the thing being graded, not one number.
     pub quick_saves: u32,
+    /// §5.5.4 step 4 的通知要说的是**那一个文件**，所以路径得留下来。
+    ///
+    /// [`crate::save::quick_to`] 本来就把它交回来了（`Ok((PathBuf, String))`），是这一
+    /// 台上一轮把它扔掉的：门当时只需要那句话。通知要能点，点的是路径，所以这一轮
+    /// 把它接住。`None` 是"这一张还没有落到任何地方"，不是"落到了某个说不出的地方"。
+    pub landed: Option<std::path::PathBuf>,
+    /// `[output] reveal_after_save`，在 `open` 上和 [`Self::naming`] 同一刻取。
+    ///
+    /// 快照而不是点击时现读：这条开关管的是"这次保存要不要顺手把目录打开"，它属于
+    /// 那张图，不属于手指按下去的那一秒——用户在流程中途改了配置，改的是**下一张**。
+    pub reveal_after_save: bool,
+    /// 通知被**点**了几次。每次点击恰好一次，与它开没开成目录无关。
+    pub reveal_clicks: u32,
+    /// 落盘时因开关自己来的那几次。和上一行分开，是因为把两个数并成一个就叫不出
+    /// "开关开着却一次没自动来"这种状态。
+    pub reveal_auto: u32,
+    /// shell **收下**了几次请求。`0` 不等于没点过，也不等于点错——它是"这个进程往
+    /// 别人家的窗口里递过一次话"的唯一证据，门要问的就是这一格。
+    pub reveal_acted: u32,
+    /// 最近一次揭示的话，成功失败都写这里，不写 [`Self::message`]：那句话是"已保存到
+    /// 某个路径（多大）"，通知的行要留着它，否则一句反馈会把另一句证据挤掉。
+    pub reveal_last: String,
     /// Bumped by every `open`, so a second capture in the same process gets keys
     /// nobody has asked for yet. A constant revision would reuse the previous
     /// frame's key, and `Image.cache: false` only re-requests when the URL changes:
@@ -246,6 +275,14 @@ impl MaskState {
         self.export = crate::settings::export();
         self.naming = crate::settings::naming();
         self.quick_saves = 0;
+        // 上一张图的通知不能跟着这一张活：一张已经落盘的路径留着，下一次点击就会去
+        // 揭示一张和用户此刻的决定无关的文件。计数同理——它们说的是这一次流程。
+        self.landed = None;
+        self.reveal_clicks = 0;
+        self.reveal_auto = 0;
+        self.reveal_acted = 0;
+        self.reveal_last.clear();
+        self.reveal_after_save = crate::settings::reveal_after_save();
         self.ink.set_hole(self.hole);
         self.virtual_bounds = snap.virtual_bounds;
         self.shown = true;
@@ -657,11 +694,14 @@ impl MaskState {
     /// division of labour - core has no timezone database.
     ///
     /// §5.5.4 step 4 asks for a notification the user can *click* to open the file or its
-    /// directory. This mask has one line of text and no click target, so what lands here
-    /// is the notification's content rather than its gesture, and
-    /// `[output] reveal_after_save` still has nothing to reveal. Both are §10 第 44 项's
-    /// carry-overs, alongside `%B`, which is empty until something other than a second
-    /// monitor enumeration decides which screen a picture came from.
+    /// directory. The click is [`Self::reveal_landed`], and what it needs from this door
+    /// is the path rather than the sentence - which is why [`Self::landed`] exists and
+    /// why the `PathBuf` `quick_to` already returned is no longer dropped here.
+    /// `[output] reveal_after_save` is the other half of that step: off (its `Default`)
+    /// the file is only ever opened by a finger, on it lands here once per save, from the
+    /// same code the click goes through. What is still carried is `%B`, empty until
+    /// something other than a second monitor enumeration decides which screen a picture
+    /// came from.
     pub fn quick_out(&mut self) -> bool {
         if !self.has_selection() {
             self.message = "还没有选区：先把要快速保存的范围拖出来。".to_string();
@@ -710,8 +750,81 @@ impl MaskState {
             }
         };
         self.quick_saves += 1;
+        self.landed = Some(landed.0.clone());
         self.message = landed.1;
+        if self.reveal_after_save {
+            self.reveal_auto();
+        }
         true
+    }
+
+    /// PRD 491 step 4 的那一次点击：通知上按下去，把刚存的那张图在它自己的目录里亮出来。
+    ///
+    /// 计数在**动手之前**加，不在成功之后加：这一格要判的是"点了几下"与"递出去几次"
+    /// 是不是同一个数，而一个失败了却不计数的点击会把两次真点击读成一次。
+    pub fn reveal_landed(&mut self) -> bool {
+        self.reveal_clicks += 1;
+        self.reveal_now()
+    }
+
+    /// 这一次运行是不是量具。判据取 argv 而不是取某一道腿的记忆，因为要挡的那一步
+    /// （[`platform_windows::reveal::select`]）在腿的下头：腿记不记得自己是腿，不该决定
+    /// 用户的桌面会不会多一个窗。前缀匹配，所以 `--mask-soft` 与 `--mask` 同判。
+    fn gauge_run() -> bool {
+        std::env::args().any(|a| GAUGE_FLAGS.iter().any(|name| a.starts_with(name)))
+    }
+
+    /// `[output] reveal_after_save` 开着时，落盘自己走的那一次。和点击分开计，因为
+    /// "开关开着却一次也没自动来"要能被说出来。
+    fn reveal_auto(&mut self) -> bool {
+        self.reveal_auto += 1;
+        self.reveal_now()
+    }
+
+    /// 两条路共用的那一步。问盘（[`platform_windows::reveal::plan`]）与开口
+    /// （[`platform_windows::reveal::select`]）在 reveal 那一层就是分开的两个函数，
+    /// 所以量具问前半段不碰用户的桌面，后半段才需要谁同意。
+    ///
+    /// 而"不碰"这一半自此不再靠各条腿自己安排：`select` 之前有一道 [`Self::gauge_run`]。
+    /// 理由不是"问盘更干净"，是 §10 第 38 项 ① 那条收尾规则 —— 探针必须能关掉自己留下的
+    /// 东西 —— 而资源管理器那个窗不归本进程管。开关是用户配置里的一个布尔，量具跑哪一档、
+    /// `--ink` 那五行快速保存会把落盘那一步重复几次，都不是这一格能替用户决定的事；把它交给
+    /// 腿的顺序去保证，等于保证一枚没人复核的配置行不会说话。
+    fn reveal_now(&mut self) -> bool {
+        let Some(path) = self.landed.clone() else {
+            self.reveal_last = "这张图还没有落到任何地方：通知没有可以去打开的文件。".to_string();
+            return false;
+        };
+        let target = match platform_windows::reveal::plan(&path) {
+            Ok(target) => target,
+            Err(e) => {
+                self.reveal_last = e.to_string();
+                return false;
+            }
+        };
+        if Self::gauge_run() {
+            self.reveal_last = format!(
+                "未问：{} 里那张 {} 已经问出来了，但量具不开这个窗。",
+                target.folder.display(),
+                target
+                    .item
+                    .file_name()
+                    .map_or_else(String::new, |n| n.to_string_lossy().into_owned())
+            );
+            return false;
+        }
+        match platform_windows::reveal::select(&target) {
+            Ok(()) => {
+                self.reveal_acted += 1;
+                self.reveal_last =
+                    format!("已经在 {} 里把这张图选出来了。", target.folder.display());
+                true
+            }
+            Err(e) => {
+                self.reveal_last = e.to_string();
+                false
+            }
+        }
     }
 
     /// PRD 433 / 459's 贴图, and §10 第 43 项 ①'s whole reason: the picture goes to a
@@ -1859,5 +1972,62 @@ mod tests {
         assert!(m.quick_out(), "{:?}", m.message);
         assert!(m.message.contains("quick-004.png"), "{:?}", m.message);
         assert!(dir.join("quick-004.png").exists(), "{:?}", m.message);
+    }
+
+    /// §5.5.4 step 4 的那一次点击，问三种**在开口之前就该被拦下**的状态：什么都还没
+    /// 落盘、落过盘但那个文件不在了、以及默认设置下一次也没有自动揭示。
+    ///
+    /// 三种都不调用 [`platform_windows::reveal::select`]，所以这一支不会在用户桌面上
+    /// 开出一个本进程关不掉的窗——会开的那一种在门里是一格发出来的 Blocked，而不是
+    /// 一格被删掉。计数在动手之前加，所以"点了两次、一次也没到 shell"这句话问得出来。
+    #[test]
+    fn a_click_is_counted_before_it_acts_and_refuses_before_it_opens() {
+        // 一、还没有任何东西落盘。
+        let mut m = savable(PhysRect::new(10, 20, 100, 80));
+        assert!(m.landed.is_none(), "一张新遮罩不该带着上一条图的路径");
+        assert!(
+            !MaskState::default().reveal_after_save,
+            "默认的开关就该是关着"
+        );
+        assert!(!m.reveal_landed(), "没有路径可点却答了 true");
+        assert_eq!(m.reveal_clicks, 1, "这一下没记上");
+        assert_eq!(m.reveal_acted, 0, "一次没有路径的点击递到了 shell 那里");
+        assert!(
+            m.reveal_last.contains("还没有落到任何地方"),
+            "{:?}",
+            m.reveal_last
+        );
+
+        // 二、落过一次盘：通知手里那个 `PathBuf`，和门从那句话里抠出来的路径，是同一个人。
+        let dir = sandbox("reveal");
+        m.naming = crate::settings::Naming {
+            dir: dir.to_string_lossy().into_owned(),
+            template: "%p-%i".into(),
+            prefix: "quick".into(),
+            collision: falcon_core::naming::Collision::Increment,
+        };
+        assert!(m.quick_out(), "{:?}", m.message);
+        let landed = m.landed.clone().expect("落盘之后通知该拿着路径");
+        assert_eq!(landed, dir.join("quick-001.png"), "{:?}", m.message);
+        assert_eq!(
+            crate::annotate_check::landed_path(&m.message).as_ref(),
+            Some(&landed),
+            "通知手里的路径与那句话里的路径不是同一个"
+        );
+        assert_eq!(m.reveal_auto, 0, "开关关着，落盘自己去了 shell 一次");
+        let said_save = m.message.clone();
+
+        // 三、把那个文件删掉再点：拒绝发生在 shell 之前，点名的是那个已经不在的文件。
+        std::fs::remove_file(&landed).expect("remove");
+        assert!(!m.reveal_landed(), "删掉的文件还能开窗");
+        assert_eq!(m.reveal_clicks, 2, "两下点成了一下");
+        assert_eq!(m.reveal_acted, 0, "一次盘上没有的揭示递到了 shell");
+        assert!(
+            m.reveal_last.contains("不在盘上")
+                && m.reveal_last.contains(&landed.display().to_string()),
+            "{:?}",
+            m.reveal_last
+        );
+        assert_eq!(m.message, said_save, "揭示的那句话把保存的那句证据挤掉了");
     }
 }

@@ -2304,6 +2304,20 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
 /// get this far says why for every one of them rather than printing two and being silent
 /// about the rest.
 fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
+    // P44 立的那条"早退也要发行"，本轮的 `--ink` c 趟抓到它只还了一半：那九行由这里补发，
+    // 而 `quick_rows` 的十三行连一次出席都没有（104 行的 a 趟对 79 行的 c 趟，缺的 26 行里
+    // 13 行是这一段的）。这里不另列那十三枚名字 —— 一枚抄出来的名单会自己烂掉，而它烂掉的
+    // 时候正好又是沉默。所以发这一行：它说的是"那一段没跑"，缺席被说出来，就不再是排版。
+    let absent = |rep: &mut Report, verdict: Check, why: &str| {
+        rep.row(
+            "quick save block ran",
+            verdict,
+            format!(
+                "没有，一行也没发：{why}。`quick_rows` 那十三格自此在缺的时候也占一行，而不是\
+                 从归档里消失（§9.1：一格的缺席与一格的未问不是一件事）"
+            ),
+        );
+    };
     let Some(want) = shipped else {
         for label in ["saved png", "saved jpg"] {
             rep.row(
@@ -2327,6 +2341,7 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
                 "the same frame was missing, so there was no picture to pin either".to_string(),
             );
         }
+        absent(rep, Check::Fail, "选区没有拼出图来");
         return;
     };
     let dir = save_gauge_dir();
@@ -2353,8 +2368,20 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
                 "the same directory, and the pin writes into it too".to_string(),
             );
         }
+        absent(
+            rep,
+            Check::Blocked,
+            &format!("{} 准备不起来（{e}）", dir.display()),
+        );
         return;
     }
+    // 健康的那条路也占同一行：跨趟比的是行的**集合**，一格只在缺的时候才露面，等于又把
+    // "出席"与"缺席"交给排版去读。
+    rep.row(
+        "quick save block ran",
+        Check::Pass,
+        "跑了；下面那十三格各说各的，这一行只保证它不会整段消失".to_string(),
+    );
     let png = dir.join("selection.png");
     let jpg = dir.join("selection.jpg");
     for stale in [&png, &jpg] {
@@ -2713,6 +2740,219 @@ fn quick_rows(rep: &mut Report, dir: &Path, mask_png: &Path, said_png: &str) {
             census_field(&census_after, "foreign_dialogs=").unwrap_or("?")
         ),
     );
+
+    // ---- §5.5.4 step 4 从这里开始。第一格问的是通知**带不带路径**：上一轮这条门上
+    // `quick_to` 交回来的那个 `PathBuf` 是被丢掉的，门从那句话里把它抠回来（`landed_path`），
+    // 而抠是一种解析——改一个字就断。现在 mask 自己留着一份，两份要指向同一个文件，
+    // 而且那个文件得在盘上：反面是文件系统，不是门自己说过的话。
+    let (carried, says) = mask::with(|m| (m.landed.clone(), m.message.clone()));
+    let from_said = landed_path(&says);
+    let is_file = carried
+        .as_ref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|meta| meta.is_file());
+    rep.row(
+        "quick save notification carries a path",
+        Check::from(
+            carried.as_deref() == Some(last.0.as_path())
+                && from_said == carried
+                && is_file == Some(true),
+        ),
+        format!(
+            "两压之后 mask 自己留着 {carried:?}；从那句 {says:?} 里抠出来的是 {from_said:?}；\
+             盘上它是不是一个文件：{is_file:?}（三路要求同一个人）"
+        ),
+    );
+
+    // ---- 点击本身。把刚落盘那一份删了再点两下：这一格因此**必然**在 shell 之前就被
+    // 拒掉，一个窗也不会开——而它照样问得出两件真事：点一下记一次（不是"这条腿记一次"
+    // 的记法），以及拒绝的话点名的是那个不在了的文件。
+    let clicks_before = mask::with(|m| m.reveal_clicks);
+    let acted_before = mask::with(|m| m.reveal_acted);
+    let removed = carried
+        .as_ref()
+        .map(|p| std::fs::remove_file(p).is_ok())
+        .unwrap_or(false);
+    let press_first = mask::with(|m| m.reveal_landed());
+    let said_first = mask::with(|m| m.reveal_last.clone());
+    let press_second = mask::with(|m| m.reveal_landed());
+    let (clicks_after, acted_after, said_after) =
+        mask::with(|m| (m.reveal_clicks, m.reveal_acted, m.reveal_last.clone()));
+    let names_it = carried
+        .as_ref()
+        .is_some_and(|p| said_after.contains(&p.display().to_string()));
+    rep.row(
+        "quick save click counts every press",
+        Check::from(
+            removed
+                && !press_first
+                && !press_second
+                && clicks_after == clicks_before + 2
+                && acted_after == acted_before
+                && said_after == said_first
+                && names_it,
+        ),
+        format!(
+            "删掉 {carried:?} 是否成功 {removed}（要求 true：这一格靠它把 shell 挡在前面）；\
+             两下都答 {press_first}/{press_second}（要求 false），计数 {clicks_before} → \
+             {clicks_after}（要求 +2），到 shell 的次数 {acted_before} → {acted_after}（要求不动）；\
+             两句 {said_first:?} 与 {said_after:?}，点名那个文件={names_it}"
+        ),
+    );
+
+    // ---- 面板那一层的同一次点击：`revealLanded` 是通知上那个 `MouseArea` 的
+    // `onClicked` 调的同一个函数，而这条腿按的时刻在第一次落盘**之前**，所以 `landed`
+    // 还是空的。两下与上面那两下问的是同一件事，隔着 QML 边界再问一遍。
+    let click_leg = said(&lines, "q-click").unwrap_or("");
+    let fields: Vec<&str> = click_leg.split('|').collect();
+    let nums = [
+        fields.first().and_then(|v| v.parse::<i32>().ok()),
+        fields.get(1).and_then(|v| v.parse::<i32>().ok()),
+        fields.get(2).and_then(|v| v.parse::<i32>().ok()),
+        fields.get(3).and_then(|v| v.parse::<i32>().ok()),
+    ];
+    let (panel_before, panel_mid, panel_after, panel_acted) = (
+        nums[0].unwrap_or(-1),
+        nums[1].unwrap_or(-1),
+        nums[2].unwrap_or(-1),
+        nums[3].unwrap_or(-1),
+    );
+    let (panel_first, panel_second) = (
+        fields.get(4).copied().unwrap_or(""),
+        fields.get(5).copied().unwrap_or(""),
+    );
+    rep.row(
+        "quick save click panel forwards each press",
+        if click_leg.is_empty() {
+            Check::Blocked
+        } else {
+            Check::from(
+                panel_mid == panel_before + 1
+                    && panel_after == panel_mid + 1
+                    && panel_acted == 0
+                    && !panel_first.is_empty()
+                    && panel_first == panel_second,
+            )
+        },
+        format!(
+            "面板报回 {click_leg:?}（要求计数 {},{}/步 +1 与 +1、到 shell 的 0，两句非空且相同；\
+             没有这一行就是这条腿没跑，判 Blocked 而不是缺席）",
+            panel_before, panel_mid
+        ),
+    );
+
+    // ---- 揭示要去的那个目录：`plan` 只问盘，不开口，所以这一格是实测且不碰桌面。
+    let press_third = mask::with(|m| m.quick_out());
+    let live = mask::with(|m| m.landed.clone());
+    let planned = live
+        .as_ref()
+        .and_then(|p| platform_windows::reveal::plan(p).ok());
+    let dir_is_dir = std::fs::metadata(dir)
+        .map(|meta| meta.is_dir())
+        .unwrap_or(false);
+    rep.row(
+        "quick save reveal asks for the file's own folder",
+        Check::from(
+            press_third
+                && planned.as_ref().is_some_and(|t| {
+                    t.selectable && t.folder == dir && Some(t.item.as_path()) == live.as_deref()
+                })
+                && dir_is_dir,
+        ),
+        format!(
+            "第三次落盘={press_third}，留下 {live:?}；plan 答 {planned:?}（要求开的那个窗就是 \
+             {dir:?}、选中项就是那个文件本身、selectable=true）；那个目录在盘上={dir_is_dir}。\
+             这一格只问 plan，一次也没开口"
+        ),
+    );
+
+    // ---- 结构性那道拒绝：文件在盘上、`plan` 也答出了目标，`select` 仍然不许动。
+    // 这一格是上一格与下一格之间唯一一枚真读数 —— 它不问"开关开着会怎样"，它问"腿已经把
+    // 一切准备好之后，是谁拦住的"。拦住的那一句必须点名那个目录，否则"没开口"与"根本没
+    // 算出目标"读起来一模一样。
+    let guard_clicks_before = mask::with(|m| m.reveal_clicks);
+    let press_guarded = mask::with(|m| m.reveal_landed());
+    let dir_text = dir.display().to_string();
+    let (guard_said, guard_acted, guard_names_dir) = mask::with(|m| {
+        (
+            m.reveal_last.clone(),
+            m.reveal_acted,
+            m.reveal_last.contains(&dir_text),
+        )
+    });
+    rep.row(
+        "quick save reveal holds the act under the gauge",
+        Check::from(
+            planned.is_some()
+                && !press_guarded
+                && guard_acted == acted_after
+                && mask::with(|m| m.reveal_clicks) == guard_clicks_before + 1
+                && guard_said.starts_with("未问：")
+                && guard_names_dir,
+        ),
+        format!(
+            "目标问出来了={}，这一次点击递出去={press_guarded}（要求 false），到 shell 的次数 \
+             {acted_after} → {}（要求不动），话={:?}（要求以 未问： 开头且点名 {dir:?}）",
+            planned.is_some(),
+            guard_acted,
+            guard_said
+        ),
+    );
+
+    // ---- 开关那一格：这一枚只由配置决定，读的是 `reveal_auto` —— 它在 `reveal_now`
+    // 之前加，所以够不着上一格那道量具拒绝，是本趟唯一一枚还能归因给开关的计数。它说不出
+    // 开着会"怎样"（那句话要真开一个窗），只说得出开着会"几次"。
+    let (switch, auto_times, saves, acted_total) = mask::with(|m| {
+        (
+            m.reveal_after_save,
+            m.reveal_auto,
+            m.quick_saves,
+            m.reveal_acted,
+        )
+    });
+    rep.row(
+        "quick save reveal follows the switch",
+        Check::from(if switch {
+            auto_times == saves
+        } else {
+            auto_times == 0
+        }),
+        format!(
+            "mask open 拿走的开关={switch}（这份配置里的值，量具不替用户改它），这一流程落盘 \
+             {saves} 次、自动揭示 {auto_times} 次：要求开关关着时 0 次、开着时与落盘同数（{}），\
+             实到 {acted_total} 次 shell —— 那个 0 如今有两个来路（开关、上一格那道量具拒绝），\
+             所以不当证据。开关开着会怎样这一格只说次数，那一句真话在单测里",
+            if switch { "相等" } else { "0" }
+        ),
+    );
+
+    // ---- 最后这一格是发出来的 Blocked，不是删掉的一格：真开一个 explorer 窗，那个窗
+    // 归 explorer 那个进程管，本进程举不到它也关不掉——桌面是别人的，谁同意都不算数到
+    // 用户点头为止。§9.1 第十四条那一族：一格的缺席和一格的未问不是一件事。
+    // 自本趟起它还多一句：这道拒绝已经写进 `MaskState::gauge_run`，所以自动化里它**永远**
+    // 不会是 PASS —— 一次成功的揭示只能来自真人在真桌面上的一次点击。
+    rep.row(
+        "quick save reveal opened a window",
+        if acted_total == 0 {
+            Check::Blocked
+        } else {
+            Check::from(mask::with(|m| m.reveal_last.contains("已经在")))
+        },
+        if acted_total == 0 {
+            format!(
+                "这一格没有问：开的那个目录窗不归本进程管，探针关不掉它，所以 mask.rs 的 \
+                 gauge_run 在 select 之前结构性地拒（上面那一格刚量到这句话）；这一趟 {} 次落盘、\
+                 {} 次点击，到 shell 的次数是 {acted_total}。要它 PASS 只能真人点一次",
+                saves,
+                mask::with(|m| m.reveal_clicks)
+            )
+        } else {
+            format!(
+                "到 shell {acted_total} 次，最近一句 {:?}",
+                mask::with(|m| m.reveal_last.clone())
+            )
+        },
+    );
 }
 
 /// The path the product's own success sentence names, in the shape it names it:
@@ -2780,6 +3020,7 @@ pub(crate) const MASK_SCHEDULE: &[&str] = &[
     "dlg-after",
     "dlg-dismiss",
     "dlg-rejected",
+    "q-click",
     "q-cell",
     "q-census",
     "done",
@@ -5201,6 +5442,53 @@ mod tests {
             (0, 0, true, Check::Pass),
             "{}",
             h.line()
+        );
+    }
+
+    /// §9.1：一格的缺席与一格的未问不是一件事。P44 立过"早退也要发行"，但它只还了 pin 那一段；
+    /// 本轮 `--ink` 的 c 趟抓到 quick 那十三格整段没有出席（a 趟 104 行、c 趟 79 行），因为
+    /// [`quick_rows`] 挂在 [`save_rows`] 的两个早退之后。现场那一趟拼不拼得出图来是环境的事，
+    /// 按不了需，所以这条不变量只能在单测里守：这一段缺席时也必须说话。
+    #[test]
+    fn an_unstitched_selection_says_its_block_was_absent_instead_of_vanishing() {
+        let mut rep = Report::new();
+        save_rows(&mut rep, None);
+        let (worst, text) = rep.finish("save block");
+        assert_eq!(worst, Check::Fail, "{text}");
+
+        // 九格是这一段本来就发的（两格落盘 + 七格贴图），第十格是本轮补的那句"没跑"。
+        for label in [
+            "saved png",
+            "saved jpg",
+            "pin saved png",
+            "pin saved jpg",
+            "jpeg quality knob",
+            "save then pin",
+            "pinned == saved",
+            "pin file damaged",
+            "pin file format",
+            "quick save block ran",
+        ] {
+            let pad = format!("{label:<22} ");
+            assert_eq!(
+                text.lines().filter(|l| l.starts_with(&pad)).count(),
+                1,
+                "{label} 在这份归档里的出席次数：\n{text}"
+            );
+        }
+        // 十格 + `finish` 的标题行：多一格少一格都要在这里被说出来，否则"发行"又多又少都没人知道。
+        assert_eq!(
+            text.lines().filter(|l| !l.trim().is_empty()).count(),
+            11,
+            "{text}"
+        );
+        let line = text
+            .lines()
+            .find(|l| l.starts_with("quick save block ran"))
+            .expect("the absence row");
+        assert!(
+            line.contains("一行也没发") && line.contains("quick_rows"),
+            "{line}"
         );
     }
 }

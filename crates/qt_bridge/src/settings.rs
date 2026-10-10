@@ -294,6 +294,15 @@ pub fn naming() -> Naming {
     with(|s| Naming::from(&s.config.output))
 }
 
+/// §5.5.4 step 4's 揭示开关, taken at the same `open` as the name it reveals.
+///
+/// A one-line read rather than a field of [`Naming`], because `Naming` is `Eq` and
+/// compares as a name: a bool that is not part of the name would make two masks that
+/// name files identically look different to every leg that compares them.
+pub fn reveal_after_save() -> bool {
+    with(|s| s.config.output.reveal_after_save)
+}
+
 /// The flow is over: keep what the layer learned, and write if that moved anything.
 pub fn write_back(layer: &Layer) -> Option<u64> {
     with(|s| s.write_back(layer))

@@ -174,6 +174,17 @@ Rectangle {
         bar.grabbed()
     }
 
+    /// §5.5.4 step 4：那条通知被点了一下，把刚落盘的那张图在它自己的目录里亮出来。
+    ///
+    /// 一次点击恰好一次调用，没有别的入口：这条行没有键位，`Cell` 也不替它代发。
+    /// 返回值不进 `delivered`——那一面是"这一笔给出去了吗"，而这里"给出去"是 shell
+    /// 收没收下请求，两句不是一个意思，混进同一个布尔会把一次失败的揭示显示成一次
+    /// 失败的保存。话在 `reveal_last`，行上就写着它。
+    function revealLanded() {
+        bar.view.revealLanded()
+        bar.grabbed()
+    }
+
     /// PRD 433 / 459's 完成后可…贴图, in the one order that makes the floating picture an
     /// artifact rather than a second rendering: 另存为 first, then a 贴图 made from the file
     /// that landed (§10 第 43 项 ①).
@@ -342,6 +353,27 @@ Rectangle {
     // is one slot and P39's `accept-was`/`pre-save` comparison has to finish before anything
     // else speaks through it.
     function quickLeg() {
+        // §5.5.4 step 4 的那一次点击，问在还没有任何东西落盘的时刻：这条腿是整条
+        // 日程里第一个按 快速保存 的，所以此刻 `landed` 是空的，点击必然在 shell 之前
+        // 就被拒掉——一个窗也不会开。要问"点成了会开哪个目录"必须真去开，那一格这一轮
+        // 没问（`annotate_check.rs` 把它作为发出来的 Blocked 带着，而不是删掉）。
+        //
+        // 按两下，中间前后各读一次计数：一下证明这条按得到 Rust 那一条路，两下证明
+        // 那个数不是"这条腿只记一次"的记法。`revealLanded` 正是通知上那个 MouseArea
+        // 的 `onClicked` 调的同一个函数——面板这一层的转发只有这里看得见。
+        const clicksBefore = bar.view.reveal_clicks
+        bar.revealLanded()
+        const clicksMid = bar.view.reveal_clicks
+        const saidFirst = bar.view.reveal_last
+        bar.revealLanded()
+        // 值先在本地拼好，下面那一句的键留在同一行上：`pin_check::qml_leg_keys` 是从
+        // 文件里**找子串**的（它找的是那条发消息的语句紧跟着一个开引号），参数被拆到下一行
+        // 之后那条腿就从日程里"消失"了。它消失的方式是响一声（日程有而 QML 不写），
+        // 不是悄悄绿——而这一族还有另一面：注释里写下那个形状，扫描就会把它读成一条腿。
+        const clickLine = String(clicksBefore) + "|" + String(clicksMid) + "|"
+            + String(bar.view.reveal_clicks) + "|" + String(bar.view.reveal_acted)
+            + "|" + saidFirst + "|" + String(bar.view.reveal_last)
+        bar.gaugeSay("q-click", clickLine)
         bar.quickSave()
         bar.gaugeSay("q-cell", String(bar.delivered) + "|" + bar.view.message)
         bar.gaugeSay("q-census", bar.session.pushDialogButton())
@@ -901,13 +933,65 @@ Rectangle {
             // What the last 复制 or 保存 did, in Rust's words. Visible only once there is
             // something to say: an empty label would take width from a sentence that
             // is not there, and the row would sit one cell further left than it did.
-            Text {
+            //
+            // §5.5.4 step 4 asks for that sentence to be *clickable*, so the click lives
+            // on the line that already carries it rather than on a toast of its own: the
+            // mask is still open and the user has not decided the next thing yet, so there
+            // is nothing for a self-disappearing bubble to protect them from, and a second
+            // window would be one more window for `--pin`'s census to have an opinion about.
+            // The target only exists while there is a path：一个点了不会有任何反应的框，
+            // 读起来就是一行在邀请人点的字。
+            Rectangle {
+                id: notice
                 visible: bar.view.message.length > 0
                 anchors.verticalCenter: parent.verticalCenter
-                leftPadding: 8
-                text: bar.view.message
-                font.pixelSize: 12
-                color: bar.delivered ? "#8e8e96" : "#ff9f0a"
+                color: "transparent"
+                radius: 3
+                border.width: noticeClick.enabled ? 1 : 0
+                border.color: "#5a5a63"
+                width: noticeRow.implicitWidth + 12
+                height: noticeRow.implicitHeight + 6
+
+                Row {
+                    id: noticeRow
+                    anchors.centerIn: parent
+                    spacing: 6
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: bar.view.message
+                        font.pixelSize: 12
+                        color: bar.delivered ? "#8e8e96" : "#ff9f0a"
+                    }
+
+                    // 只在真有路径可点时说出这一句；没有的时候那行字就是全部。
+                    Text {
+                        visible: bar.view.landed.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "点击打开所在目录"
+                        font.pixelSize: 11
+                        color: "#8e8e96"
+                    }
+
+                    // 上一次揭示的话并排写着，不替换那一句：保存的证据和揭示的证据是
+                    // 两句，一句都不许被另一句挤掉。
+                    Text {
+                        visible: bar.view.reveal_last.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: bar.view.reveal_last
+                        font.pixelSize: 12
+                        color: "#8e8e96"
+                    }
+                }
+
+                MouseArea {
+                    id: noticeClick
+                    anchors.fill: parent
+                    enabled: bar.view.landed.length > 0
+                    hoverEnabled: true
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: bar.revealLanded()
+                }
             }
         }
     }

@@ -335,7 +335,10 @@ pub struct Output {
     pub corner_radius: u32,
     /// §5.5.7 drop shadow; 0 off.
     pub shadow_size: u32,
-    /// §5.5.4 open the destination after a manual save.
+    /// PRD 491（§5.5.4 快速保存）步骤 4 那一档：落盘之后自动把目标打开一次。
+    ///
+    /// 曾经是一枚没有读者的键（第 35 项 ⑨），P45 起由 `MaskState::quick_out` 读取；
+    /// 成功通知上那一次点击不受它管，开关关着通知照样点得开。
     pub reveal_after_save: bool,
     /// §5.5.11 share targets shown in the toolbar.
     pub share_targets: Vec<String>,
