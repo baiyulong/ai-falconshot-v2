@@ -122,6 +122,25 @@ pub fn written_as(path: &std::path::Path) -> Option<encode::Format> {
 
 /// Writes `frame` to the name the user gave, and returns the sentence to say about it.
 ///
+/// This is [`write_to`] with the name left out, which is enough for every door whose user
+/// just typed that name into a dialog. It is not enough for a door that has to hand the
+/// *file* to something else: §10 第 43 项 ①'s 存完再钉图 pins what landed on disk, and an
+/// extension may have been appended below - from the dialog's filter, or from the
+/// configured format - so a caller that re-derived the name would be guessing at a rule it
+/// does not own. Two spellings of that rule is how the two doors came to disagree about one
+/// picture once already (P35).
+pub fn write(
+    frame: &Frame,
+    typed: &str,
+    export: &EncodeOptions,
+    subject: &str,
+    chosen: &str,
+) -> Result<String, Refusal> {
+    write_to(frame, typed, export, subject, chosen).map(|(_, said)| said)
+}
+
+/// The same write, answering with the path that was actually written and the sentence.
+///
 /// `subject` is what the picture is called *from the caller's side* - 选区 behind the
 /// mask, 贴图 on a pin - and it appears in both the size clause and the transparency
 /// clause. It is a parameter rather than fixed wording because a sentence that says
@@ -130,13 +149,13 @@ pub fn written_as(path: &std::path::Path) -> Option<encode::Format> {
 ///
 /// `chosen` is the dialog's own filter text, and only a name that carries no extension
 /// can consult it: see [`filter_format`].
-pub fn write(
+pub fn write_to(
     frame: &Frame,
     typed: &str,
     export: &EncodeOptions,
     subject: &str,
     chosen: &str,
-) -> Result<String, Refusal> {
+) -> Result<(std::path::PathBuf, String), Refusal> {
     let named = local_path(typed);
     let path = std::path::Path::new(named.as_ref());
     // An extension is the user's choice; a bare name is the format the dialog was
@@ -182,20 +201,27 @@ pub fn write(
         // The frame's size, not the file's: `encode` rescales an ICO down to 256 before
         // it writes, and a sentence quoting the file would quote a picture the user
         // never looked at. The frame is true of every format.
-        Ok(()) => Ok(format!(
-            "已保存到 {}（{subject} {}×{} 像素）。{}",
-            target.display(),
-            frame.width,
-            frame.height,
-            if filled == 0 {
-                String::new()
-            } else {
+        Ok(()) => {
+            // Read off before the path moves into the tuple: the sentence quotes the
+            // name the file has, and the caller gets the same name as a path.
+            let where_ = target.display().to_string();
+            Ok((
+                target,
                 format!(
-                    "{subject}里有 {filled} px 透明，{} 存不下，已填成白色；要保留透明请存成 PNG。",
-                    format.label()
-                )
-            }
-        )),
+                    "已保存到 {where_}（{subject} {}×{} 像素）。{}",
+                    frame.width,
+                    frame.height,
+                    if filled == 0 {
+                        String::new()
+                    } else {
+                        format!(
+                            "{subject}里有 {filled} px 透明，{} 存不下，已填成白色；要保留透明请存成 PNG。",
+                            format.label()
+                        )
+                    }
+                ),
+            ))
+        }
         Err(e) => Err(Refusal::Write(e.to_string())),
     }
 }
@@ -650,6 +676,43 @@ mod tests {
         assert_eq!(
             local_path("https://example.com/a.png"),
             "https://example.com/a.png"
+        );
+    }
+
+    /// The path [`write_to`] answers with is the file that is on disk, and it is the only
+    /// form in which a second act can be handed this picture. A caller that re-derived
+    /// the name from the text the user typed would be guessing at the extension rule -
+    /// and when the filter appended a `.jpg` nobody typed, it would go and pin (or show,
+    /// or promise) a file that was never written. §10 第 43 项 ① is the reason this
+    /// exists: 存完再钉图 has to pin what landed, not what was asked for.
+    #[test]
+    fn the_path_it_returns_is_the_file_that_exists() {
+        let dir = sandbox("returned");
+        let typed = dir.join("shot");
+        let (landed, said) = write_to(
+            &textured(24, 16),
+            &typed.to_string_lossy(),
+            &EncodeOptions {
+                format: Format::Jpg,
+                ..Default::default()
+            },
+            "选区",
+            "",
+        )
+        .expect("write");
+        assert!(landed.exists(), "{landed:?} is not on disk: {said}");
+        assert_eq!(written_as(&landed), Some(Format::Jpg), "{said}");
+        assert!(
+            said.contains(&landed.display().to_string()),
+            "the sentence promised a different file than the one it returned: {said}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir)
+                .expect("dir")
+                .filter_map(Result::ok)
+                .count(),
+            1,
+            "the bare name and the written one are two files: {said}"
         );
     }
 

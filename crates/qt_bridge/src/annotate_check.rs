@@ -64,6 +64,7 @@ use falcon_core::capture::ScreenSnapshot;
 use falcon_core::config::FILE_NAME;
 use falcon_core::frame::Frame;
 use falcon_core::geometry::{PhysPoint, PhysRect};
+use falcon_core::pin::PinId;
 
 use crate::annotate;
 use crate::capture;
@@ -2224,9 +2225,11 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
 /// write, because a file the previous run left behind would be graded as this run's
 /// answer to a write that never happened.
 ///
-/// [`pin_save_rows`] closes the same act at the pin window's door and hangs its three
-/// rows off the files written here, so a run that could not get this far says why for all
-/// five rather than printing two and being silent about the other three.
+/// [`pin_save_rows`] closes the same act at the pin window's door and hangs its three rows
+/// off the files written here, and since P43 [`save_then_pin_rows`] does the two acts in
+/// one call - 另存为 and then 贴图 out of that file (§10 第 43 项 ①). A run that could not
+/// get this far says why for every one of them rather than printing two and being silent
+/// about the rest.
 fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
     let Some(want) = shipped else {
         for label in ["saved png", "saved jpg"] {
@@ -2236,7 +2239,15 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
                 "nothing was stitched, so there was no picture to save".to_string(),
             );
         }
-        for label in ["pin saved png", "pin saved jpg", "jpeg quality knob"] {
+        for label in [
+            "pin saved png",
+            "pin saved jpg",
+            "jpeg quality knob",
+            "save then pin",
+            "pinned == saved",
+            "pin file damaged",
+            "pin file format",
+        ] {
             rep.row(
                 label,
                 Check::Fail,
@@ -2254,7 +2265,15 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
                 format!("{} could not be made ready ({e})", dir.display()),
             );
         }
-        for label in ["pin saved png", "pin saved jpg", "jpeg quality knob"] {
+        for label in [
+            "pin saved png",
+            "pin saved jpg",
+            "jpeg quality knob",
+            "save then pin",
+            "pinned == saved",
+            "pin file damaged",
+            "pin file format",
+        ] {
             rep.row(
                 label,
                 Check::Blocked,
@@ -2449,6 +2468,7 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
 
     mask_dialog_rows(rep, &dir, &png);
     pin_save_rows(rep, want, &dir, &png, &jpg);
+    save_then_pin_rows(rep, &dir);
 }
 
 /// The same act at either output door, closed by a click rather than by this file.
@@ -2481,11 +2501,15 @@ pub(crate) fn before_is_products_own(was: Option<&str>, pre: Option<&str>) -> bo
 /// [`pin_check::PIN_SCHEDULE`] (§10 第 41 项 ②). `f-jpg` sits *above* the refusal here, which
 /// is the placement `AnnotationToolbar.qml`'s own comment asks for and the opposite of the
 /// pin's, because this door's refusal is written by the leg that reads it back rather than
-/// by an earlier one. `dlg-dismiss`/`dlg-rejected` are the two confessions that may be absent.
+/// by an earlier one. `pin-after` is the 存完再钉图 leg (§10 第 43 项 ①) and rides along for
+/// that same reason: it overwrites `message`, so it has to be read before the refusal puts
+/// its own sentence there. `dlg-dismiss`/`dlg-rejected` are the two confessions that may be
+/// absent.
 pub(crate) const MASK_SCHEDULE: &[&str] = &[
     "dlg-folder",
     "dlg-name",
     "f-jpg",
+    "pin-after",
     "pre-save",
     "dlg-open",
     "dlg-shown",
@@ -2669,6 +2693,31 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
             filtered.display()
         ),
     );
+
+    // 存完再钉图 across the same boundary (§10 第 43 项 ①). The Rust rows in
+    // [`save_then_pin_rows`] call the door directly and so cannot see whether QML hands the
+    // second invokable over at all - a `saveAndPin` the toolbar never calls would leave
+    // every one of them green. This leg is the cell's own call, made inside the event loop
+    // rather than after it, so the pin it produces is also the one this gauge can show.
+    let pinned = dir.join(format!("{DIALOG_STEM}-p.png"));
+    let leg = said(&lines, "pin-after").unwrap_or("");
+    let shown = pin_shown_matching(&pinned);
+    rep.row(
+        "mask pin via qml",
+        Check::from(
+            leg.starts_with("true|")
+                && leg.contains("-p.png")
+                && leg.contains("也钉成了贴图")
+                && crate::save::written_as(&pinned)
+                    == Some(falcon_core::encode::Format::Png)
+                && pin_id_in(leg).is_some_and(|id| shown.contains(&id)),
+        ),
+        format!(
+            "QML 那一条 {leg:?}（要求 true、点名 -p.png、说出 也钉成了贴图）；{} 的头四字节读成 {:?}，正被这些贴图显示 {shown:?}",
+            pinned.display(),
+            crate::save::written_as(&pinned)
+        ),
+    );
 }
 
 /// The same act at the other door: a pin's 另存为 (§5.9.17), read against the mask's
@@ -2818,6 +2867,231 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
             problems
         ),
     );
+}
+
+/// The id a 存完再钉图 sentence names, or `None` when it names nothing.
+///
+/// The door's success line ends `… 也钉成了贴图 {id}。` and its pin-refusal line
+/// `{said}但贴图没有钉出来：{e}`. Reading the number out of the words is the only way to
+/// ask whether the id the user is told about is an id the state machine actually made:
+/// a door that quoted somebody else's pin would otherwise be graded by this file's
+/// arithmetic rather than by the product's sentence.
+fn pin_id_in(said: &str) -> Option<PinId> {
+    let tail = said.split_once("也钉成了贴图 ")?.1;
+    tail.split(['。', ' ', '，', '；']).next()?.parse().ok()
+}
+
+/// Which pins, if any, are showing exactly the picture in this file.
+///
+/// [`pin_check::file_pin_rows`] asks the question for one id; this asks it of the whole
+/// set, which is the only way to catch a door that pinned the right bytes into a pin
+/// nobody was told about, or the same file twice. The frame compared is the state
+/// machine's own first frame for that id - what [`crate::state::PinState::sync`] handed
+/// Qt - so the answer is about the artifact and the texture, not about two copies this
+/// file made.
+fn pin_shown_matching(path: &Path) -> Vec<PinId> {
+    let Ok(want) = falcon_core::encode::decode_file(path) else {
+        return Vec::new();
+    };
+    state::with(|s| {
+        s.ids()
+            .into_iter()
+            .filter(|id| {
+                s.with_rendered(*id, |f| {
+                    f.width == want.width
+                        && f.height == want.height
+                        && f.pixels.iter().zip(&want.pixels).all(|(a, b)| a == b)
+                })
+                .unwrap_or(false)
+            })
+            .collect()
+    })
+}
+
+/// 存完再钉图's own door (§10 第 43 项 ①, PRD 433 / 459), and the two refusals PRD line
+/// 910 asks of anything that reads a file.
+///
+/// [`pin_check::file_pin_rows`] pairs the artifact's bytes with the window the file-pin
+/// got, and can only do that at the pin gauge: every row of *this* report is written
+/// after `app.exec()` returned, and a pin born then never gets a window - which is the
+/// same reason [`pin_save_rows`] never asks what the shell sees. So the window half of the
+/// criterion is graded there and not here, and what these rows own is the door:
+/// [`crate::mask::MaskState::save_then_pin`] called the way the toolbar's cell calls it,
+/// and the claim that the id its sentence names is an id the state machine made.
+///
+/// Neither side of the pair is the frame the write went out from: the bytes come back
+/// through `decode_file` of what is on disk, the other half through the new pin's first
+/// frame. A `save` that wrote something other than what it was handed, and an
+/// `add_from_file` that pinned something other than what it read, both show up here as a
+/// pin that matches nothing - or as nothing matching.
+///
+/// The refusals are the same bytes twice, under two names - which is exactly the pair line
+/// 910 names, 文件损坏 and 格式不支持, and the pair the decoder itself cannot tell apart
+/// (both arrive as `Codec`, because an unknown extension only means the format had to be
+/// guessed from the bytes). So the *wording* is graded on the name as well: each arm has
+/// to say its own thing and must not say the other's, or one sentence would be passing
+/// two rows with different claims in them.
+fn save_then_pin_rows(rep: &mut Report, dir: &Path) {
+    let file = dir.join("then-pin.png");
+    let _ = std::fs::remove_file(&file);
+
+    let before = state::with(|s| s.ids());
+    let done = mask::with(|m| m.save_then_pin(&file.to_string_lossy(), ""));
+    let said = mask::with(|m| m.message.clone());
+    let fresh: Vec<PinId> = state::with(|s| s.ids())
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    let named = pin_id_in(&said);
+
+    // 1. Both acts in one sentence, and the file that sentence points at. `done` alone
+    //    would be the door's own verdict; the two clauses and the path are what a user
+    //    reads, and the first is the half that would otherwise be the only one promised.
+    rep.row(
+        "save then pin",
+        Check::from(
+            done && file.exists()
+                && said.contains("已保存到")
+                && said.contains("也钉成了贴图")
+                && named.is_some_and(|id| fresh.contains(&id)),
+        ),
+        format!(
+            "{} 存在={}；那句 {said:?}；这一步新增的贴图 {fresh:?}（要求句里点名的那个在其中）",
+            file.display(),
+            file.exists()
+        ),
+    );
+
+    // 2. The registered pair, at this door: the artifact's pixels against the new pin's
+    //    first frame, channel by channel, with exactly one pin arriving from this call.
+    //    Every pin that shows those bytes is printed as well - a second one would mean the
+    //    door pinned the same file twice - but it is not graded, because the mask's own
+    //    selection is the picture several earlier rows also wrote, and pins this run made
+    //    before the door are not this door's doing.
+    let from_disk = falcon_core::encode::decode_file(&file);
+    let (diff, sizes) = match (fresh.as_slice(), &from_disk) {
+        ([id], Ok(want)) => {
+            let shown = state::with(|s| s.with_rendered(*id, |f| f.clone()));
+            match shown {
+                Some(frame) => {
+                    let shape = frame.width == want.width
+                        && frame.height == want.height
+                        && frame.pixels.len() == want.pixels.len();
+                    (
+                        if shape {
+                            frame
+                                .pixels
+                                .iter()
+                                .zip(&want.pixels)
+                                .filter(|(a, b)| a != b)
+                                .count()
+                        } else {
+                            usize::MAX
+                        },
+                        format!(
+                            "文件 {}x{} ↔ 贴图 {id} 首帧 {}x{}",
+                            want.width, want.height, frame.width, frame.height
+                        ),
+                    )
+                }
+                None => (usize::MAX, format!("贴图 {id} 没有首帧可比")),
+            }
+        }
+        ([], Ok(_)) => (usize::MAX, "这一步没有新增贴图".to_string()),
+        ([], Err(e)) | ([_, _, ..], Err(e)) => (usize::MAX, format!("盘上的文件读不回来：{e}")),
+        (other, _) => (
+            usize::MAX,
+            format!("一次门要走两步，新增的贴图有 {other:?} 个"),
+        ),
+    };
+    rep.row(
+        "pinned == saved",
+        Check::from(fresh.len() == 1 && diff == 0),
+        format!(
+            "{} 的像素正被这些贴图显示 {:?}；{}，不同的通道 {diff} 个（要求 0）；state 记的 {:?}",
+            file.display(),
+            pin_shown_matching(&file),
+            sizes,
+            state::with(|s| s.problems.clone())
+        ),
+    );
+
+    // This run's pin, not the user's: the mask comes down after these rows and a leftover
+    // floating picture would be one more window for the report to account for.
+    if !fresh.is_empty() {
+        state::with(|s| s.close(&fresh));
+    }
+
+    // 3. `EncodeError`'s own strings are English (`io: …`, `codec failed: …`), and §10 第
+    //    37 项 ① measured one of them reaching a `保存失败：` prefix. A path is
+    //    legitimately ASCII, so the reading is these markers rather than "no latin
+    //    letters".
+    const CASES: [(&str, &str, &str, &str); 2] = [
+        (
+            "pin file damaged",
+            "broken.png",
+            "损坏",
+            "不是本程序会读的图片",
+        ),
+        (
+            "pin file format",
+            "notes.qqq",
+            "不是本程序会读的图片",
+            "损坏",
+        ),
+    ];
+    const ENGLISH: [&str; 5] = [
+        "io: ",
+        "codec failed",
+        "unsupported format",
+        "too large to decode",
+        "transparent pixels would be lost",
+    ];
+    for (label, name, word, other) in CASES {
+        let stale = dir.join(name);
+        if let Err(e) = std::fs::write(&stale, b"this file is not a picture") {
+            rep.row(
+                label,
+                Check::Blocked,
+                format!(
+                    "{} 写不出来（{e}），所以问不了它读不读得进来",
+                    stale.display()
+                ),
+            );
+            continue;
+        }
+        let before = state::with(|s| s.ids());
+        let refused =
+            state::with(|s| s.add_from_file(&stale.to_string_lossy(), PhysPoint::new(20, 20)));
+        let grew: Vec<PinId> = state::with(|s| s.ids())
+            .into_iter()
+            .filter(|id| !before.contains(id))
+            .collect();
+        if !grew.is_empty() {
+            state::with(|s| s.close(&grew));
+        }
+        let told = match &refused {
+            Ok(id) => format!("<钉成了贴图 {id}，没有拒>"),
+            Err(e) => e.clone(),
+        };
+        rep.row(
+            label,
+            Check::from(
+                refused.is_err()
+                    && grew.is_empty()
+                    && told.contains(name)
+                    && told.contains(word)
+                    && !told.contains(other)
+                    && ENGLISH.iter().all(|m| !told.contains(m)),
+            ),
+            format!(
+                "{}：{:?}（要求点名 {name:?}、说出 {word:?}、不说 {other:?}，也不说英语）；新增的贴图 {grew:?}",
+                stale.display(),
+                refused
+            ),
+        );
+        let _ = std::fs::remove_file(&stale);
+    }
 }
 
 pub fn measure() -> (Check, String) {
@@ -3338,6 +3612,29 @@ mod tests {
     use super::*;
     use falcon_core::capture::{FrozenMonitor, MonitorInfo};
     use falcon_core::geometry::Scale;
+
+    /// §10 第 43 项 ①: the door that saves and then pins answers both acts in one
+    /// sentence, and the id in it is the only handle the report has on the pin the product
+    /// says it made. Read out of the words rather than out of the state machine, because
+    /// "a pin appeared" is a fact this file can produce without the door - whether the
+    /// user was *told* about that particular pin is not.
+    #[test]
+    fn the_pin_a_door_names_is_read_out_of_its_own_sentence() {
+        assert_eq!(
+            pin_id_in("已保存到 C:\\t\\d-p.png（800×600） 也钉成了贴图 7。"),
+            Some(7)
+        );
+        // The two halves of the same door's answer, in the shapes it actually has: the
+        // success line ends with the id and a full stop, the refusal names the file it
+        // wrote and then says the pin did not arrive.
+        assert_eq!(
+            pin_id_in("已保存到 x.png。但贴图没有钉出来：读不进。"),
+            None
+        );
+        assert_eq!(pin_id_in("还没有选区：先把要钉的范围拖出来。"), None);
+        assert_eq!(pin_id_in("也钉成了贴图 。"), None);
+        assert_eq!(pin_id_in("也钉成了贴图 不是数字。"), None);
+    }
 
     /// §10 第 39 项 ①: the click's before-half has to be a sentence, and a sentence this
     /// gauge dictated does not count. The two keys are the same property read at two

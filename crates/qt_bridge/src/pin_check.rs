@@ -31,7 +31,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-use falcon_core::geometry::PhysRect;
+use falcon_core::geometry::{PhysPoint, PhysRect};
 use falcon_core::pin::PinId;
 
 use crate::mask_check::TITLE;
@@ -210,17 +210,20 @@ impl LegTiming {
     }
 }
 
-/// The six names this run owns inside [`DIR`], in the order the plan keeps them.
+/// The seven names this run owns inside [`DIR`], in the order the plan keeps them.
 /// `never.png` is written by the leg that must *not* write it; `dialog.png` is written
 /// by the door a real click closed, and is the only file here whose name the gauge did
-/// not choose - the dialog picked the extension off its own filter list.
-const NAMES: [&str; 6] = [
+/// not choose - the dialog picked the extension off its own filter list. `from-file.png`
+/// is written by this file's own plant (§10 第 43 项 ①), and is the only one here that is
+/// *read* back in: the pin on the other side of it is the thing under test.
+const NAMES: [&str; 7] = [
     "qml.png",
     "qml.jpg",
     "rust.png",
     "rust.jpg",
     "never.png",
     "dialog.png",
+    "from-file.png",
 ];
 
 /// The name the real-click leg hands the dialog, as a `currentFile` without an
@@ -368,6 +371,18 @@ struct Plan {
     rust_jpg: PathBuf,
     never: PathBuf,
     dialog: PathBuf,
+    /// §10 第 43 项 ①'s artifact: a file this run wrote through [`crate::save`] and then
+    /// pinned through [`crate::state::PinState::add_from_file`]. Not in [`plan_line`]:
+    /// no QML leg reads it, the pin it names is a second window that stays out of the
+    /// leg because `PinWindow.qml` gates on `gauge[4]`, and a field that crosses the
+    /// boundary needs a field index in the other language to break.
+    from_file: PathBuf,
+    /// The pin made from [`Self::from_file`], and the rect it asked Qt for.
+    fid: PinId,
+    frect: Option<PhysRect>,
+    /// Why the run has no file-pin: the owner's own refusal, kept so the row quotes the
+    /// sentence the product said rather than this file's guess about it.
+    file_said: String,
     id: PinId,
     bad: PinId,
     /// What the pin asked Qt to show, in device pixels, as the state machine saw it.
@@ -387,6 +402,10 @@ impl Plan {
             rust_jpg: PathBuf::new(),
             never: PathBuf::new(),
             dialog: PathBuf::new(),
+            from_file: PathBuf::new(),
+            fid: 0,
+            frect: None,
+            file_said: String::new(),
             id: 0,
             bad: 0,
             rect: None,
@@ -476,8 +495,11 @@ pub fn plant() -> Result<String, String> {
     let mut dir = std::env::temp_dir();
     dir.push(DIR);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let [qml_png, qml_jpg, rust_png, rust_jpg, never, dialog] = NAMES.map(|n| dir.join(n));
-    for p in [&qml_png, &qml_jpg, &rust_png, &rust_jpg, &never, &dialog] {
+    let [qml_png, qml_jpg, rust_png, rust_jpg, never, dialog, from_file] =
+        NAMES.map(|n| dir.join(n));
+    for p in [
+        &qml_png, &qml_jpg, &rust_png, &rust_jpg, &never, &dialog, &from_file,
+    ] {
         let _ = std::fs::remove_file(p);
     }
     // The filter leg's name, which the door finishes: QML hands the door `<stem>-f` with no
@@ -502,6 +524,15 @@ pub fn plant() -> Result<String, String> {
         view.size_w.max(1) as u32,
         view.size_h.max(1) as u32,
     );
+
+    // §10 第 43 项 ①: 存完再钉图, planted the way a user's flow reaches it - the
+    // product's own write owner, then the product's own file-to-pin door, in that order,
+    // with nothing of this file's in between. Both steps run *here* rather than in
+    // [`measure`] because the window is the subject: a pin born after `app.exec()`
+    // returns never gets one (that is `annotate_check::pin_save_rows`'s limitation), and
+    // this mode's whole claim is about a window the OS can be asked about.
+    let (fid, frect, file_said) = plant_file_pin(id, &from_file, rect);
+
     let bad = id + NEVER_OFFSET;
     with(|p| {
         p.dir = dir.clone();
@@ -511,16 +542,77 @@ pub fn plant() -> Result<String, String> {
         p.rust_jpg = rust_jpg;
         p.never = never;
         p.dialog = dialog;
+        p.from_file = from_file;
+        p.fid = fid;
+        p.frect = frect;
+        p.file_said = file_said;
         p.id = id;
         p.bad = bad;
         p.rect = Some(rect);
         p.lines.clear();
     });
     Ok(format!(
-        "贴图 {id} 的窗在 {rect}，写进 {}，另有一个不存在的 id {bad}，真点击那一格交给 {} 的对话框自己取名",
+        "贴图 {id} 的窗在 {rect}，写进 {}，另有一个不存在的 id {bad}，真点击那一格交给 {} 的对话框自己取名，{} 先由 `save::write_to` 写成再交 `add_from_file` 钉成贴图 {fid}",
         dir.display(),
-        DIALOG_STEM
+        DIALOG_STEM,
+        NAMES[6]
     ))
+}
+
+/// 存完再钉图's two steps, run as a user's flow runs them: [`crate::save::write_to`] on
+/// the picture the first pin is already showing, then
+/// [`crate::state::PinState::add_from_file`] on the name that write returned - never on
+/// the name this file asked for, because an extension can be appended on the way
+/// (§10 第 43 项 ①).
+///
+/// Answers the new pin's id, the rect it asked Qt for, and the sentence belonging to
+/// whichever step spoke last: the success clause when both ran, the refusal when either
+/// did not. `fid: 0` is therefore not a pin - the set's first id is the demo's - and the
+/// rows read `frect` rather than trusting it.
+///
+/// The file-pin goes beside the first one rather than on top of it: [`pin_window`] picks
+/// the window whose overlap is *largest*, so two windows sharing a rectangle would make
+/// every reading below ambiguous, and a desktop too small for the offset says so through
+/// the two rects the rows print instead of through a clamp this file invented.
+fn plant_file_pin(
+    first: PinId,
+    from_file: &Path,
+    rect: PhysRect,
+) -> (PinId, Option<PhysRect>, String) {
+    let export = crate::settings::export();
+    // The first pin's rendered frame, so the file and the first window are the same image
+    // and anything the rows find is the round trip's doing, not two subjects'.
+    let Some(written) = state::with(|s| {
+        s.with_rendered(first, |frame| {
+            crate::save::write_to(frame, &from_file.to_string_lossy(), &export, "贴图", "")
+        })
+    }) else {
+        return (0, None, "贴图还没有画过，没有可写的像素".to_string());
+    };
+    let (landed, said) = match written {
+        Ok(landed) => landed,
+        Err(crate::save::Refusal::BadName(e)) => return (0, None, e),
+        Err(crate::save::Refusal::Write(e)) => return (0, None, e),
+    };
+    let at = PhysPoint::new(rect.x + rect.w as i32 + 16, rect.y + rect.h as i32 + 16);
+    match state::with(|s| s.add_from_file(&landed.to_string_lossy(), at)) {
+        Ok(id) => {
+            let view = state::with(|s| s.view_data(id));
+            (
+                id,
+                Some(PhysRect::new(
+                    view.pos_x,
+                    view.pos_y,
+                    view.size_w.max(1) as u32,
+                    view.size_h.max(1) as u32,
+                )),
+                said,
+            )
+        }
+        // No pin, so no window: the row says this in the product's own words and the two
+        // under it read as absent rather than as wrong.
+        Err(e) => (0, None, e),
+    }
 }
 
 /// What [`crate::session`]'s `pushDialogButton` answers: the C++ shim's one-line
@@ -624,6 +716,204 @@ fn pin_window(want: PhysRect) -> Option<crate::r13::Top> {
         .map(|(_, t)| t)
 }
 
+/// Whether a window's device rect is the one the state machine asked for, allowing for
+/// the rounding [`RECT_SLACK`] exists for. One predicate rather than two copies, because
+/// this run reads two windows the same way and a slack written twice is a pair that drifts.
+fn within_slack(got: &PhysRect, want: &PhysRect) -> bool {
+    (got.x - want.x).abs() <= RECT_SLACK
+        && (got.y - want.y).abs() <= RECT_SLACK
+        && (got.w as i32 - want.w as i32).abs() <= RECT_SLACK
+        && (got.h as i32 - want.h as i32).abs() <= RECT_SLACK
+}
+
+/// Per-channel distance still counted as the same colour, and the share of a window's
+/// opaque pixels that has to answer to it for the row to pass. Both numbers are R13's,
+/// whose matrix of four capture paths settled the tolerance at one rounding per channel
+/// and grades "did this path see the window" as a ratio for the same reason: a capture
+/// that came back one pixel off-position still reports most of the colour, and the ratio
+/// is what says how off.
+const PIXEL_TOL: u8 = 8;
+const PIXEL_SHARE: f64 = 0.95;
+
+/// The three rows 存完再钉图 registers (§10 第 43 项 ①), in the order the flow reaches
+/// them: the file, the pin made from it, the window that pin got.
+///
+/// **The registered pair is row 1's bytes and row 2's hwnd.** The item's wording asks for
+/// "保存产物那枚 sha ↔ 钉出来的那扇窗首帧的 sha 同值"; this compares the two frames
+/// channel by channel instead of hashing them, which says the same thing with more
+/// detail - and hashing it would need a crate the lock file does not have, while the
+/// pixels are already in hand.
+///
+/// Neither side of row 1 is a copy of the frame the write went out from: the bytes come
+/// from `decode_file` of the artifact on disk, the other half from the state machine's
+/// first frame for the id the file door handed back. So a `save` that wrote something
+/// other than what it was given, or an `add_from_file` that pinned something other than
+/// what it read, is a count of differing channels here rather than a passing grade.
+///
+/// Row 2's other side is the operating system, twice over and by two roads that have to
+/// agree: [`crate::capture::desktop_scene`]'s own `window_at_point` - the point-in-z-order
+/// road, at a point inside the rect the pin asked for - and [`pin_window`], which reads
+/// Qt's top-level list. One number for both is what says the window the product believes
+/// it made is the window the shell says is there. `Blocked` when the point answers
+/// nothing: that is the desktop being unreadable, not the pin missing.
+///
+/// `fid: 0` means [`plant_file_pin`] refused, and rows 2 and 3 then never run - one row
+/// says the product's own sentence, because grading a window that was never made would
+/// be grading this file.
+fn file_pin_rows(
+    frect: Option<PhysRect>,
+    fid: PinId,
+    from_file: &Path,
+    file_said: &str,
+) -> Vec<(Check, &'static str, String)> {
+    let named = from_file.display().to_string();
+    let Some(rect) = frect else {
+        return vec![(
+            Check::Fail,
+            "pin from file",
+            format!("{named} 没有钉成贴图：{file_said}"),
+        )];
+    };
+    let from_disk = match falcon_core::encode::decode_file(from_file) {
+        Ok(f) => f,
+        Err(e) => {
+            return vec![(
+                Check::Fail,
+                "pin from file",
+                format!("{named} 在盘上读不回来：{e}"),
+            )]
+        }
+    };
+    let mut rows: Vec<(Check, &'static str, String)> = Vec::new();
+
+    // 1. The artifact, read back off the disk, against the frame the window is built from.
+    let shown = state::with(|s| s.with_rendered(fid, |f| f.clone()));
+    let (diff, sizes) = match &shown {
+        None => (usize::MAX, "没有首帧可读".to_string()),
+        Some(frame) => {
+            let shape = frame.width == from_disk.width
+                && frame.height == from_disk.height
+                && frame.pixels.len() == from_disk.pixels.len();
+            (
+                if shape {
+                    frame
+                        .pixels
+                        .iter()
+                        .zip(&from_disk.pixels)
+                        .filter(|(a, b)| a != b)
+                        .count()
+                } else {
+                    usize::MAX
+                },
+                format!(
+                    "文件 {}x{} ↔ 贴图 {fid} 首帧 {}x{}",
+                    from_disk.width, from_disk.height, frame.width, frame.height
+                ),
+            )
+        }
+    };
+    rows.push((
+        Check::from(diff == 0),
+        "pin from file",
+        format!(
+            "{named}（{}）不同的通道 {} 个（要求 0）；钉它的那句 {:?}",
+            sizes, diff, file_said
+        ),
+    ));
+
+    // 2. That window's hwnd, by the two roads, in one number.
+    let centre = PhysPoint::new(rect.x + rect.w as i32 / 2, rect.y + rect.h as i32 / 2);
+    let at_point = platform_windows::proc::window_at_point(centre);
+    let Some(t) = pin_window(rect) else {
+        rows.push((
+            Check::Fail,
+            "pin from file window",
+            format!(
+                "没有一个可见顶层和贴图 {fid} 的 {rect} 重叠（中心 ({},{}) 上是 {at_point:?}）",
+                centre.x, centre.y
+            ),
+        ));
+        return rows;
+    };
+    let close = within_slack(&t.phys, &rect);
+    rows.push(match at_point {
+        None => (
+            Check::Blocked,
+            "pin from file window",
+            format!(
+                "({},{}) 处桌面 shell 不认任何窗口，这一格问不了；Qt 那份是 0x{:x}",
+                centre.x, centre.y, t.hwnd
+            ),
+        ),
+        Some(there) => (
+            Check::from(close && there == t.hwnd),
+            "pin from file window",
+            format!(
+                "同一位置两条路读回 0x{there:x} vs Qt 0x{:x}，一致={}；顶层 {}x{}@{},{} 和要求的 {rect} 相差在 {RECT_SLACK} px 内={}（class={}）",
+                t.hwnd,
+                there == t.hwnd,
+                t.phys.w,
+                t.phys.h,
+                t.phys.x,
+                t.phys.y,
+                close,
+                t.class
+            ),
+        ),
+    });
+
+    // 3. The same window's pixels as the shell renders them, against the file - graded on
+    // a *share*, because this is the composited side of the claim: what the desktop shows
+    // of a pin with alpha in it is the picture plus whatever was behind it. The file's
+    // opaque pixels have to be there; its transparent ones are counted out, not excused.
+    rows.push(match crate::capture::service().capture_window(t.hwnd as u32) {
+        Err(e) => (
+            Check::Blocked,
+            "pin window pixels",
+            format!("0x{:x} 截不回来：{e}", t.hwnd),
+        ),
+        Ok(cap) => {
+            let mut seen = 0usize;
+            let mut matched = 0usize;
+            if cap.frame.width == from_disk.width && cap.frame.height == from_disk.height {
+                for (px, file) in cap
+                    .frame
+                    .pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .zip(from_disk.pixels.as_chunks::<4>().0)
+                {
+                    if file[3] == 255 {
+                        seen += 1;
+                        if px[..3]
+                            .iter()
+                            .zip(&file[..3])
+                            .all(|(a, b)| a.abs_diff(*b) <= PIXEL_TOL)
+                        {
+                            matched += 1;
+                        }
+                    }
+                }
+            }
+            let share = if seen == 0 {
+                0.0
+            } else {
+                matched as f64 / seen as f64
+            };
+            (
+                Check::from(seen > 0 && share >= PIXEL_SHARE),
+                "pin window pixels",
+                format!(
+                    "窗 {}x{} 取自 {} 的 {}，文件里不透明的 {seen} px 中对上 {matched} px = {share:.3}（要求 ≥ {PIXEL_SHARE}，单通道容差 {PIXEL_TOL}）",
+                    cap.frame.width, cap.frame.height, t.class, cap.rect
+                ),
+            )
+        }
+    });
+    rows
+}
+
 /// One file both doors were asked to write: QML's and the state machine's own,
 /// compared byte for byte.
 ///
@@ -692,22 +982,41 @@ pub fn measure() -> (Check, String) {
     // a change of wallpaper), but a run of it alone is still a run inside some session, and
     // "which session" was the question this round could not answer from an archived log.
     crate::r13::scene_row(&mut rep);
-    let (id, bad, qml_png, qml_jpg, rust_png, rust_jpg, never, dialog, dir, rect, lines) =
-        with(|p| {
-            (
-                p.id,
-                p.bad,
-                p.qml_png.clone(),
-                p.qml_jpg.clone(),
-                p.rust_png.clone(),
-                p.rust_jpg.clone(),
-                p.never.clone(),
-                p.dialog.clone(),
-                p.dir.clone(),
-                p.rect,
-                p.lines.clone(),
-            )
-        });
+    let (
+        id,
+        bad,
+        qml_png,
+        qml_jpg,
+        rust_png,
+        rust_jpg,
+        never,
+        dialog,
+        dir,
+        rect,
+        lines,
+        fid,
+        frect,
+        from_file,
+        file_said,
+    ) = with(|p| {
+        (
+            p.id,
+            p.bad,
+            p.qml_png.clone(),
+            p.qml_jpg.clone(),
+            p.rust_png.clone(),
+            p.rust_jpg.clone(),
+            p.never.clone(),
+            p.dialog.clone(),
+            p.dir.clone(),
+            p.rect,
+            p.lines.clone(),
+            p.fid,
+            p.frect,
+            p.from_file.clone(),
+            p.file_said.clone(),
+        )
+    });
 
     // Every other row reads a value, so this one reads whether there is a value to
     // read: a document that failed to build, a delegate that never matched the plan,
@@ -759,10 +1068,7 @@ pub fn measure() -> (Check, String) {
             format!("没有一个可见顶层和贴图的 {want} 重叠"),
         ),
         Some(t) => {
-            let close = (t.phys.x - want.x).abs() <= RECT_SLACK
-                && (t.phys.y - want.y).abs() <= RECT_SLACK
-                && (t.phys.w as i32 - want.w as i32).abs() <= RECT_SLACK
-                && (t.phys.h as i32 - want.h as i32).abs() <= RECT_SLACK;
+            let close = within_slack(&t.phys, &want);
             rep.row(
                 "pin window",
                 Check::from(close),
@@ -772,6 +1078,9 @@ pub fn measure() -> (Check, String) {
                 ),
             );
         }
+    }
+    for (verdict, label, detail) in file_pin_rows(frect, fid, &from_file, &file_said) {
+        rep.row(label, verdict, detail);
     }
 
     rep.row(

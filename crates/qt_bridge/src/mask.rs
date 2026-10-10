@@ -616,6 +616,58 @@ impl MaskState {
         }
     }
 
+    /// PRD 433 / 459's 贴图, and §10 第 43 项 ①'s whole reason: the picture goes to a
+    /// file *first* and the pin is made **from that file**, so what floats on screen
+    /// afterwards is the artifact rather than a second reading of the selection.
+    ///
+    /// The rungs are [`Self::save_out`]'s through the write, then one more that
+    /// `save_out` does not have: [`crate::state::PinState::add_from_file`] at the
+    /// selection's own corner. That last step is why this door returns two acts rather
+    /// than one verdict. A file that landed and a pin that refused is a state the user
+    /// has to be told about - the picture exists, it is just not floating - and a door
+    /// that answered `false` with only the pin's sentence would leave them disbelieving
+    /// the file, which is the same shape of lie as the 保存 that reported 透明 as kept.
+    ///
+    /// The pin is placed at `hole`'s top-left because that is where the user's
+    /// rectangle already is: 存完再钉图 that moves the picture is a different feature.
+    /// The physical point is the same space [`crate::capture::pin_rect`] spawns in, so
+    /// the pin's geometry arrives by the route a capture-pinned rectangle already uses.
+    pub fn save_then_pin(&mut self, path: &str, chosen: &str) -> bool {
+        if !self.has_selection() {
+            self.message = "还没有选区：先把要钉的范围拖出来。".to_string();
+            return false;
+        }
+        let Some(frame) = self.ink.deliver() else {
+            self.message = "选区的画面拼不出来：截图还在，可以再保存一次。".to_string();
+            return false;
+        };
+        let landed = match crate::save::write_to(&frame, path, &self.export, "选区", chosen) {
+            Ok((landed, said)) => (landed, said),
+            Err(crate::save::Refusal::BadName(e)) => {
+                self.message = e;
+                return false;
+            }
+            Err(crate::save::Refusal::Write(e)) => {
+                self.message = format!("{e}。截图还在，可以再保存一次。");
+                return false;
+            }
+        };
+        let (path_, said) = landed;
+        let at = self.hole.top_left();
+        match crate::state::with(|s| s.add_from_file(&path_.to_string_lossy(), at)) {
+            Ok(id) => {
+                self.message = format!("{said} 也钉成了贴图 {id}。");
+                true
+            }
+            // The file clause stays: the write succeeded, and a refusal that hides
+            // that tells the user to do the whole thing again.
+            Err(e) => {
+                self.message = format!("{said}但贴图没有钉出来：{e}");
+                false
+            }
+        }
+    }
+
     /// §5.7.11's 文本, §5.7.5's 折线 and §5.7.13's 放大 finishers, in that order, in
     /// this one place: 双击 and `Enter` mean four things to this mask (close a box, close
     /// a line, place a copy, crop the picture) and only the layer knows which is pending.

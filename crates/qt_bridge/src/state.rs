@@ -223,7 +223,11 @@ impl PinState {
     /// Hands the pin's current picture to one of the output paths. Taking the
     /// frame by reference rather than cloning it is the point: a 4K pin is 33 MB
     /// and a copy gesture should not pay for it twice.
-    fn with_rendered<R>(&self, id: PinId, f: impl FnOnce(&Frame) -> R) -> Option<R> {
+    ///
+    /// Reachable from the gauges since §10 第 43 项 ①: a row that has to say whether the
+    /// picture a pin shows is the picture a file holds has to read the frame the pin was
+    /// *handed*, and there is no other way to ask without copying megabytes into the row.
+    pub(crate) fn with_rendered<R>(&self, id: PinId, f: impl FnOnce(&Frame) -> R) -> Option<R> {
         self.rendered.get(&id).map(f)
     }
 
@@ -263,6 +267,26 @@ impl PinState {
         done
     }
 
+    /// §5.8.3 / §10 第 43 项 ① - a file that is already on disk becomes a pin.
+    ///
+    /// Until P43 the only way a picture living in a file could reach the screen was the
+    /// clipboard: [`Self::add_from_clipboard`] took a `Files` payload and decoded its
+    /// first entry (`encode::decode_file(first)`). That made 存完再钉图 an accident - the
+    /// user had to copy the file, and it made §5.8.3's own "选择图片文件 → 系统读取图片并
+    /// 创建贴图" unreachable without a trip through the shell.
+    ///
+    /// Reading the file is the whole of the difference from [`Self::add`], and the reason
+    /// to do it here rather than at each door is the second half of PRD line 910: a
+    /// damaged or unsupported file "应显示错误信息". Spelled once, both doors answer the
+    /// same way, and neither one gets to forward `EncodeError`'s English.
+    pub fn add_from_file(&mut self, path: &str, at: PhysPoint) -> Result<PinId, String> {
+        let frame = match encode::decode_file(std::path::Path::new(path)) {
+            Ok(f) => f,
+            Err(e) => return Err(read_refusal(path, &e)),
+        };
+        self.add(frame, at)
+    }
+
     /// §5.8.2 - whatever the user copied becomes a pin. Deciding *what it was* is
     /// `core::clip::classify`'s job, already tested; this only moves bytes.
     pub fn add_from_clipboard(&mut self, at: PhysPoint) -> Result<PinId, String> {
@@ -293,6 +317,37 @@ impl PinState {
 
     fn note(&mut self, message: String) {
         self.problems.push(message);
+    }
+}
+
+/// What went wrong with a file, said the way the user reads it.
+///
+/// PRD line 910 asks for a message on both shapes, and they are different answers: one says
+/// the file is broken, the other says this program does not read that kind of file. The
+/// decoder cannot tell them apart - an unrecognised extension and a damaged file both
+/// arrive as `Codec`, because `encode::decode_file` hints the format from the extension and
+/// falls back to guessing from the bytes - so the name is asked as well as the error.
+/// The file's own path is the one piece that travels through as typed: it is what the user
+/// can find in the dialog again.
+fn read_refusal(path: &str, e: &encode::EncodeError) -> String {
+    use encode::EncodeError as E;
+    let readable = encode::IMPORT_FORMATS
+        .iter()
+        .map(|f| f.ext())
+        .collect::<Vec<_>>()
+        .join("、");
+    let named = std::path::Path::new(path)
+        .extension()
+        .and_then(|x| x.to_str())
+        .and_then(encode::Format::from_ext);
+    match e {
+        E::Io(_) => format!("{path} 打不开：文件读不进来（可能已被移走、正被占用，或没有权限）"),
+        E::TooLarge(w, h) => format!("{path} 太大读不进来（{w}×{h} 像素）"),
+        E::Codec(_) | E::Unsupported(_) => match named {
+            None => format!("{path} 不是本程序会读的图片：用 {readable}。"),
+            Some(_) => format!("{path} 读不出图片：文件可能已损坏。"),
+        },
+        E::Frame(_) | E::TransparencyLost(_) => format!("{path} 钉不上：这张图拼不出像素"),
     }
 }
 
@@ -1248,7 +1303,41 @@ pub fn capture_selftest() -> (Check, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::not_drawn;
+    use super::{not_drawn, read_refusal};
+    use falcon_core::encode::EncodeError;
+
+    /// PRD 910's two shapes are one error to the decoder - both a damaged file and an
+    /// unrecognised extension arrive as `Codec`, because an unknown suffix only means the
+    /// format had to be guessed from the bytes - so the split lives in this file and is
+    /// decided by the name. A refusal that says the wrong half is a user told to go look
+    /// for a broken file that is fine, which is why the two arms are graded against each
+    /// other and not only against English.
+    #[test]
+    fn a_file_that_will_not_decode_is_named_by_what_the_name_says() {
+        let damaged = read_refusal(
+            "C:\\temp\\broken.png",
+            &EncodeError::Codec("could not determine image size".into()),
+        );
+        let unsupported = read_refusal(
+            "C:\\temp\\notes.qqq",
+            &EncodeError::Codec("Image format not recognized".into()),
+        );
+        for (said, word, other, name) in [
+            (&damaged, "损坏", "不是本程序会读的图片", "broken.png"),
+            (&unsupported, "不是本程序会读的图片", "损坏", "notes.qqq"),
+        ] {
+            assert!(said.contains(word) && said.contains(name), "{said}");
+            assert!(!said.contains(other), "{said} answers two questions");
+            for english in [
+                "io: ",
+                "codec failed",
+                "unsupported format",
+                "not recognized",
+            ] {
+                assert!(!said.contains(english), "{said} forwards {english:?}");
+            }
+        }
+    }
 
     /// §10 第 37 项 ①. `session` prints this under `复制失败：` and `保存失败：`, so for
     /// as long as it was English the line a user read was one Chinese prefix wrapped
@@ -1264,5 +1353,21 @@ mod tests {
             !said.chars().any(|c| c.is_ascii_alphabetic()),
             "the sentence still carries Latin letters: {said}"
         );
+    }
+
+    /// A file that is simply not there is the third shape line 910 covers, and the one
+    /// this function cannot get from a name: the extension is a real one, so only the
+    /// operating system's own answer says why.
+    #[test]
+    fn a_file_that_is_not_there_names_the_file() {
+        let said = read_refusal(
+            "C:\\temp\\gone.png",
+            &EncodeError::Io(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        );
+        assert!(
+            said.contains("gone.png") && said.contains("打不开"),
+            "{said}"
+        );
+        assert!(!said.contains("io: "), "{said}");
     }
 }

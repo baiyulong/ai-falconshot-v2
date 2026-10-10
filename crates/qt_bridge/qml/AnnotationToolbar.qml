@@ -50,6 +50,14 @@ Rectangle {
     /// which is why it is a property of the bar rather than a `MaskView` one.
     property bool delivered: false
 
+    /// Set by the 存完再钉图 cell and read once by [`Self.saveAs`]'s `onAccepted`, which
+    /// clears it. The dialog is the same door for both acts - §10 第 43 项 ① asks that the
+    /// pin be made *out of the file that landed*, and the file's name is only known after
+    /// the user has typed it - so the flag carries the second half across that gap rather
+    /// than a second dialog being built. It is cleared on rejection too: a cancelled 另存为
+    /// must not leave the next plain 保存 quietly pinning.
+    property bool pinAfterSave: false
+
     /// The `--ink` gauge's plan for this door, read by index in
     /// [`crate::annotate_check::mask_gauge_plan`]'s order: 0 目录, 1 对话框默认名,
     /// 2 延迟 ms, 3 推开尝试上限, 4 窗 index. One field when nobody asked for the leg,
@@ -154,6 +162,20 @@ Rectangle {
         saveAs.open()
     }
 
+    /// PRD 433 / 459's 完成后可…贴图, in the one order that makes the floating picture an
+    /// artifact rather than a second rendering: 另存为 first, then a 贴图 made from the file
+    /// that landed (§10 第 43 项 ①).
+    ///
+    /// The dialog is opened by [`Self.pinAfterSave`] rather than by a second door, because
+    /// the name the pin must be made from is not known until the user has typed it. Both
+    /// halves are Rust's sentence: `MaskState::save_then_pin` answers the write and the pin
+    /// in one line, and the pin half is the only place a user learns that the file exists
+    /// while nothing floated.
+    function saveAndPin() {
+        bar.pinAfterSave = true
+        saveAs.open()
+    }
+
     // The `--ink` gauge at this door. Everything above is the product's own path; what
     // follows only ever runs when a plan was planted, and it asks the one question
     // [`crate::annotate_check::save_rows`]'s two rows cannot: those name the file and call
@@ -215,6 +237,17 @@ Rectangle {
         const arm = bar.filterExt(1)
         const wrote = bar.view.saveSelection(bareName, arm)
         bar.gaugeSay("f-jpg", arm + "|" + String(wrote) + "|" + bar.view.message)
+
+        // 存完再钉图 (§10 第 43 项 ①, PRD 433 / 459), asked at this same door one rung
+        // further along: the file is written first and the pin is made *out of that file*,
+        // so what floats afterwards is the artifact rather than a second reading of the
+        // selection. `saveAndPin` is the cell's own invokable and the name is the gauge's,
+        // so no dialog has to be in the way to ask it. `message` is read back because the
+        // door answers both acts in one sentence, and the id in that sentence is the only
+        // handle the report has on the pin the product says it made.
+        const pinName = bar.dlgUrl(String(bar.gauge[0]) + "/" + String(bar.gauge[1]) + "-p.png")
+        const pinned = bar.view.saveAndPin(pinName, "")
+        bar.gaugeSay("pin-after", String(pinned) + "|" + bar.view.message)
 
         // The click's before-half has to be a sentence, not silence. P38 read
         // `accept-was ""` here - a true reading, and an empty one, so the graded pair
@@ -799,6 +832,16 @@ Rectangle {
                 onTapped: bar.save()
             }
 
+            // PRD 433's "完成后可复制、保存或贴图" read as one flow instead of two: the
+            // picture goes to a file and the file comes back as a 贴图, so what floats is
+            // the artifact the user named (§10 第 43 项 ①). Greyed with the selection for
+            // the same reason 保存 is.
+            Cell {
+                label: "存完再钉图"
+                usable: bar.view.selected
+                onTapped: bar.saveAndPin()
+            }
+
             Cell {
                 label: "确认选区"
                 usable: bar.view.selected
@@ -849,11 +892,19 @@ Rectangle {
             // and not the setting's. An empty text is what a dialog that has selected no
             // filter answers with (`||-1`, read here the first time), and `save::write`
             // treats it as "the menu named nothing".
-            bar.delivered = bar.view.saveSelection(
-                String(saveAs.selectedFile),
-                saveAs.selectedNameFilter.extensions.join(",")
-            )
+            // 存完再钉图 (§10 第 43 项 ①) is the same answer with one more act: the file
+            // this name became is what gets pinned, so `saveAndPin` is handed exactly what
+            // `saveSelection` would have been and the flag is put down before anything else
+            // can read it. A pin that refused leaves the file behind and says so in the
+            // same line - which is why the cell's verdict is not `bar.delivered` alone.
+            const picked = String(saveAs.selectedFile)
+            const chosen = saveAs.selectedNameFilter.extensions.join(",")
+            bar.delivered = bar.pinAfterSave
+                ? bar.view.saveAndPin(picked, chosen)
+                : bar.view.saveSelection(picked, chosen)
+            bar.pinAfterSave = false
             bar.grabbed()
         }
+        onRejected: bar.pinAfterSave = false
     }
 }

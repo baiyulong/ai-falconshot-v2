@@ -347,6 +347,15 @@ pub mod qobject {
         #[cxx_name = "saveSelection"]
         fn save_selection(self: Pin<&mut Self>, path: &QString, filter: &QString) -> bool;
 
+        /// PRD 433 / 459's 贴图 after 保存: the same write as
+        /// [`crate::mask::MaskState::save_out`], then a pin made from the file that
+        /// landed. `true` is "the file is there *and* it is floating"; the one case
+        /// where those disagree is named in `message` rather than collapsed into a
+        /// bool, so QML shows the sentence and decides nothing about the picture.
+        #[qinvokable]
+        #[cxx_name = "saveAndPin"]
+        fn save_and_pin(self: Pin<&mut Self>, path: &QString, filter: &QString) -> bool;
+
         /// The tool buttons' labels, in [`crate::annotate::TOOLS`]' order. Read once
         /// by the toolbar's `Component.onCompleted`: the list is Rust's, so a tool
         /// renamed in one place cannot be a different tool in the other.
@@ -765,6 +774,16 @@ impl qobject::MaskView {
 
     pub fn tool_names(&self) -> QString {
         QString::from(&*annotate::tool_names())
+    }
+
+    /// §10 第 43 项 ①'s 存完再钉图. Same path handling as [`Self::save_selection`],
+    /// same reason: the name is Qt's to keep and `std::path` wants it owned.
+    pub fn save_and_pin(mut self: Pin<&mut Self>, path: &QString, filter: &QString) -> bool {
+        let target = path.to_string();
+        let chosen = filter.to_string();
+        let done = mask::with(|m| m.save_then_pin(&target, &chosen));
+        self.as_mut().reload();
+        done
     }
 }
 
