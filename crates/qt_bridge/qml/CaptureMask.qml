@@ -385,12 +385,15 @@ Window {
             // and a copy that swallowed a chord it did not implement would leave the
             // user with no way to find out what the chord does.
             const copy = event.key === Qt.Key_C && !shifted
-            // §4.1's `Ctrl+S` = "打开保存流程或执行快速保存". The dialog is the half this
-            // mask has; 快速保存 (§5.5.4) needs a configured directory and is a later
-            // round's, so the chord opens the same flow the 保存 cell does rather than
-            // inventing a second one.
+            // §4.1's `Ctrl+S` = "打开保存流程或执行快速保存", and the two halves of that
+            // sentence are now two chords: the unshifted one opens the dialog §5.5.5 asks
+            // for, `Ctrl+Shift+S` is §5.5.4's 快速保存 and opens nothing. Shift is the
+            // whole difference, which is why the shifted chord is named here rather than
+            // left to fall through: an unimplemented `Ctrl+Shift+S` would open the dialog
+            // by accident or nothing at all, and a user could not tell which.
             const save = event.key === Qt.Key_S && !shifted
-            if (!undo && !redo && !copy && !save) {
+            const quick = event.key === Qt.Key_S && shifted
+            if (!undo && !redo && !copy && !save && !quick) {
                 return
             }
             event.accepted = true
@@ -403,6 +406,10 @@ Window {
             }
             if (save) {
                 inkBar.save()
+                return
+            }
+            if (quick) {
+                inkBar.quickSave()
                 return
             }
             if (redo ? view.redoStep() : view.undoStep()) {

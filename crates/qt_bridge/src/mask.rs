@@ -30,6 +30,7 @@ use falcon_core::encode;
 use falcon_core::geometry::{
     handle_at, nudge, nudge_edge, resize, Handle, PhysPoint, PhysRect, Scale, DEFAULT_HIT_SLOP,
 };
+use falcon_core::naming;
 
 use crate::annotate;
 use crate::capture;
@@ -152,6 +153,20 @@ pub struct MaskState {
     /// anyway - so a test that never calls `open` saves at the same numbers a user
     /// with no `config.toml` does, rather than at quality 0.
     pub export: encode::EncodeOptions,
+    /// §5.5.4's 快速保存 naming rule and directory, taken at the same `open` and for the
+    /// same reason as [`Self::export`] - and the two have to be taken together, because
+    /// one file name is built out of both: `%p`/`%Y`/`%i` from here, the extension from
+    /// `export.format`. Read apart, a settings edit that lands mid-flow would name a
+    /// file from one state of the file and encode it from another.
+    pub naming: crate::settings::Naming,
+    /// How many files this flow has already quick-saved, so `%i` counts the series the
+    /// user is watching rather than the process's lifetime. Not incremented by an
+    /// attempt the settings refused: the number means "how many of these are on disk".
+    ///
+    /// Public for the gauge, which reads it to name the file the *next* press owes: a
+    /// run that hardcoded `quick-001` would go red the moment another leg pressed the
+    /// door first, and the sequence is the thing being graded, not one number.
+    pub quick_saves: u32,
     /// Bumped by every `open`, so a second capture in the same process gets keys
     /// nobody has asked for yet. A constant revision would reuse the previous
     /// frame's key, and `Image.cache: false` only re-requests when the URL changes:
@@ -229,6 +244,8 @@ impl MaskState {
         // touches the file, and it costs what `[settings] apply=` reports.
         crate::settings::apply_to(&mut self.ink);
         self.export = crate::settings::export();
+        self.naming = crate::settings::naming();
+        self.quick_saves = 0;
         self.ink.set_hole(self.hole);
         self.virtual_bounds = snap.virtual_bounds;
         self.shown = true;
@@ -614,6 +631,87 @@ impl MaskState {
                 false
             }
         }
+    }
+
+    /// §5.5.4's 快速保存: the same picture [`Self::save_out`] writes, into the file the
+    /// settings name, with no dialog in between.
+    ///
+    /// The first two rungs are `save_out`'s in the same order, and for the same reasons:
+    /// nothing selected is the user's own doing and needs no probe, and a selection that
+    /// cannot be stitched has to be refused *before* a file appears. What this door owns
+    /// that `save_out` does not is the name: `[output] naming_template` and
+    /// `naming_prefix`, this flow's 序号 for `%i`, the extension from `[output] format`,
+    /// and a taken name settled by `[output] collision` - §5.5.3's three rules, which
+    /// had an owner in [`falcon_core::naming`] and a full set of tests and, until this
+    /// door, no caller anywhere in the product.
+    ///
+    /// The sentence is [`crate::save::write_decided`]'s, shared with the dialog door down
+    /// to the transparency count: 同一句 is the whole reason §5.5.4's success reads like
+    /// §5.5.5's rather than like a third thing, and P35 is why the sharing is done by one
+    /// owner rather than by two doors agreeing to copy each other.
+    ///
+    /// The clock is read at the save rather than at `open`, because a name belongs to the
+    /// write: a mask held open ten minutes and then quick-saved is filed under the minute
+    /// it was saved at, not the minute the desktop was frozen. `wall_clock` gives the
+    /// offset as well as the epoch second, which is [`naming::LocalStamp`]'s documented
+    /// division of labour - core has no timezone database.
+    ///
+    /// §5.5.4 step 4 asks for a notification the user can *click* to open the file or its
+    /// directory. This mask has one line of text and no click target, so what lands here
+    /// is the notification's content rather than its gesture, and
+    /// `[output] reveal_after_save` still has nothing to reveal. Both are §10 第 44 项's
+    /// carry-overs, alongside `%B`, which is empty until something other than a second
+    /// monitor enumeration decides which screen a picture came from.
+    pub fn quick_out(&mut self) -> bool {
+        if !self.has_selection() {
+            self.message = "还没有选区：先把要快速保存的范围拖出来。".to_string();
+            return false;
+        }
+        let Some(frame) = self.ink.deliver() else {
+            self.message = "选区的画面拼不出来：截图还在，可以再保存一次。".to_string();
+            return false;
+        };
+        let Some(dir) = self.naming.directory() else {
+            self.message =
+                "快速保存没有目录可写：这台机器说不出图片文件夹在哪里，请在设置里填 [output] save_dir。"
+                    .to_string();
+            return false;
+        };
+        let (epoch, offset_min) = platform_windows::clock::wall_clock();
+        let facts = naming::NameFacts {
+            width: frame.width,
+            height: frame.height,
+            monitor: "",
+            tool: self.ink.tool().map(|kind| kind.key()).unwrap_or(""),
+        };
+        let quick = crate::save::Quick {
+            dir: &dir,
+            template: &self.naming.template,
+            prefix: &self.naming.prefix,
+            seq: self.quick_saves + 1,
+            collision: &self.naming.collision,
+        };
+        let landed = match crate::save::quick_to(
+            &frame,
+            naming::LocalStamp::from_epoch(epoch, offset_min),
+            facts,
+            &quick,
+            &self.export,
+            "选区",
+        ) {
+            Ok(landed) => landed,
+            Err(crate::save::Refusal::BadName(e)) => {
+                self.message = e;
+                return false;
+            }
+            Err(crate::save::Refusal::Write(e)) => {
+                self.message = format!("{e}。截图还在，可以再保存一次。");
+                return false;
+            }
+        };
+        self.quick_saves += 1;
+        self.message = landed.1;
+        true
     }
 
     /// PRD 433 / 459's 贴图, and §10 第 43 项 ①'s whole reason: the picture goes to a
@@ -1661,5 +1759,105 @@ mod tests {
             MaskState::frame_key("m0-display1", second),
             "so the provider URL changes with the capture"
         );
+    }
+
+    /// §5.5.4's 快速保存, from the door a click and `Ctrl+Shift+S` both reach.
+    ///
+    /// The template is `%p-%i` rather than the shipped one because this leg has to be
+    /// about the *door*: a name built from the wall clock would make two presses in one
+    /// test run collide on the second and turn the assertion into a race with the clock,
+    /// while `%i` is the setting's own way of saying "the second press is the second
+    /// file". `%p` is asserted too, since a prefix that never reached the name is the
+    /// silent half of this feature - the file would appear, and nobody would be able to
+    /// tell that `[output] naming_prefix` had anything to do with it.
+    #[test]
+    fn a_quick_save_names_its_own_file_and_counts_its_own_series() {
+        let dir = sandbox("quick");
+        let mut m = savable(PhysRect::new(10, 20, 100, 80));
+        m.naming = crate::settings::Naming {
+            dir: dir.to_string_lossy().into_owned(),
+            template: "%p-%i".into(),
+            prefix: "quick".into(),
+            collision: falcon_core::naming::Collision::Increment,
+        };
+
+        // Nothing selected: the refusal is the user's own, and it writes nothing.
+        let mut empty = savable(PhysRect::default());
+        empty.naming = m.naming.clone();
+        assert!(!empty.quick_out());
+        assert!(empty.message.contains("还没有选区"), "{:?}", empty.message);
+
+        assert!(m.quick_out(), "{:?}", m.message);
+        let first = dir.join("quick-001.png");
+        assert!(first.exists(), "{:?}", m.message);
+        assert!(
+            m.message.contains("quick-001.png"),
+            "the sentence did not name the file it wrote: {:?}",
+            m.message
+        );
+        assert!(m.message.contains("已保存到"), "{:?}", m.message);
+        assert_eq!(
+            crate::save::written_as(&first),
+            Some(encode::Format::Png),
+            "a quick save wrote something other than `[output] format`"
+        );
+
+        // The second press is the second file, and the number moved with it.
+        assert!(m.quick_out(), "{:?}", m.message);
+        assert!(dir.join("quick-002.png").exists(), "{:?}", m.message);
+        assert!(m.message.contains("quick-002.png"), "{:?}", m.message);
+        assert_eq!(
+            std::fs::read_dir(&dir)
+                .expect("dir")
+                .filter_map(Result::ok)
+                .count(),
+            2,
+            "the two presses wrote a different number of files than the sentence counted"
+        );
+
+        // A refusal does not spend a number. `keep_both` turns the third press into a
+        // sentence about the file that was already there and touches nothing; the same
+        // press under `increment` still asks for `003` - the refused name, not the next
+        // one - and makes room beside it.
+        let planted = dir.join("quick-003.png");
+        std::fs::write(&planted, b"not a picture this program wrote").expect("plant");
+        let before = std::fs::read_dir(&dir)
+            .expect("dir")
+            .filter_map(Result::ok)
+            .count();
+        m.naming.collision = falcon_core::naming::Collision::KeepBoth;
+        assert!(!m.quick_out(), "{:?}", m.message);
+        assert!(m.message.contains("keep_both"), "{:?}", m.message);
+        assert!(m.message.contains("quick-003.png"), "{:?}", m.message);
+        assert!(
+            std::fs::read(&planted)
+                .expect("still there")
+                .starts_with(b"not a picture"),
+            "the refusal overwrote the file it refused about"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir)
+                .expect("dir")
+                .filter_map(Result::ok)
+                .count(),
+            before,
+            "a refusal wrote a file"
+        );
+
+        m.naming.collision = falcon_core::naming::Collision::Increment;
+        assert!(m.quick_out(), "{:?}", m.message);
+        let beside = dir.join("quick-003_1.png");
+        assert!(
+            crate::save::written_as(&beside) == Some(encode::Format::Png),
+            "the retry did not land beside the name the refusal quoted: {:?}",
+            m.message
+        );
+        assert!(m.message.contains("quick-003_1.png"), "{:?}", m.message);
+
+        // And the number the refusal declined to use is still unused: the next press is
+        // the third file of the series, not the fourth.
+        assert!(m.quick_out(), "{:?}", m.message);
+        assert!(m.message.contains("quick-004.png"), "{:?}", m.message);
+        assert!(dir.join("quick-004.png").exists(), "{:?}", m.message);
     }
 }

@@ -356,6 +356,15 @@ pub mod qobject {
         #[cxx_name = "saveAndPin"]
         fn save_and_pin(self: Pin<&mut Self>, path: &QString, filter: &QString) -> bool;
 
+        /// §5.5.4's 快速保存: the same write 另存为 does, with no dialog and no name from
+        /// the user - `[output]` decides where it goes and what it is called. `true` is
+        /// "the file is there", and as with the two doors above the sentence is already in
+        /// `message` either way, including the one about the directory the machine could
+        /// not name and the one about a taken name under `collision = keep_both`.
+        #[qinvokable]
+        #[cxx_name = "quickSave"]
+        fn quick_save(self: Pin<&mut Self>) -> bool;
+
         /// The tool buttons' labels, in [`crate::annotate::TOOLS`]' order. Read once
         /// by the toolbar's `Component.onCompleted`: the list is Rust's, so a tool
         /// renamed in one place cannot be a different tool in the other.
@@ -782,6 +791,16 @@ impl qobject::MaskView {
         let target = path.to_string();
         let chosen = filter.to_string();
         let done = mask::with(|m| m.save_then_pin(&target, &chosen));
+        self.as_mut().reload();
+        done
+    }
+
+    /// §5.5.4's 快速保存. Nothing to convert, because nothing comes from a dialog: the
+    /// name and the directory are Rust's `[output]` reading, taken when the mask opened.
+    /// The `reload` is the same one 复制 needs - the sentence lives in the one mask state
+    /// and both windows have to re-read it after the write rather than before.
+    pub fn quick_save(mut self: Pin<&mut Self>) -> bool {
+        let done = mask::with(|m| m.quick_out());
         self.as_mut().reload();
         done
     }

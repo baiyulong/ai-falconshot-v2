@@ -6,6 +6,7 @@ pub mod clip;
 #[cfg(windows)]
 pub mod glyphs;
 
+pub mod clock;
 pub mod desktop;
 pub mod print;
 pub mod proc;

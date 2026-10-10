@@ -20,8 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
-use falcon_core::config::{config_path, Config, LoadSource};
+use falcon_core::config::{config_path, Config, LoadSource, Output};
 use falcon_core::encode::EncodeOptions;
+use falcon_core::naming::Collision;
 
 use crate::annotate::Layer;
 
@@ -234,6 +235,65 @@ pub fn export() -> EncodeOptions {
     with(|s| s.export_opts())
 }
 
+/// The `[output]` fields that decide a *name* rather than an encoder (§5.5.3's 命名规则,
+/// §5.5.4's 快速保存目录).
+///
+/// A view rather than the whole `Output` because the mask snapshots this at `open` next
+/// to its [`EncodeOptions`] and the two have to come from one instant: a file named by
+/// the template as of *now* and an extension as of when the mask opened would be one name
+/// built out of two settings states.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Naming {
+    /// `[output] save_dir`; empty means the pictures folder, see [`Naming::directory`].
+    pub dir: String,
+    pub template: String,
+    /// `[output] naming_prefix`, the text `%p` stands for.
+    pub prefix: String,
+    pub collision: Collision,
+}
+
+impl Default for Naming {
+    /// The shipped settings rather than empty strings: a mask that never reached `open`
+    /// then names its files the way a first run with no `config.toml` does, which is the
+    /// same reason `MaskState::export` defaults to `{Png, 92, true}` instead of zeros.
+    fn default() -> Self {
+        Self::from(&Output::default())
+    }
+}
+
+impl From<&Output> for Naming {
+    fn from(o: &Output) -> Self {
+        Self {
+            dir: o.save_dir.clone(),
+            template: o.naming_template.clone(),
+            prefix: o.naming_prefix.clone(),
+            collision: o.collision.clone(),
+        }
+    }
+}
+
+impl Naming {
+    /// Where a save that opens no dialog writes: `[output] save_dir`, or §6.2's pictures
+    /// folder while that setting is empty.
+    ///
+    /// `None` is the machine declining to say where its pictures are, and it is carried
+    /// as a refusal rather than resolved here: inventing a directory - temp, home, the
+    /// current working directory - would put the user's screenshots somewhere nobody
+    /// chose, which is the one thing §5.5.4 step 1's "预先配置" exists to prevent.
+    pub fn directory(&self) -> Option<PathBuf> {
+        if self.dir.is_empty() {
+            falcon_core::config::pictures_dir()
+        } else {
+            Some(PathBuf::from(&self.dir))
+        }
+    }
+}
+
+/// §5.5.3's naming rule and §5.5.4's directory, handed over as the mask opens.
+pub fn naming() -> Naming {
+    with(|s| Naming::from(&s.config.output))
+}
+
 /// The flow is over: keep what the layer learned, and write if that moved anything.
 pub fn write_back(layer: &Layer) -> Option<u64> {
     with(|s| s.write_back(layer))
@@ -332,6 +392,44 @@ mod tests {
         assert_eq!(raw.export_opts().quality, 100);
         raw.config.output.jpeg_quality = 0;
         assert_eq!(raw.export_opts().quality, 1);
+    }
+
+    /// §5.5.4 step 1's 预先配置, read out of a real file rather than out of a default - the
+    /// same claim [`export_knobs_come_from_the_file`] makes about the two encoder knobs.
+    ///
+    /// A door that ignored `save_dir` would write into the pictures folder while the user's
+    /// settings said somewhere else, and one that ignored `naming_template` or
+    /// `naming_prefix` would answer a named rule with a timestamped one. All three are
+    /// silent, and all three are why they are asserted against the bytes on disk here: the
+    /// gauge's version of this row can only read a name that already landed, so a door that
+    /// invented the name it wrote would satisfy it.
+    ///
+    /// The empty `save_dir` leg is the other half of §6.2: empty means the pictures folder,
+    /// and a door that read it as a literal directory would write into whatever folder the
+    /// process started in.
+    #[test]
+    fn naming_rows_come_from_the_file() {
+        let dir = sandbox("naming");
+        let path = file_in(&dir);
+        let mut cfg = Config::default();
+        cfg.output.save_dir = dir.to_string_lossy().into_owned();
+        cfg.output.naming_template = "%p-#%i-%t".into();
+        cfg.output.naming_prefix = "snap".into();
+        cfg.output.collision = Collision::KeepBoth;
+        std::fs::write(&path, cfg.export_text().unwrap()).expect("seed");
+        let got = Naming::from(&Settings::open(&path, Some(&path)).config.output);
+        assert_eq!(got.dir, cfg.output.save_dir, "{got:?}");
+        assert_eq!(got.template, "%p-#%i-%t", "{got:?}");
+        assert_eq!(got.prefix, "snap", "{got:?}");
+        assert_eq!(got.collision, Collision::KeepBoth, "{got:?}");
+        assert_eq!(got.directory().as_deref(), Some(dir.as_path()));
+
+        // The shipped default is the one leg no file can be blamed for.
+        let blank = Naming::default();
+        assert!(blank.dir.is_empty(), "{blank:?} 的默认值挑了一个目录");
+        if let Some(p) = blank.directory() {
+            assert!(p.is_absolute(), "{} 不是用户选过的目录", p.display());
+        }
     }
 
     #[test]

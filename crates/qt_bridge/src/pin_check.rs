@@ -735,6 +735,28 @@ fn within_slack(got: &PhysRect, want: &PhysRect) -> bool {
 const PIXEL_TOL: u8 = 8;
 const PIXEL_SHARE: f64 = 0.95;
 
+/// The three rows [`file_pin_rows`] owes, in the order it reaches them. The list is a
+/// constant rather than a memory because the reason below is a count: a leg that stops at
+/// row 1 and says nothing about rows 2 and 3 leaves the door three lines short, and the
+/// reader cannot tell a stopped leg from a different run of the gauge.
+const FILE_PIN_ROWS: [&str; 3] = ["pin from file", "pin from file window", "pin window pixels"];
+
+/// Every row *below* index `after` - the one that stopped this leg - as its own graded
+/// line: named, `Blocked`, and saying what made it unaskable.
+///
+/// `Blocked` and not `Fail`, because the claim the row makes was never put: the file was
+/// not readable, so the window it would have been pinned from does not exist to be looked
+/// for. Item 42 sub-item 2's rule is that a row which asked and a row the desktop refused
+/// are two rows; the same rule read the other way is that a row this run never asked is
+/// still a row the report carries - and P43's 行数不是护栏 is why the name has to be
+/// printed rather than inferred from a length.
+fn unasked_rows(after: usize, why: &str) -> Vec<(Check, &'static str, String)> {
+    FILE_PIN_ROWS[(after + 1).min(FILE_PIN_ROWS.len())..]
+        .iter()
+        .map(|name| (Check::Blocked, *name, format!("这一格没有问：{why}")))
+        .collect()
+}
+
 /// The three rows 存完再钉图 registers (§10 第 43 项 ①), in the order the flow reaches
 /// them: the file, the pin made from it, the window that pin got.
 ///
@@ -757,8 +779,9 @@ const PIXEL_SHARE: f64 = 0.95;
 /// it made is the window the shell says is there. `Blocked` when the point answers
 /// nothing: that is the desktop being unreadable, not the pin missing.
 ///
-/// `fid: 0` means [`plant_file_pin`] refused, and rows 2 and 3 then never run - one row
-/// says the product's own sentence, because grading a window that was never made would
+/// `fid: 0` means [`plant_file_pin`] refused. Rows 2 and 3 are then not gradable - there
+/// is no window to read and none was asked about - so [`unasked_rows`] prints both as
+/// their own `Blocked` line instead of grading a window that was never made, which would
 /// be grading this file.
 fn file_pin_rows(
     frect: Option<PhysRect>,
@@ -768,20 +791,30 @@ fn file_pin_rows(
 ) -> Vec<(Check, &'static str, String)> {
     let named = from_file.display().to_string();
     let Some(rect) = frect else {
-        return vec![(
+        let mut rows = vec![(
             Check::Fail,
             "pin from file",
             format!("{named} 没有钉成贴图：{file_said}"),
         )];
+        rows.extend(unasked_rows(
+            0,
+            &format!("贴图 {fid} 没有 rect，窗与像素两格无从问起"),
+        ));
+        return rows;
     };
     let from_disk = match falcon_core::encode::decode_file(from_file) {
         Ok(f) => f,
         Err(e) => {
-            return vec![(
+            let mut rows = vec![(
                 Check::Fail,
                 "pin from file",
                 format!("{named} 在盘上读不回来：{e}"),
-            )]
+            )];
+            rows.extend(unasked_rows(
+                0,
+                &format!("{} 读不回来，没有可比的首帧", from_file.display()),
+            ));
+            return rows;
         }
     };
     let mut rows: Vec<(Check, &'static str, String)> = Vec::new();
@@ -832,6 +865,12 @@ fn file_pin_rows(
                 "没有一个可见顶层和贴图 {fid} 的 {rect} 重叠（中心 ({},{}) 上是 {at_point:?}）",
                 centre.x, centre.y
             ),
+        ));
+        // The row below reads this window's pixels, and there is no handle to hand it.
+        // Index 1 is the row just pushed, so exactly the one underneath it is owed.
+        rows.extend(unasked_rows(
+            1,
+            &format!("贴图 {fid} 的窗找不着，没有 hwnd 可截"),
         ));
         return rows;
     };
@@ -1437,7 +1476,10 @@ pub fn measure() -> (Check, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{leg_order, qml_leg_keys, real_click, said, same_file, PIN_SCHEDULE};
+    use super::{
+        file_pin_rows, leg_order, qml_leg_keys, real_click, said, same_file, unasked_rows, Check,
+        PhysRect, FILE_PIN_ROWS, PIN_SCHEDULE,
+    };
     use std::path::Path;
 
     /// The keys are the entire protocol between QML and this file, so one key must not
@@ -1644,5 +1686,49 @@ mod tests {
             missing.is_empty() && extra.is_empty(),
             "日程与 PinWindow.qml 的腿对不上：日程有而 QML 不写 {missing:?}；QML 写而日程没有 {extra:?}"
         );
+    }
+
+    /// §10 第 42 项 ② read against this file rather than against the desktop: a leg that
+    /// stops early used to stop *writing*, so the door came back three lines short and the
+    /// only evidence that anything had gone wrong was a row count - which P43 established is
+    /// not a guardrail. Both shapes below are the real stops (no rect, and a file the disk
+    /// will not hand back), and neither is allowed to swallow the rows beneath it.
+    ///
+    /// `Blocked`, not `Fail`, for the rows never asked: their claim was not put to anything,
+    /// and a red row here would say "the pin is wrong" when the run only ever learned that
+    /// the file is unreadable.
+    #[test]
+    fn a_leg_that_stops_early_still_names_the_rows_below_it() {
+        let nowhere = Path::new("falconshot-gauge-this-file-was-never-written.png");
+        let no_rect = file_pin_rows(None, 0, nowhere, "还没有选区：先把要钉的范围拖出来。");
+        let unreadable = file_pin_rows(
+            Some(PhysRect::new(10, 20, 30, 40)),
+            7,
+            nowhere,
+            "已保存到 x.png（30×40）。",
+        );
+        for rows in [&no_rect, &unreadable] {
+            let names: Vec<&str> = rows.iter().map(|(_, name, _)| *name).collect();
+            assert_eq!(names, FILE_PIN_ROWS.to_vec(), "{names:?}");
+            assert_eq!(
+                rows[0].0,
+                Check::Fail,
+                "停住的那一格本身要红：{:?}",
+                rows[0]
+            );
+            for (grade, name, detail) in &rows[1..] {
+                assert_eq!(*grade, Check::Blocked, "{name} 没被问过，不该算红");
+                assert!(!detail.is_empty(), "{name} 那一格连为什么都没说");
+            }
+        }
+
+        // The index is the whole contract between the three stops and this list, so the
+        // boundary is graded: the row under row 2 is exactly the pixels row, and there is
+        // nothing at all under the last one - a slipped index would otherwise reprint a row
+        // the leg did produce, next to the real one and with the same name.
+        let below_two = unasked_rows(1, "没有 hwnd 可截");
+        assert_eq!(below_two.len(), 1, "{below_two:?}");
+        assert_eq!(below_two[0].1, "pin window pixels");
+        assert!(unasked_rows(2, "下面没有格了").is_empty());
     }
 }

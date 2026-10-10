@@ -1,7 +1,10 @@
 //! The one owner of "this picture, into that file, and what it cost" (§5.5.5).
 //!
-//! Two doors write a picture out: the mask's 另存为 (`mask::MaskState::save_out`) and
-//! a pin's (`state::PinState::save_image`). Until P35 they spelled the same act twice,
+//! Three doors write a picture out: the mask's 另存为 (`mask::MaskState::save_out`), a
+//! pin's (`state::PinState::save_image`) and, from P44, the mask's 快速保存
+//! (`mask::MaskState::quick_out`) - the one that opens no dialog and takes its name from
+//! `[output]` instead of from a user typing one. Until P35 the first two spelled the
+//! same act twice,
 //! and the two spellings had drifted: the pin took `..Default::default()` so
 //! `[output] jpeg_quality` was inert on that half of the product (PRD 507 asks for a
 //! configurable JPG quality, not a half-configurable one), it answered in English, and
@@ -13,13 +16,16 @@ use std::borrow::Cow;
 
 use falcon_core::encode::{self, EncodeOptions};
 use falcon_core::frame::Frame;
+use falcon_core::naming;
 
 /// Why the write did not happen. The two arms need different tails from a caller:
 /// a refused name is the user's own doing and stands alone, while a failed write
 /// means the picture is still in memory and can be asked for again.
 #[derive(Debug)]
 pub enum Refusal {
-    /// The name carries an extension this app cannot write. Nothing was touched.
+    /// The name the user's own choosing produced cannot be written - it carries an
+    /// extension this app does not have, or (`[output] collision = keep_both`) a file is
+    /// already there and the settings say not to touch it. Nothing was written.
     BadName(String),
     /// The encoder or the disk said no. The picture is still there.
     Write(String),
@@ -181,6 +187,24 @@ pub fn write_to(
             "{named} 不是本程序会写的格式：用 .png、.jpg 或 .bmp。"
         )));
     };
+    write_decided(frame, target, format, export, subject)
+}
+
+/// The write itself, once both *where* and *which encoder* are settled.
+///
+/// [`write_to`] reaches it through the dialog's name and this file's rules about an
+/// extension; [`quick_to`] reaches it through a name the template built and no dialog
+/// ever opened. Two doors, one sentence: §5.5.4's 快速保存 asks for the same success the
+/// 另存为 reports, and P35 is on this file's head for what two spellings of "this picture
+/// went to that file" cost - one of them said it in English while ignoring
+/// `[output] jpeg_quality`.
+fn write_decided(
+    frame: &Frame,
+    target: std::path::PathBuf,
+    format: encode::Format,
+    export: &EncodeOptions,
+    subject: &str,
+) -> Result<(std::path::PathBuf, String), Refusal> {
     // Counted before the write, from the frame about to be encoded: asking the file
     // afterwards would be asking a JPG whether it kept an alpha channel. `!= 255` and
     // not `== 0`, because a half-transparent pixel is just as unsavable - and this is
@@ -224,6 +248,83 @@ pub fn write_to(
         }
         Err(e) => Err(Refusal::Write(e.to_string())),
     }
+}
+
+/// What the doors that open no dialog have to hand over: the `[output]` fields that
+/// together are §5.5.4 step 1's "预先配置快速保存目录和格式", plus §5.5.3's 命名规则.
+///
+/// The *format* is not in here, because it already lives in [`EncodeOptions::format`]
+/// (`[output] format`) and this owner reads the encoder off that one field for every
+/// door. A second route to "which format" is how a setting goes quietly inert on half a
+/// product.
+pub struct Quick<'a> {
+    /// The directory to write into. Created by the encoder if it is missing.
+    pub dir: &'a std::path::Path,
+    pub template: &'a str,
+    pub prefix: &'a str,
+    /// `%i`, and only the caller knows what number this picture is: a mask counts its
+    /// own 快速保存 presses, because that is the series the user is watching.
+    pub seq: u32,
+    pub collision: &'a naming::Collision,
+}
+
+/// Writes `frame` to the file the settings name, and returns the same answer
+/// [`write_to`] gives.
+///
+/// This is §5.5.4 step 3 - "无需打开文件对话框，直接保存截图" - and the only thing it
+/// changes about the write is who names the file. The name comes from
+/// `[output] naming_template` + `naming_prefix` + the clock the caller read, the
+/// extension from `[output] format`, and a taken name is settled by
+/// `[output] collision`; all four are §5.5.3's rules, which until now had an owner in
+/// [`falcon_core::naming`] that no door ever reached. The sentence, the transparency
+/// count and the quality knob are [`write_decided`]'s, shared with the dialog door, so
+/// the two roads say one thing about one picture.
+///
+/// `facts.monitor` has no answer yet: nothing in this process has decided what a
+/// monitor's *name* is, so `%B` expands to nothing rather than to an id plucked from a
+/// second enumeration that can disagree with the freeze the picture came from. See
+/// §10 第 44 项's carry-over list.
+pub fn quick_to(
+    frame: &Frame,
+    stamp: naming::LocalStamp,
+    facts: naming::NameFacts<'_>,
+    quick: &Quick<'_>,
+    export: &EncodeOptions,
+    subject: &str,
+) -> Result<(std::path::PathBuf, String), Refusal> {
+    let format = export.format;
+    let asked = naming::file_name(
+        quick.template,
+        stamp,
+        quick.prefix,
+        quick.seq,
+        facts,
+        format.ext(),
+    );
+    // The probe is the one `resolve_on_disk` uses, spelled out here because the name this
+    // function computed is also what a refusal has to quote, and a second call that
+    // re-derives it is the same duplicated rule P35 is about.
+    let target = match naming::resolve(quick.dir, &asked, quick.collision, |p: &std::path::Path| {
+        p.exists()
+    }) {
+        Some(path) => path,
+        // `None` means one of two opposite things, and which one it was is readable from
+        // the setting rather than guessed. `Overwrite` cannot answer `None` at all, so
+        // its arm is the same sentence `Increment` runs out of names with - both say
+        // "no name in this directory was usable", which is what the disk reported.
+        None if matches!(quick.collision, naming::Collision::KeepBoth) => {
+            return Err(Refusal::BadName(format!(
+                "{} 已经存在，而 [output] collision 设成了 keep_both：没有覆盖它。",
+                quick.dir.join(&asked).display()
+            )));
+        }
+        None => {
+            return Err(Refusal::BadName(format!(
+                "{asked} 加序号也不能在这个目录里找到一个没人占的名字。"
+            )));
+        }
+    };
+    write_decided(frame, target, format, export, subject)
 }
 
 #[cfg(test)]
@@ -738,5 +839,256 @@ mod tests {
             }
             Refusal::Write(said) => panic!("a refused name came back as a failed write: {said}"),
         }
+    }
+
+    /// A clock the test owns. `quick_to` takes the reading rather than taking a
+    /// `SystemTime::now()` of its own for the reason core's `LocalStamp` documents - the
+    /// zone is the platform's business - and a fixed one is what lets the *name* be
+    /// asserted instead of only being looked at.
+    fn stamp() -> naming::LocalStamp {
+        naming::LocalStamp {
+            year: 2026,
+            month: 10,
+            day: 6,
+            hour: 7,
+            min: 8,
+            sec: 9,
+        }
+    }
+
+    /// §5.5.4 steps 1 and 3: a save that opens no dialog still has to produce a file, and
+    /// the file it produces is the one `[output]` describes. The name is asserted as a
+    /// name - template, prefix and extension all read out of the settings - because that
+    /// is the half of this door a dialog never exercised, and the sentence is asserted
+    /// against the path it returned for the same reason §10 第 43 项 ① asserted the dialog
+    /// door's: a promise about a file the caller does not hold is a promise nobody can
+    /// keep.
+    #[test]
+    fn a_quick_save_writes_the_file_the_settings_named() {
+        let dir = sandbox("quick-name");
+        let collision = naming::Collision::Increment;
+        let quick = Quick {
+            dir: &dir,
+            template: "%p_%Y-%m-%d_%H%M%S",
+            prefix: "falcon",
+            seq: 1,
+            collision: &collision,
+        };
+        let (landed, said) = quick_to(
+            &textured(48, 32),
+            stamp(),
+            naming::NameFacts::default(),
+            &quick,
+            &EncodeOptions::default(),
+            "选区",
+        )
+        .expect("write");
+        assert_eq!(
+            landed.file_name().map(|n| n.to_string_lossy().into_owned()),
+            Some("falcon_2026-10-06_070809.png".to_string()),
+            "the template, the prefix or the extension did not come from `[output]`"
+        );
+        assert!(landed.exists(), "{landed:?} is not on disk: {said}");
+        assert_eq!(written_as(&landed), Some(Format::Png), "{said}");
+        assert!(
+            said.contains(&landed.display().to_string()),
+            "the sentence promised a different file than the one it returned: {said}"
+        );
+        assert!(said.contains("选区 48×32 像素"), "{said}");
+    }
+
+    /// `%i` is §5.5.3's 序号 and the caller owns the number, so the only thing this owner
+    /// can get wrong is spelling it: three digits, zero-padded, in front of the extension.
+    #[test]
+    fn the_sequence_the_caller_counts_is_the_sequence_in_the_name() {
+        let dir = sandbox("quick-seq");
+        let collision = naming::Collision::Increment;
+        let quick = Quick {
+            dir: &dir,
+            template: "%p-#%i-%t",
+            prefix: "falcon",
+            seq: 3,
+            collision: &collision,
+        };
+        let facts = naming::NameFacts {
+            width: 8,
+            height: 8,
+            monitor: "",
+            tool: "rect",
+        };
+        let (landed, _) = quick_to(
+            &textured(8, 8),
+            stamp(),
+            facts,
+            &quick,
+            &EncodeOptions::default(),
+            "选区",
+        )
+        .expect("write");
+        assert_eq!(
+            landed.file_name().map(|n| n.to_string_lossy().into_owned()),
+            Some("falcon-#003-rect.png".to_string())
+        );
+    }
+
+    /// The 同一句 claim, and the one that the whole module exists to keep: the same
+    /// picture through the dialog door and through this one differs in *where* it lands
+    /// and nothing else. `[output] format` is the extension here where the dialog's filter
+    /// was the extension there, and the flattened-transparency clause - the sentence P35
+    /// found the pin door missing - has to come out character for character the same.
+    #[test]
+    fn the_two_roads_say_one_sentence_about_one_picture() {
+        let frame = textured(64, 64);
+        let lost = frame
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] != 255)
+            .count();
+        assert!(lost > 0, "the test picture had nothing to lose");
+        let export = EncodeOptions {
+            format: Format::Jpg,
+            ..Default::default()
+        };
+
+        let dialog = sandbox("quick-clause-dialog");
+        let (_, by_dialog) = write_to(
+            &frame,
+            &dialog.join("shot.jpg").to_string_lossy(),
+            &export,
+            "选区",
+            "",
+        )
+        .expect("dialog write");
+        let quick = sandbox("quick-clause-quick");
+        let collision = naming::Collision::Increment;
+        let (landed, by_quick) = quick_to(
+            &frame,
+            stamp(),
+            naming::NameFacts::default(),
+            &Quick {
+                dir: &quick,
+                template: "%p_%Y-%m-%d_%H%M%S",
+                prefix: "falcon",
+                seq: 1,
+                collision: &collision,
+            },
+            &export,
+            "选区",
+        )
+        .expect("quick write");
+
+        // The JPG really was a JPG: the extension came from `[output] format` and the
+        // encoder that ran agrees with it.
+        assert_eq!(written_as(&landed), Some(Format::Jpg), "{by_quick}");
+        for said in [&by_dialog, &by_quick] {
+            assert!(
+                said.contains(&format!(
+                    "选区里有 {lost} px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。"
+                )),
+                "{said}"
+            );
+            assert!(said.contains("选区 64×64 像素"), "{said}");
+        }
+        // Same size clause, same loss clause, same opening: cut each sentence at its own
+        // path and the two halves are one string.
+        let (Some(at_dialog), Some(at_quick)) = (by_dialog.find('（'), by_quick.find('（'))
+        else {
+            panic!("a sentence without a size clause: {by_dialog} / {by_quick}");
+        };
+        assert_eq!(&by_dialog[at_dialog..], &by_quick[at_quick..]);
+    }
+
+    /// `[output] collision` is a rule about the disk, so it can only be measured against
+    /// one: both legs write twice into one directory at one clock reading, which is the
+    /// only shape of input where the two settings answer differently. `increment` makes a
+    /// sibling; `keep_both` refuses, names the file it would have written, and leaves the
+    /// directory exactly as it found it.
+    #[test]
+    fn a_taken_name_is_settled_by_the_collision_setting() {
+        let frame = textured(16, 12);
+        fn plan<'a>(dir: &'a std::path::Path, collision: &'a naming::Collision) -> Quick<'a> {
+            Quick {
+                dir,
+                template: "%p_%Y-%m-%d_%H%M%S",
+                prefix: "falcon",
+                seq: 1,
+                collision,
+            }
+        }
+
+        let dir = sandbox("quick-increment");
+        let first = quick_to(
+            &frame,
+            stamp(),
+            naming::NameFacts::default(),
+            &plan(&dir, &naming::Collision::Increment),
+            &EncodeOptions::default(),
+            "选区",
+        )
+        .expect("first write");
+        let second = quick_to(
+            &frame,
+            stamp(),
+            naming::NameFacts::default(),
+            &plan(&dir, &naming::Collision::Increment),
+            &EncodeOptions::default(),
+            "选区",
+        )
+        .expect("second write");
+        assert_eq!(
+            second
+                .0
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+            Some("falcon_2026-10-06_070809_1.png".to_string()),
+            "{} then {}",
+            first.0.display(),
+            second.0.display()
+        );
+        assert!(second.1.contains("_1.png"), "{second:#?}");
+
+        let dir = sandbox("quick-keep-both");
+        quick_to(
+            &frame,
+            stamp(),
+            naming::NameFacts::default(),
+            &plan(&dir, &naming::Collision::KeepBoth),
+            &EncodeOptions::default(),
+            "选区",
+        )
+        .expect("first write");
+        let before = std::fs::read_dir(&dir)
+            .expect("dir")
+            .filter_map(Result::ok)
+            .count();
+        let err = quick_to(
+            &frame,
+            stamp(),
+            naming::NameFacts::default(),
+            &plan(&dir, &naming::Collision::KeepBoth),
+            &EncodeOptions::default(),
+            "选区",
+        )
+        .expect_err("keep_both overwrote a taken name");
+        match err {
+            Refusal::BadName(said) => {
+                assert!(said.contains("keep_both"), "{said}");
+                assert!(said.contains("falcon_2026-10-06_070809.png"), "{said}");
+                assert!(!said.contains("file://"), "{said}");
+            }
+            Refusal::Write(said) => {
+                panic!("a refused name came back as a failed write: {said}")
+            }
+        }
+        assert_eq!(
+            std::fs::read_dir(&dir)
+                .expect("dir")
+                .filter_map(Result::ok)
+                .count(),
+            before,
+            "the refusal wrote a file anyway"
+        );
     }
 }

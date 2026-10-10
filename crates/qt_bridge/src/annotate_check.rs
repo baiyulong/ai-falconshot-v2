@@ -475,6 +475,52 @@ fn save_gauge_dir() -> PathBuf {
 /// the one the shell named.
 const DIALOG_STEM: &str = "dialog";
 
+/// §5.5.4's 快速保存 leg, named here rather than in the settings file the run happens to
+/// read.
+///
+/// The door takes its directory and its template from `[output]`, so a gauge that pressed
+/// it while the user's own settings were in force would write the user's screenshots into
+/// the user's pictures folder - §9.1 第十五条's debt exactly, and the same one [`plant`]
+/// pins the config writes against. So [`plant`] replaces the mask's [`crate::settings::Naming`]
+/// with these two fields plus the directory below, and the row that grades the *file's*
+/// naming reads the copy it displaced, taken before the swap.
+///
+/// `%p-%i` is the shape that makes the series readable: the prefix is this run's, the
+/// number is the flow's own count, and no clock is involved, so a row that expects
+/// `quick-002` cannot go red because the run straddled a second.
+const QUICK_PREFIX: &str = "quick";
+const QUICK_TEMPLATE: &str = "%p-%i";
+
+/// What the mask had read out of the settings file, before [`plant`] pointed the door
+/// somewhere else. `None` is a run that never reached `plant`, which [`quick_rows`]
+/// answers as its own row rather than as a passing comparison.
+static QUICK_BASE: Mutex<Option<crate::settings::Naming>> = Mutex::new(None);
+
+fn quick_base_take() -> Option<crate::settings::Naming> {
+    QUICK_BASE
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take()
+}
+
+/// One field of the dialog census [`crate::session::shim::push_dialog_button`] prints,
+/// read by name rather than by position - the same rule [`crate::r13`] applies to a
+/// `top_levels` line, and for the same reason: the fields in front of it change with which
+/// branch the C++ took, and a positional read would grade the branch instead of the count.
+pub(crate) fn census_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    line.split_whitespace()
+        .find_map(|token| token.strip_prefix(key))
+}
+
+/// The one claim both censuses have to make for the dialog-free door to be that: nothing
+/// this process owns is a `#32770`. `pushed=no` is part of it because the probe *presses*
+/// what it finds - so a quick door that opened a dialog would answer `pushed=yes`, and the
+/// run would dismiss the window it had just proved it should not have opened, which is what
+/// §10 第 38 项 ①'s self-dismissal rule asks of a probe in that case.
+pub(crate) fn census_says_no_dialog(line: &str) -> bool {
+    census_field(line, "dialogs=") == Some("0") && line.starts_with("pushed=no")
+}
+
 /// The mask's own dialog leg, in the same shape and for the same reasons as
 /// [`crate::pin_check`]'s: a wait per phase, up to [`DIALOG_PUSH_TRIES_MAX`] of them for
 /// the shell to make its `#32770`, and the run ending one wait after the leg says `done`.
@@ -556,8 +602,33 @@ pub fn plant(shader: bool) -> Result<String, String> {
     // run and never reports.
     let pinned = crate::settings::pin_writes(&gauge_config());
     mask_check::open(shader)?;
+    // §5.5.4's door takes its directory from `[output] save_dir`, and this run's settings
+    // may say nothing about it - in which case §6.2's pictures folder *is* the answer, and
+    // every quick save of a gauge would land in the user's own collection. §9.1 第十五条 is
+    // exactly this debt, so the mask's naming is swapped for the gauge's here, before any
+    // window exists and before the leg below can press the door.
+    //
+    // The copy it displaced is kept for [`quick_rows`]'s first row: that one grades the
+    // half of the chain this swap would otherwise hide (settings file → `open` →
+    // `MaskState::naming`), and it can only be read before the override, not after.
+    let from_file = mask::with(|m| m.naming.clone());
+    *QUICK_BASE.lock().unwrap_or_else(PoisonError::into_inner) = Some(from_file);
+    mask::with(|m| {
+        m.naming = crate::settings::Naming {
+            dir: save_gauge_dir().to_string_lossy().into_owned(),
+            template: QUICK_TEMPLATE.to_string(),
+            prefix: QUICK_PREFIX.to_string(),
+            collision: falcon_core::naming::Collision::Increment,
+        }
+    });
     let slots = mask::with(|m| m.slots.clone());
-    let mut notes = vec![format!("config writes pinned to {}", pinned.display())];
+    let mut notes = vec![
+        format!("config writes pinned to {}", pinned.display()),
+        format!(
+            "quick save 命名指到 {}，模板 {QUICK_TEMPLATE} 前缀 {QUICK_PREFIX}",
+            save_gauge_dir().display()
+        ),
+    ];
 
     // §10 第 38 项 ①'s *other* door. The two rows below this run already grade a 另存为
     // whose file Rust named and wrote itself, which is the half of the flow that never
@@ -574,8 +645,10 @@ pub fn plant(shader: bool) -> Result<String, String> {
     // The stale files go here rather than in [`measure`]: this write lands while the run is
     // still going, so a file the last run left behind would answer for a click that never
     // happened, and the extension the shell picks is not something this file can predict.
-    // Every name beginning with the stem is in scope, because the filter leg below plants
-    // `<stem>-f` through the door and its three possible outcomes are this run's to clear.
+    // Every name beginning with one of the two stems is in scope, because the filter leg
+    // below plants `<stem>-f` through the door and its three possible outcomes are this
+    // run's to clear - and `quick-*` is the 快速保存 leg's, whose row counts the files in
+    // the directory rather than only the one it expects.
     let dialog_dir = save_gauge_dir();
     let _ = std::fs::create_dir_all(&dialog_dir);
     if let Ok(entries) = std::fs::read_dir(&dialog_dir) {
@@ -584,7 +657,7 @@ pub fn plant(shader: bool) -> Result<String, String> {
             let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            if stem.starts_with(DIALOG_STEM) {
+            if stem.starts_with(DIALOG_STEM) || stem.starts_with(QUICK_PREFIX) {
                 let _ = std::fs::remove_file(&path);
             }
         }
@@ -2469,6 +2542,187 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
     mask_dialog_rows(rep, &dir, &png);
     pin_save_rows(rep, want, &dir, &png, &jpg);
     save_then_pin_rows(rep, &dir);
+    quick_rows(rep, &dir, &png, &said_png);
+}
+
+/// §5.5.4's 快速保存 (PRD 491, §10 第 44 项 ①), read against the directory it wrote, the
+/// window census it owes, and the sentence the *other* door already says about the same
+/// picture.
+///
+/// Three rungs, because the three ways this feature can fail are three different bugs:
+///
+/// * the file's half - `[output]` has to reach the mask at `open`, which is exactly the
+///   claim [`plant`]'s override below cannot make. So the copy the override displaced is
+///   kept and compared first, against the same file read again by a second route.
+/// * the panel's half - `AnnotationToolbar.qml`'s `quickSave()` is what a pointer reaches,
+///   and every leg that calls Rust directly stays green over a cell that never forwards the
+///   call. That is §10 第 38 项 ①'s lesson, and P43's 存完再钉图 row is the same shape one
+///   rung away.
+/// * the series' half - `%i` counts the presses of *this flow*, and only a run that presses
+///   more than once can tell that apart from a run that names one file and overwrites it.
+///
+/// The opposite of each claim is the file system and `EnumWindows`, not a memory of what the
+/// door returned: names come off the directory listing, the encoder off the header bytes, the
+/// picture byte-for-byte against the file 另存为 wrote, and the dialog count from a probe that
+/// presses nothing while the count is 0.
+fn quick_rows(rep: &mut Report, dir: &Path, mask_png: &Path, said_png: &str) {
+    // ---- Which settings the door is running under, and where that came from.
+    let read_from = crate::settings::with(|s| s.read_from.clone());
+    let (config, _) = falcon_core::config::Config::load(&read_from);
+    let wants = crate::settings::Naming::from(&config.output);
+    match quick_base_take() {
+        None => rep.row(
+            "quick save naming from file",
+            Check::Fail,
+            "量具没留下 open 拿走的那份命名，这一格问不了".to_string(),
+        ),
+        Some(held) => {
+            let same = held == wants;
+            rep.row(
+                "quick save naming from file",
+                Check::from(same),
+                format!(
+                    "{} 现在读成 {wants:?}；遮罩 open 时拿走的是 {held:?}，目录落成 {:?}",
+                    read_from.display(),
+                    held.directory().map(|p| p.display().to_string())
+                ),
+            );
+        }
+    }
+
+    // ---- The cell's own press, from inside the event loop.
+    let lines = mask_with(|l| l.clone());
+    let cell = said(&lines, "q-cell");
+    let census_cell = said(&lines, "q-census").unwrap_or("");
+    let (told, msg) = match cell {
+        Some(v) => v.split_once('|').unwrap_or((v, "")),
+        None => ("", ""),
+    };
+    let by_cell = landed_path(msg);
+    let head_cell = by_cell.as_ref().and_then(|p| crate::save::written_as(p));
+    rep.row(
+        "quick save via qml cell",
+        match cell {
+            None => Check::Blocked,
+            Some(_) => Check::from(
+                told == "true"
+                    && head_cell == Some(falcon_core::encode::Format::Png)
+                    && census_says_no_dialog(census_cell),
+            ),
+        },
+        format!(
+            "面板那句 {msg:?}（要求 delivered=true 且那个文件头四字节是 PNG，读出 {head_cell:?}）；\
+             它自己那份窗口普查 {census_cell:?}（要求 pushed=no 且 dialogs=0）"
+        ),
+    );
+
+    // ---- Two presses from Rust, and the name each one owes.
+    let census_before = session::shim::push_dialog_button();
+    let owed = mask::with(|m| m.quick_saves);
+    let mut legs = Vec::new();
+    let mut agreed = true;
+    let mut last = (PathBuf::new(), String::new());
+    for step in 1..=2u32 {
+        let want = dir.join(format!("{QUICK_PREFIX}-{:03}.png", owed + step));
+        let did = mask::with(|m| m.quick_out());
+        let said = mask::with(|m| m.message.clone());
+        let name = want
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let head = crate::save::written_as(&want);
+        let named = said.contains(&name);
+        agreed &= did && named && head == Some(falcon_core::encode::Format::Png);
+        last = (want.clone(), said.clone());
+        legs.push(format!(
+            "第 {} 次：门={did} 点名 {name}={named} 头字节={head:?} 那句 {said:?}",
+            owed + step
+        ));
+    }
+    let census_after = session::shim::push_dialog_button();
+    let on_disk: Vec<String> = {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .map(|entries| {
+                entries
+                    .flatten()
+                    .filter_map(|e| {
+                        let n = e.file_name().to_string_lossy().into_owned();
+                        n.starts_with(QUICK_PREFIX).then_some(n)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    };
+    // One file per press, counted off the listing rather than off the door's own `true`: a
+    // door that wrote every candidate name, or that overwrote the one it had already made,
+    // answers `true` twice and leaves one or three files behind.
+    rep.row(
+        "quick save counts its own series",
+        Check::from(agreed && on_disk.len() == (owed + 2) as usize),
+        format!(
+            "{} 次之前盘上有 {owed} 份，两次之后读成 {} 份 {on_disk:?}；{}",
+            owed,
+            on_disk.len(),
+            legs.join(" ; ")
+        ),
+    );
+
+    // ---- The two doors, one picture, one sentence.
+    let by_rust = std::fs::read(&last.0).ok();
+    let wrote_dialog = std::fs::read(mask_png).ok();
+    let written_rust = by_rust.as_ref().map_or(0, |v| v.len());
+    let written_dialog = wrote_dialog.as_ref().map_or(0, |v| v.len());
+    let same_bytes = by_rust.is_some() && by_rust == wrote_dialog;
+    let tail = |said: &str| said.find('（').map(|at| said[at..].to_string());
+    let said_tail = tail(&last.1);
+    let dialog_tail = tail(said_png);
+    let same_said = said_tail.is_some() && said_tail == dialog_tail;
+    rep.row(
+        "quick save says what 另存为 said",
+        Check::from(same_bytes && same_said),
+        format!(
+            "{} 与 {} 字节一致={same_bytes}（{written_rust} B 对 {written_dialog} B）；\
+             去掉各自的路径之后那句一致={same_said}，快速保存那句剩 {said_tail:?}，\
+             另存为那句剩 {dialog_tail:?}",
+            last.0.display(),
+            mask_png.display(),
+        ),
+    );
+
+    // ---- And the claim §5.5.4 step 3 is named for: nothing was opened.
+    let tops_before = census_field(&census_before, "mine_tops");
+    let tops_after = census_field(&census_after, "mine_tops");
+    rep.row(
+        "quick save opened no dialog",
+        Check::from(
+            census_says_no_dialog(&census_before)
+                && census_says_no_dialog(&census_after)
+                && tops_before == tops_after,
+        ),
+        format!(
+            "两压之前 {census_before:?}；两压之后 {census_after:?}（要求两次都 pushed=no、\
+             dialogs=0，且 mine_tops 不变；两次读成 {tops_before:?} 与 {tops_after:?}）"
+        ),
+    );
+    rep.note(
+        "quick save 别人的对话框",
+        format!(
+            "foreign_dialogs={:?}（只数不碰：别的进程也能在这台桌面上摆出一个 #32770）",
+            census_field(&census_after, "foreign_dialogs=").unwrap_or("?")
+        ),
+    );
+}
+
+/// The path the product's own success sentence names, in the shape it names it:
+/// `已保存到 <path>（…）`. Read rather than assumed, because the row below compares it to a
+/// file this run picked - and if the door wrote one thing and said another, that difference
+/// is the finding, not an inconvenience.
+pub(crate) fn landed_path(said: &str) -> Option<PathBuf> {
+    let rest = said.strip_prefix("已保存到 ")?;
+    let at = rest.find('（')?;
+    Some(PathBuf::from(&rest[..at]))
 }
 
 /// The same act at either output door, closed by a click rather than by this file.
@@ -2504,7 +2758,9 @@ pub(crate) fn before_is_products_own(was: Option<&str>, pre: Option<&str>) -> bo
 /// by an earlier one. `pin-after` is the 存完再钉图 leg (§10 第 43 项 ①) and rides along for
 /// that same reason: it overwrites `message`, so it has to be read before the refusal puts
 /// its own sentence there. `dlg-dismiss`/`dlg-rejected` are the two confessions that may be
-/// absent.
+/// absent. `q-cell`/`q-census` are §5.5.4's 快速保存 (§10 第 44 项 ①) and sit *last* for the
+/// same reason `pre-save` sits where it does: both read and write the one `message` slot, so
+/// they may only speak once the dialog's own before/after pair has been taken.
 pub(crate) const MASK_SCHEDULE: &[&str] = &[
     "dlg-folder",
     "dlg-name",
@@ -2524,6 +2780,8 @@ pub(crate) const MASK_SCHEDULE: &[&str] = &[
     "dlg-after",
     "dlg-dismiss",
     "dlg-rejected",
+    "q-cell",
+    "q-census",
     "done",
 ];
 
@@ -3612,6 +3870,52 @@ mod tests {
     use super::*;
     use falcon_core::capture::{FrozenMonitor, MonitorInfo};
     use falcon_core::geometry::Scale;
+
+    /// §10 第 44 项 ①'s three reads, each against the shape the C++ probe and the product's
+    /// sentence really have. The two census lines below are copied out of the archived P43
+    /// logs rather than invented: the first is what a quiet desktop answers, the second what
+    /// the shell's 另存为 answers once it is up - and the third is the *other* `pushed=no`
+    /// branch, which is not a quiet desktop at all (`dialogs=1`: the window was there, it
+    /// just had no default button). A helper that read only the prefix would call that one
+    /// "no dialog", and the row would pass on the exact thing it exists to catch.
+    #[test]
+    fn the_quick_save_rows_read_the_census_and_the_sentence_by_name() {
+        let quiet = "pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=13 \
+                     mine_visible=1 foreign_dialogs=1 \
+                     mine=[Qt6101QWindowIcon][falconshot-mask-m0-display1]";
+        let open = "pushed=yes dialog=0x4c134e class=[#32770] title=[另存为] dialogs=1 \
+                    desc=50 buttons=1 button=0xa btitle=[保存(&S)] bid=1 ret=0 visible_after=0";
+        assert!(census_says_no_dialog(quiet), "{quiet}");
+        assert!(!census_says_no_dialog(open), "{open}");
+        assert!(!census_says_no_dialog(
+            "pushed=no reason=no-enabled-idok-button dialogs=1 desc=50 buttons=2 title=[另存为]"
+        ));
+        assert_eq!(census_field(quiet, "mine_tops="), Some("13"));
+        assert_eq!(census_field(quiet, "foreign_dialogs="), Some("1"));
+        // Read by name, so the branch that has no such field answers `None` instead of
+        // borrowing the number out of whatever position it happens to fall in.
+        assert_eq!(census_field(open, "mine_tops="), None);
+        assert_eq!(
+            census_field(
+                "pushed=yes dialog=0x1 mine_tops=99 dialogs=1 buttons=1 bid=1",
+                "mine_tops="
+            ),
+            Some("99")
+        );
+
+        assert_eq!(
+            landed_path("已保存到 C:\\t\\quick-002.png（选区 800×600 像素）。"),
+            Some(PathBuf::from("C:\\t\\quick-002.png"))
+        );
+        // The two shapes that are not a landing: a refusal, and a success line that lost
+        // the clause the size of the picture lives in. Guessing a path from either would
+        // let a row read a file the door never said it wrote.
+        assert_eq!(
+            landed_path("保存失败：路径不存在。截图还在，可以再保存一次。"),
+            None
+        );
+        assert_eq!(landed_path("已保存到 c.png"), None);
+    }
 
     /// §10 第 43 项 ①: the door that saves and then pins answers both acts in one
     /// sentence, and the id in it is the only handle the report has on the pin the product

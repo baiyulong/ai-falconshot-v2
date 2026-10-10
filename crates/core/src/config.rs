@@ -328,6 +328,8 @@ pub struct Output {
     pub jpeg_quality: u32,
     /// §5.5.3 naming template, see [`crate::naming`].
     pub naming_template: String,
+    /// §5.5.3's 自定义前缀 — the text `%p` of [`Self::naming_template`] stands for.
+    pub naming_prefix: String,
     pub collision: Collision,
     /// §5.5.6 rounded corners; 0 off.
     pub corner_radius: u32,
@@ -352,6 +354,7 @@ impl Default for Output {
             format: Format::Png,
             jpeg_quality: 92,
             naming_template: crate::naming::DEFAULT_TEMPLATE.into(),
+            naming_prefix: "falcon".into(),
             collision: Collision::Increment,
             corner_radius: 0,
             shadow_size: 0,
@@ -1233,6 +1236,7 @@ const SUGGESTED_PREFIXES: &[&str] = &[
     "pin.",
     "output.save_dir",
     "output.naming_template",
+    "output.naming_prefix",
     "output.collision",
     "output.format",
 ];
@@ -1467,6 +1471,20 @@ fn quarantine(path: &Path) -> Option<PathBuf> {
         }
         i += 1;
     }
+}
+
+/// Where a save with no configured directory goes: the user's pictures folder
+/// (§6.2 lets the user point the auto-save directory somewhere else, and says where
+/// it goes when they have not).
+///
+/// `None` is this machine declining to say where its pictures are, which is a different
+/// answer from "somewhere else then": a caller that invented a directory here would put
+/// screenshots where nobody chose to put them, so the refusal travels up as a refusal.
+/// The known folder is asked of the shell rather than built from `%USERPROFILE%\Pictures`,
+/// because a redirected or OneDrive-held pictures folder is a real configuration and
+/// concatenating a home path would quietly save beside it instead of into it.
+pub fn pictures_dir() -> Option<PathBuf> {
+    directories::UserDirs::new().and_then(|d| d.picture_dir().map(Path::to_path_buf))
 }
 
 /// Where `config.toml` lives: the OS config dir, unless `advanced.data_dir`

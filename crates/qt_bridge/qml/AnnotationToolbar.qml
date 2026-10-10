@@ -162,6 +162,18 @@ Rectangle {
         saveAs.open()
     }
 
+    /// §5.5.4's 快速保存, from this cell or from `Ctrl+Shift+S`: the same stitched picture
+    /// 保存 writes, into the file `[output]` names, with no dialog at all.
+    ///
+    /// Nothing is asked of the user, which is the feature rather than a shortcut for it -
+    /// §5.5.4 step 3 is "无需打开文件对话框，直接保存截图". What the settings have to have
+    /// is step 1's 目录 and 格式, and a machine that cannot name either one answers in
+    /// Rust's sentence instead of writing somewhere nobody chose.
+    function quickSave() {
+        bar.delivered = bar.view.quickSave()
+        bar.grabbed()
+    }
+
     /// PRD 433 / 459's 完成后可…贴图, in the one order that makes the floating picture an
     /// artifact rather than a second rendering: 另存为 first, then a 贴图 made from the file
     /// that landed (§10 第 43 项 ①).
@@ -312,7 +324,27 @@ Rectangle {
             saveAs.reject()
         }
         bar.dlgLeg = false
+        bar.quickLeg()
         gaugeSay("done", bar.gauge[0])
+    }
+
+    // §5.5.4's 快速保存, asked the way the cell asks it: `quickSave` is the very function
+    // the 快速保存 `Cell` taps, so this leg covers the panel's own handler and not only the
+    // invokable beneath it - which is the one rung every Rust-side leg cannot see.
+    //
+    // The census that follows is this run's own definition of "opens no dialog": the probe
+    // counts this process's `#32770` windows and, when the count is 0, presses nothing at
+    // all. A quick door that did open one would be answered by `pushed=yes`, and the window
+    // dismissed - §10 第 38 项 ①'s rule that a probe always cleans up after itself, kept
+    // even at a door whose whole claim is that there is nothing to clean up.
+    //
+    // It runs *last*, after the dialog's before/after pair has been read, because `message`
+    // is one slot and P39's `accept-was`/`pre-save` comparison has to finish before anything
+    // else speaks through it.
+    function quickLeg() {
+        bar.quickSave()
+        bar.gaugeSay("q-cell", String(bar.delivered) + "|" + bar.view.message)
+        bar.gaugeSay("q-census", bar.session.pushDialogButton())
     }
 
     Timer {
@@ -782,6 +814,9 @@ Rectangle {
         // (§5.5.2, §5.5.5), and they are greyed off with the selection rather than left
         // clickable, because a delivery with nothing selected is a refusal the user has
         // to be handed a sentence for. `Ctrl+C` and `Ctrl+S` still reach Rust's answer.
+        // 快速保存 joins them from §5.5.4 with the same greying and the same chord rule,
+        // and with no dialog to open - which is why its refusal has to be a sentence too:
+        // a door that opens nothing leaves the message line as the only thing a user sees.
         Row {
             spacing: 2
 
@@ -830,6 +865,16 @@ Rectangle {
                 label: "保存"
                 usable: bar.view.selected
                 onTapped: bar.save()
+            }
+
+            // §5.5.4: the same write with no dialog in front of it. Next to 保存 because
+            // that is where the user looks for a save, and named 快速保存 because the two
+            // have to be tellable apart on screen - one asks for a name, this one takes
+            // the one the settings already hold.
+            Cell {
+                label: "快速保存"
+                usable: bar.view.selected
+                onTapped: bar.quickSave()
             }
 
             // PRD 433's "完成后可复制、保存或贴图" read as one flow instead of two: the
