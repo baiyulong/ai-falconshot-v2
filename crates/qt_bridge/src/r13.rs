@@ -118,6 +118,7 @@ impl Stats {
 pub(crate) struct Report {
     out: Vec<String>,
     worst: Check,
+    rows: usize,
 }
 
 impl Report {
@@ -126,6 +127,7 @@ impl Report {
         Report {
             out: Vec::new(),
             worst: Check::Pass,
+            rows: 0,
         }
     }
 
@@ -133,8 +135,16 @@ impl Report {
         if verdict > self.worst {
             self.worst = verdict;
         }
+        self.rows += 1;
         self.out
             .push(format!("{label:<22} {:<4} {detail}", verdict.tag()));
+    }
+
+    /// 已经发过几格。第 46 项 ④：一段的条数由这一段自己数出来，不再抄进另一句话里——
+    /// P44 那句手抄的"十三格"在本轮往 `quick_rows` 里加了两格之后就是一个错字，而错字不会
+    /// 让任何一行变红。`note` 不算：它是读数，不是判定。
+    pub(crate) fn row_count(&self) -> usize {
+        self.rows
     }
 
     /// A measurement with no verdict attached. The matrix exists to record which
@@ -268,10 +278,7 @@ pub(crate) fn parse_size(info: &str) -> Option<(u32, u32)> {
 /// Read the screen, then read the same screen four other ways, and print what
 /// each one saw. Runs after the event loop, while the windows still exist.
 pub fn measure(id: PinId) -> (Check, String) {
-    let mut rep = Report {
-        out: Vec::new(),
-        worst: Check::Pass,
-    };
+    let mut rep = Report::new();
     let view = state::with(|s| s.view_data(id));
     let rect = PhysRect::new(
         view.pos_x,

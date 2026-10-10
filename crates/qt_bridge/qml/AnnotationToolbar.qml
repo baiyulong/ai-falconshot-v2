@@ -80,6 +80,12 @@ Rectangle {
     /// Every attempt's own answer, kept apart so the count is not the only evidence.
     property string pushTriesLog: ""
 
+    /// 遮罩窗口自己，只给 `--ink` 量具的一条腿用（第 46 项 ②）。`Ctrl+…` 的匹配在
+    /// `CaptureMask.qml` 的 `chord()` 里，那是窗口那一层的函数，面板够不着 `win` 这个 id：
+    /// 别的属性都是窗口把对象**递进来**（`view`、`session`），这一条同规矩，递的是宿主本身。
+    /// 产品会话里没人绑它，于是它是 null，而那条腿也就不会跑。
+    property var chordHost: null
+
     color: "#f0232326"
     border.color: "#55555c"
     border.width: 1
@@ -376,6 +382,19 @@ Rectangle {
         bar.gaugeSay("q-click", clickLine)
         bar.quickSave()
         bar.gaugeSay("q-cell", String(bar.delivered) + "|" + bar.view.message)
+        // 上面那句是面板函数被**直接调用**的样子；这一句起的是 Cell 自己的 `tapped` 信号，
+        // 也就是 `MouseArea.onReleased` 在一次真释放里做的唯一一件事（第 46 项 ②）。两句之差
+        // 才是这条判定的内容：`onTapped` 那根线到底接上没有——接上没有过一次点，就没人能替它作证。
+        quickCell.tapped()
+        bar.gaugeSay("q-cellown", String(bar.delivered) + "|" + bar.view.message)
+        // 第三段从窗口那层走进来：`chord()` 拿到与真按键完全相同的两个数值，判完再把它自己的
+        // 分派交给 `inkBar.quickSave()`。合成的按键本轮不做（注入的按键会落进当时有焦点的应用，
+        // 而跑级时焦点在谁那里产品说不出），所以这条覆盖"匹配 + 分派"那两步，欠的那一步写在
+        // `CaptureMask.qml` 的注释里：Qt 把 WM_KEYDOWN 翻成 event.key / event.modifiers。
+        const chordSaid = bar.chordHost
+            ? bar.chordHost.chord(Qt.Key_S, Qt.ControlModifier | Qt.ShiftModifier)
+            : "nohost"
+        bar.gaugeSay("q-chord", String(chordSaid) + "|" + bar.view.message)
         bar.gaugeSay("q-census", bar.session.pushDialogButton())
     }
 
@@ -904,6 +923,7 @@ Rectangle {
             // have to be tellable apart on screen - one asks for a name, this one takes
             // the one the settings already hold.
             Cell {
+                id: quickCell
                 label: "快速保存"
                 usable: bar.view.selected
                 onTapped: bar.quickSave()
@@ -943,7 +963,7 @@ Rectangle {
             // 读起来就是一行在邀请人点的字。
             Rectangle {
                 id: notice
-                visible: bar.view.message.length > 0
+                visible: bar.view.message.length > 0 || bar.view.pre_notice.length > 0
                 anchors.verticalCenter: parent.verticalCenter
                 color: "transparent"
                 radius: 3
@@ -956,6 +976,17 @@ Rectangle {
                     id: noticeRow
                     anchors.centerIn: parent
                     spacing: 6
+
+                    // 写之前那一句排最左。PRD 447 的措辞是"将被填充"，它要在文件落地之前
+                    // 就有自己的一行，而不是被右边那句"已保存到 …"顶掉一次才算说过；两条都
+                    // 留着 —— 左边是提醒的记录，右边是结果，一句不挤掉另一句。
+                    Text {
+                        visible: bar.view.pre_notice.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: bar.view.pre_notice
+                        font.pixelSize: 12
+                        color: "#ff9f0a"
+                    }
 
                     Text {
                         anchors.verticalCenter: parent.verticalCenter

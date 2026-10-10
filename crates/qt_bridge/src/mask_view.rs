@@ -151,6 +151,9 @@ pub mod qobject {
         #[qproperty(QString, landed)]
         /// 最近一次揭示的话，与 `message` 分着放：一句反馈不许把另一句证据挤掉。
         #[qproperty(QString, reveal_last)]
+        /// 写之前那一档提醒（PRD 447 的"将被填充"）。它和 `message` 分着，正是因为
+        /// 一个槽位里"将被"会被"已保存"顶掉——那就不算在写之前说过。空串 = 这一档不丢透明。
+        #[qproperty(QString, pre_notice)]
         /// 点击与揭示的两个计数，给这条腿在它自己前后各读一次用：一次点击记一次，
         /// 与开没开成窗无关；开了几个窗是另一个数。两个数并成一个就说不出"点了两次、
         /// 一次也没到 shell"这句话——而那正是默认设置下唯一该发生的事。
@@ -451,6 +454,7 @@ pub struct MaskViewRust {
     message: QString,
     landed: QString,
     reveal_last: QString,
+    pre_notice: QString,
     reveal_clicks: i32,
     reveal_acted: i32,
 }
@@ -474,56 +478,68 @@ impl qobject::MaskView {
     /// key both times, because the second flush has nothing new to say.
     pub fn reload(mut self: Pin<&mut Self>) {
         let index = *self.index();
-        let (view, shader, label, selected, ink, message, landed, reveal_last, clicks, acted) =
-            mask::with(|m| {
-                m.ink.flush();
-                let label = m
-                    .slot(index.max(0) as usize)
-                    .map(|s| (s.key.clone(), s.name.clone()));
-                let overlay = label
-                    .as_ref()
-                    .map(|(_, name)| m.ink.overlay_key(name))
-                    .unwrap_or_default();
+        let (
+            view,
+            shader,
+            label,
+            selected,
+            ink,
+            message,
+            landed,
+            reveal_last,
+            pre_notice,
+            clicks,
+            acted,
+        ) = mask::with(|m| {
+            m.ink.flush();
+            let label = m
+                .slot(index.max(0) as usize)
+                .map(|s| (s.key.clone(), s.name.clone()));
+            let overlay = label
+                .as_ref()
+                .map(|(_, name)| m.ink.overlay_key(name))
+                .unwrap_or_default();
+            (
+                m.view_data(index.max(0) as usize),
+                m.shader,
+                label,
+                m.has_selection(),
                 (
-                    m.view_data(index.max(0) as usize),
-                    m.shader,
-                    label,
-                    m.has_selection(),
-                    (
-                        overlay,
-                        m.ink.tool_code(),
-                        m.ink.objects() as i32,
-                        m.ink.can_undo(),
-                        m.ink.can_redo(),
-                        m.ink.width() as i32,
-                        (i32::from(m.ink.color()[0]) << 16)
-                            | (i32::from(m.ink.color()[1]) << 8)
-                            | i32::from(m.ink.color()[2]),
-                        m.ink.dashed(),
-                        m.ink.filled(),
-                        m.ink.zoom_tool(),
-                        m.ink.zoom_percent(),
-                        m.ink.zoom_border(),
-                        m.ink.connection_line(),
-                        m.ink.text_tool(),
-                        m.ink.font_px() as i32,
-                        m.ink.align_code(),
-                        m.ink.text_bg_on(),
-                        m.ink.text_outline_on(),
-                        m.ink.font_family().to_string(),
-                        m.ink.eraser_tool(),
-                        m.ink.erase_transparent(),
-                    ),
-                    m.message.clone(),
-                    m.landed
-                        .as_ref()
-                        .map(|p| p.display().to_string())
-                        .unwrap_or_default(),
-                    m.reveal_last.clone(),
-                    m.reveal_clicks as i32,
-                    m.reveal_acted as i32,
-                )
-            });
+                    overlay,
+                    m.ink.tool_code(),
+                    m.ink.objects() as i32,
+                    m.ink.can_undo(),
+                    m.ink.can_redo(),
+                    m.ink.width() as i32,
+                    (i32::from(m.ink.color()[0]) << 16)
+                        | (i32::from(m.ink.color()[1]) << 8)
+                        | i32::from(m.ink.color()[2]),
+                    m.ink.dashed(),
+                    m.ink.filled(),
+                    m.ink.zoom_tool(),
+                    m.ink.zoom_percent(),
+                    m.ink.zoom_border(),
+                    m.ink.connection_line(),
+                    m.ink.text_tool(),
+                    m.ink.font_px() as i32,
+                    m.ink.align_code(),
+                    m.ink.text_bg_on(),
+                    m.ink.text_outline_on(),
+                    m.ink.font_family().to_string(),
+                    m.ink.eraser_tool(),
+                    m.ink.erase_transparent(),
+                ),
+                m.message.clone(),
+                m.landed
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default(),
+                m.reveal_last.clone(),
+                m.pre_notice.clone(),
+                m.reveal_clicks as i32,
+                m.reveal_acted as i32,
+            )
+        });
 
         self.as_mut().set_live(view.live);
         self.as_mut().set_shown(view.shown);
@@ -605,6 +621,7 @@ impl qobject::MaskView {
         self.as_mut().set_message(QString::from(&*message));
         self.as_mut().set_landed(QString::from(&*landed));
         self.as_mut().set_reveal_last(QString::from(&*reveal_last));
+        self.as_mut().set_pre_notice(QString::from(&*pre_notice));
         self.as_mut().set_reveal_clicks(clicks);
         self.as_mut().set_reveal_acted(acted);
     }

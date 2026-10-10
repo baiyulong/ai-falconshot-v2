@@ -27,6 +27,12 @@
 //!   opens the real dialog and presses that window's own default button, so a sentence
 //!   can be graded as arriving through the path a user's click takes (§10 第 38 项 ①),
 //!   and the run prints the `<ms>` it was asked for next to the one it waited (②).
+//! * `--reveal <ms>` is the one door that is *not* in `mask::GAUGE_FLAGS`: it freezes and
+//!   opens the mask, writes one file through the same `save_out`, and then presses the
+//!   notification's own 落在一次点击 — through [`platform_windows::reveal::select`], for
+//!   real (§10 第 46 项 ③). That means it leaves one Explorer window on the user's desktop
+//!   which this process cannot close, so it is never implied by another door and never run
+//!   by default.
 //! * no flags: the app.
 
 mod annotate;
@@ -38,6 +44,7 @@ mod mask_view;
 mod pin_check;
 mod pin_view;
 mod r13;
+mod reveal_check;
 mod save;
 mod session;
 mod settings;
@@ -167,6 +174,21 @@ fn main() {
             "--pin 不能和 --mask / --ink 一起用：遮罩的窗会盖住贴图，那几格读的就不是这块窗了"
                 .to_string(),
         );
+    }
+    // 这一条不是拼错，是把那一档要量的东西关掉：`gauge_run` 是 argv 前缀匹配，所以
+    // `--reveal --mask 1500` 里那一步 `select` 会被结构性地拒，于是这一档报的是自己没跑，
+    // 而不是产品拒绝。要么单独点它，要么什么都别点。
+    if flag("--reveal") && mask::MaskState::gauge_run() {
+        orphans.push(
+            "--reveal 不能和 --probe / --r13 / --mask / --ink / --pin 一起用：那些前缀会让 \
+             gauge_run 在 select 之前就把这一步拒掉，那一趟读到的只是腿没跑"
+                .to_string(),
+        );
+    }
+    // 同一族的另一种走法：`--reveal` 不在 GAUGE_FLAGS 里，上面那个循环看不见它，而不带毫秒数
+    // 时它和那些门一样什么都不跑——退化成一次等真人关窗的 GUI 会话，日志 0 字节。
+    if flag("--reveal") && after("--reveal").is_none() {
+        orphans.push("--reveal 少了毫秒数（例如 `--reveal 1500`）".to_string());
     }
     if !orphans.is_empty() {
         println!("[falconshot] {}", orphans.join("；"));
@@ -329,6 +351,26 @@ fn main() {
         }
     }
 
+    // §10 第 46 项 ③：这一档要的是 `MaskState::landed` 与那一次点击，所以它得先有一张开得起
+    // 的遮罩；它与 `--mask` 走同一个 `open`，只是 argv 里没有那道拒绝（上面刚为此拒过一次
+    // 组合）。它不画标注，也不种量具的命名：那一格由 `reveal_check` 自己挑名字。
+    let reveal_want = after("--reveal");
+    let reveal_ms = reveal_want.map(|ms| ms.max(reveal_check::MIN_MS));
+    let mut reveal_opened = false;
+    if let Some(ms) = reveal_ms {
+        // 钉在开遮罩之前，和 `annotate_check::plant` 同一个理由：`close()` 里那句
+        // `write_back` 是产品的，腿拦不住它，只能给它换地方。
+        let pinned = reveal_check::pin();
+        println!("[reveal pin] 配置写回钉到 {}", pinned.display());
+        match mask_check::open(!flag("--mask-soft")) {
+            Ok(line) => {
+                reveal_opened = true;
+                println!("[reveal mask] {line}（被要求等 {ms} ms）");
+            }
+            Err(e) => println!("[reveal] 遮罩开不起来：{e}"),
+        }
+    }
+
     // Extra rounds of the same freeze-and-open, run once the process is warm. The
     // plan has to be written before the engine loads, because QML reads it in
     // `Component.onCompleted` and only a QML timer can fire afterwards.
@@ -377,6 +419,11 @@ fn main() {
         // document is loaded, so the leg's own budget starts late. A `--pin` run that was
         // asked for therefore has the time it needs rather than reporting its own
         // absence, and the report prints the gap it actually measured.
+        state::quit_after(ms);
+    }
+    if let Some(ms) = reveal_ms {
+        // 这一档等的不是腿的相位，是 shell 把那个目录窗端起来的时间——而它端起来之后本进程
+        // 也举不到它，所以这个数只决定遮罩在屏幕上留多久，不决定任何一格的成功。
         state::quit_after(ms);
     }
 
@@ -524,6 +571,22 @@ fn main() {
         println!(
             "[pin after {ms} ms] 要求 {} ms 生效 {ms} ms qml_loaded={} {} {}",
             pin_want.unwrap_or(ms),
+            state::qml_loaded(),
+            exe_stamp(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
+    }
+    if let Some(ms) = reveal_ms {
+        let (verdict, report) = if reveal_opened {
+            reveal_check::measure(ms)
+        } else {
+            reveal_check::open_failed("上面那行 [reveal] 说了为什么")
+        };
+        println!("{report}");
+        println!(
+            "[reveal after {ms} ms] 要求 {} ms 生效 {ms} ms qml_loaded={} {} {}",
+            reveal_want.unwrap_or(ms),
             state::qml_loaded(),
             exe_stamp(),
             state::desktop_summary()

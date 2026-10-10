@@ -76,6 +76,55 @@ Window {
         view.assign(index)
     }
 
+    // 把 `Ctrl+…` 的匹配抽成一个 win 上的函数，量具才能拿与真按键**完全相同的两个数值**
+    // (key, modifiers) 走一遍这条分支，而不是去合成一次按键：一次注入的按键会落进当时有
+    // 焦点的那个应用，而跑级时焦点在谁的窗口里，产品说不出、也不该替用户决定（第 46 项 ②）。
+    // 抽出去之后 `Keys.onPressed` → `chord()` 那一步（Qt 把 WM_KEYDOWN 翻成 event.key /
+    // event.modifiers）本轮没有判定行 —— 那是这条腿欠的部分，不是它覆盖的部分，写在这里而
+    // 不是留在日志里。返回值 = 原来那句 `event.accepted = true` 的条件。
+    function chord(key, modifiers) {
+        if ((modifiers & Qt.ControlModifier) === 0) {
+            return false
+        }
+        const shifted = (modifiers & Qt.ShiftModifier) !== 0
+        const undo = key === Qt.Key_Z && !shifted
+        const redo = key === Qt.Key_Y || (key === Qt.Key_Z && shifted)
+        // `Ctrl+C`, and only without Shift: `Ctrl+Shift+C` is not this program's,
+        // and a copy that swallowed a chord it did not implement would leave the
+        // user with no way to find out what the chord does.
+        const copy = key === Qt.Key_C && !shifted
+        // §4.1's `Ctrl+S` = "打开保存流程或执行快速保存", and the two halves of that
+        // sentence are now two chords: the unshifted one opens the dialog §5.5.5 asks
+        // for, `Ctrl+Shift+S` is §5.5.4's 快速保存 and opens nothing. Shift is the
+        // whole difference, which is why the shifted chord is named here rather than
+        // left to fall through: an unimplemented `Ctrl+Shift+S` would open the dialog
+        // by accident or nothing at all, and a user could not tell which.
+        const save = key === Qt.Key_S && !shifted
+        const quick = key === Qt.Key_S && shifted
+        if (!undo && !redo && !copy && !save && !quick) {
+            return false
+        }
+        // The toolbar owns the gesture, key or click alike: it is the item that
+        // has to remember whether the copy got through, and a second path to the
+        // same `copySelection()` is a path that colours its own sentence wrong.
+        if (copy) {
+            inkBar.copy()
+            return true
+        }
+        if (save) {
+            inkBar.save()
+            return true
+        }
+        if (quick) {
+            inkBar.quickSave()
+            return true
+        }
+        if (redo ? view.redoStep() : view.undoStep()) {
+            win.grabbed()
+        }
+        return true
+    }
+
     color: "black"
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     // The `--mask` harness finds these by title to put `PrintWindow` on them, and
@@ -375,45 +424,8 @@ Window {
         // and `Ctrl+Shift+Z` is accepted alongside `Ctrl+Y` because that is what
         // people who came from another program type.
         Keys.onPressed: (event) => {
-            if ((event.modifiers & Qt.ControlModifier) === 0) {
-                return
-            }
-            const shifted = (event.modifiers & Qt.ShiftModifier) !== 0
-            const undo = event.key === Qt.Key_Z && !shifted
-            const redo = event.key === Qt.Key_Y || (event.key === Qt.Key_Z && shifted)
-            // `Ctrl+C`, and only without Shift: `Ctrl+Shift+C` is not this program's,
-            // and a copy that swallowed a chord it did not implement would leave the
-            // user with no way to find out what the chord does.
-            const copy = event.key === Qt.Key_C && !shifted
-            // §4.1's `Ctrl+S` = "打开保存流程或执行快速保存", and the two halves of that
-            // sentence are now two chords: the unshifted one opens the dialog §5.5.5 asks
-            // for, `Ctrl+Shift+S` is §5.5.4's 快速保存 and opens nothing. Shift is the
-            // whole difference, which is why the shifted chord is named here rather than
-            // left to fall through: an unimplemented `Ctrl+Shift+S` would open the dialog
-            // by accident or nothing at all, and a user could not tell which.
-            const save = event.key === Qt.Key_S && !shifted
-            const quick = event.key === Qt.Key_S && shifted
-            if (!undo && !redo && !copy && !save && !quick) {
-                return
-            }
-            event.accepted = true
-            // The toolbar owns the gesture, key or click alike: it is the item that
-            // has to remember whether the copy got through, and a second path to the
-            // same `copySelection()` is a path that colours its own sentence wrong.
-            if (copy) {
-                inkBar.copy()
-                return
-            }
-            if (save) {
-                inkBar.save()
-                return
-            }
-            if (quick) {
-                inkBar.quickSave()
-                return
-            }
-            if (redo ? view.redoStep() : view.undoStep()) {
-                win.grabbed()
+            if (win.chord(event.key, event.modifiers)) {
+                event.accepted = true
             }
         }
     }
@@ -504,6 +516,10 @@ Window {
         id: inkBar
         view: win.view
         session: win.session
+
+        // 量具的那条 `Ctrl+Shift+S` 腿要从窗口这层的 `chord()` 走进来，而面板够不着 `win`：
+        // 与 `view`/`session` 同一条规矩，宿主也是递进去的，不是让它去爬窗口。
+        chordHost: win
 
         // The same propagation the pointer does: undo, redo and 全清 change a
         // desktop-space picture that both windows draw.

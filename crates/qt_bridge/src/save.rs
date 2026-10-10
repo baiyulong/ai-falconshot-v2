@@ -162,32 +162,97 @@ pub fn write_to(
     subject: &str,
     chosen: &str,
 ) -> Result<(std::path::PathBuf, String), Refusal> {
+    let (target, format) = decide(typed, chosen, export)?;
+    write_decided(frame, target, format, export, subject)
+}
+
+/// Which file this name means, and which encoder that file selects - the half of
+/// [`write_to`] that needs no bytes.
+///
+/// It is a function of its own because the pre-write reminder (§10 第 46 项 ①, PRD 447's
+/// "背景**将**被填充") has to answer the same two questions the write answers, and an
+/// extension rule spelled twice is how the two doors came to disagree about one picture
+/// once already. This is that rule's only owner.
+fn decide(
+    typed: &str,
+    chosen: &str,
+    export: &EncodeOptions,
+) -> Result<(std::path::PathBuf, encode::Format), Refusal> {
     let named = local_path(typed);
     let path = std::path::Path::new(named.as_ref());
     // An extension is the user's choice; a bare name is the format the dialog was
     // showing while they typed, and only when that names nothing is it the configured
     // one (`[output] format`).
-    let (target, format) = match path.extension() {
-        Some(ext) => (
+    match path.extension() {
+        Some(ext) => Ok((
             path.to_path_buf(),
-            encode::Format::from_ext(&ext.to_string_lossy()),
-        ),
+            encode::Format::from_ext(&ext.to_string_lossy()).ok_or_else(|| {
+                Refusal::BadName(format!(
+                    "{named} 不是本程序会写的格式：用 .png、.jpg 或 .bmp。"
+                ))
+            })?,
+        )),
         None => {
             let wanted = filter_format(chosen).unwrap_or(export.format);
             let mut suffixed = path.as_os_str().to_os_string();
             suffixed.push(".");
             suffixed.push(wanted.ext());
-            (std::path::PathBuf::from(suffixed), Some(wanted))
+            Ok((std::path::PathBuf::from(suffixed), wanted))
         }
-    };
-    let Some(format) = format else {
-        // The converted name, because the `file:///` is the dialog's own writing and
-        // not something the user recognises as the name they typed.
-        return Err(Refusal::BadName(format!(
-            "{named} 不是本程序会写的格式：用 .png、.jpg 或 .bmp。"
-        )));
-    };
-    write_decided(frame, target, format, export, subject)
+    }
+}
+
+/// How many pixels the chosen encoder cannot carry.
+///
+/// Counted before the write, from the frame about to be encoded: asking the file
+/// afterwards would be asking a JPG whether it kept an alpha channel. `!= 255` and
+/// not `== 0`, because a half-transparent pixel is just as unsavable - and this is
+/// the same predicate `Frame::has_transparency` uses.
+pub fn transparency_lost(frame: &Frame, format: encode::Format) -> usize {
+    if format.supports_alpha() || !frame.has_transparency() {
+        return 0;
+    }
+    frame
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[3] != 255)
+        .count()
+}
+
+/// What a format without alpha is about to do to this picture, said before anything is
+/// written. PRD 447 ("不支持透明度的输出格式**应提醒**用户背景**将**被填充") asks for a
+/// reminder, not a gate: the write still happens, and the caller shows both sentences.
+///
+/// An empty string is the honest answer when nothing is lost, and it is why this returns
+/// the text rather than a count - a door that prints "有 0 px 透明" about a PNG would be
+/// inventing a cost to name.
+pub fn reminder(
+    frame: &Frame,
+    typed: &str,
+    chosen: &str,
+    export: &EncodeOptions,
+    subject: &str,
+) -> Result<String, Refusal> {
+    let (_, format) = decide(typed, chosen, export)?;
+    Ok(reminder_for_format(frame, format, subject))
+}
+
+/// [`reminder`]'s wording, for the door that already knows its encoder.
+///
+/// §5.5.4's 快速保存 builds its own name out of `[output] naming_template`, so it has the
+/// format before it has the path - and a second sentence for "this format eats those
+/// pixels" is exactly how two doors start saying two things about one picture.
+pub fn reminder_for_format(frame: &Frame, format: encode::Format, subject: &str) -> String {
+    let lost = transparency_lost(frame, format);
+    if lost == 0 {
+        return String::new();
+    }
+    format!(
+        "{subject}里有 {lost} px 透明，{} 存不下，将被填成白色；要保留透明请存成 PNG。",
+        format.label()
+    )
 }
 
 /// The write itself, once both *where* and *which encoder* are settled.
@@ -205,21 +270,9 @@ fn write_decided(
     export: &EncodeOptions,
     subject: &str,
 ) -> Result<(std::path::PathBuf, String), Refusal> {
-    // Counted before the write, from the frame about to be encoded: asking the file
-    // afterwards would be asking a JPG whether it kept an alpha channel. `!= 255` and
-    // not `== 0`, because a half-transparent pixel is just as unsavable - and this is
-    // the same predicate `Frame::has_transparency` uses.
-    let filled = if format.supports_alpha() || !frame.has_transparency() {
-        0
-    } else {
-        frame
-            .pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .filter(|p| p[3] != 255)
-            .count()
-    };
+    // Counted by the same owner the pre-write reminder reads, so the two sentences
+    // cannot disagree about how many pixels this write is about to lose.
+    let filled = transparency_lost(frame, format);
     let opt = EncodeOptions { format, ..*export };
     match encode::save(frame, &target, &opt) {
         // The frame's size, not the file's: `encode` rescales an ICO down to 256 before
@@ -998,6 +1051,59 @@ mod tests {
             panic!("a sentence without a size clause: {by_dialog} / {by_quick}");
         };
         assert_eq!(&by_dialog[at_dialog..], &by_quick[at_quick..]);
+    }
+
+    /// §10 第 46 项 ① 的这一半归 owner：写前那句与写后那句必须数出**同一个数**，用的必须是
+    /// 同一条扩展名规则。否则两位用户会各自截图互相矛盾——一个看到"有 40 px 将被填"，另一个
+    /// 看到"已填了 41 px"。这里比的是提醒与写各自的字节，不是它对 PRD 的复述。
+    #[test]
+    fn the_pre_write_reminder_counts_what_the_write_fills() {
+        let dir = sandbox("reminder-owner");
+        let frame = textured(17, 9);
+        let lost = frame
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] != 255)
+            .count();
+        assert!(lost > 0, "the test picture had nothing to lose");
+        let export = EncodeOptions::default();
+        let jpg = dir.join("s.jpg");
+        let png = dir.join("s.png");
+
+        let said = reminder(&frame, &jpg.to_string_lossy(), "", &export, "选区")
+            .expect("a .jpg name decides its own format");
+        assert!(said.contains(&format!("{lost} px 透明")), "{said}");
+        assert!(said.contains("将被"), "{said}");
+        assert!(!said.contains("已填"), "{said}");
+        // PNG 档无话，而且提醒不落地：它读到的是 frame，写的什么都没有。
+        assert_eq!(
+            reminder(&frame, &png.to_string_lossy(), "", &export, "选区").unwrap(),
+            ""
+        );
+        assert!(!jpg.exists() && !png.exists(), "a reminder wrote a file");
+
+        // 同一位 owner 的另一半：真写一次，事后那句与事前那句只差时态，而文件里确实一个
+        // 透明像素都不剩——数字不是从句子读出来的，是从解回来的像素数出来的。
+        let (landed, post) = write_to(&frame, &jpg.to_string_lossy(), &export, "选区", "")
+            .expect("dialog-shaped write");
+        assert_eq!(landed, jpg);
+        let back = encode::decode(&std::fs::read(&landed).expect("the jpg is there"))
+            .expect("decodable jpg");
+        let kept = back
+            .pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] != 255)
+            .count();
+        assert_eq!(kept, 0, "the JPG kept alpha, so both sentences lied");
+        assert!(post.contains(&format!("{lost} px 透明")), "{post}");
+        assert!(
+            post.ends_with(&said.replace("将被填成白色", "已填成白色")),
+            "两句话差的不止时态：前 {said:?} 后 {post:?}"
+        );
     }
 
     /// `[output] collision` is a rule about the disk, so it can only be measured against

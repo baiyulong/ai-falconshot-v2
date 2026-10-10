@@ -735,6 +735,19 @@ fn within_slack(got: &PhysRect, want: &PhysRect) -> bool {
 const PIXEL_TOL: u8 = 8;
 const PIXEL_SHARE: f64 = 0.95;
 
+/// `PrintWindow` 的那一枚 flag，§10 第 46 项 ④ 把第三格换到这条腿上来采集时用的数。
+///
+/// 不是随手挑的：R13 的四路矩阵在这台机器上对同一扇贴图窗（240x160）三种 flag 各问过一次，
+/// 归档在 `.qoder/scratch/p45_r13_*.log` —— `2` 答 `ctrl=0.959`，`0` 与 `4` 都答
+/// `ctrl=0.000 flat=1.000`（画出来一张全黑）。于是这一格只问 `2`，问另外两种是把已知会
+/// 全黑的答案当成采集结果。
+///
+/// 而"只问一次"正是换腿的理由：`crates/core/src/capture.rs` 那条产品腿会连着试
+/// `2`/`0`/`4` 再退回桌面 `BitBlt`，所以它的一次成功可能是"读到了窗后面那张桌面"；
+/// 这台机器上它对贴图窗的实际回答是 `no window`（`p45_pin_*.log` 里第三格常年 Blocked），
+/// 于是"窗自己画不画得出来"这句话从来没被这一格问过。
+const PRINT_FLAG: u32 = 2;
+
 /// The three rows [`file_pin_rows`] owes, in the order it reaches them. The list is a
 /// constant rather than a memory because the reason below is a count: a leg that stops at
 /// row 1 and says nothing about rows 2 and 3 leaves the door three lines short, and the
@@ -820,38 +833,52 @@ fn file_pin_rows(
     let mut rows: Vec<(Check, &'static str, String)> = Vec::new();
 
     // 1. The artifact, read back off the disk, against the frame the window is built from.
+    //
+    // §10 第 45 项 ④：这一格不再把"没有可比的分母"写成一个整数。它以前是 `usize::MAX`，
+    // 于是句子印成 `不同的通道 18446744073709551615 个（要求 0）`——一个整数上限冒充了通道数，
+    // 而读者要的那句人话在括号里。`None` 就是没有分母，它自己带为什么；判定照旧 Fail，一格没松。
     let shown = state::with(|s| s.with_rendered(fid, |f| f.clone()));
     let (diff, sizes) = match &shown {
-        None => (usize::MAX, "没有首帧可读".to_string()),
+        None => (None, "没有首帧可读".to_string()),
         Some(frame) => {
             let shape = frame.width == from_disk.width
                 && frame.height == from_disk.height
                 && frame.pixels.len() == from_disk.pixels.len();
             (
                 if shape {
-                    frame
-                        .pixels
-                        .iter()
-                        .zip(&from_disk.pixels)
-                        .filter(|(a, b)| a != b)
-                        .count()
+                    Some(
+                        frame
+                            .pixels
+                            .iter()
+                            .zip(&from_disk.pixels)
+                            .filter(|(a, b)| a != b)
+                            .count(),
+                    )
                 } else {
-                    usize::MAX
+                    None
                 },
-                format!(
-                    "文件 {}x{} ↔ 贴图 {fid} 首帧 {}x{}",
-                    from_disk.width, from_disk.height, frame.width, frame.height
-                ),
+                if shape {
+                    format!(
+                        "文件 {}x{} ↔ 贴图 {fid} 首帧 {}x{}",
+                        from_disk.width, from_disk.height, frame.width, frame.height
+                    )
+                } else {
+                    format!(
+                        "文件 {}x{} 与贴图 {fid} 首帧 {}x{} 形状不同，逐通道没有对齐的两串像素可比",
+                        from_disk.width, from_disk.height, frame.width, frame.height
+                    )
+                },
             )
         }
     };
+    let counted = match diff {
+        Some(n) => format!("不同的通道 {n} 个（要求 0）"),
+        None => "这一格没有可比的分母，所以它是 FAIL 而不是 0 个不同".to_string(),
+    };
     rows.push((
-        Check::from(diff == 0),
+        Check::from(diff == Some(0)),
         "pin from file",
-        format!(
-            "{named}（{}）不同的通道 {} 个（要求 0）；钉它的那句 {:?}",
-            sizes, diff, file_said
-        ),
+        format!("{named}（{sizes}）{counted}；钉它的那句 {file_said:?}"),
     ));
 
     // 2. That window's hwnd, by the two roads, in one number.
@@ -901,55 +928,76 @@ fn file_pin_rows(
         ),
     });
 
-    // 3. The same window's pixels as the shell renders them, against the file - graded on
-    // a *share*, because this is the composited side of the claim: what the desktop shows
-    // of a pin with alpha in it is the picture plus whatever was behind it. The file's
-    // opaque pixels have to be there; its transparent ones are counted out, not excused.
-    rows.push(match crate::capture::service().capture_window(t.hwnd as u32) {
-        Err(e) => (
-            Check::Blocked,
-            "pin window pixels",
-            format!("0x{:x} 截不回来：{e}", t.hwnd),
-        ),
-        Ok(cap) => {
-            let mut seen = 0usize;
-            let mut matched = 0usize;
-            if cap.frame.width == from_disk.width && cap.frame.height == from_disk.height {
-                for (px, file) in cap
-                    .frame
-                    .pixels
-                    .as_chunks::<4>()
-                    .0
-                    .iter()
-                    .zip(from_disk.pixels.as_chunks::<4>().0)
-                {
-                    if file[3] == 255 {
-                        seen += 1;
-                        if px[..3]
+    // 3. The same window's pixels as *the window itself* paints them, against the file -
+    // graded on a *share*, because this is the composited side of the claim: what the
+    // desktop shows of a pin with alpha in it is the picture plus whatever was behind it.
+    // The file's opaque pixels have to be there; its transparent ones are counted out, not
+    // excused.
+    //
+    // P46 ④ moved the collection off the product's xcap leg and onto `PrintWindow`, for
+    // the reason [`PRINT_FLAG`]'s doc gives: a success there can be a `BitBlt` of the
+    // desktop behind the window, and on this machine it was not a success at all, so this
+    // row had been `Blocked` in every archived run since it was written - the claim was
+    // registered but never put. The old leg's answer is still printed next to the new one,
+    // because a reader has to be able to see which leg moved rather than guess it from a
+    // sentence that changed wording. The thresholds are the same two numbers.
+    let old_leg = match crate::capture::service().capture_window(t.hwnd as u32) {
+        Err(e) => e.to_string(),
+        Ok(cap) => format!("{}x{} rect={}", cap.frame.width, cap.frame.height, cap.rect),
+    };
+    rows.push(
+        match platform_windows::print::print_window(t.hwnd, t.phys.w, t.phys.h, PRINT_FLAG) {
+            None => (
+                Check::Blocked,
+                "pin window pixels",
+                format!(
+                    "0x{:x} 这一腿（PrintWindow flag {PRINT_FLAG}）交回没有像素；产品那条腿（xcap）\
+                     本轮答 {old_leg}",
+                    t.hwnd
+                ),
+            ),
+            Some(cap) => {
+                let mut seen = 0usize;
+                let mut matched = 0usize;
+                if cap.width == from_disk.width && cap.height == from_disk.height {
+                    for (px, file) in
+                        cap.pixels
+                            .as_chunks::<4>()
+                            .0
                             .iter()
-                            .zip(&file[..3])
-                            .all(|(a, b)| a.abs_diff(*b) <= PIXEL_TOL)
-                        {
-                            matched += 1;
+                            .zip(from_disk.pixels.as_chunks::<4>().0)
+                    {
+                        if file[3] == 255 {
+                            seen += 1;
+                            if px[..3]
+                                .iter()
+                                .zip(&file[..3])
+                                .all(|(a, b)| a.abs_diff(*b) <= PIXEL_TOL)
+                            {
+                                matched += 1;
+                            }
                         }
                     }
                 }
+                let share = if seen == 0 {
+                    0.0
+                } else {
+                    matched as f64 / seen as f64
+                };
+                (
+                    Check::from(seen > 0 && share >= PIXEL_SHARE),
+                    "pin window pixels",
+                    format!(
+                        "窗 {}x{} 取自 {} 的 PrintWindow flag {PRINT_FLAG}（这一腿自己填的 alpha \
+                         恒为 255，所以比的是文件那侧的不透明），文件里不透明的 {seen} px 中对上 \
+                         {matched} px = {share:.3}（要求 ≥ {PIXEL_SHARE}，单通道容差 {PIXEL_TOL}）；\
+                         产品那条腿（xcap）本轮答 {old_leg}",
+                        cap.width, cap.height, t.class
+                    ),
+                )
             }
-            let share = if seen == 0 {
-                0.0
-            } else {
-                matched as f64 / seen as f64
-            };
-            (
-                Check::from(seen > 0 && share >= PIXEL_SHARE),
-                "pin window pixels",
-                format!(
-                    "窗 {}x{} 取自 {} 的 {}，文件里不透明的 {seen} px 中对上 {matched} px = {share:.3}（要求 ≥ {PIXEL_SHARE}，单通道容差 {PIXEL_TOL}）",
-                    cap.frame.width, cap.frame.height, t.class, cap.rect
-                ),
-            )
-        }
-    });
+        },
+    );
     rows
 }
 

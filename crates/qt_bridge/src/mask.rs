@@ -196,6 +196,13 @@ pub struct MaskState {
     /// 最近一次揭示的话，成功失败都写这里，不写 [`Self::message`]：那句话是"已保存到
     /// 某个路径（多大）"，通知的行要留着它，否则一句反馈会把另一句证据挤掉。
     pub reveal_last: String,
+    /// 写之前那一档提醒 —— PRD **447** 说的是"应提醒用户背景**将**被填充"，而
+    /// [`Self::message`] 那一行的"已保存到 … 已填成白色"是**事后**说的。
+    ///
+    /// 它单独占一格，是因为一句话的槽位里"将被"只存在几毫秒就被"已保存"顶掉 —— 那不
+    /// 叫提醒过。空串是"这一档不丢透明"，不是"没提醒"；它是提醒而不是确认，所以写照常
+    /// 发生（P39 ⑦ 那次产品决定的另一读，第 46 项 ①）。
+    pub pre_notice: String,
     /// Bumped by every `open`, so a second capture in the same process gets keys
     /// nobody has asked for yet. A constant revision would reuse the previous
     /// frame's key, and `Image.cache: false` only re-requests when the URL changes:
@@ -219,6 +226,7 @@ impl MaskState {
         self.hole = Self::default_hole(snap);
         self.pixels_ms = None;
         self.message.clear();
+        self.pre_notice.clear();
 
         let started = Instant::now();
         let screens = shim::screens();
@@ -645,6 +653,19 @@ impl MaskState {
     /// Like 复制, this does not end the flow: the freeze, the ink and the sentence all
     /// go with the mask, and a save that closed the overlay would take the picture the
     /// user may still want to copy with it.
+    /// [`Self::save_out`]'s first rung on its own, so the order is *callable*: the gauge
+    /// asks what the notice said at the moment the file it warns about did not exist yet.
+    /// Returns the sentence (empty when this format carries alpha).
+    pub fn remind_before_save(&mut self, path: &str, chosen: &str) -> String {
+        let Some(frame) = self.ink.deliver() else {
+            self.pre_notice.clear();
+            return String::new();
+        };
+        self.pre_notice =
+            crate::save::reminder(&frame, path, chosen, &self.export, "选区").unwrap_or_default();
+        self.pre_notice.clone()
+    }
+
     pub fn save_out(&mut self, path: &str, chosen: &str) -> bool {
         if !self.has_selection() {
             self.message = "还没有选区：先把要保存的范围拖出来。".to_string();
@@ -654,6 +675,10 @@ impl MaskState {
             self.message = "选区的画面拼不出来：截图还在，可以再保存一次。".to_string();
             return false;
         };
+        // 写之前先说一次：PRD 447 的措辞是"将被填充"，而 [`crate::save::write`] 一回来
+        // 就把那句话变成"已填成白色"。这一格是提醒，不是确认 —— 照写。
+        self.pre_notice =
+            crate::save::reminder(&frame, path, chosen, &self.export, "选区").unwrap_or_default();
         match crate::save::write(&frame, path, &self.export, "选区", chosen) {
             Ok(said) => {
                 self.message = said;
@@ -731,6 +756,9 @@ impl MaskState {
             seq: self.quick_saves + 1,
             collision: &self.naming.collision,
         };
+        // 同一句提醒的另一扇门：快速保存没有对话框，也就没有"用户自己选了扩展名"这一步，
+        // 而它照样可能把透明像素填白（`[output] format` = jpg）。措辞与上一格同一个所有者。
+        self.pre_notice = crate::save::reminder_for_format(&frame, self.export.format, "选区");
         let landed = match crate::save::quick_to(
             &frame,
             naming::LocalStamp::from_epoch(epoch, offset_min),
@@ -770,7 +798,11 @@ impl MaskState {
     /// 这一次运行是不是量具。判据取 argv 而不是取某一道腿的记忆，因为要挡的那一步
     /// （[`platform_windows::reveal::select`]）在腿的下头：腿记不记得自己是腿，不该决定
     /// 用户的桌面会不会多一个窗。前缀匹配，所以 `--mask-soft` 与 `--mask` 同判。
-    fn gauge_run() -> bool {
+    ///
+    /// 第 46 项 ③ 那一档要能对着一句"我不是量具"作保，所以它是 `pub(crate)`：那一档的第一格
+    /// 读的就是这个函数的答案，而不是自己 argv 里有没有那个字符串——两处各读一次，就会有一处
+    /// 在名单被改动的下一趟变成谎话。
+    pub(crate) fn gauge_run() -> bool {
         std::env::args().any(|a| GAUGE_FLAGS.iter().any(|name| a.starts_with(name)))
     }
 
@@ -852,6 +884,8 @@ impl MaskState {
             self.message = "选区的画面拼不出来：截图还在，可以再保存一次。".to_string();
             return false;
         };
+        self.pre_notice =
+            crate::save::reminder(&frame, path, chosen, &self.export, "选区").unwrap_or_default();
         let landed = match crate::save::write_to(&frame, path, &self.export, "选区", chosen) {
             Ok((landed, said)) => (landed, said),
             Err(crate::save::Refusal::BadName(e)) => {
@@ -1689,6 +1723,51 @@ mod tests {
             back.pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255),
             "JPG kept an alpha channel, so the sentence lied"
         );
+    }
+
+    /// §10 第 46 项 ①：PRD 447 说的是"**应提醒**用户背景**将**被填充"，而不是"存完之后告
+    /// 诉用户填了"。所以这一条测的是**顺序**：提醒说出口的那一刻，文件还不许在盘上；它自己也
+    /// 不许写。第二半是两句话只差一个时态——同一位用户在一扇门前不能听到两种说法。
+    #[test]
+    fn the_notice_is_said_before_the_file_exists() {
+        let dir = sandbox("pre-notice");
+        let hole = PhysRect::new(10, 20, 100, 80);
+        let mut m = savable(hole);
+        let total = (hole.w * hole.h) as usize;
+
+        let png = dir.join("selection.png");
+        let jpg = dir.join("selection.jpg");
+
+        // PNG 档无话：空串是"这一档不丢透明"，不是"没提醒"。
+        assert!(m.remind_before_save(&png.to_string_lossy(), "").is_empty());
+        assert_eq!(m.pre_notice, "");
+        assert!(!png.exists(), "a reminder wrote a file");
+
+        // JPG 档有话，而且说的时候那份文件还不存在。
+        let pre = m.remind_before_save(&jpg.to_string_lossy(), "");
+        assert!(pre.contains(&format!("{total} px 透明")), "{pre}");
+        assert!(pre.contains("将被填成白色"), "{pre}");
+        assert!(pre.contains("存成 PNG"), "{pre}");
+        assert!(!jpg.exists(), "the reminder itself wrote {jpg:?}");
+        assert_eq!(m.pre_notice, pre, "窗口那一格与返回值不是同一句");
+
+        assert!(m.save_out(&jpg.to_string_lossy(), ""), "{:?}", m.message);
+        assert!(jpg.exists(), "the write did not follow the notice");
+        let post = pre.replace("将被填成白色", "已填成白色");
+        assert!(
+            m.message.ends_with(&post),
+            "两句话差的不止时态：前 {pre:?} 后 {:?}",
+            m.message
+        );
+
+        // 一扇会拒的门也不留下提醒：名字定不下格式，就没有"将要丢掉的像素"可说。
+        let odd = dir.join("selection.qqq");
+        assert!(m.remind_before_save(&odd.to_string_lossy(), "").is_empty());
+        assert_eq!(
+            m.pre_notice, "",
+            "a refused name kept a stale notice on the window"
+        );
+        assert!(!odd.exists());
     }
 
     /// §5.5.5's dialog is showing a format while the user types a bare name: when the

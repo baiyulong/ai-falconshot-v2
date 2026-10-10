@@ -2313,8 +2313,9 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
             "quick save block ran",
             verdict,
             format!(
-                "没有，一行也没发：{why}。`quick_rows` 那十三格自此在缺的时候也占一行，而不是\
-                 从归档里消失（§9.1：一格的缺席与一格的未问不是一件事）"
+                "没有，一行也没发：{why}。`quick_rows` 那一段自此在缺的时候也占同一行，而不是\
+                 从归档里消失（§9.1：一格的缺席与一格的未问不是一件事）；健康的那趟把这一格发到\
+                 段末并带上自己数出的条数，所以两个读法不会撞名"
             ),
         );
     };
@@ -2376,12 +2377,8 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
         return;
     }
     // 健康的那条路也占同一行：跨趟比的是行的**集合**，一格只在缺的时候才露面，等于又把
-    // "出席"与"缺席"交给排版去读。
-    rep.row(
-        "quick save block ran",
-        Check::Pass,
-        "跑了；下面那十三格各说各的，这一行只保证它不会整段消失".to_string(),
-    );
+    // "出席"与"缺席"交给排版去读。条数由 `quick_rows` 自己数出来（第 46 项 ④），这句里不再
+    // 抄一个写死的数字。
     let png = dir.join("selection.png");
     let jpg = dir.join("selection.jpg");
     for stale in [&png, &jpg] {
@@ -2443,9 +2440,45 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
         ),
     );
 
+    // ---- 写之前那一档提醒（§10 第 46 项 ①，PRD 447 的"应提醒用户背景**将**被填充"、506 的
+    // "包含透明背景时应推荐 PNG"、§5.5.6 第 521 行）。这一格问的是**顺序**而不是文字：提醒要在
+    // 文件还不存在的时候就已经说出口，否则它只是事后那句报告的重复。所以腿先读
+    // `remind_before_save`，当场确认 `jpg` 还没落盘（它自己也不许落），再让门真写一次。
+    // 两句话只差时态：这一条把事后那句的时态换回去，要求它逐字节等于写前那一条 —— 数字、
+    // 格式名、后半句都不能漂，否则用户在一扇门前听到两种说法。
+    let pre_said = mask::with(|m| m.remind_before_save(&jpg.to_string_lossy(), ""));
+    let pre_clean = !jpg.exists();
+    let pre_cell = mask::with(|m| m.pre_notice.clone());
+    rep.note("pre-save notice", pre_said.clone());
+
     // ---- JPG: the format that cannot keep it, and the sentence that has to say so.
     let done_jpg = mask::with(|m| m.save_out(&jpg.to_string_lossy(), ""));
     let said_jpg = mask::with(|m| m.message.clone());
+    let pre_tense = pre_said.replace("将被填成白色", "已填成白色");
+    let only_tense = gone > 0 && !pre_said.is_empty() && said_jpg.ends_with(&pre_tense);
+    rep.row(
+        "pre-save notice",
+        Check::from(
+            pre_clean
+                && pre_cell == pre_said
+                && if gone == 0 {
+                    pre_said.is_empty()
+                } else {
+                    pre_said.contains(&format!("{gone} px 透明"))
+                        && pre_said.contains("将被填成白色")
+                        && pre_said.contains("存成 PNG")
+                        && only_tense
+                },
+        ),
+        format!(
+            "提醒说于 {} 落盘之前（当时不在盘上={pre_clean}，提醒自己也不写文件），窗口那一格 \
+             pre_notice 与返回值同字（{pre_cell:?}）；文档丢了 {gone} px，PNG 档应当无话（空串是\
+             \"这一档不丢透明\"，不是\"没提醒\"），JPG 档要求说出 {gone} px、\"将被填成白色\"、\
+             并把时态换回\"已填\"后逐字节接在事后那句 {said_jpg:?} 的句尾（只差时态={only_tense}）。\
+             这一格是提醒不是确认：写照常发生（save_out={done_jpg}）",
+            jpg.display()
+        ),
+    );
     rep.note("saved jpg sentence", said_jpg.clone());
     let back_jpg = std::fs::read(&jpg)
         .ok()
@@ -2569,7 +2602,16 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
     mask_dialog_rows(rep, &dir, &png);
     pin_save_rows(rep, want, &dir, &png, &jpg);
     save_then_pin_rows(rep, &dir);
+    // 段前那一格搬到这里，因为它说的是"这一段落了几格"，而那个数只有落完才知道（第 46 项 ④）。
+    // P44 手抄的"十三"在本轮往 `quick_rows` 加了两格之后就成了一个不会变红的错字。
+    let at = rep.row_count();
     quick_rows(rep, &dir, &png, &said_png);
+    let n = rep.row_count() - at;
+    rep.row(
+        "quick save block ran",
+        Check::Pass,
+        format!("跑了；这一趟由 `{n}` 这格自己数出来（这一行自己也在这段里，所以 {n} 含它）"),
+    );
 }
 
 /// §5.5.4's 快速保存 (PRD 491, §10 第 44 项 ①), read against the directory it wrote, the
@@ -2642,6 +2684,78 @@ fn quick_rows(rep: &mut Report, dir: &Path, mask_png: &Path, said_png: &str) {
              它自己那份窗口普查 {census_cell:?}（要求 pushed=no 且 dialogs=0）"
         ),
     );
+
+    // ---- §10 第 46 项 ② 的另外两条腿：Cell 自己的 `tapped` 信号，和窗口那层的 `chord()`。
+    // `q-cell` 是面板函数被 Rust 直接调用的样子；`quickCell.tapped()` 起的是
+    // `MouseArea.onReleased` 在一次真释放里做的唯一一件事，`chord()` 那一步则是
+    // `Keys.onPressed` 会做的那两步（匹配 + 分派）。三根线都接到同一个 `quickSave()`，但
+    // 从没被点过的按钮不能说它点得动——所以判定读的是**文件名**：每一条腿都必须写下自己那份
+    // 新号，写在别人已经写过的那一份上就是这条腿根本没走到 Rust。合成的按键本轮不做（注入会
+    // 落进当时有焦点的应用），于是 `chord` 那条欠的一步是 Qt 把 WM_KEYDOWN 翻成
+    // event.key/event.modifiers，这句话写在行里而不是留在日志里。
+    let serial_of = |p: &Path| -> Option<u32> {
+        let n = p.file_name()?.to_string_lossy().into_owned();
+        let tail = n.strip_prefix(QUICK_PREFIX)?.strip_prefix('-')?;
+        tail.chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse()
+            .ok()
+    };
+    let mut seen: Vec<String> = by_cell.iter().map(|p| p.display().to_string()).collect();
+    let mut prior = by_cell.as_ref().and_then(|p| serial_of(p));
+    let mut last_key = "q-cell".to_string();
+    for (key, how) in [
+        (
+            "q-cellown",
+            "Cell 自己的 tapped 信号（真释放走的就是这一根）",
+        ),
+        (
+            "q-chord",
+            "窗口那层 chord() 的匹配加分派；本轮欠的一步是 Qt 把 WM_KEYDOWN 翻成 (key, modifiers)",
+        ),
+    ] {
+        let line = said(&lines, key);
+        let (told, msg) = match line {
+            Some(v) => v.split_once('|').unwrap_or((v, "")),
+            None => ("", ""),
+        };
+        let path = landed_path(msg);
+        let head = path.as_ref().and_then(|p| crate::save::written_as(p));
+        let serial = path.as_ref().and_then(|p| serial_of(p));
+        let exists = path.as_ref().is_some_and(|p| p.exists());
+        let fresh = path
+            .as_ref()
+            .is_some_and(|p| !seen.contains(&p.display().to_string()));
+        let stepped = matches!((prior, serial), (Some(a), Some(b)) if b == a + 1);
+        let verdict = match line {
+            None => Check::Blocked,
+            Some(_) => Check::from(
+                told == "true"
+                    && exists
+                    && fresh
+                    && stepped
+                    && head == Some(falcon_core::encode::Format::Png)
+                    && census_says_no_dialog(census_cell),
+            ),
+        };
+        let (was_key, was_serial) = (&last_key, &prior);
+        rep.row(
+            &format!("quick save via {key}"),
+            verdict,
+            format!(
+                "{how}：那一句 {msg:?}（要求 delivered/返回值=true、盘上有={exists}、头四字节是 PNG 读出 {head:?}、\
+                 号是上一条 {was_key} 的 {was_serial:?} 的下一条 {serial:?}（+1={stepped}）、且不是别人的那一份（新名字={fresh}）；\
+                 它与 {was_key} 共用腿末那一次普查 {census_cell:?}（要求 pushed=no 且 dialogs=0），\
+                 这条腿自己不另取一次普查——缺席则记 Blocked 而不是绿",
+            ),
+        );
+        if let Some(p) = &path {
+            seen.push(p.display().to_string());
+        }
+        prior = serial.or(prior);
+        last_key = key.to_string();
+    }
 
     // ---- Two presses from Rust, and the name each one owes.
     let census_before = session::shim::push_dialog_button();
@@ -3001,6 +3115,10 @@ pub(crate) fn before_is_products_own(was: Option<&str>, pre: Option<&str>) -> bo
 /// absent. `q-cell`/`q-census` are §5.5.4's 快速保存 (§10 第 44 项 ①) and sit *last* for the
 /// same reason `pre-save` sits where it does: both read and write the one `message` slot, so
 /// they may only speak once the dialog's own before/after pair has been taken.
+/// `q-cellown`/`q-chord` are the same door's other two ways in (§10 第 46 项 ②): the Cell's own
+/// `tapped` signal and the window's `chord()` arm. They sit *between* `q-cell` and `q-census`
+/// because each of them overwrites `message` with the next file's name, and the census has to
+/// stay the last thing this leg says so it can still be that leg's own witness.
 pub(crate) const MASK_SCHEDULE: &[&str] = &[
     "dlg-folder",
     "dlg-name",
@@ -3022,6 +3140,8 @@ pub(crate) const MASK_SCHEDULE: &[&str] = &[
     "dlg-rejected",
     "q-click",
     "q-cell",
+    "q-cellown",
+    "q-chord",
     "q-census",
     "done",
 ];
@@ -3313,6 +3433,21 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
         ),
     );
 
+    // ---- 贴图的另存为没有写前那一档（第 46 项 ① 欠的一半，说在这一格里而不是消失）。
+    // `state::save_image(&self, …)` 借不到 `&mut`，而提醒要写的正是窗口那一格；本轮没有为了
+    // 让这一格变绿而改掉上面那句已评分的事后措辞（§9.1：既有行的字是别趟归档可比对的量），
+    // 也没有给它加 interior mutability 把"没走的路"写成"走过了"。于是它记 Blocked，结转。
+    rep.row(
+        "pin pre-save notice",
+        Check::Blocked,
+        format!(
+            "这扇门本轮没有写前提醒：{gone} px 的事后那句上面已经说过，而写前那一句要从 \
+             `state::save_image` 里读一个 `&mut self` 的位置——PRD 447 的\"应提醒\"在这里只有 \
+             事后那一半。遮罩的三扇门（另存为 / 快速保存 / 存完再钉图）本轮各有一条，见 \
+             pre-save notice 那格"
+        ),
+    );
+
     // ---- The knob itself, at both ends of its range, at both doors.
     //
     // `save_image` reads the live settings and `save_out` the snapshot the mask took at
@@ -3468,6 +3603,10 @@ fn save_then_pin_rows(rep: &mut Report, dir: &Path) {
     //    selection is the picture several earlier rows also wrote, and pins this run made
     //    before the door are not this door's doing.
     let from_disk = falcon_core::encode::decode_file(&file);
+    // §10 第 45 项 ④：这里不再有 `usize::MAX`。那个哨兵和上面那句"没有首帧可比"是同一条
+    // 事实的两种写法，而印出来的那一个是 `不同的通道 18446744073709551615 个（要求 0）`——
+    // 一个整数上限被当成通道数递给了读者，读者要的是那句人话。`None` 说的就是"没有可比
+    // 的分母"，它自己带一句为什么；判定照旧是 FAIL，一个都没松。
     let (diff, sizes) = match (fresh.as_slice(), &from_disk) {
         ([id], Ok(want)) => {
             let shown = state::with(|s| s.with_rendered(*id, |f| f.clone()));
@@ -3478,39 +3617,51 @@ fn save_then_pin_rows(rep: &mut Report, dir: &Path) {
                         && frame.pixels.len() == want.pixels.len();
                     (
                         if shape {
-                            frame
-                                .pixels
-                                .iter()
-                                .zip(&want.pixels)
-                                .filter(|(a, b)| a != b)
-                                .count()
+                            Some(
+                                frame
+                                    .pixels
+                                    .iter()
+                                    .zip(&want.pixels)
+                                    .filter(|(a, b)| a != b)
+                                    .count(),
+                            )
                         } else {
-                            usize::MAX
+                            None
                         },
-                        format!(
-                            "文件 {}x{} ↔ 贴图 {id} 首帧 {}x{}",
-                            want.width, want.height, frame.width, frame.height
-                        ),
+                        if shape {
+                            format!(
+                                "文件 {}x{} ↔ 贴图 {id} 首帧 {}x{}",
+                                want.width, want.height, frame.width, frame.height
+                            )
+                        } else {
+                            format!(
+                                "文件 {}x{} 与贴图 {id} 首帧 {}x{} 形状不同，逐通道没有对齐的两串像素可比",
+                                want.width, want.height, frame.width, frame.height
+                            )
+                        },
                     )
                 }
-                None => (usize::MAX, format!("贴图 {id} 没有首帧可比")),
+                None => (None, format!("贴图 {id} 没有首帧可比")),
             }
         }
-        ([], Ok(_)) => (usize::MAX, "这一步没有新增贴图".to_string()),
-        ([], Err(e)) | ([_, _, ..], Err(e)) => (usize::MAX, format!("盘上的文件读不回来：{e}")),
-        (other, _) => (
-            usize::MAX,
-            format!("一次门要走两步，新增的贴图有 {other:?} 个"),
+        ([], Ok(_)) => (None, "这一步没有新增贴图".to_string()),
+        ([], Err(e)) | ([_, _, ..], Err(e)) => (
+            None,
+            format!("盘上的文件读不回来，没有可比的那一串像素：{e}"),
         ),
+        (other, _) => (None, format!("一次门要走两步，新增的贴图有 {other:?} 个")),
+    };
+    let counted = match diff {
+        Some(n) => format!("不同的通道 {n} 个（要求 0）"),
+        None => "这一格没有可比的分母，所以它是 FAIL 而不是 0 个不同".to_string(),
     };
     rep.row(
         "pinned == saved",
-        Check::from(fresh.len() == 1 && diff == 0),
+        Check::from(fresh.len() == 1 && diff == Some(0)),
         format!(
-            "{} 的像素正被这些贴图显示 {:?}；{}，不同的通道 {diff} 个（要求 0）；state 记的 {:?}",
+            "{} 的像素正被这些贴图显示 {:?}；{sizes}，{counted}；state 记的 {:?}",
             file.display(),
             pin_shown_matching(&file),
-            sizes,
             state::with(|s| s.problems.clone())
         ),
     );
@@ -4308,6 +4459,34 @@ mod tests {
         assert_eq!(verdict, Check::Pass);
         assert!(line.contains("usable=41 of planted=165"), "{line}");
         assert!(line.contains("124 too dark"), "{line}");
+    }
+
+    /// §10 第 46 项 ④：`readable` 的分母与桌面底色解耦。底色是这一格**引**的那枚现场像素
+    /// （第 41 项 ⑤ 要求它进句子），而它对判定的影响早就算在 `dark`/`flat` 两个计数里了
+    /// （R20：一块暗桌面把 150 个样本里的 148 个放进了 `dark`）。所以同一组读数、只换底色
+    /// 那串字，判定必须一个都不动 —— 这条断言以后会烂掉的方式只有一种：有人把 `centre`
+    /// 拿来参加 `usable` 的比较，把"这张壁纸暗"重新算成一次判定。
+    #[test]
+    fn the_readability_verdict_does_not_read_the_wallpaper() {
+        for wallpaper in [
+            "Some([0, 0, 0, 255])",
+            "Some([245, 245, 245, 255])",
+            "Some([163, 163, 163, 255])",
+            "None",
+            "-",
+        ] {
+            let (verdict, line) = readable_row(165, 41, 124, 0, 0, wallpaper);
+            assert_eq!(
+                verdict,
+                Check::Pass,
+                "换了底色就把判定改了一次：{wallpaper}"
+            );
+            assert!(line.contains("usable=41 of planted=165"), "{line}");
+            assert!(
+                line.ends_with(&format!("pixel@centre={wallpaper}")),
+                "底色那一句没在分母之外单独站着：{line}"
+            );
+        }
     }
 
     /// The split added rows; it re-graded nothing. R20's band is the same denominator in all
