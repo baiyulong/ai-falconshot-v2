@@ -1140,6 +1140,46 @@ fn readable_row(
 /// nothing downstream would say so.
 const PAINTING_ROWS: [&str; 4] = ["ink box", "ink stroke", "ink polyline", "ink text"];
 
+/// The window rows, named once (第 49 项 ①). These four and the delivery row below are the
+/// rows whose sample is the slot's own read-back bitmap - so the two degenerate branches owe
+/// them, and the healthy loop is the only other place that ever emits them.
+const ZOOM_ROW: &str = "zoom copy";
+const GHOST_ROW: &str = "no ghost";
+const DIM_ROW: &str = "dim";
+const HOLE_ROW: &str = "hole";
+const SHIPPED_ROW: &str = "shipped on screen";
+
+/// Every row a healthy slot grades against the photograph, in the order the healthy loop
+/// emits them. [`slot_silence`] walks this list, so the question "what does a slot that never
+/// reached the screen still owe the report" has exactly one answer in this file - which is the
+/// shape 第 43 项 ⑦ asked for and 第 48 项 ⑯ half-built: `shipped on screen` reads this same
+/// bitmap and was missing from both branches, so the two were equal to each other while each
+/// stayed one row short of the healthy loop.
+const BITMAP_ROWS: [&str; 9] = [
+    "ink box",
+    "ink stroke",
+    "ink polyline",
+    "ink text",
+    ZOOM_ROW,
+    GHOST_ROW,
+    DIM_ROW,
+    HOLE_ROW,
+    SHIPPED_ROW,
+];
+
+/// The one spelling of a bitmap row's label. `dim` and `hole` carry the `(ink up)` suffix
+/// because that is the only name the healthy loop has ever given them, and a label is a row's
+/// identity in the census: a degenerate row named `dim of m1-display1` would be counted as a
+/// different row from the healthy `dim of m1-display1 (ink up)`, which is 第 47 项 ① seen from
+/// the other side - two spellings of one row, and only one of them drifts.
+fn bitmap_label(tag: &str, name: &str) -> String {
+    if name == DIM_ROW || name == HOLE_ROW {
+        format!("{name} of {tag} (ink up)")
+    } else {
+        format!("{name} of {tag}")
+    }
+}
+
 /// The eight companion rows for a round that never got to ask the screen (第 43 项 ⑦).
 ///
 /// Before this, a round whose pixels never arrived stopped at the graded rows: `这一轮压根没问`
@@ -1173,14 +1213,14 @@ fn painting_silence(tag: &str, why: &str) -> Vec<(String, Check, String)> {
     rows
 }
 
-/// Everything one slot owes the report when its read-back leg cannot run at all: the eight
+/// Everything one slot owes the report when its read-back leg cannot run at all: the nine
 /// graded rows that would have sampled the bitmap, and the eight companion rows
 /// [`painting_silence`] names.
 ///
 /// One function rather than two copies, because 第 48 项 ⑯ is precisely about the copies
 /// drifting. The `window {tag}` branch used to print its one `Fail` and stop, while the
-/// `PrintWindow` branch printed sixteen rows for the same failure to reach the screen - so
-/// a round with no window had the *smaller* row count, and the absence was announced only by
+/// `PrintWindow` branch used to print sixteen rows for the same failure to reach the screen -
+/// so a round with no window had the *smaller* row count, and the absence was announced only by
 /// the branch that was not missing anything. A reader comparing two archives would have read
 /// the shorter one as a quieter defect.
 ///
@@ -1188,16 +1228,15 @@ fn painting_silence(tag: &str, why: &str) -> Vec<(String, Check, String)> {
 /// the graded rows therefore never got. Merging them would put the window branch's sentence
 /// inside the bitmap branch's rows.
 ///
-/// The eight here are eight, not "every row a healthy slot emits": `shipped on screen of {tag}`
-/// reads this same bitmap and is still not in the list, so the two branches are equal to each
-/// other while both stay one row short of the healthy loop. 第 49 项 ① carries that row.
+/// The nine here are the whole of [`BITMAP_ROWS`], not a second list: 第 49 项 ① was the row
+/// this function did not emit (`shipped on screen of {tag}`, which grades the delivery against
+/// the same photograph), and the fix is that both branches now walk the array the healthy loop
+/// names its rows from - so a fifth bitmap row added to the healthy side has its companion
+/// rows here whether anybody remembered or not.
 fn slot_silence(rep: &mut Report, tag: &str, why_blocked: &str, why_silence: &str) {
-    for row in PAINTING_ROWS
-        .iter()
-        .chain(["zoom copy", "no ghost", "dim", "hole"].iter())
-    {
+    for row in BITMAP_ROWS {
         rep.row(
-            &format!("{row} of {tag}"),
+            &bitmap_label(tag, row),
             Check::Blocked,
             why_blocked.to_string(),
         );
@@ -4002,10 +4041,10 @@ pub fn measure() -> (Check, String) {
                 format!("no top-level titled {want_title}"),
             );
             // 第 48 项 ⑯: this Fail is not the whole of what the round has to say. The slot
-            // still owes the eight rows that would have sampled its bitmap and the eight that
+            // still owes the nine rows that would have sampled its bitmap and the eight that
             // answer "did the round ask" - and it owes them *because* there is no window, not
             // in addition to it. `continue` after the Fail left the shorter archive to be read
-            // as the quieter failure.
+            // as the quieter failure. 第 49 项 ① is what made the nine nine rather than eight.
             slot_silence(
                 &mut rep,
                 &tag,
@@ -4186,7 +4225,7 @@ pub fn measure() -> (Check, String) {
         ] {
             let hits = band(win.phys, &got, frozen, &points, want, true);
             rep.row(
-                &format!("{label} of {tag}"),
+                &bitmap_label(&tag, label),
                 hits.verdict(tenths),
                 hits.line(),
             );
@@ -4214,7 +4253,7 @@ pub fn measure() -> (Check, String) {
         match p.text {
             Some(strip) => {
                 let fp = footprint(win.phys, &got, frozen, strip);
-                rep.row(&format!("{text_row} of {tag}"), fp.verdict(), fp.line());
+                rep.row(&bitmap_label(&tag, text_row), fp.verdict(), fp.line());
                 let (c, l) = asked_row(fp.planted);
                 rep.row(&format!("{text_row} of {tag} asked"), c, l);
                 let (c, l) = readable_row(
@@ -4233,7 +4272,7 @@ pub fn measure() -> (Check, String) {
             }
             None => {
                 rep.row(
-                    &format!("{text_row} of {tag}"),
+                    &bitmap_label(&tag, text_row),
                     Check::Blocked,
                     "the selection is too small for a text strip that clears the bands the \
                      other rows grade, so none of this pen's colour was planted to count"
@@ -4278,7 +4317,7 @@ pub fn measure() -> (Check, String) {
                          magnifier output to grade the copy against"
                     )
                 };
-                rep.row(&format!("zoom copy of {tag}"), verdict, detail);
+                rep.row(&bitmap_label(&tag, ZOOM_ROW), verdict, detail);
                 rep.note(
                     &format!("zoom expectation of {tag}"),
                     format!(
@@ -4289,7 +4328,7 @@ pub fn measure() -> (Check, String) {
                 );
             }
             None => rep.row(
-                &format!("zoom copy of {tag}"),
+                &bitmap_label(&tag, ZOOM_ROW),
                 Check::Fail,
                 "放大 left no copy in the document; see the planted notes".to_string(),
             ),
@@ -4306,7 +4345,7 @@ pub fn measure() -> (Check, String) {
             false,
         );
         rep.row(
-            &format!("no ghost of {tag}"),
+            &bitmap_label(&tag, GHOST_ROW),
             ghost.verdict(GHOST_PASS),
             format!("{}, and that ink is the ghost", ghost.line()),
         );
@@ -4315,11 +4354,11 @@ pub fn measure() -> (Check, String) {
         // un-inked desktop inside it.
         let sides: Sides = samples(win.phys, &got, frozen, &p.hole, slot.scale.ratio());
         for (label, want, values) in [
-            ("dim", 1.0 - mask::DIM, &sides.outside),
-            ("hole", 1.0, &sides.inside),
+            (DIM_ROW, 1.0 - mask::DIM, &sides.outside),
+            (HOLE_ROW, 1.0, &sides.inside),
         ] {
             let (verdict, detail) = ratio_row(values.len(), median(values), want, &sides);
-            rep.row(&format!("{label} of {tag} (ink up)"), verdict, detail);
+            rep.row(&bitmap_label(&tag, label), verdict, detail);
         }
         // The delivery as the desktop shows it. Every row above this one grades a stroke
         // against the screen; none of them has ever graded the *picture* against it, and
@@ -4336,20 +4375,20 @@ pub fn measure() -> (Check, String) {
                     slot.scale.ratio(),
                 );
                 rep.row(
-                    &format!("shipped on screen of {tag}"),
+                    &bitmap_label(&tag, SHIPPED_ROW),
                     hits.verdict(SHIP_PASS),
                     hits.line(),
                 );
             }
             (None, _) => rep.row(
-                &format!("shipped on screen of {tag}"),
+                &bitmap_label(&tag, SHIPPED_ROW),
                 Check::Fail,
                 "the selection stitched no frame, so there is no picture this screen could \
                  be showing"
                     .to_string(),
             ),
             (_, None) => rep.row(
-                &format!("shipped on screen of {tag}"),
+                &bitmap_label(&tag, SHIPPED_ROW),
                 Check::Blocked,
                 "the hole reaches none of this canvas, so this window photographs none of \
                  the delivery"
@@ -4687,13 +4726,18 @@ mod tests {
     /// 第 48 项 ⑯：两格"没问到屏幕"的分支必须发同一批行。本轮之前 `window {tag}` 那一支发完
     /// 一枚 Fail 就 `continue`，而 `PrintWindow` 那一支发十六行 —— 于是"连窗都没有"的那一份档
     /// 比"有窗而摄不到"的那一份**更短**，读档的人会把更严重的失败读成更安静的那一个。这里钉
-    /// 三件事：两支各发满十六行（八 graded + 八 silence）；行数由 `Report` 自己数出来而不是
-    /// 抄进某句话里（第 46 项 ④ 同一条）；以及十六行里每一格**只发一次** —— 最后这条是"接进去
+    /// 三件事：两支各发满十七行（九 graded + 八 silence）；行数由 `Report` 自己数出来而不是
+    /// 抄进某句话里（第 46 项 ④ 同一条）；以及十七行里每一格**只发一次** —— 最后这条是"接进去
     /// 以后仍然只发一次"所能给出的最强证明，因为它不需要桌面配合，也不留一扇别人的窗。
+    ///
+    /// 第 49 项 ① 钉的是这份清单本身：那九行不再是一句"四行 painting 加四行别的"，而是
+    /// [`BITMAP_ROWS`] 这一个数组，且健康环的标签也从它取（经 [`bitmap_label`]）。所以"健康环新增
+    /// 一行位图判定"与"退化支欠一行"自此是同一件事，不需要有人记得——而 `dim`/`hole` 那两行的
+    /// `(ink up)` 拼法也只剩一处定义：退化支发的必须是健康环那一枚**同名**的行，不是它的短别名。
     #[test]
     fn the_branch_that_blames_the_window_owes_the_same_rows_as_the_one_that_blames_the_bitmap() {
         let tag = "m1-display1";
-        let graded_rows = PAINTING_ROWS.len() + 4; // 四行 painting + zoom copy/no ghost/dim/hole
+        let graded_rows = BITMAP_ROWS.len();
         let want = graded_rows + PAINTING_ROWS.len() * 2;
         let no_window_why = "no top-level titled X, so there is no window to photograph";
         let no_window_said = "这一轮连这个标题的顶层窗都没有，所以四行 painting 连样本都没有";
@@ -4709,26 +4753,54 @@ mod tests {
         );
         assert_eq!(no_window.row_count(), want, "缺窗那一支发的行数");
         assert_eq!(no_bitmap.row_count(), want, "缺位图那一支发的行数");
+        // ① 的那张数组本身：行数不是抄来的，前四枚必须就是 painting 那四枚（两张数组一旦
+        // 分家，退化支就会安静地少发一行，而这一格是它唯一的证人）。
+        assert_eq!(
+            BITMAP_ROWS.len(),
+            PAINTING_ROWS.len() + 5,
+            "位图行的清单与 painting 清单脱钩了"
+        );
+        for (i, name) in PAINTING_ROWS.iter().enumerate() {
+            assert_eq!(
+                BITMAP_ROWS[i], *name,
+                "第 {i} 枚位图行不再是 painting 的第 {i} 枚"
+            );
+        }
+        assert!(
+            BITMAP_ROWS.contains(&SHIPPED_ROW),
+            "{SHIPPED_ROW} 又不在退化支的清单里了：{BITMAP_ROWS:?}"
+        );
+        // 标签只有一种拼法：`(ink up)` 是健康环给 dim/hole 的唯一名字，短名是另一行。
+        assert_eq!(
+            bitmap_label(tag, DIM_ROW),
+            format!("{DIM_ROW} of {tag} (ink up)")
+        );
+        assert_eq!(
+            bitmap_label(tag, HOLE_ROW),
+            format!("{HOLE_ROW} of {tag} (ink up)")
+        );
+        assert_eq!(
+            bitmap_label(tag, SHIPPED_ROW),
+            format!("{SHIPPED_ROW} of {tag}")
+        );
 
         let (verdict, text) = no_window.finish("slot");
-        assert_eq!(verdict, Check::Blocked, "十六行 Blocked 不该给出 Pass");
+        assert_eq!(verdict, Check::Blocked, "十七行 Blocked 不该给出 Pass");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(
             lines.iter().filter(|l| l.ends_with(no_window_why)).count(),
             graded_rows,
             "{text}"
         );
-        for row in PAINTING_ROWS
-            .iter()
-            .chain(["zoom copy", "no ghost", "dim", "hole"].iter())
-        {
+        for row in BITMAP_ROWS {
+            let label = bitmap_label(tag, row);
             // graded 的标签是 silence 标签的前缀，所以只 `starts_with` 不够：第 47 项 ① 那一族
             // 在这一格的反面 —— 这里要让两种行各自数得出一次。
             let hits = lines
                 .iter()
-                .filter(|l| l.starts_with(&format!("{row} of {tag}")) && l.ends_with(no_window_why))
+                .filter(|l| l.starts_with(&label) && l.ends_with(no_window_why))
                 .count();
-            assert_eq!(hits, 1, "{row} of {tag} 在缺窗那一支发了 {hits} 次：{text}");
+            assert_eq!(hits, 1, "{label} 在缺窗那一支发了 {hits} 次：{text}");
         }
         for label in PAINTING_ROWS {
             for suffix in [" asked", " readable"] {
