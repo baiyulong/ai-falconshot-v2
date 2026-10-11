@@ -127,6 +127,13 @@ QString pinWindowReport();
 /// Quit the event loop after ms, so a probe run cannot hang a CI job.
 void pinQuitAfter(std::int32_t ms);
 
+/// QGuiApplication::setQuitOnLastWindowClosed. A resident session has no window of
+/// its own - §5.1's "无主窗口，一个托盘图标" root is an invisible `Item` - so the
+/// only windows it ever has are the ones a capture flow borrows and hands back.
+/// Qt's default ends the process when the last of them closes, which would take the
+/// registered hot keys and the tray icon with it after one screenshot.
+void pinSetQuitOnLastWindowClosed(bool on);
+
 /// Installs the "falconshot" image provider on the engine that owns the window
 /// QML passes in, and applies the native styles. Both are Q_INVOKABLE rather
 /// than cxx functions because a QWindow* only exists on the C++ side of a QML

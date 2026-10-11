@@ -69,6 +69,10 @@ pub mod qobject {
         fn pinMessages() -> QString;
         #[rust_name = "pin_quit_after"]
         fn pinQuitAfter(ms: i32);
+        /// Off in a gauge run and on in a resident one: a session whose last mask
+        /// closes must still be listening to its hot keys. See [`crate::hotkey`].
+        #[rust_name = "set_quit_on_last_window_closed"]
+        fn pinSetQuitOnLastWindowClosed(on: bool);
     }
 
     extern "RustQt" {
@@ -132,6 +136,14 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "markLoaded"]
         fn mark_loaded(self: &Self);
+
+        /// Give the hot-key pump the only route it has back onto this object's thread.
+        /// QML calls it once, in `Component.onCompleted`, immediately after
+        /// [`Self::mark_loaded`] - and the pump is only started after that, so a press
+        /// can never arrive before there is somewhere to send it. See [`crate::hotkey`].
+        #[qinvokable]
+        #[cxx_name = "handThread"]
+        fn hand_thread(self: Pin<&mut Self>);
 
         /// The pin in slot `index` of the z order, or 0 when there is none.
         #[qinvokable]
@@ -201,10 +213,17 @@ pub mod qobject {
         #[cxx_name = "maskGaugeReport"]
         fn mask_gauge_report(self: &Self, line: &QString);
     }
+
+    // Threading is opt-in per QObject; without this declaration `qt_thread()` does
+    // not exist on `Session`. It is what lets a message that arrived on the pump
+    // thread ask this object - which lives on the GUI thread and is not `Send` - to
+    // open a mask. Proven against 6.10.1 in `spike/hello-cxxqt/src/pump.rs`.
+    impl cxx_qt::Threading for Session {}
 }
 
 use core::pin::Pin;
 
+use cxx_qt::Threading;
 use cxx_qt_lib::QString;
 use falcon_core::geometry::PhysPoint;
 
@@ -272,6 +291,13 @@ impl qobject::Session {
 
     pub fn mark_loaded(&self) {
         state::mark_qml_loaded();
+    }
+
+    /// The one thing the pump thread needs and cannot make for itself: a handle on
+    /// the thread this object lives on. QML owns the `Session` instance, so Rust has
+    /// no other way to reach it - see [`crate::hotkey::hand`].
+    pub fn hand_thread(self: Pin<&mut Self>) {
+        crate::hotkey::hand(self.qt_thread());
     }
 
     pub fn add_demo(mut self: Pin<&mut Self>, width: i32, height: i32) -> i64 {

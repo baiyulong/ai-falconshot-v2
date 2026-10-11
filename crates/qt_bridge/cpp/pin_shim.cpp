@@ -353,6 +353,11 @@ void pinQuitAfter(std::int32_t ms)
     QTimer::singleShot(ms, [] { QCoreApplication::exit(0); });
 }
 
+void pinSetQuitOnLastWindowClosed(bool on)
+{
+    QGuiApplication::setQuitOnLastWindowClosed(on);
+}
+
 // ---------------------------------------------------------------- grab
 
 namespace {

@@ -20,6 +20,12 @@ Item {
     property var maskWindows: []
 
     Component.onCompleted: {
+        // First, because it is the one thing here that another thread is waiting for:
+        // the hot key pump can only reach this object through the handle cxx-qt gives
+        // from inside it, and `main` installs the pump right after `engine.load()`
+        // returns - which is when this block runs. Handing it over later would be a
+        // key press with nowhere to go.
+        app.session.handThread()
         app.session.markLoaded()
         app.session.refresh()
         app.session.refreshMasks()

@@ -157,6 +157,35 @@ pub fn window_at_point(p: PhysPoint) -> Option<u64> {
     }
 }
 
+/// The window the shell is giving keystrokes to right now, as a handle value.
+///
+/// This is the one question §5.16.2's "免打扰" rules have to be asked against: the
+/// rule is about the app the user is *in* at the moment of the press, so it is read
+/// at that moment rather than cached. It answers with a handle and no name, because
+/// naming the window is a separate question that can fail separately.
+pub fn foreground_window() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        // SAFETY: the handle is read, never owned or freed.
+        let hwnd = unsafe { windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow() };
+        (!hwnd.0.is_null()).then_some(hwnd.0 as u64)
+    }
+    #[cfg(not(windows))]
+    None
+}
+
+/// `(executable name, full path)` of the app the user is in, or `None` when either
+/// half is unavailable.
+///
+/// `None` means the exclusion rules cannot be consulted, which is reported as such
+/// rather than folded into "no rule matched": a protected process refuses its name
+/// just as surely as a rule silences a hot key, and the two have different fixes.
+pub fn foreground_app() -> Option<(String, String)> {
+    let hwnd = foreground_window()?;
+    let pid = pid_of_window(hwnd)?;
+    process_paths(pid)
+}
+
 /// A handle value back into the pointer-sized shape Win32 expects.
 #[cfg(windows)]
 pub(crate) fn to_hwnd(hwnd: u64) -> windows::Win32::Foundation::HWND {

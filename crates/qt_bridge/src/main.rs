@@ -1,6 +1,6 @@
 //! AI Falconshot - the process that owns the pin windows.
 //!
-//! Eight modes, because "does it work" has eight different answers:
+//! Nine modes, because "does it work" has nine different answers:
 //! * `--selftest` drives the state machine and the pixel pipeline and prints
 //!   PASS/FAIL per step, without ever creating a window. `--clipboard` and
 //!   `--capture` add the two checks that take over something real - the user's
@@ -33,11 +33,24 @@
 //!   real (§10 第 46 项 ③). That means it leaves one Explorer window on the user's desktop
 //!   which this process cannot close, so it is never implied by another door and never run
 //!   by default.
-//! * no flags: the app.
+//! * `--hotkeys <ms>` measures the *resident* chain instead of a window: it registers the two
+//!   actions this build can perform, puts the icon in the notification area, then posts the
+//!   delivery the shell would have posted for each registered key and grades what the product
+//!   did about it — mask opened, pin pasted. Only the fingertip is imitated, so the combination
+//!   itself stays unmeasured and the report says so (§10 第 51 项). The paste leg needs
+//!   something to paste, so this door writes a two-pixel picture through the same call a pin's
+//!   复制 uses and hands the user's own clipboard back at the end — the one door that takes the
+//!   clipboard besides `--selftest --clipboard` and `--ink`'s 复制, and it pays into the same
+//!   `state::put_back`.
+//! * no flags: the app. The same install, but nobody measures it and nothing quits: the keys and
+//!   the icon stay up until 退出 is asked for. That is also why Qt's quit-on-last-window-closed
+//!   is turned off here — the mask is the only window, and closing it must not take the
+//!   registered keys and the icon away with it.
 
 mod annotate;
 mod annotate_check;
 mod capture;
+mod hotkey;
 mod mask;
 mod mask_check;
 mod mask_view;
@@ -140,6 +153,11 @@ fn refusals(args: &[String], gauge_mode: bool) -> Vec<String> {
     // refused by one path and not by the other.
     let mut numbered: Vec<&str> = mask::GAUGE_FLAGS.to_vec();
     numbered.push("--reveal");
+    // `--hotkeys` is named by a flag *and* a number and degrades the same way as the
+    // doors above do: with no number the pump installs, the tray icon goes up, and
+    // the run becomes a resident session that prints nothing - which is exactly the
+    // zero-byte log from a live process that 第 47 项 ⑭ refuses on sight.
+    numbered.push("--hotkeys");
     let mut missing_ms = Vec::new();
     for name in numbered {
         if flag(name) && after(name).is_none() {
@@ -171,6 +189,32 @@ fn refusals(args: &[String], gauge_mode: bool) -> Vec<String> {
         orphans.push(
             "--reveal 不能和 --probe / --r13 / --mask / --ink / --pin 一起用：那些前缀会让 \
              gauge_run 在 select 之前就把这一步拒掉，那一趟读到的只是腿没跑"
+                .to_string(),
+        );
+    }
+    // 装热键的那一步在 `engine.load()` 之后，而这两类档都在它之前就走完了：`--selftest`
+    // 与 `--desktop` 打印完就 `exit`，量具档读的是自己开的那张遮罩。和它们并列时，这一档
+    // 报的是自己没跑——和上面每一条被拒的组合同一个理由。
+    // `--snap` / `--paste` / `--demo` 不在这一列：它们留下窗口然后进入事件循环，那正是常驻
+    // 会话的样子。
+    if flag("--hotkeys")
+        && [
+            "--selftest",
+            "--desktop",
+            "--probe",
+            "--r13",
+            "--mask",
+            "--ink",
+            "--pin",
+            "--reveal",
+        ]
+        .iter()
+        .any(|name| flag(name))
+    {
+        orphans.push(
+            "--hotkeys 不能和 --selftest / --desktop / --probe / --r13 / --mask / --ink / \
+             --pin / --reveal 一起用：那些档各自读完就退，热键泵要到 engine 加载完才装，\
+             并列时读数是别人的"
                 .to_string(),
         );
     }
@@ -414,6 +458,12 @@ fn main() {
     }
 
     let probe = after("--probe");
+    // §5.2's front door, and §5.1's resident process. `--hotkeys <ms>` is the door
+    // that measures the chain; no flags at all is the app the plan ships, which
+    // registers its keys, puts the icon in the notification area and stays up.
+    let hot_want = after("--hotkeys");
+    let hotkeys_ms = hot_want.map(|ms| ms.max(hotkey::MIN_MS));
+    let plain = args.is_empty();
     state::stamp("engine");
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
@@ -423,6 +473,51 @@ fn main() {
         std::process::exit(2);
     }
     state::stamp("loaded");
+
+    // The pump is built here rather than at the top of `main` for one reason: QML
+    // hands the GUI thread to the hot key layer inside `Component.onCompleted`,
+    // which runs during the `load` call above. A pump installed before that owns a
+    // thread with nothing at the other end of it, and every key it catches would be
+    // a message with nowhere to go.
+    let mut launch = None;
+    if plain || hotkeys_ms.is_some() {
+        // §5.1's root is an invisible `Item` and Qt's default ends the process when
+        // the last visible window closes - which, for a tool whose one window is the
+        // mask, would take the registered keys and the icon away after a single
+        // screenshot.
+        session::qobject::set_quit_on_last_window_closed(false);
+        launch = match hotkey::install() {
+            Ok(done) => Some(done),
+            Err(e) => {
+                println!("[hotkeys] 一个也没装：{e}");
+                None
+            }
+        };
+        if let Some(done) = launch.as_ref() {
+            for row in &done.rows {
+                println!("[hotkey] {row}");
+            }
+        }
+    }
+
+    // The presses, and the order: 贴出剪贴板 first, because the capture leg leaves the
+    // mask covering the screen and a second freeze would photograph the mask itself -
+    // the listener refuses that on purpose, so a door that pressed capture first would
+    // end up measuring its own refusal.
+    // The clipboard is taken by the door and by nothing else — the app's own path never
+    // writes it. Paste needs something to paste, and the door is the one that says
+    // whether it put it there, so `press paste_pin` grades `id=-1` against that answer
+    // instead of against an excuse.
+    let clip = match hotkeys_ms {
+        Some(_) => hotkey::Clip::plant(),
+        None => hotkey::Clip::untouched(),
+    };
+    let mut injected: Vec<(String, bool)> = Vec::new();
+    if hotkeys_ms.is_some() {
+        for action in ["paste_pin", "capture"] {
+            injected.push((action.to_string(), hotkey::press(action)));
+        }
+    }
 
     if let Some(ms) = probe {
         state::quit_after(ms);
@@ -455,9 +550,22 @@ fn main() {
         // 也举不到它，所以这个数只决定遮罩在屏幕上留多久，不决定任何一格的成功。
         state::quit_after(ms);
     }
+    if let Some(ms) = hotkeys_ms {
+        // The presses are already posted by now, so the wait is the chain's: pump to
+        // listener, listener to the Qt queue, and a freeze plus N presented frames.
+        state::quit_after(ms);
+    }
 
     let mut code = 0;
     if let Some(app) = app.as_mut() {
+        // The alarm is armed; this is where the process stops being the one that decides
+        // when the run ends. `--hotkeys` reduces "等到的 4000 ms" against this stamp, and
+        // a number shorter than the alarm says something else took the process - the only
+        // candidate in this door is "the last window closed". No other door asks for it,
+        // so no other door's cold-path line can grow a `hotkeys loop=`.
+        if hotkeys_ms.is_some() {
+            state::stamp("hotkeys loop");
+        }
         code = app.exec();
     }
 
@@ -622,6 +730,34 @@ fn main() {
         );
         code = verdict_code(code, verdict);
     }
+    if let Some(ms) = hotkeys_ms {
+        // The report is the pump's own numbers - what the shell took, what the icon
+        // says, and what each injected press did to the product - graded against the
+        // mask and pin state the chain left behind.
+        let (verdict, report) = match launch.as_ref() {
+            Some(done) => hotkey::report(done, hot_want.unwrap_or(ms), ms, &injected, &clip),
+            None => (
+                state::Check::Blocked,
+                "hotkeys door: BLOCKED - 上面那行 [hotkeys] 说了为什么；装了 0 个，链路没有起点"
+                    .to_string(),
+            ),
+        };
+        println!("{report}");
+        println!(
+            "[hotkeys after {ms} ms] 要求 {} ms 生效 {ms} ms，读回时泵仍活着={}，qml_loaded={} {} {}",
+            hot_want.unwrap_or(ms),
+            hotkey::is_running(),
+            state::qml_loaded(),
+            exe_stamp(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
+    }
+    // The last thing before the process ends, whatever the mode: an unregistered key
+    // and a removed icon are the difference between this run and one that left the
+    // user's PrintScreen held by a process that no longer exists. A no-op when
+    // nothing was installed.
+    hotkey::shutdown();
     std::process::exit(code);
 }
 

@@ -8,6 +8,7 @@ pub mod glyphs;
 
 pub mod clock;
 pub mod desktop;
+pub mod hotkey;
 pub mod print;
 pub mod proc;
 pub mod reveal;
