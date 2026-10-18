@@ -213,6 +213,13 @@ pub enum Event {
     /// entry, and a left click that starts the one thing the tool is for satisfies
     /// both halves; the menu is on the right button.
     TrayLeft,
+    /// 机器自己播了一次设置变更（`WM_SETTINGCHANGE`）。载荷是那枚广播带来的**名字**，
+    /// `NULL`（内核自己播的那一次没有名字）读成空串 —— 名字不是判据，只是「机器说了话」的证人。
+    ///
+    /// §5.19.1 第 3 步：这一枚事件是 `theme::apps_use_light_theme` 那一格缓存唯一的失效点。
+    /// 它到不了这一层的两臂都照实交回：泵没起来（进程里根本没有收广播的窗口），以及广播来了而
+    /// 没有人读事件流。
+    SettingChange(String),
 }
 
 /// Why a registration did not happen, in the shell's own number plus a sentence a
@@ -250,6 +257,11 @@ pub struct Started {
     /// is reported, not retried: the keys still work either way.
     pub tray: bool,
     pub hwnd: u64,
+    /// 收 `WM_SETTINGCHANGE` 的那枚**顶层**窗口，`0` 是没建起来。它必须是顶层而不能是上面那枚
+    /// 消息窗口：`HWND_BROADCAST` 只走顶层窗口那一条链，消息窗口不在链里 —— 所以 §5.19.1 第 3 步
+    /// 要是只建消息窗口，热键与托盘照旧而主题的广播永远不来。那一格由这一枚数交给门去读，
+    /// 而不是由注释担保（`0` 读得出来）。
+    pub settings_hwnd: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -269,6 +281,10 @@ pub struct Pump {
     /// The message-only window the shell delivers to, kept as a number so this
     /// type has no Win32 dependency on a machine that has none.
     pub hwnd: u64,
+    /// 收广播的那枚顶层窗口，同上以数字存。它在这里而不是只留在 [`Started`] 里，为的是
+    /// 门能往它身上投一次真的 `WM_SETTINGCHANGE`（[`Pump::notify_setting_change`]）；
+    /// `0` 意味着那一发没有落点。
+    pub settings_hwnd: u64,
     #[cfg(windows)]
     thread: Option<std::thread::JoinHandle<()>>,
     #[cfg(windows)]
@@ -319,6 +335,7 @@ impl Pump {
         Ok((
             Pump {
                 hwnd: started.hwnd,
+                settings_hwnd: started.settings_hwnd,
                 thread: Some(thread),
                 events: Some(events_rx),
             },
@@ -366,6 +383,19 @@ impl Pump {
         win::post(self.hwnd, win::WM_APP_TIP)
     }
 
+    /// 替系统播一次「设置改了」：把 `WM_SETTINGCHANGE` 投给本进程那枚收广播的顶层窗口，
+    /// LPARAM 带的就是系统会带的那串宽字符名字。
+    ///
+    /// 哪一半是真的、哪一半是替的：窗口是本进程建的，那一发走的是从别的线程到泵线程那一条
+    /// 内核路径，wndproc 读的也是消息里那根指针 —— 缺的是**别的进程**（Explorer、设置应用）
+    /// 播这一发。所以这一格证的是「广播进了这条链之后会发生什么」，不是「系统会不会播」。
+    ///
+    /// `false` 只有一种含义：`settings_hwnd == 0`，那枚窗口根本没建起来（[`Started`] 里
+    /// 同一个数已经说过）。名字给空串就是 `lparam` 为 `NULL` 的那一臂。
+    pub fn notify_setting_change(&self, name: &str) -> bool {
+        win::send_setting_change(self.settings_hwnd, name)
+    }
+
     /// Unregister, remove the icon, end the thread. That order is the one the
     /// shell wants: an icon whose window dies first stays in the notification area
     /// until Explorer reloads it, and a key registered to a live window keeps
@@ -406,6 +436,12 @@ impl Pump {
     }
 
     pub fn set_tip(&self, _text: &str) -> bool {
+        false
+    }
+
+    /// 没有广播可收的机器也就没有可替系统播的那一发；`Pump::start` 在这一臂上本来就返 `Err`，
+    /// 所以这一格存在的理由只是让门侧的调用点不必再套一层 `#[cfg]`。
+    pub fn notify_setting_change(&self, _name: &str) -> bool {
         false
     }
 
@@ -531,6 +567,38 @@ mod win {
             .unwrap_or(false)
     }
 
+    /// 往那枚顶层窗口上真发一次 `WM_SETTINGCHANGE`，LPARAM 指着调用方栈上那串 UTF-16。
+    ///
+    /// 为什么是 `SendMessageW` 而不是这一模块其他地方用的 `PostMessageW`：这一发的 lParam
+    /// 是**一根指针**，而 `PostMessageW` 在对方还没读它就返回 —— 返回之后这块栈 frame 就没了，
+    /// 泵线程随后读到的是别人写过的内存。`SendMessageW` 等的是对方 wndproc 返回，而那枚
+    /// wndproc 只在读名字和往 mpsc 里塞一条消息之间碰这根指针，所以缓冲区活到它读完。
+    /// 代价也是这条等待带来的：泵线程正卡在模态菜单里时，调用方会一起等。
+    pub fn send_setting_change(hwnd: u64, name: &str) -> bool {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::{SendMessageW, WM_SETTINGCHANGE};
+
+        if hwnd == 0 {
+            return false;
+        }
+        let units = encode(name);
+        // 空名字不递一根"只装着终止符"的指针，而是把 `lparam` 交成 `None` —— 系统播那一发
+        // 时本来就允许不带名字，而 wndproc 读 `NULL` 的那一臂（载荷 = 空串）只有这样才能被
+        // 本进程这条路走到。
+        let carried = if units.len() > 1 {
+            Some(LPARAM(units.as_ptr() as isize))
+        } else {
+            None
+        };
+        // SAFETY: `units` 是本函数的局部，活到 `SendMessageW` 返回，而返回的条件就是接收方
+        // wndproc 已经读完它；指针由 `encode` 自己产出（含终止符的 UTF-16），长度按它算；
+        // 窗口句柄来自 [`super::Started::settings_hwnd`]，是同一个模块建的那一枚。
+        unsafe {
+            SendMessageW(to_hwnd(hwnd), WM_SETTINGCHANGE, Some(WPARAM(0)), carried);
+        }
+        true
+    }
+
     fn to_hwnd(hwnd: u64) -> windows::Win32::Foundation::HWND {
         windows::Win32::Foundation::HWND(hwnd as *mut core::ffi::c_void)
     }
@@ -570,9 +638,9 @@ mod win {
             Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD,
         };
         use windows::Win32::UI::WindowsAndMessaging::{
-            CreateWindowExW, DispatchMessageW, GetMessageW, LoadIconW, RegisterClassExW,
-            TranslateMessage, UnregisterClassW, HWND_MESSAGE, IDI_APPLICATION, MSG,
-            WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW,
+            CreateWindowExW, DestroyWindow, DispatchMessageW, GetMessageW, LoadIconW,
+            RegisterClassExW, TranslateMessage, UnregisterClassW, HWND_MESSAGE, IDI_APPLICATION,
+            MSG, WINDOW_EX_STYLE, WINDOW_STYLE, WNDCLASSEXW,
         };
 
         let staged = STAGED
@@ -626,6 +694,35 @@ mod win {
                 let _ = UnregisterClassW(PCWSTR(wide.as_ptr()), Some(instance));
                 let _ = handshake.send(Started::default());
                 return;
+            };
+
+            // §5.19.1 第 3 步要的那枚广播走 `HWND_BROADCAST`，而**消息窗口不在那条链上**
+            // （`HWND_MESSAGE` 的父窗口只收显式投递，广播从来不进它的队列 —— 这是 SDK 写明的
+            // 行为，不是本层的观察）。所以这一枚是**顶层**窗口：没有父、没有 `WS_VISIBLE`、
+            // 不上任务栏、不接热键，只是把广播送到同一个 wndproc、同一条线程。
+            //
+            // 建不起来不当成失败：热键与托盘那一臂照旧，只有主题那一臂永远不来，而那由下面
+            // 交回的 `settings_hwnd == 0` 读得出来 —— 不是由注释担保。
+            let settings = CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                PCWSTR(wide.as_ptr()),
+                PCWSTR(encode("falconshot.settings").as_ptr()),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                0,
+                0,
+                None,
+                None,
+                Some(instance),
+                None,
+            );
+            let settings_hwnd = match settings {
+                Ok(at) => at,
+                Err(e) => {
+                    tracing::warn!("theme: 收广播的顶层窗口建不起来，主题切换自此听不到：{e}");
+                    windows::Win32::Foundation::HWND::default()
+                }
             };
 
             // Registration belongs to the window and the window to this thread, so
@@ -689,6 +786,7 @@ mod win {
                 refused,
                 tray: tray_shown,
                 hwnd: hwnd.0 as u64,
+                settings_hwnd: settings_hwnd.0 as u64,
             });
 
             let mut msg = MSG::default();
@@ -703,6 +801,12 @@ mod win {
             // The loop ends only after teardown, but a thread that leaves by some
             // other route still has to hand the notification area back clean.
             teardown(hwnd);
+            // 广播那一枚也一样要交回去。它没有键、没有图标，所以 `teardown` 对它无事可做；
+            // 它触的 `WM_DESTROY` 会再 `PostQuitMessage` 一次，而那条消息自此没人读 ——
+            // 线程正在退出，留下的是它自己队列里的一条消息，不是又一个窗口。
+            if !settings_hwnd.0.is_null() {
+                let _ = DestroyWindow(settings_hwnd);
+            }
             let _ = UnregisterClassW(PCWSTR(wide.as_ptr()), Some(instance));
         }
     }
@@ -717,13 +821,23 @@ mod win {
         use windows::Win32::Foundation::LRESULT;
         use windows::Win32::UI::WindowsAndMessaging::{
             DefWindowProcW, DestroyWindow, PostQuitMessage, WM_CLOSE, WM_DESTROY, WM_HOTKEY,
-            WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP,
+            WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_SETTINGCHANGE,
         };
 
         match msg {
             WM_HOTKEY => {
                 if let Some(tx) = sink() {
                     let _ = tx.send(Event::Hotkey(wparam.0 as u32));
+                }
+                LRESULT(0)
+            }
+            WM_SETTINGCHANGE => {
+                // §5.19.1 第 3 步的那一响：机器自己改了设置，本进程自此要重新问一次。
+                // 这里只交出「机器说了话」加上它给的名字，判定不在这一层 —— 名字从来不是
+                // 判据（`ImmersiveColorSet` 之外的设置变更也得让缓存重新问一次，因为问一次
+                // 注册表本来就是便宜的，而猜哪一处变更会影响主题是另一枚会错的仪器）。
+                if let Some(tx) = sink() {
+                    let _ = tx.send(Event::SettingChange(setting_from_lparam(lparam)));
                 }
                 LRESULT(0)
             }
@@ -762,6 +876,76 @@ mod win {
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+
+    /// 把 `WM_SETTINGCHANGE` 的 `lParam` 读成一枚名字。
+    ///
+    /// 这一枚指针来自**进程之外**：写它的是广播的发送者，读它的是本线程，而 SDK 明说它可以是
+    /// `NULL`。所以碰它之前先问一次 `VirtualQuery` —— 地址那段内存得是**已提交**、**可读**、
+    /// **没有 PAGE_GUARD**，否则交出空串。这不是防御想象中的敌人：一枚 AV 落在泵线程上就是整个
+    /// 进程没了，而「机器说了话」这件事本来不依赖名字（名字只是证人，见 [`Event::SettingChange`]）。
+    ///
+    /// 上界 256 枚 UTF-16 单元，并且不越过 `VirtualQuery` 报回的那一段的尾：广播没给长度凭证，
+    /// 而无限读一枚外来指针是本层不该有的自由度。截断在这里是可接受的失真，崩溃不是。
+    ///
+    /// `pub(super)` 只为下面那枚单测：三格里有两格（`NULL`、以及一枚不属于任何已提交内存的数）
+    /// 不需要广播、也不需要 GUI，就能在本进程里钉住 —— 门只欠「广播真来了一次」那一格。
+    pub(super) fn setting_from_lparam(lparam: windows::Win32::Foundation::LPARAM) -> String {
+        use windows::Win32::System::Memory::{
+            VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_EXECUTE_READ,
+            PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_GUARD, PAGE_NOCACHE,
+            PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY,
+        };
+
+        let at = lparam.0 as usize;
+        if at == 0 {
+            return String::new();
+        }
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        // 第三参数是「往这枚缓冲里放几个字节」，而不是一枚探针长度：给它 2 时
+        // `VirtualQuery` 对**已提交**的堆指针也直接返 0，于是那一格读回空串 —— 本函数第一次
+        // 跑过的那枚单测抓的就是这个（一个真名字被读成"没名字"，比读成崩溃更难看见）。
+        // SAFETY: `VirtualQuery` 只往 `&mut info` 里写它自己那枚结构，而它报回来的那一段
+        // 之外本函数一概不碰；读 `at` 之前先要求那一段已提交且可读。
+        let room = core::mem::size_of::<MEMORY_BASIC_INFORMATION>();
+        let answered =
+            unsafe { VirtualQuery(Some(at as *const core::ffi::c_void), &mut info, room) };
+        if answered < room || info.State != MEM_COMMIT {
+            return String::new();
+        }
+        // 保护位分两层：低字节是「这一段能干什么」，上面那些是叠上去的修饰位。
+        // `PAGE_GUARD` / `PAGE_NOCACHE` 带着的时候读一次就触发异常，所以「可读」这一问
+        // 要两半都问 —— 而 `PAGE_NOACCESS`（0x01）不在下面那张表里，天然被拒。
+        let protect = info.Protect.0;
+        if protect & (PAGE_GUARD.0 | PAGE_NOCACHE.0) != 0 {
+            return String::new();
+        }
+        let readable = [
+            PAGE_READONLY.0,
+            PAGE_READWRITE.0,
+            PAGE_WRITECOPY.0,
+            PAGE_EXECUTE_READ.0,
+            PAGE_EXECUTE_READWRITE.0,
+            PAGE_EXECUTE_WRITECOPY.0,
+        ]
+        .contains(&(protect & 0xFF));
+        if !readable {
+            return String::new();
+        }
+        let base = info.BaseAddress as usize;
+        let room = info.RegionSize.saturating_sub(at.saturating_sub(base)) / 2;
+        let mut units = Vec::with_capacity(room.min(256));
+        for offset in 0..room.min(256) {
+            // SAFETY: the loop bound is the number of `u16` cells `VirtualQuery` said this
+            // region holds past `at`, and the region is committed and readable, so every
+            // cell here is inside memory the kernel already told us about.
+            let unit = unsafe { *(at as *const u16).add(offset) };
+            if unit == 0 {
+                break;
+            }
+            units.push(unit);
+        }
+        crate::theme::setting_name(&units)
     }
 
     /// Show the menu at the pointer. `TrackPopupMenu` blocks this thread until the
@@ -1063,5 +1247,29 @@ mod tests {
             "repeat suppression is added to every binding, so a wrong number here \
              would refuse all of them"
         );
+    }
+
+    /// §5.19.1 第 3 步里**不需要广播**的那三格。
+    ///
+    /// 这一枚测试读的是本进程自己拥有的两段内存，所以它证的不是「机器会播」（那一格归门），
+    /// 而是这枚指针解码器对三种形状的答复：`NULL` 交空串、一段真的宽字符交名字、而一枚没有
+    /// 任何已提交内存认领的数交空串**而不是崩** —— 最后一格才是 `VirtualQuery` 那一问的证人，
+    /// 它只要一个不可能有效的地址，不需要谁去改系统的主题。
+    #[cfg(windows)]
+    #[test]
+    fn the_broadcast_pointer_is_read_only_where_the_kernel_says_it_may_be() {
+        use windows::Win32::Foundation::LPARAM;
+
+        let owned: Vec<u16> = "ImmersiveColorSet"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        assert_eq!(
+            win::setting_from_lparam(LPARAM(owned.as_ptr() as isize)),
+            "ImmersiveColorSet"
+        );
+        assert_eq!(win::setting_from_lparam(LPARAM(0)), "");
+        // 低 64 KB 是保留页，`VirtualQuery` 在这里报回的是未提交，于是这一格必须是空串。
+        assert_eq!(win::setting_from_lparam(LPARAM(0x0001_0000)), "");
     }
 }

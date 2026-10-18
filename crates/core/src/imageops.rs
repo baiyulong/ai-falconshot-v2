@@ -309,6 +309,87 @@ pub fn plate(src: &Frame, plate: &Plate) -> Result<Frame, FrameError> {
     Ok(out)
 }
 
+/// §5.5.6 and §5.5.7 answered as one value: what happens to a picture *after* the ink
+/// has been stitched and *before* anything is asked to encode it.
+///
+/// One value rather than two settings reads because the two features share a canvas. The
+/// corners have to be cut first and the margin grown around the cut: run in the other
+/// order, the plate would draw shadow under pixels that are about to become transparent
+/// and the exported picture would carry a shadow nobody configured at that spot.
+///
+/// Both halves are the identity at the shipped values (`corner_radius = 0`,
+/// `shadow_size = 0`, `border_width = 0`), which is what lets every caller keep its exact
+/// bytes: the `[output]` keys that were already in the file with no reader start being
+/// honoured, and a user who never touched them sees no difference.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Decoration {
+    /// §5.5.6's radius, in physical pixels. 0 leaves the corners alone.
+    pub corner: u32,
+    /// §5.5.6's 圆角外部区域: 透明, or filled with the configured background colour.
+    pub outside: Outside,
+    /// §5.5.7's border and shadow.
+    pub plate: Plate,
+}
+
+impl Default for Decoration {
+    fn default() -> Self {
+        Self::from(&crate::config::Output::default())
+    }
+}
+
+impl From<&crate::config::Output> for Decoration {
+    fn from(o: &crate::config::Output) -> Self {
+        // An empty `corner_fill` *is* §5.5.6's first reading (透明), not a value that is
+        // missing. A non-empty one that will not parse falls back to that same
+        // transparent corner rather than to a guess: inventing a colour nobody typed is
+        // worse than the shipped behaviour, and `Config::validate` has already said the
+        // typographical one out loud and cleared it before anything reads this.
+        let outside = match o.corner_fill.as_str() {
+            "" => Outside::Transparent,
+            text => crate::colors::parse(text)
+                .map(Outside::Fill)
+                .unwrap_or(Outside::Transparent),
+        };
+        Self {
+            corner: o.corner_radius,
+            outside,
+            plate: Plate {
+                border_width: o.border_width,
+                border_color: crate::colors::parse(&o.border_color).unwrap_or([0, 0, 0, 255]),
+                shadow_margin: o.shadow_size,
+                // 强度 says how dark and 边距 says how far; §5.5.7 step 2 asks for no
+                // third shadow knob, so the fade spends the whole margin it was given.
+                shadow_radius: o.shadow_size,
+                shadow_color: [0, 0, 0, (o.shadow_strength.min(100) * 255 / 100) as u8],
+            },
+        }
+    }
+}
+
+impl Decoration {
+    /// Nothing to add: the export is the stitched picture, byte for byte.
+    pub fn is_identity(&self) -> bool {
+        self.corner == 0 && self.plate.is_identity()
+    }
+
+    /// Pixels this adds to each edge of the picture. Only the shadow costs margin - a
+    /// corner cut resizes nothing, and a border is drawn over the picture's own edge.
+    pub fn extra(&self) -> u32 {
+        self.plate.extra()
+    }
+
+    /// Cut, then plate. The only `Err` a legal setting can reach here is
+    /// [`FrameError::TooLarge`]: a whole-desktop selection plus a 96 px margin is the
+    /// one arithmetic that can leave [`crate::frame::MAX_DIM`] behind.
+    pub fn apply(&self, src: &Frame) -> Result<Frame, FrameError> {
+        if self.is_identity() {
+            return Ok(src.clone());
+        }
+        let cut = rounded(src, self.corner, self.outside)?;
+        plate(&cut, &self.plate)
+    }
+}
+
 /// §5.5.8: the region a refresh re-reads, clamped to a possibly changed
 /// desktop. `None` means the area has gone off every screen and the user has
 /// to pick again.
@@ -584,6 +665,93 @@ mod tests {
         assert!(near[3] > far[3], "{near:?} vs {far:?}");
         assert!(far[3] < 160 && near[3] < 160, "{far:?} {near:?}");
         assert_eq!(&near[..3], &[0, 0, 0]);
+    }
+
+    /// §5.5.6 and §5.5.7 as the export reads them: what the shipped `[output]` asks for
+    /// is no cut and no margin at all, and what a user turning both on asks for is the
+    /// two in the one order that keeps the shadow off the pixels about to go transparent.
+    #[test]
+    fn the_settings_decide_the_corner_and_the_plate() {
+        let src = Frame::filled(20, 20, [10, 20, 30, 255]).unwrap();
+
+        let off = Decoration::default();
+        assert!(off.is_identity());
+        assert_eq!(
+            off.apply(&src).unwrap(),
+            src,
+            "the shipped settings must not move a byte"
+        );
+
+        // A radius alone cuts four corners and resizes nothing.
+        let mut o = crate::config::Output {
+            corner_radius: 4,
+            ..Default::default()
+        };
+        let cut = Decoration::from(&o).apply(&src).unwrap();
+        assert_eq!((cut.width, cut.height), (20, 20));
+        assert_eq!(cut.get(0, 0), [0, 0, 0, 0]);
+        assert_eq!(cut.get(10, 10), [10, 20, 30, 255]);
+
+        // "或按配置填充背景色" — the corner becomes that colour, alpha and all.
+        o.corner_fill = "#FF000080".into();
+        assert_eq!(
+            Decoration::from(&o).apply(&src).unwrap().get(0, 0),
+            [255, 0, 0, 128]
+        );
+
+        // A fill nobody can parse is the shipped corner, not a colour somebody guessed.
+        o.corner_fill = "ivory".into();
+        assert_eq!(Decoration::from(&o).outside, Outside::Transparent);
+
+        // Shadow alone grows the canvas and fades inside its own margin.
+        let mut s = crate::config::Output {
+            shadow_size: 4,
+            shadow_strength: 100,
+            ..Default::default()
+        };
+        let d = Decoration::from(&s);
+        assert_eq!(d.plate.shadow_color, [0, 0, 0, 255]);
+        let grown = d.apply(&src).unwrap();
+        assert_eq!((grown.width, grown.height), (28, 28));
+        assert_eq!(grown.get(4, 14), [10, 20, 30, 255]);
+        assert_eq!(
+            grown.get(0, 14),
+            [0, 0, 0, 0],
+            "the outermost ring is clear"
+        );
+        assert_eq!(grown.get(3, 14)[..3], [0, 0, 0]);
+        assert!(grown.get(3, 14)[3] > 0, "the margin carries the shadow");
+
+        // 强度 is the only shadow knob §5.5.7 asks for, and 0 spends the margin on
+        // nothing rather than switching the margin off behind the user's back.
+        s.shadow_strength = 0;
+        assert_eq!(Decoration::from(&s).plate.shadow_color[3], 0);
+        assert_eq!(Decoration::from(&s).extra(), 4);
+
+        // Both at once. The corner is cut *first*, so the notch inside the border is
+        // transparent instead of the plate's own colour.
+        let both = crate::config::Output {
+            corner_radius: 6,
+            shadow_size: 3,
+            border_width: 1,
+            border_color: "#E81123".into(),
+            ..Default::default()
+        };
+        let out = Decoration::from(&both).apply(&src).unwrap();
+        assert_eq!((out.width, out.height), (26, 26));
+        assert_eq!(
+            out.get(4, 3),
+            [232, 17, 35, 255],
+            "the border rings the picture"
+        );
+        assert_eq!(
+            out.get(4, 4),
+            [0, 0, 0, 0],
+            "the arc was cut before the plate"
+        );
+        assert_eq!(out.get(13, 13), [10, 20, 30, 255]);
+        assert_eq!(out.get(1, 1)[..3], [0, 0, 0]);
+        assert!(out.get(1, 1)[3] > 0);
     }
 
     #[test]

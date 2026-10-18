@@ -73,6 +73,11 @@ pub mod qobject {
         #[qproperty(f64, dpr)]
         #[qproperty(f64, dim_alpha)]
         #[qproperty(bool, shader)]
+        /// §5.3.5 —— 遮罩是否显示选区尺寸的一枚影子，从 [`crate::mask::MaskState::show_dimensions`]
+        /// 经 [`crate::mask::MaskViewData::show_dimensions`] 抄到这里，再由 QML 用来 gate 一行文字。
+        /// 单独放在 qproperty 而不是让 QML 直接读 `settings::show_dimensions()`，是因为 `open`
+        /// 时取的这一刻属于那一次流程，而不是手指按下去的那一秒（同 [`crate::mask::MaskState::auto_copy`] 那一格）。
+        #[qproperty(bool, show_dimensions)]
         #[qproperty(i32, revision)]
         #[qproperty(QString, key)]
         #[qproperty(QString, name)]
@@ -154,6 +159,12 @@ pub mod qobject {
         /// 写之前那一档提醒（PRD 447 的"将被填充"）。它和 `message` 分着，正是因为
         /// 一个槽位里"将被"会被"已保存"顶掉——那就不算在写之前说过。空串 = 这一档不丢透明。
         #[qproperty(QString, pre_notice)]
+        /// §5.14.1 那一行的话，与上面三条分着放：`record_history` 的五格分岔（拼不出图 /
+        /// `enabled` 是关的 / 打不开 `history.db` / 那一行没写进去 / 写进去而 §5.14.4 的
+        /// 清理没跑成）各说各的话，合并成一句就输掉"落盘成了而历史没记"这一整格证据。
+        /// P93 只有写侧（`MaskState::history_last` 全仓零读者），这一条是它的第一位读者。
+        /// 空串 = 这一场还没走到那道门。
+        #[qproperty(QString, history_last)]
         /// 点击与揭示的两个计数，给这条腿在它自己前后各读一次用：一次点击记一次，
         /// 与开没开成窗无关；开了几个窗是另一个数。两个数并成一个就说不出"点了两次、
         /// 一次也没到 shell"这句话——而那正是默认设置下唯一该发生的事。
@@ -393,6 +404,25 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "toolNames"]
         fn tool_names(self: &Self) -> QString;
+
+        /// P91：§5.5.12 send-to 显示条目第一次跨过 Rust→QML 边界 —— 从
+        /// [`crate::settings::output_cfg`] 走 [`crate::settings::pipeline_send_to`]、
+        /// [`crate::settings::send_to_menu_entries`] 映射 UI 显示串，最后
+        /// [`crate::settings::send_to_menu_names_joined`] 用 `|` 联成一枚纯串。QML
+        /// 层 `.split("|")` 就能喂 Repeater；空集合 ⇒ 空串。真 Repeater 接线留下一轮。
+        #[qinvokable]
+        #[cxx_name = "sendToMenuNames"]
+        fn send_to_menu_names(self: &Self) -> QString;
+
+        /// P92：§5.5.11 share 显示条目第一次跨过 Rust→QML 边界 —— 从
+        /// [`crate::settings::output_cfg`] 走 [`crate::settings::pipeline_share_targets`]、
+        /// [`crate::settings::share_menu_entries`] 映射 UI 显示串，最后
+        /// [`crate::settings::share_menu_names_joined`] 用 `|` 联成一枚纯串。这一半与
+        /// P91 的 `sendToMenuNames` 对称。QML 层 `.split("|")` 就能喂 Repeater；空集合
+        /// ⇒ 空串。真 Repeater 接线与 provider 派发留下一轮。
+        #[qinvokable]
+        #[cxx_name = "shareMenuNames"]
+        fn share_menu_names(self: &Self) -> QString;
     }
 }
 
@@ -403,6 +433,7 @@ use falcon_core::geometry::PhysRect;
 
 use crate::annotate;
 use crate::mask;
+use crate::settings;
 
 #[derive(Default)]
 pub struct MaskViewRust {
@@ -421,6 +452,7 @@ pub struct MaskViewRust {
     dpr: f64,
     dim_alpha: f64,
     shader: bool,
+    show_dimensions: bool,
     revision: i32,
     key: QString,
     name: QString,
@@ -455,6 +487,7 @@ pub struct MaskViewRust {
     landed: QString,
     reveal_last: QString,
     pre_notice: QString,
+    history_last: QString,
     reveal_clicks: i32,
     reveal_acted: i32,
 }
@@ -488,6 +521,7 @@ impl qobject::MaskView {
             landed,
             reveal_last,
             pre_notice,
+            history_last,
             clicks,
             acted,
         ) = mask::with(|m| {
@@ -536,6 +570,7 @@ impl qobject::MaskView {
                     .unwrap_or_default(),
                 m.reveal_last.clone(),
                 m.pre_notice.clone(),
+                m.history_last.clone(),
                 m.reveal_clicks as i32,
                 m.reveal_acted as i32,
             )
@@ -557,6 +592,7 @@ impl qobject::MaskView {
         // so `--mask` checking `1 - DIM` is checking the value actually on screen.
         self.as_mut().set_dim_alpha(mask::DIM);
         self.as_mut().set_shader(shader);
+        self.as_mut().set_show_dimensions(view.show_dimensions);
         self.as_mut().set_revision(view.revision as i32);
         match &label {
             Some((key, name)) => {
@@ -622,6 +658,8 @@ impl qobject::MaskView {
         self.as_mut().set_landed(QString::from(&*landed));
         self.as_mut().set_reveal_last(QString::from(&*reveal_last));
         self.as_mut().set_pre_notice(QString::from(&*pre_notice));
+        self.as_mut()
+            .set_history_last(QString::from(&*history_last));
         self.as_mut().set_reveal_clicks(clicks);
         self.as_mut().set_reveal_acted(acted);
     }
@@ -835,6 +873,27 @@ impl qobject::MaskView {
 
     pub fn tool_names(&self) -> QString {
         QString::from(&*annotate::tool_names())
+    }
+
+    /// P91：`sendToMenuNames()` 的 Rust 侧 —— 从 [`settings::output_cfg`] 走
+    /// [`settings::pipeline_send_to`] 拿校验过的 `(name, exe)` 段，
+    /// [`settings::send_to_menu_names_joined`] 联成 `|` 分隔串交给 QML。
+    /// 空集合 ⇒ 空串；而 `"".split("|")` 在 JS 里是**一段空串**而不是零段，所以 P93
+    /// 的 Repeater 接线必须先判空再喂模型（这一格由 P92 的单测钉住）。
+    pub fn send_to_menu_names(&self) -> QString {
+        let o = settings::output_cfg();
+        let (final_ok, _, _) = settings::pipeline_send_to(&o.send_to_apps);
+        QString::from(&*settings::send_to_menu_names_joined(&final_ok))
+    }
+
+    /// P92：`shareMenuNames()` 的 Rust 侧 —— 从 [`settings::output_cfg`] 走
+    /// [`settings::pipeline_share_targets`] 拿白名单内的 known 段，
+    /// [`settings::share_menu_names_joined`] 联成 `|` 分隔串交给 QML。与 P91 那一枚
+    /// 对称；空集合 ⇒ 空串。
+    pub fn share_menu_names(&self) -> QString {
+        let o = settings::output_cfg();
+        let (known, _, _) = settings::pipeline_share_targets(&o.share_targets);
+        QString::from(&*settings::share_menu_names_joined(&known))
     }
 
     /// §10 第 43 项 ①'s 存完再钉图. Same path handling as [`Self::save_selection`],

@@ -23,13 +23,13 @@
 //! ## What gets registered
 //!
 //! Only an action this build can actually perform. §5.16.1's table has nine rows and
-//! this round wires two of them, so the other seven are *not* registered: a
+//! this round wires four of them, so the other five are *not* registered: a
 //! combination the shell holds for us while nothing answers it does not merely sit
-//! idle, it takes the key away from whatever the user expected it to do. `print` is
-//! the clearest case - registering `capture_active_window` before that action is
-//! wired would swallow the user's PrintScreen and give them back nothing. Every
-//! unregistered row still gets its own sentence in the report, so the census is the
-//! nine the plan counts rather than the two that happen to work.
+//! idle, it takes the key away from whatever the user expected it to do.
+//! `capture_custom` is the clearest case - the coordinates dialog it names (§5.3.5)
+//! does not exist yet, so registering `Ctrl+Shift+F` would leave that chord with no
+//! answer at all. Every unregistered row still gets its own sentence in the report,
+//! so the census is the nine the plan counts rather than the four that happen to work.
 
 use std::pin::Pin;
 use std::sync::mpsc::Receiver;
@@ -42,6 +42,8 @@ use falcon_core::frame::Frame;
 use falcon_core::hotkeys;
 use platform_windows::hotkey::{bind, Event, Pump, Request, Started, TraySpec};
 
+use crate::capture;
+use crate::delay;
 use crate::mask;
 use crate::r13::Report;
 use crate::session;
@@ -68,6 +70,10 @@ type Gui = CxxQtThread<session::qobject::Session>;
 pub enum Work {
     /// §5.2.1: freeze and cover the screens.
     Capture,
+    /// §5.2.6: the window the shell is giving keystrokes to, as its own picture.
+    ActiveWindow,
+    /// §5.2.5: the region the last capture used, on a frame taken now.
+    Repeat,
     /// §5.8.2: turn the clipboard into a pin.
     PastePin,
     /// §5.1.1's tray menu entry. Tray-only: no key binding means "quit", because a
@@ -83,6 +89,8 @@ impl Work {
     fn action(self) -> Option<&'static str> {
         match self {
             Work::Capture => Some("capture"),
+            Work::ActiveWindow => Some("capture_active_window"),
+            Work::Repeat => Some("capture_repeat"),
             Work::PastePin => Some("paste_pin"),
             Work::Quit => None,
         }
@@ -92,6 +100,8 @@ impl Work {
     fn label(self) -> &'static str {
         match self {
             Work::Capture => "截图",
+            Work::ActiveWindow => "活动窗口截图",
+            Work::Repeat => "重复上次截图",
             Work::PastePin => "贴出剪贴板",
             Work::Quit => "退出",
         }
@@ -99,9 +109,15 @@ impl Work {
 
     /// The work an action id names, if this build performs it.
     fn of(action: &str) -> Option<Work> {
-        [Work::Capture, Work::PastePin, Work::Quit]
-            .into_iter()
-            .find(|work| work.action() == Some(action))
+        [
+            Work::Capture,
+            Work::ActiveWindow,
+            Work::Repeat,
+            Work::PastePin,
+            Work::Quit,
+        ]
+        .into_iter()
+        .find(|work| work.action() == Some(action))
     }
 
     /// How one line of the history names this work: the config action when there is
@@ -298,6 +314,20 @@ fn tray_menu(plan: &mut Plan) -> Vec<(u32, String)> {
     menu
 }
 
+/// §5.1.1 那一格 `show_tray` 的分岔本体：把 `[general] show_tray` 与托盘的两样材料
+/// (tip 文案 + menu 项) 合成 `Pump::start` 的第二参数 —— 真则 `Some(TraySpec)`、
+/// 假则 `None`。抽出来是因为 `install()` 需要真 Win32 消息泵、单测跑不动 (§9.1 第十条
+/// 的 headless 半边)，而这一支的分支语义本身不需要消息泵就能证：`cargo test -p
+/// qt_bridge` 直接调这个纯函数、看两边各自的 `Option` 形状对不对，就替 P66 那句
+/// "分岔代码自己作证"补上一枚 §9.1 单测证人。
+fn tray_from(show_tray: bool, tip: String, items: Vec<(u32, String)>) -> Option<TraySpec> {
+    if show_tray {
+        Some(TraySpec { tip, items })
+    } else {
+        None
+    }
+}
+
 /// Register what this build can do, install the icon, and start the listener.
 ///
 /// Returns the census rather than printing it, so the caller decides what a census
@@ -332,13 +362,18 @@ pub fn install() -> Result<Launch, String> {
 
     let attempts = planned.requests.len();
     let initial = "Falconshot 正在运行".to_string();
-    let (mut pump, started) = match Pump::start(
-        planned.requests,
-        Some(TraySpec {
-            tip: initial,
-            items: menu.clone(),
-        }),
-    ) {
+    // §5.1.1 / P66：托盘的"上或不上"由 `[general] show_tray` 决定，而不是由 P50 那一句
+    // `Some(TraySpec { ... })` 硬编码。整段 `[general]` 由 `crate::settings::general_cfg()`
+    // 一次 clone（与 P64 `pin_cfg()` / P65 `capture_cfg()` 同形），`show_tray = false` 时
+    // `Pump::start` 的第二个参数换 `None` —— Win32 `Shell_NotifyIcon` 那一头不会挂上，
+    // 托盘左键 (`Event::TrayLeft`) 也永远不来。热键那一支不受影响：`planned.requests`
+    // 与 menu 已经建了、`Pump::start` 里的热键注册照旧跑，只是 tray 那一格空着。
+    // P67：分岔本身由 `tray_from()` 承担，那是一枚纯函数、`cargo test -p qt_bridge`
+    // 能直接跑，本轮的证人不只是"分岔代码自己"（P66 的形状），而是 `install` 之外
+    // 那一支 `tray_honours_the_general_switch` 单测（§9.1 第十条的 headless 半边）。
+    let general = crate::settings::general_cfg();
+    let tray = tray_from(general.show_tray, initial, menu.clone());
+    let (mut pump, started) = match Pump::start(planned.requests, tray) {
         Ok(pair) => pair,
         Err(e) => return Err(e.to_string()),
     };
@@ -430,6 +465,24 @@ fn listen(events: Receiver<Event>, handle: Gui) {
                 );
                 (name, route.map(|route| route.work))
             }
+            // §5.19.1 第 3 步：机器自己播了一次设置变更。这一枚不进下面那张 `Work` 表，因为它
+            // 没有「哪个动作」的归宿，也不该被遮罩挡住（遮罩开着也不会多冻一次画面）—— 它唯一的
+            // 活是让界面那一枚词重新问一次机器。名字原样印出来当证人，本层不拿它当判据。
+            Event::SettingChange(name) => {
+                let shown = if name.is_empty() {
+                    "(无名)".to_string()
+                } else {
+                    name.clone()
+                };
+                note(format!("设置变更 {shown}：排队到 GUI 线程重问主题"));
+                // 名字要跟着闭包走，所以给 GUI 线程一份自己的副本；`shown` 留在这一条线程上，
+                // 为的是「GUI 线程没接住」那一格也要能把名字说出来。
+                let tagged = shown.clone();
+                if let Err(e) = handle.queue(move |session| theme_refresh(&tagged, session)) {
+                    note(format!("设置变更 {shown}：GUI 线程没接住（{e}）"));
+                }
+                continue;
+            }
         };
         let Some(work) = work else {
             note(format!("{what}：没有归宿，不动手"));
@@ -459,6 +512,46 @@ fn listen(events: Receiver<Event>, handle: Gui) {
     note("事件流结束：泵停了，监听线程收工".to_string());
 }
 
+/// 让界面那一枚词重新问一次机器，并把前后两枚词打出来。
+///
+/// 四步是同一条腿、同一枚闭包、同一个 GUI 线程，为的是 #281 那一问在这里也有答案：
+/// `before` 与 `after` 读的都是 [`crate::settings::startup_theme_face`]，也就是
+/// [`session::SessionRust::refresh_theme`] 往 qproperty 里写的那**同一枚来源** —— 显示的那份与
+/// 判的那份从来不是两次读数，所以 `moved=` 说的就是屏幕上那一格动了没有。中间只有两件事：先让
+/// 缓存失效（那是它唯一的失效点），再重新合成。
+///
+/// 机器的答案也一并印出来（`None` = 这一台没答），因为「词没动」有两种来路：机器改了而合成后
+/// 恰好同词，以及机器压根没答 —— 只有前者才叫 moved=false 而值得追。
+fn theme_refresh(shown: &str, mut session: Pin<&mut session::qobject::Session>) {
+    let before = crate::settings::startup_theme_face();
+    let machine = platform_windows::theme::apps_use_light_theme_invalidate();
+    session.as_mut().refresh_theme();
+    let after = crate::settings::startup_theme_face();
+    note(format!(
+        "GUI 线程 设置变更 {shown}：机器答 {machine:?}，主题 {before}→{after}，moved={}",
+        before != after
+    ));
+}
+
+/// Freeze and open the mask, and print whichever half of that actually happened.
+///
+/// Shared by two callers on purpose: the immediate arm below, and [`crate::delay`]'s last
+/// tick. They are the same product action (§5.2's 截图) reached at two different moments,
+/// and a second copy of it would be a second sentence for the door to read back — which is
+/// how `--hotkeys` and `--mask` stopped measuring one hot path.
+pub(crate) fn open_mask(tag: &str, mut session: Pin<&mut session::qobject::Session>) {
+    match mask::open_from_freeze(SHADER) {
+        Ok(opened) => {
+            session.as_mut().refresh_masks();
+            note(format!(
+                "GUI 线程 {tag}：遮罩开了 {} 屏，freeze {} ms",
+                opened.slots, opened.ms
+            ));
+        }
+        Err(e) => note(format!("GUI 线程 {tag}：遮罩开不起来：{e}")),
+    }
+}
+
 /// The work itself, on the thread that owns Qt. Every line names the action it
 /// answers, so the door's read-back can be tied to the press that caused it.
 fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
@@ -468,15 +561,19 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
             // The same stamp the gauge doors write, so `--hotkeys` and `--mask`
             // measure one hot path rather than two that happen to look alike.
             state::stamp("asked");
-            match mask::open_from_freeze(SHADER) {
-                Ok(opened) => {
-                    session.as_mut().refresh_masks();
+            // §5.2.4：`capture.delay_seconds` 自此决定这一刻冻不冻画面 —— 这一枚 match 就是
+            // 那唯一一位行为读者。0（默认那一侧）走的还是下面那条与 P108 之前逐字相同的路；
+            // >0 把遮罩交给 `main.qml` 里那枚绑在 `delay_left` 上的定时器，由它在数完的那一刻
+            // 回调 [`session::SessionRust::delay_round`]，于是画面和指针都冻在倒计时结束那一刻
+            // （PRD 第 420 行要的正是这个时刻，而 P107 已把指针那一问安在冻结那一格里）。
+            match delay::arm_from_config() {
+                delay::Arm::Immediate => open_mask(&tag, session.as_mut()),
+                delay::Arm::Waiting { left, step_ms } => {
+                    session.as_mut().refresh_delay();
                     note(format!(
-                        "GUI 线程 {tag}：遮罩开了 {} 屏，freeze {} ms",
-                        opened.slots, opened.ms
+                        "GUI 线程 {tag}：延时截图，还剩 {left} 枚数才冻画面（每枚 {step_ms} ms）"
                     ));
                 }
-                Err(e) => note(format!("GUI 线程 {tag}：遮罩开不起来：{e}")),
             }
         }
         Work::PastePin => {
@@ -487,6 +584,30 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
                 session.as_mut().set_status(QString::from("已从剪贴板贴图"));
             }
             note(format!("GUI 线程 {tag}：剪贴板贴图 id={id}"));
+        }
+        // Both legs end in a picture of something the desktop is showing right now,
+        // so both answer with an id and the sentence the door prints beside it. A
+        // refusal is `id=-1` for the same reason `pin_clipboard`'s is: the door grades
+        // on whether the product answered, and a prose-only refusal would make that
+        // grade a reading of this file's wording rather than of the run.
+        Work::ActiveWindow | Work::Repeat => {
+            let (leg, outcome) = if work == Work::ActiveWindow {
+                ("活动窗口", capture::pin_active_window())
+            } else {
+                ("上一次区域", capture::pin_last_region())
+            };
+            match outcome {
+                Ok((id, line)) => {
+                    let said = format!("{leg}截图：{line}");
+                    session.as_mut().set_status(QString::from(&*said));
+                    note(format!("GUI 线程 {tag}：{leg}贴图 id={id}，{line}"));
+                }
+                Err(e) => {
+                    let said = format!("{leg}没截成：{e}");
+                    session.as_mut().set_status(QString::from(&*said));
+                    note(format!("GUI 线程 {tag}：{leg}贴图 id=-1，{e}"));
+                }
+            }
         }
         Work::Quit => {
             // The mask's frames and windows go first: leaving them in a process on
@@ -667,6 +788,72 @@ impl Clip {
     }
 }
 
+/// What the door did so §5.2.5 could be pressed at all.
+///
+/// `capture_repeat` repeats the region the *last* capture used, and a door that has
+/// not captured anything has no last - so the run plants one the same way
+/// [`Clip::plant`] plants a picture: through the product's own leg
+/// ([`capture::pin_rect`], which is what writes the memory), at the centre of the
+/// primary monitor, before any press. The row's grading then has the same two
+/// answers as the paste leg's: a repeat that comes back `id=-1` after the door
+/// itself made a region exist is the product refusing to repeat what it just
+/// captured, while a plant that could not freeze anything is the machine declining
+/// to be measured.
+pub struct Region {
+    pub planted: (state::Check, String),
+}
+
+impl Region {
+    /// Freeze, take 320×200 out of the middle of the primary monitor and pin it -
+    /// which is also the act that gives this process a 上一次区域.
+    ///
+    /// The memory is wiped first. A run that also asked for `--rect` has a region
+    /// already, and `press capture_repeat` would then be measuring the CLI leg's
+    /// rectangle while the row beside it claims the door planted one.
+    pub fn plant() -> Self {
+        capture::forget_region();
+        let said = |check, line: String| Self {
+            planted: (check, line),
+        };
+        let rect = match capture::centre_rect(320, 200) {
+            Ok(rect) => rect,
+            Err(e) => {
+                return said(
+                    state::Check::Blocked,
+                    format!("连整屏都冻不出来，也就没有一个可重复的区域：{e}——一张贴图也没造"),
+                )
+            }
+        };
+        match capture::pin_rect(&rect) {
+            Ok(id) => said(
+                state::Check::Pass,
+                format!(
+                    "{rect:?} 已按产品自己那条腿（capture::pin_rect）贴成 id={id}，\
+                     下面 press capture_repeat 重复的就是这一块"
+                ),
+            ),
+            Err(e) => said(
+                state::Check::Fail,
+                format!(
+                    "冻住了、区域也算出来了，可 {rect:?} 仍没贴成：{e}——这一格不能报成\"没动过\""
+                ),
+            ),
+        }
+    }
+
+    /// The app's own path: no measurement, no extra picture. The resident process
+    /// gets its 上一次区域 from the captures the user actually made.
+    pub fn untouched() -> Self {
+        Self {
+            planted: (
+                state::Check::Blocked,
+                "这一档没跑：只有 `--hotkeys` 才替重复造一个区域，产品自己那条路重复的是用户上一次真的截过的地方"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
 /// Stand in for one keystroke: post the delivery the shell would post for a
 /// registered key. The registration is the shell's own; only the finger is missing,
 /// so a run that presses this has proved the chain from a `WM_HOTKEY` onward and
@@ -681,6 +868,17 @@ pub fn press(action: &str) -> bool {
         return false;
     };
     id.is_some_and(|id| pump.press(id))
+}
+
+/// §5.19.1 第 3 步的那一发广播，由门自己替系统播一次：把这枚进程里那两条线程之间的链
+/// 走满一遍，而缺的是「另一个进程真的播了」。泵不在（`install` 没成）就是 `false`，
+/// 与那枚顶层窗口没建起来（`settings_hwnd == 0`）在读回里分得开。
+pub fn notify_setting_change(name: &str) -> bool {
+    let pump_cell = held(&PUMP);
+    match pump_cell.as_ref() {
+        Some(pump) => pump.notify_setting_change(name),
+        None => false,
+    }
 }
 
 /// Unregister, remove the icon, stop both threads. The order matters twice over:
@@ -713,17 +911,23 @@ pub fn is_running() -> bool {
 /// `setup_ok` names the door's own prior link. With a clipboard this door wrote
 /// itself, an `id=-1` is the product failing to read what is demonstrably there -
 /// `Fail`. On a clipboard this process does not control, the same answer is the
-/// machine declining to be measured - `Blocked`. The capture leg has no setup to
-/// speak of: a freeze this process cannot take is always the environment's answer.
+/// machine declining to be measured - `Blocked`. The repeat leg is graded the same
+/// way against [`Region::plant`], and the plain capture leg has no setup to speak of:
+/// a freeze this process cannot take is always the environment's answer.
 fn press_verdict(
     action: &str,
     posted: bool,
     history: &[String],
     setup_ok: bool,
 ) -> (state::Check, Vec<String>) {
+    // The action plus the colon every note line writes after it. Matching the bare
+    // name would let `capture` read `capture_repeat`'s and `capture_active_window`'s
+    // chains as its own - three actions share that prefix, and a row that passes on
+    // another leg's pixels is the kind of reading this door exists to refuse.
+    let needle = format!("{action}：");
     let lines: Vec<String> = history
         .iter()
-        .filter(|line| line.contains(action))
+        .filter(|line| line.contains(&needle))
         .cloned()
         .collect();
     let queued = lines.iter().any(|line| line.contains("排队到"));
@@ -756,12 +960,21 @@ fn press_verdict(
 /// paste leg's grading depends on whether there was anything to paste, and this is the
 /// one place that says which of the two it was. It is also what pays the clipboard back
 /// - on the way out of this function, after every chain reading has been taken.
+///
+/// `region` is the same argument for §5.2.5: the repeat leg can only be graded
+/// against a region this run made exist.
+///
+/// `setting` is the §5.19.1 leg: the name the door broadcast on the system's behalf,
+/// and whether the send came back. A run that never broadcast anything passes
+/// `("", false)`, which the row reads as its own answer rather than as a zero.
 pub fn report(
     launch: &Launch,
     asked_ms: i32,
     ran_ms: i32,
     injected: &[(String, bool)],
     clip: &Clip,
+    region: &Region,
+    setting: (&str, bool),
 ) -> (state::Check, String) {
     let mut rep = Report::new();
     // The read-back's own place on the clock. `main` stamped `hotkeys loop` just before
@@ -861,10 +1074,17 @@ pub fn report(
         clip.planted.0,
         clip.planted.1.clone(),
     );
+    rep.row(
+        "region planted by the door",
+        region.planted.0,
+        region.planted.1.clone(),
+    );
+    let region_planted = region.planted.0 == state::Check::Pass;
 
     for (action, posted) in injected {
-        let (verdict, lines) =
-            press_verdict(action, *posted, &history, action == "paste_pin" && planted);
+        let setup_ok =
+            (action == "paste_pin" && planted) || (action == "capture_repeat" && region_planted);
+        let (verdict, lines) = press_verdict(action, *posted, &history, setup_ok);
         rep.row(
             &format!("press {action}"),
             verdict,
@@ -879,6 +1099,50 @@ pub fn report(
             ),
         );
     }
+
+    // §5.19.1 第 3 步：那一发广播本来由**别的进程**播给系统的顶层窗口，门替不了它，只能替
+    // 系统播一次。所以三格读数各自说自己那一头：那枚顶层窗口在不在、监听线程有没有接住、
+    // GUI 线程有没有真的重问注册表。名字是证人不是判据 —— 下面判的三问里没有一问读它。
+    let (setting_name, setting_sent) = setting;
+    let lines: Vec<String> = history
+        .iter()
+        .filter(|line| line.contains("设置变更"))
+        .cloned()
+        .collect();
+    let queued = lines
+        .iter()
+        .any(|line| line.starts_with("设置变更") && line.contains("排队到 GUI 线程"));
+    let reasked = lines
+        .iter()
+        .find(|line| line.starts_with("GUI 线程 设置变更"))
+        .is_some_and(|line| line.contains("机器答"));
+    let moved = lines
+        .iter()
+        .find(|line| line.starts_with("GUI 线程 设置变更"))
+        .map(|line| line.contains("moved=true"))
+        .unwrap_or(false);
+    rep.row(
+        "wm_settingchange reaches the theme",
+        if started.settings_hwnd == 0 || !setting_sent || !queued || !reasked {
+            state::Check::Fail
+        } else {
+            state::Check::Pass
+        },
+        format!(
+            "顶层窗口 hwnd={}（`0` = 没建起来；`HWND_BROADCAST` 那条链不含消息窗口，所以这一枚\
+             必须是顶层的），替系统播一次 name={setting_name:?} 的答复={setting_sent}\
+             （`SendMessageW` 返回即接收方 wndproc 已读完那串指针）；监听线程接住={queued}，\
+             GUI 线程重问注册表={reasked}，主题变了={moved}（这一档不动用户的选择，重问答的\
+             就是同一份，所以 `false` 是这一趟应有的读数）；链路读数 {:?}\
+             ——缺的那一半是别的进程真播了这一发，而那一半不在本进程能替的范围内",
+            started.settings_hwnd,
+            if lines.is_empty() {
+                vec!["一行都没有".to_string()]
+            } else {
+                lines
+            }
+        ),
+    );
 
     // The debt, paid after every chain reading above was taken. This row is part of the
     // verdict, not a footnote: a door that took the user's clipboard and could not give
@@ -936,12 +1200,38 @@ fn label_of(id: u32) -> String {
 mod tests {
     use super::*;
     use falcon_core::config::{AppExclusion, Config};
-    use platform_windows::hotkey::{MOD_CONTROL, MOD_SHIFT};
+    use platform_windows::hotkey::{virtual_key, MOD_CONTROL, MOD_SHIFT};
+
+    /// §5.1.1 的 `show_tray` 分岔，两边各一次：真给 `Some(TraySpec)` 且把两样材料
+    /// 原样送到 `Pump::start`，假给 `None` 且 `Shell_NotifyIcon` 挂不上。P66 落这
+    /// 支分岔时它只有 install 现场作证人（那一头需要真消息泵、headless 跑不动）；
+    /// 本轮把分岔本体抽成 `tray_from` 这一枚纯函数，于是 §9.1 第十条的"由 cargo
+    /// 单测而不是由门作证"这一族自此也覆盖到 `[general] show_tray` 那一格。
+    #[test]
+    fn tray_honours_the_general_switch() {
+        let tip = "Falconshot 正在运行".to_string();
+        let items: Vec<(u32, String)> =
+            vec![(1, "截图".into()), (2, "贴图".into()), (3, "退出".into())];
+
+        let on = tray_from(true, tip.clone(), items.clone());
+        let on = on.expect("show_tray = true must hand Pump::start a Some(TraySpec)");
+        assert_eq!(on.tip, tip);
+        assert_eq!(
+            on.items, items,
+            "the three menu rows must reach the pump verbatim"
+        );
+
+        let off = tray_from(false, tip, items);
+        assert!(
+            off.is_none(),
+            "show_tray = false must hand Pump::start a None so Shell_NotifyIcon does not mount"
+        );
+    }
 
     /// The wiring table, and the promise it keeps: an action this build cannot
-    /// perform is left alone rather than taken over. `print` is the row that makes
-    /// the difference visible - it is a shipped default with no arm here, and
-    /// registering it would swallow the user's PrintScreen for nothing.
+    /// perform is left alone rather than taken over. `capture_custom` is the row that
+    /// makes the difference visible - a shipped default whose coordinates dialog
+    /// (§5.3.5) does not exist, so its key stays the user's.
     #[test]
     fn only_wired_actions_are_asked_for() {
         let actions = Config::default().hotkey.actions;
@@ -952,8 +1242,17 @@ mod tests {
             .iter()
             .map(|request| request.action.as_str())
             .collect();
-        assert_eq!(asked, vec!["capture", "paste_pin"], "接线表变了");
-        assert_eq!(planned.routes.len(), 2, "路由表该和注册表一样长");
+        assert_eq!(
+            asked,
+            vec![
+                "capture",
+                "capture_active_window",
+                "capture_repeat",
+                "paste_pin"
+            ],
+            "接线表变了"
+        );
+        assert_eq!(planned.routes.len(), 4, "路由表该和注册表一样长");
         assert_eq!(
             rows_of_actions(&planned.rows) + planned.requests.len(),
             actions.len()
@@ -961,7 +1260,24 @@ mod tests {
         for row in &planned.rows {
             assert!(row.contains("未接线"), "{row}");
         }
-        assert_eq!(planned.next, 3, "id 从 1 连续发到注册的下一个");
+        assert_eq!(planned.next, 5, "id 从 1 连续发到注册的下一个");
+        // The five that stay the user's, by name: this is the census the report
+        // prints, and a row that dropped out of it would take a key with it.
+        let unwired: Vec<&str> = planned
+            .rows
+            .iter()
+            .map(|row| row.split(' ').next().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            unwired,
+            vec![
+                "capture_custom",
+                "pin_edit",
+                "solo",
+                "switch_group",
+                "toggle_pins"
+            ]
+        );
     }
 
     /// Census rule the report asserts: every configured action gets exactly one row,
@@ -990,7 +1306,7 @@ mod tests {
             ("未绑定", "solo"),
             ("系统保留组合", "pin_edit"),
             ("注册不了", "toggle_pins"),
-            ("未接线", "capture_repeat"),
+            ("未接线", "capture_custom"),
         ] {
             assert!(
                 planned
@@ -1003,34 +1319,40 @@ mod tests {
         }
     }
 
-    /// The two defaults that *are* registered must survive the whole trip: core's
+    /// The four defaults that *are* registered must survive the whole trip: core's
     /// grammar, core's bindability rule, and this module's virtual-key table. A
     /// default that cannot register is a shipped key that does nothing.
     #[test]
-    fn the_two_defaults_reach_a_binding() {
-        for (text, action, work) in [
-            ("ctrl+shift+a", "capture", Work::Capture),
-            ("ctrl+shift+v", "paste_pin", Work::PastePin),
+    fn the_four_defaults_reach_a_binding() {
+        for (text, action, work, chords) in [
+            ("ctrl+shift+a", "capture", Work::Capture, true),
+            ("print", "capture_active_window", Work::ActiveWindow, false),
+            ("ctrl+shift+x", "capture_repeat", Work::Repeat, true),
+            ("ctrl+shift+v", "paste_pin", Work::PastePin, true),
         ] {
             let spec = hotkeys::parse(text).unwrap();
             assert!(spec.is_bindable(), "{text} 不该被 is_bindable 拦下");
             assert!(spec.reserved_reason().is_none(), "{text} 不是保留组合");
             let canonical = spec.canonical();
+            let vk = virtual_key(spec.key).expect("{text} 的键在这张表里没有码");
             let binding = bind(spec, &canonical).unwrap();
             assert_eq!(Work::of(action), Some(work));
             assert_eq!(work.action(), Some(action));
+            assert_eq!(binding.vk, vk, "{text} 落到别的键上了");
             // No modifier at all means no global delivery: `RegisterHotKey` takes the
-            // combination, not the key, and the shipped default is a chord. `bind`
-            // adds `MOD_NOREPEAT` on top, so this names the two keys a user presses.
+            // combination, not the key, and three of the four shipped defaults are
+            // chords. `bind` adds `MOD_NOREPEAT` on top, so this names the two keys a
+            // user presses. `print` is the exception core allows exactly - a
+            // modifierless key that is still delivered globally.
             assert_eq!(
                 binding.modifiers & (MOD_CONTROL | MOD_SHIFT),
-                MOD_CONTROL | MOD_SHIFT,
+                if chords { MOD_CONTROL | MOD_SHIFT } else { 0 },
                 "{text} 的修饰键位不是 Ctrl+Shift"
             );
         }
         let print = hotkeys::parse("print").unwrap();
         assert!(print.is_bindable(), "`print` 是 Win32 认得的特例");
-        assert_eq!(Work::of("capture_active_window"), None);
+        assert_eq!(Work::of("capture_custom"), None);
     }
 
     /// The tray menu always offers three entries and every one of them routes: an
@@ -1182,6 +1504,49 @@ mod tests {
             press_verdict("paste_pin", true, &pasted, true).0,
             state::Check::Pass
         );
+        // Three of the nine actions begin with the same word, so a row for `capture`
+        // must not be satisfied by a leg that repeated a region instead. This is the
+        // reading the door would otherwise get wrong on a machine where the mask never
+        // opened but the repeat worked.
+        let three = vec![
+            "热键 id=1 capture：排队到 GUI 线程（截图）".to_string(),
+            "热键 id=2 capture_active_window：排队到 GUI 线程（活动窗口截图）".to_string(),
+            "热键 id=3 capture_repeat：排队到 GUI 线程（重复上次截图）".to_string(),
+            "GUI 线程 capture_active_window：活动窗口贴图 id=3，notepad".to_string(),
+            "GUI 线程 capture_repeat：上一次区域贴图 id=4，120 ms".to_string(),
+            "GUI 线程 capture：遮罩开了 1 屏，freeze 151 ms".to_string(),
+        ];
+        let (verdict, lines) = press_verdict("capture", true, &three, false);
+        assert_eq!(verdict, state::Check::Pass);
+        assert_eq!(lines.len(), 2, "两个兄弟动作的链路不是这一行的读数");
+        assert_eq!(
+            press_verdict("capture_active_window", true, &three, false).0,
+            state::Check::Pass
+        );
+        // A GUI line with no listener line in front of it is a chain that skipped a
+        // link: the product answered, but this process never queued the press. That is
+        // the reading `queued && gui` is there to keep apart from a pass.
+        let orphan = vec!["GUI 线程 capture_repeat：上一次区域贴图 id=4".to_string()];
+        assert_eq!(
+            press_verdict("capture_repeat", true, &orphan, true).0,
+            state::Check::Fail
+        );
+        // A refusal on the new legs says `id=-1`, so the door sees a chain that ran and
+        // answered nothing. Whether that is the product's fault or the machine's is the
+        // plant's answer, exactly as it is for the paste leg.
+        let refused_repeat = vec![
+            "热键 id=3 capture_repeat：排队到 GUI 线程（重复上次截图）".to_string(),
+            "GUI 线程 capture_repeat：上一次区域贴图 id=-1，还没有截图过".to_string(),
+        ];
+        assert_eq!(
+            press_verdict("capture_repeat", true, &refused_repeat, false).0,
+            state::Check::Blocked
+        );
+        assert_eq!(
+            press_verdict("capture_repeat", true, &refused_repeat, true).0,
+            state::Check::Fail,
+            "这一档自己种下的区域，产品不肯重复就不是环境的账"
+        );
     }
 
     /// The census helper cannot be wrong about its own denominator: with a config
@@ -1192,6 +1557,11 @@ mod tests {
         let mut actions = Config::default().hotkey.actions;
         actions.insert("capture".to_string(), "win+d".to_string());
         actions.insert("paste_pin".to_string(), "ctrl+shift+,.".to_string());
+        // The two the previous round left unwired are wired now, so a config that wants
+        // *no* registrations has to refuse those as well - the denominator this test
+        // counts is the config's nine, not the four this build can perform.
+        actions.insert("capture_active_window".to_string(), "".to_string());
+        actions.insert("capture_repeat".to_string(), "".to_string());
         let planned = plan(&actions);
         assert_eq!(rows_of_actions(&planned.rows), actions.len());
         assert_eq!(planned.requests.len(), 0, "这趟一个都注册不了");

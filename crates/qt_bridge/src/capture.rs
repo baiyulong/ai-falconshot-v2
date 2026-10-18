@@ -10,13 +10,17 @@
 //! so the mask path cannot afford to re-read the screen per gesture, and the
 //! magnifier would rebuild it on every mouse move.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use falcon_core::capture::{CaptureService, ScreenSnapshot, WindowInfo, XcapCapture};
+use falcon_core::capture::{
+    CaptureService, MonitorInfo, ScreenSnapshot, WindowExtras, WindowInfo, XcapCapture,
+};
 use falcon_core::geometry::{PhysPoint, PhysRect};
 use falcon_core::pin::PinId;
 use platform_windows::proc::{
-    cursor_pos, pid_of_window, process_name, window_at_point, window_title,
+    cursor_pos, foreground_window, is_minimized, pid_of_window, process_name, window_at_point,
+    window_title,
 };
 use platform_windows::win::WinExtras;
 
@@ -31,6 +35,69 @@ pub fn service() -> CaptureService<WinExtras> {
     CaptureService::with_extras(Box::new(XcapCapture), Box::new(WinExtras))
 }
 
+/// How many times this process has frozen the screen, and how many times it has
+/// gone to ask about the pointer.
+///
+/// These two numbers exist for one question, and it is not a question about pixels:
+/// §5.4.3 的指针**在哪一刻**被读走。P106 之前它在 [`crate::mask::MaskState::commit`] 那道门上
+/// 问，也就是「用户按下完成之后才去看指针此刻在哪」；而底图早在 [`freeze`] 就冻住了。读数时刻
+/// 挪到冻结这一格之后，「一次流程问了几回」从跟着 commit 走变成跟着 freeze 走——这两枚计数器
+/// 就是让门能在运行期把这条区别读出来，而不是要人来相信 doc。
+///
+/// 键开没开**不影响这两枚数**：[`cursor_overlay`] 在分岔之前就自增，因为它数的是「代码在哪一格
+/// 去问」。键关着时那一问当场返回 `None`、一次平台调用也不发，所以门读到的 `cursor_reads` 是
+/// 时刻的证据，不是像素的证据；键开那一侧的像素证人仍是 §10 第 106 项 ④ 欠着的第 28 格。
+static FREEZE_COUNT: AtomicU64 = AtomicU64::new(0);
+static CURSOR_READS: AtomicU64 = AtomicU64::new(0);
+
+pub fn freeze_count() -> u64 {
+    FREEZE_COUNT.load(Ordering::Relaxed)
+}
+
+pub fn cursor_reads() -> u64 {
+    CURSOR_READS.load(Ordering::Relaxed)
+}
+
+/// §5.4.3 `include_cursor` 的**唯一读者**（P65 给整段 `[capture]` 建了快照读者，12 枚键里
+/// 这一枚到今天才有第二个调用点 —— 而它要的是一条**分岔**，不是一次 clone）。
+///
+/// 两臂各说各的：键关着 ⇒ 直接 `None`，**一次平台调用都不发**（默认那一侧写在
+/// `crates/core/src/config.rs:187`，多数用户从来不知道自己关着它）；键开着 ⇒ 问指针此刻
+/// 在哪，再把这个答案交给平台的 [`WindowExtras::cursor_image`]。第二臂自 P106 起是**真臂**
+/// （`crates/platform-windows/src/cursor.rs`：`GetCursorInfo` 问哪一只、`GetIconInfo` 问尺子
+/// 与热点、一枚 `DrawIconEx` 画进本进程自己的 32 位 DIB），它交回 `None` 还剩两种原因：桌面
+/// 此刻没亮着指针（`CURSOR_SHOWING` 没置上），或者那一趟 GDI 画不出图 —— 这一句写在这里而不
+/// 是等门去猜，因为门能观察到的只有缝合，观察不到这三者里少了哪一格。
+///
+/// 交回的是 `(图, 图的左上角落在屏幕上的物理坐标)`，**不做任何裁剪**：选区在哪、贴去哪，
+/// 归 [`crate::mask::MaskState::stamp_cursor`] 那一格的算术，那里能不开窗就验。
+///
+/// **调用它的是 [`freeze`]，不是 commit 那道门**（P107，结掉 §10 第 107 项 ⑨ 记的 #197）：
+/// 指针的答案属于它被读走时那一枚画面，所以画面到手之后当场问一次、和画面并存进同一枚槽。
+/// 判据是 PRD 那两条规则——第 419 行「指针热点位置应与实际屏幕位置一致」里的「实际位置」只能
+/// 是**图里那块屏幕**，用户按下完成时指针已经走开的话，走开之后那个位置在图上根本没有对应物；
+/// 第 420 行「延时截图应捕获倒计时结束时的指针状态」把时刻点名点得更死，而倒计时结束正是冻结
+/// 发生的那一格。第 415 行「将当前鼠标指针合成」的「当前」在本轮读成「当前这张画面」，另一种
+/// 读法（此刻）与 419/420 冲突，冲突时取那两条规则而不是取流程叙述里的一个形容词。
+pub fn cursor_overlay() -> Option<(falcon_core::frame::Frame, PhysPoint)> {
+    CURSOR_READS.fetch_add(1, Ordering::Relaxed);
+    if !crate::settings::capture_cfg().include_cursor {
+        return None;
+    }
+    let p = cursor_pos()?;
+    WinExtras.cursor_image(p)
+}
+
+/// The monitors as the platform enumerates them: physical rects in virtual-desktop
+/// coordinates, each with its own ratio, primary first.
+///
+/// No pixels are read, so this is cheap enough to call while a pin is being placed
+/// rather than only while a frame is being frozen. It is also the only source of a
+/// per-screen ratio that does not depend on where a window has ended up (§10 第 52 项 ①).
+pub fn monitor_table() -> Result<Vec<MonitorInfo>, String> {
+    service().monitors().map_err(|e| e.to_string())
+}
+
 /// A freeze, with how long it took. The timing is part of the product's promise
 /// (plan P1: hot key to mask visible inside 150 ms), so it is measured here rather
 /// than assumed.
@@ -39,9 +106,22 @@ pub struct Frozen {
     pub ms: u64,
 }
 
-static FROZEN: OnceLock<Mutex<Option<ScreenSnapshot>>> = OnceLock::new();
+/// What one freeze owns: the pixels, and the pointer as it stood while those pixels
+/// were read.
+///
+/// The two halves live in one value on purpose. §5.4.3 的覆盖层属于「它被读走时那一枚画面」，
+/// 而这句话只要还是靠两处赋值挨得近来维持，就还是一次改码能拆开的东西：槽里放两枚 `Option`，
+/// 忘了清其中一枚的 `clear()`、或者只写其中一枚的 `freeze()`，都能让画面与指针各说各话。
+/// 合在一枚槽、一次锁、一次写入之后，那种走神不再有位置。
+#[derive(Clone, Debug)]
+pub struct Freeze {
+    pub snap: ScreenSnapshot,
+    pub cursor: Option<(falcon_core::frame::Frame, PhysPoint)>,
+}
 
-fn slot() -> &'static Mutex<Option<ScreenSnapshot>> {
+static FROZEN: OnceLock<Mutex<Option<Freeze>>> = OnceLock::new();
+
+fn slot() -> &'static Mutex<Option<Freeze>> {
     FROZEN.get_or_init(|| Mutex::new(None))
 }
 
@@ -49,11 +129,21 @@ fn slot() -> &'static Mutex<Option<ScreenSnapshot>> {
 /// snapshot is what a "capture the screen as it was two minutes ago" bug looks
 /// like, so a new flow always takes a new frame (PRD §8.5 makes the same point the
 /// other way round - when the resolution changes, the old frame is invalid).
+///
+/// 指针那一问就在这一格里、画面到手之后当场问一次（P107 挪过来的，判据写在
+/// [`cursor_overlay`] 头上）。问在 `?` 之后：一次失败的冻结不许留下任何新东西，槽里
+/// 上一场的画面与指针一起还在原位——因为「只有画面更新了、指针还是上一场的」正是这一轮
+/// 要关掉的那族 bug，而它不该从错误分支里进来。
 pub fn freeze() -> Result<Frozen, String> {
     let started = std::time::Instant::now();
     let snap = service().freeze().map_err(|e| e.to_string())?;
     let ms = started.elapsed().as_millis() as u64;
-    *slot().lock().unwrap_or_else(PoisonError::into_inner) = Some(snap.clone());
+    let cursor = cursor_overlay();
+    FREEZE_COUNT.fetch_add(1, Ordering::Relaxed);
+    *slot().lock().unwrap_or_else(PoisonError::into_inner) = Some(Freeze {
+        cursor,
+        snap: snap.clone(),
+    });
     Ok(Frozen { snap, ms })
 }
 
@@ -62,10 +152,28 @@ pub fn current() -> Option<ScreenSnapshot> {
     slot()
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .clone()
+        .as_ref()
+        .map(|f| f.snap.clone())
 }
 
-/// The flow is over; the pixels go away with it.
+/// The pointer that belongs to the frame currently in the slot, if there is one.
+///
+/// `None` 有三种读法，而这一格分不开它们——门只能数缝合，代码只能留证据：键关着（默认那一侧，
+/// [`cursor_overlay`] 的第一臂）；桌面此刻没亮着指针；或者压根还没冻过画面。前两种在一场
+/// 正常流程里长得一样。
+///
+/// 它读的是槽，不是桌面：从 [`freeze`] 到 [`crate::mask::MaskState::commit`] 之间指针走没走开，
+/// 都不该改变交回的那一枚答案，而那正是 §5.4.3 第 419 行要的。
+pub fn frozen_cursor() -> Option<(falcon_core::frame::Frame, PhysPoint)> {
+    slot()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|f| f.cursor.clone())
+}
+
+/// The flow is over; the pixels go away with it — and so does the pointer read that
+/// belonged to them, because the two are one value here.
 pub fn clear() {
     *slot().lock().unwrap_or_else(PoisonError::into_inner) = None;
 }
@@ -78,11 +186,160 @@ fn working_frame() -> Result<ScreenSnapshot, String> {
     }
 }
 
+/// The last region this process turned into a picture, and the leg that asked for it.
+///
+/// §5.2.5's 重复上次截图 needs a rectangle, not a frame: the picture has to be a fresh
+/// look at the same place, so the memory outlives the freeze cache while the pixels do
+/// not. `leg` is kept because the sentence this action prints is about *what* is being
+/// repeated - the same three hundred pixels the user dragged out, or the same window
+/// bounds - and a bare rect cannot tell those two apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LastRegion {
+    pub rect: PhysRect,
+    pub leg: &'static str,
+}
+
+static LAST: OnceLock<Mutex<Option<LastRegion>>> = OnceLock::new();
+
+fn last_slot() -> &'static Mutex<Option<LastRegion>> {
+    LAST.get_or_init(|| Mutex::new(None))
+}
+
+/// The one decision the memory makes: has this rect earned a repeat.
+///
+/// An empty rect is a flow that never selected anything, and storing it would make
+/// the next `capture_repeat` answer `Empty` - a bug report about the crop when the
+/// truth is "nothing has been captured yet".
+fn worth_remembering(rect: PhysRect) -> bool {
+    !rect.is_empty()
+}
+
+/// Take note of a region that just became a picture.
+pub fn remember(rect: PhysRect, leg: &'static str) {
+    if !worth_remembering(rect) {
+        return;
+    }
+    *last_slot().lock().unwrap_or_else(PoisonError::into_inner) = Some(LastRegion { rect, leg });
+}
+
+/// What the last capture asked for, if this process has made one.
+pub fn last_region() -> Option<LastRegion> {
+    *last_slot().lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The flow is over and the memory goes with it - used by the doors that have to
+/// start from "nothing has been captured yet".
+pub fn forget_region() {
+    *last_slot().lock().unwrap_or_else(PoisonError::into_inner) = None;
+}
+
+/// §5.2.5: the last region again, on a frame taken **now**.
+///
+/// `working_frame` is deliberately not used here. Every other read of the freeze
+/// exists to avoid re-photographing a desktop that has not changed; a repeat is the
+/// one flow whose whole point is that the desktop *has* changed under a region that
+/// has not. Reusing the cached frame would hand back the same pixels and call it a
+/// second capture.
+///
+/// A region that no longer fits - a monitor unplugged, the resolution changed - is
+/// clipped by `ScreenSnapshot::capture` and the clipping is said out loud, which is
+/// what PRD §5.2.5 asks for ("自动裁剪到有效范围并提示").
+pub fn pin_last_region() -> Result<(PinId, String), String> {
+    let last = last_region().ok_or("还没有截图过：先把要重复的范围截出来")?;
+    let f = freeze()?;
+    let cap = f.snap.capture(&last.rect).map_err(|e| e.to_string())?;
+    let id = state::with(|s| s.add(cap.frame, PhysPoint::new(cap.rect.x, cap.rect.y)))?;
+    remember(cap.rect, "重复");
+    Ok((
+        id,
+        format!(
+            "重复{}的上一次区域 {:?}：{} 的 {} ms 新冻结{}",
+            last.leg,
+            cap.rect,
+            f.snap.backend,
+            f.ms,
+            if cap.clipped {
+                "（越界，已裁剪到当前桌面）"
+            } else {
+                ""
+            }
+        ),
+    ))
+}
+
+/// Why `hwnd` cannot be §5.2.6's 活动窗口, or `None` when it can.
+///
+/// Split out from [`pin_active_window`] because the three readings that feed it -
+/// which process owns the window, whether the shell draws it minimised, what the
+/// session is showing - are each a separate Win32 answer that can fail separately,
+/// while the *decision* is a table this function can be handed in a test with no
+/// desktop behind it.
+///
+/// The order is the order of confidence: an unreadable owner is refused before
+/// "minimised", because a handle the shell will not explain is not evidence that any
+/// of the later readings mean anything.
+pub fn active_window_refusal(
+    owner: Option<u32>,
+    self_pid: u32,
+    minimized: bool,
+    app: Option<&str>,
+) -> Option<String> {
+    let Some(pid) = owner else {
+        return Some(
+            "前台窗口查不到它的进程：受保护的进程或别的会话就是这样，这一趟不猜它是谁".to_string(),
+        );
+    };
+    if pid == self_pid {
+        return Some("前台是 Falconshot 自己：贴图截贴图只会得到一张图里的图".to_string());
+    }
+    if minimized {
+        return Some("活动窗口最小化了：桌面上没有它的画面可截（§5.2.6）".to_string());
+    }
+    if let Some(app) = app {
+        if is_lock(app) {
+            return Some(format!("会话锁屏，前台是 {app}：那不是用户正在用的窗口"));
+        }
+    }
+    None
+}
+
+/// `capture_active_window` (§5.2.6): the window the shell is giving keystrokes to,
+/// as its own picture.
+///
+/// This leg does not read the freeze. A window shot goes to the DWM for that
+/// window's own content, which is what makes it survive being partly behind
+/// something else - and what makes the mask's frozen frame irrelevant here.
+pub fn pin_active_window() -> Result<(PinId, String), String> {
+    let hwnd = foreground_window().ok_or("前台没有窗口：这一趟连焦点在谁那里都问不出来")?;
+    let owner = pid_of_window(hwnd);
+    let app = owner.and_then(process_name);
+    if let Some(why) = active_window_refusal(
+        owner,
+        std::process::id(),
+        is_minimized(hwnd),
+        app.as_deref(),
+    ) {
+        return Err(why);
+    }
+    let id = pin_window(hwnd as u32)?;
+    let title = window_title(hwnd).unwrap_or_default();
+    Ok((
+        id,
+        format!("活动窗口「{title}」[{}] {hwnd:#x}", app.unwrap_or_default()),
+    ))
+}
+
 /// §5.3's output for one rectangle: stitched across monitors, clipped to the
 /// desktop, and pinned where it was on screen.
+///
+/// Also the region `capture_repeat` will ask for next time (§5.2.5): what is
+/// remembered is `cap.rect`, the crop that actually became a picture, rather than
+/// `want`. A request that ran off the edge of the desktop has already been answered
+/// once by clipping it, and repeating the answer is what the user saw.
 pub fn pin_rect(want: &PhysRect) -> Result<PinId, String> {
     let snap = working_frame()?;
     let cap = snap.capture(want).map_err(|e| e.to_string())?;
+    remember(cap.rect, "矩形");
     state::with(|s| s.add(cap.frame, PhysPoint::new(cap.rect.x, cap.rect.y)))
 }
 
@@ -151,8 +408,13 @@ pub fn rect_arg(raw: &str) -> Option<PhysRect> {
 /// shot asks the DWM for that window's content, which is what makes it survive
 /// being behind another window - and what makes its size drift (P5), hence the
 /// re-crop inside `capture_window`.
+///
+/// The re-cropped bounds are what goes into §5.2.5's memory, not the window's
+/// geometry as the shell reported it: the picture the user got is the region they
+/// will ask to see again.
 pub fn pin_window(hwnd: u32) -> Result<PinId, String> {
     let cap = service().capture_window(hwnd).map_err(|e| e.to_string())?;
+    remember(cap.rect, "窗口");
     state::with(|s| s.add(cap.frame, PhysPoint::new(cap.rect.x, cap.rect.y)))
 }
 
@@ -334,5 +596,59 @@ mod tests {
         // `--rect 0,0,0,0` would read as "the desktop is broken". Clamping to one
         // pixel keeps the diagnostic about the region the user named.
         assert_eq!(rect_arg("5,6,0,-40"), Some(PhysRect::new(5, 6, 1, 1)));
+    }
+
+    /// §5.2.5's memory keeps the region of a capture that happened, not of a flow
+    /// that gave up. One pixel is a picture; zero is not.
+    #[test]
+    fn only_a_region_with_pixels_earns_a_repeat() {
+        assert!(worth_remembering(PhysRect::new(0, 0, 1, 1)));
+        assert!(!worth_remembering(PhysRect::new(10, 20, 0, 400)));
+        assert!(!worth_remembering(PhysRect::default()));
+    }
+
+    /// §5.2.6's refusals, one per reading, and in the order the readings are trusted.
+    /// The desktop is not needed for any of them: this is the table the leg consults
+    /// after it has asked the shell its three questions.
+    #[test]
+    fn the_active_window_is_refused_for_the_reason_the_shell_gave() {
+        let me = 4_100;
+        // A handle the shell will not explain outranks everything else, because the
+        // later readings are readings about a window this run cannot even name.
+        let why = active_window_refusal(None, me, true, Some("LockApp.exe")).unwrap();
+        assert!(why.contains("查不到它的进程"), "{why}");
+        // Our own window is the loop the PRD's 活动窗口 is not about: a pin of a pin.
+        let why =
+            active_window_refusal(Some(me), me, false, Some("falconshot-desktop.exe")).unwrap();
+        assert!(why.contains("Falconshot 自己"), "{why}");
+        // Minimized beats the lock reading, and both beat acceptance - a locked
+        // session's foreground window is minimised as far as this run can tell, and the
+        // sentence the user reads should be the one that is certainly true.
+        let why = active_window_refusal(Some(4_200), me, true, Some("LockApp.exe")).unwrap();
+        assert!(why.contains("最小化"), "{why}");
+        let why = active_window_refusal(Some(4_200), me, false, Some("LogonUI.exe")).unwrap();
+        assert!(why.contains("锁屏"), "{why}");
+        assert_eq!(
+            active_window_refusal(Some(4_200), me, false, Some("notepad.exe")),
+            None
+        );
+        // Not knowing the process *name* is not a refusal: `is_lock` is one of the
+        // checks, and a window that answers its pid but not its exe is still a window.
+        assert_eq!(
+            active_window_refusal(Some(4_200), me, false, None),
+            None,
+            "查不到名字不是查不到窗口"
+        );
+    }
+
+    /// The refusal rule is the shell's spelling, not this file's: the two names the
+    /// lock window is answered under are the ones [`is_lock`] is written for.
+    #[test]
+    fn a_lock_is_the_third_reading_not_a_fourth_question() {
+        assert!(
+            active_window_refusal(Some(4_200), 4_100, false, Some("LockApp.exe"))
+                .unwrap()
+                .contains("LockApp.exe")
+        );
     }
 }

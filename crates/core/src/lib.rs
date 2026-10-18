@@ -6,6 +6,7 @@ pub mod capture;
 pub mod clip;
 pub mod colors;
 pub mod config;
+pub mod dialog_link;
 pub mod encode;
 pub mod frame;
 pub mod geometry;

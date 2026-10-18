@@ -53,6 +53,20 @@ Window {
     // The step is a *device* pixel because that is the unit the PRD's title names -
     // 像素级控制 - not the unit the pointer arrives in.
     function step(dx, dy, mods) {
+        // §5.14.2 的翻页自 P113 起住在 `chord()` 里（Ctrl+Up / Ctrl+Down），而上面那四行
+        // `Keys.on*Pressed` 是**任何**修饰键都会触发的，所以这一格得先让开那一档：不让开，一次
+        // Ctrl+Up 就会同时做两件事 —— 把框往上挪一像素、又翻一页。
+        //
+        // 让开的只有"Ctrl **单独**"那一档（不带 Shift、也不带 Alt），可观测面因此最小：Shift 在
+        // §5.3.9 里说的是步长（一步 ↔ 十步），Alt 说的是挪哪条边，两枚各自与 Ctrl 同按时仍然
+        // 照原样走 —— `Ctrl+Shift+Up` 从前是十步、现在还是十步，`Ctrl+Alt+Up` 从前是挪右下边、
+        // 现在还是。产品改口的只有裸的那一枚：§5.3.9 只承诺了"更细或更大步长"，而那两档由 Shift
+        // 与 Alt 各自占着，Ctrl 单独一档产品从前什么也没说，现在说的是历史翻页。
+        // 两条腿因此按任意顺序都不互踩：`chord()` 里那两枚也只认裸的。
+        if ((mods & Qt.ControlModifier) !== 0
+            && (mods & (Qt.ShiftModifier | Qt.AltModifier)) === 0) {
+            return
+        }
         const n = (mods & Qt.ShiftModifier) ? 10 : 1
         view.nudgeHole(dx * n, dy * n, (mods & Qt.AltModifier) !== 0)
     }
@@ -101,7 +115,15 @@ Window {
         // by accident or nothing at all, and a user could not tell which.
         const save = key === Qt.Key_S && !shifted
         const quick = key === Qt.Key_S && shifted
-        if (!undo && !redo && !copy && !save && !quick) {
+        // §5.14.2 step 2「使用上一条、下一条快捷键浏览记录」：裸 Ctrl 配 Up/Down。Alt 那一枚
+        // 也要查，因为上面那四枚（Z/Y/C/S）都不带方向键，而方向键在 `step()` 那头还有一位主人
+        // —— Alt 单独一档说的是"挪哪条边"，`Ctrl+Alt+Up` 自 P113 起仍是挪边，不翻页。
+        // 这两枚的条件与 `step()` 头上让开的那一条必须**一字同**（Ctrl 而既不带 Shift 也不带
+        // Alt）：错开一寸，一次按键就会同时挪一像素又翻一页，而这两件事谁也不会报错。
+        const alted = (modifiers & Qt.AltModifier) !== 0
+        const older = key === Qt.Key_Up && !shifted && !alted
+        const newer = key === Qt.Key_Down && !shifted && !alted
+        if (!undo && !redo && !copy && !save && !quick && !older && !newer) {
             return false
         }
         // The toolbar owns the gesture, key or click alike: it is the item that
@@ -117,6 +139,18 @@ Window {
         }
         if (quick) {
             inkBar.quickSave()
+            return true
+        }
+        if (older || newer) {
+            // 只递方向。锚点（此刻停在第几行）、库里那一侧还有没有行、以及"翻过去就是重新进入
+            // 那一行的原选区"全在 Rust 那一头：`Session::historyFlip` → `settings::neighbor_id_for`
+            // → `MaskState::restore_history_selection` → 同一枚 `set_hole`。界面既不该猜锚点，
+            // 也不该拿一句中文去判翻没翻成 —— 那两句都是产品自己说的话，屏幕与量具读同一份。
+            session.historyFlip(older)
+            // 与 undo/redo 那一臂同一个收尾：Rust 那头的框动了，这扇窗要把它读回来。翻不动时
+            // 那次 reload 读到的是同一枚矩形，`main.qml` 的那句 "Reload-only: it never re-emits
+            // grabbed" 保证这里不会长成一次循环。
+            win.grabbed()
             return true
         }
         if (redo ? view.redoStep() : view.undoStep()) {
@@ -305,6 +339,21 @@ Window {
         color: "transparent"
         border.color: "white"
         border.width: 2
+    }
+
+    // §5.3.5's live size readout, gated by the flow's own copy of
+    // `[capture] show_dimensions` (`win.view.show_dimensions`, snapshotted
+    // in Rust at `open`). `selected` is the other half of the gate: a hole
+    // that has not been made yet has no width to name, and this is the one
+    // line on the mask whose value comes from the same `hole_w`/`hole_h`
+    // that the eight handles were placed by, so a readout that disagrees
+    // with the box means the box itself is wrong.
+    Text {
+        x: win.view.hole_x
+        y: Math.max(0, win.view.hole_y - 22)
+        visible: win.view.selected && win.view.show_dimensions
+        color: "white"
+        text: Math.max(0, win.view.hole_w) + " × " + Math.max(0, win.view.hole_h)
     }
 
     // Where the eight grips sit, as fractions of the hole, in `Handle::all()`'s

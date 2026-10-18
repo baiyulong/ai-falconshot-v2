@@ -14,17 +14,21 @@ Window {
     required property PinShim shim
     required property Session session
 
-    // Not `required`: a QQmlInstantiator delegate is created before the slot it
-    // fills is known, and a required property that is missing aborts creation.
+    // Not `required`: this window is made by `main.qml`'s `syncPins` before it is known
+    // which pin it will show, and a required property that is missing aborts creation.
     // -1 is a pin id the state machine never hands out, so an unassigned window
     // reads as not-live rather than as somebody else's pin.
     property int pinId: -1
 
-    // The view is filled by `assign`, not by a binding: the Instantiator tells
-    // this window which pin it is *after* it is created, and a `pin_id` binding
-    // would race its own change handler for who updates first.
+    // The view is filled by `assign`, not by a binding: `syncPins` tells this window
+    // which pin it is *after* it is created, and a `pin_id` binding would race its own
+    // change handler for who updates first.
     readonly property PinView view: PinView {}
-    readonly property real dpr: Screen.devicePixelRatio
+    // The ratio comes from the state machine, not from the `Screen` attached object:
+    // that one resolves which screen this window is on, which depends on x/y/width,
+    // which are divided by this number - a cycle the QML engine reports as a loop.
+    // The pin's own physical rect is what the answer is looked up from.
+    readonly property real dpr: view.dpr
 
     function assign(id) {
         win.pinId = id
@@ -41,7 +45,7 @@ Window {
     //
     // The fields are read by index, and the order is `pin_check::plan_line`'s:
     // 0 目录, 1 qml.png, 2 qml.jpg, 3 never.png, 4 贴图 id, 5 一个不存在的 id,
-    // 6 延迟 ms, 7 对话框默认名, 8 推开尝试上限.
+    // 6 延迟 ms, 7 对话框默认名, 8 推开尝试上限, 9 这一腿最后要关掉的那枚 id.
     property var gauge: []
 
     // True only between the moment the dialog leg asked for a real dialog and the moment
@@ -67,6 +71,12 @@ Window {
     // window the shell had (or did not have) at each wait is what says whether the
     // `pushed=yes` below was earned by waiting or given for free.
     property string pushTriesLog: ""
+
+    // The same attempt's §5.5.11 reading, taken *before* the press rather than after it: the
+    // press is what closes that door, so a rect read on the far side of it is a reading of a
+    // window that is already gone. One line, reported under the attempt that actually pressed
+    // (or under the last one, when none did) - see `dlg-probe` below.
+    property string pushProbe: ""
 
     color: "transparent"
 
@@ -224,6 +234,10 @@ Window {
     // else in this process writes one at this moment.
     function pushDialogLeg() {
         win.pushTries += 1
+        // §5.5.11 的读数取在这一手的**最前**，press 之后不再问一次：那一下按下关的就是这扇窗，
+        // 关完再读的矩形属于一扇已经不存在的窗。它随 `dlg-probe` 一起报出去，报的是**真的按下
+        // 了那一次**（或一趟也没按下的最后一次尝试）自己的读数，不是上一轮等待留下的旧值。
+        win.pushProbe = win.session.dialogProbe()
         if (win.pushTries === 1) {
             gaugeSay("dlg-shown", String(saveAs.visible))
             win.readFilter("dlg-shown-filter")
@@ -235,6 +249,7 @@ Window {
             gaugeSay("dlg-push", said)
             gaugeSay("dlg-push-tries", String(win.pushTries))
             gaugeSay("dlg-push-log", win.pushTriesLog)
+            gaugeSay("dlg-probe", win.pushProbe)
             dlgTail.restart()
         } else {
             dlgPush.restart()
@@ -254,12 +269,18 @@ Window {
             gaugeSay("dlg-dismiss", "reject")
             saveAs.reject()
         }
+        // 上面那一手 reject 与点击那一下关的门，两条腿之后 `dialogClosed` 都已经叫过了；这一行
+        // 读的就是"叫过之后账上还剩什么"。它读在 `dlgLeg = false` 之前，是因为那条只是腿的收尾，
+        // 而这一枚读数是这一格唯一的证人：读晚了（`jpgArmLeg` 会再落一次盘）就分不清是谁改的账。
+        gaugeSay("dlg-probe-gone", win.session.dialogProbe())
         // Closed last, after the reject above: that one is this phase's own dismissal and
         // is meant to be reported. From here nothing else may answer under the click's
         // keys.
         win.dlgLeg = false
         win.jpgArmLeg()
-        gaugeSay("done", win.gauge[0])
+        // The leg is not over: `done` moves to the end of the close below, because the run's
+        // end is armed off that key and the close is the last thing this door measures.
+        win.closeArmLeg()
     }
 
     // §10 第 40 项 ②, at this door: a name with no extension takes the format of the arm
@@ -282,6 +303,43 @@ Window {
         const bareName = win.dlgUrl(String(win.gauge[0]) + "/" + win.gauge[7] + "-f")
         const arm = win.filterExt(1)
         gaugeSay("f-jpg", arm + "|" + win.session.savePin(win.pinId, bareName, arm))
+    }
+
+    // §10 第 55 项: 关掉非最上层的一枚, at this door.
+    //
+    // The doomed pin's id is the plan's (field 9) rather than a number written here, and it
+    // is the pin that is neither the bottom of the pile nor the top: the set is bottom-first,
+    // so closing it moves the *slot* of every pin after it while leaving those pins where
+    // they are. Closing the topmost pin instead would move nothing and prove nothing - and
+    // would also destroy the window that the file-pin rows above read, which are this run's
+    // other witnesses.
+    //
+    // The speaker is a different window from the victim, on purpose, and it is the reason the
+    // window set is keyed by id in `main.qml`: this leg's own first version ran while an
+    // `int` model owned these windows, and that model answered a membership change by
+    // rebuilding every one of them - the window saying `close-before` was destroyed inside
+    // the `closePin` call it had just made, the leg ended in a `TypeError` and the fresh
+    // slot-0 window started the whole run again (P55, `.qoder/scratch/p55_pin_diag4.log`).
+    //
+    // `close-before` and `close-after` carry this window's own id and nothing else: which
+    // windows are on the screen is `pin_check`'s reading to take, and what this leg decides is
+    // *when* - and the first run of this leg could not tell, after a delegate was gone, which
+    // delegate had spoken. `close` is the door's own answer - how many pins `closePin` removed -
+    // so that a pile which did not shrink can still be told apart from a close that never ran.
+    function closeArmLeg() {
+        gaugeSay("close-before", String(win.pinId))
+        gaugeSay("close", String(win.session.closePin(Number(win.gauge[9]))))
+        closeTail.restart()
+    }
+
+    // One loop turn later, which is the whole of the wait's reason: the retirement of a
+    // window whose pin left the set is deferred out of the notify that saw it leave, so this
+    // turn is the first one that can see the pile finished.
+    function closeAfterLeg() {
+        gaugeSay("close-after", String(win.pinId))
+        // Closed last, as in the dialog phase: from here nothing else may answer, and this
+        // key is what arms the run's own end.
+        gaugeSay("done", win.gauge[0])
     }
 
     // `selectedNameFilter` three times, because it is read-only (assigning to it is a
@@ -316,8 +374,8 @@ Window {
         repeat: false
         // Stopped for every delegate that is not the planned pin, and for every
         // ordinary session: `pinId` is -1 until `assign` and a plan with no gauge run
-        // is one field long, not eight.
-        running: win.gauge.length === 9 && String(win.gauge[4]) === String(win.pinId)
+        // is one field long, not ten.
+        running: win.gauge.length === 10 && String(win.gauge[4]) === String(win.pinId)
         onTriggered: win.runGauge()
     }
 
@@ -339,6 +397,16 @@ Window {
         onTriggered: win.finishDialogLeg()
     }
 
+    // The close leg's one wait (§10 第 55 项), same interval from the same plan as the two
+    // above. `pin_check::LEG_WAITS` counts it: the budget and the schedule are read together
+    // or the run ends before the census is taken.
+    Timer {
+        id: closeTail
+        interval: Number(win.gauge[6]) || 400
+        repeat: false
+        onTriggered: win.closeAfterLeg()
+    }
+
     // The gauge's witness that the signal fired, taken from outside the door so the
     // `onAccepted` below stays the one statement §5.9.17 asks for. It is not the whole
     // claim: this object cannot write a file, so the bytes at `dialog.png` are what say
@@ -351,10 +419,10 @@ Window {
     Connections {
         target: saveAs
         function onAccepted() {
-            if (win.gauge.length === 9 && win.dlgLeg) win.gaugeSay("dlg-accepted", String(saveAs.selectedFile))
+            if (win.gauge.length === 10 && win.dlgLeg) win.gaugeSay("dlg-accepted", String(saveAs.selectedFile))
         }
         function onRejected() {
-            if (win.gauge.length === 9 && win.dlgLeg) win.gaugeSay("dlg-rejected", String(saveAs.selectedFile))
+            if (win.gauge.length === 10 && win.dlgLeg) win.gaugeSay("dlg-rejected", String(saveAs.selectedFile))
         }
     }
 
@@ -569,6 +637,12 @@ Window {
         title: "另存为"
         fileMode: FileDialog.SaveFile
         nameFilters: ["PNG 图片 (*.png)", "JPG 图片 (*.jpg)", "BMP 图片 (*.bmp)"]
+        // §5.5.11 步骤 3/4 的事件源。绑 `visible` 而不是 `accepted`/`rejected`，是因为
+        // "这张对话框不在了" 就是那一步的全部条件：保存、取消、还是用户直接关掉窗，三条腿
+        // 之后贴图都该回来，而 `visible` 只有这一次真的会变的读数。谁藏、藏几层、什么时候
+        // 放回，全在 Rust 那一头记账（`state::PinState::dialog_opened`）；这里只报"有一张
+        // 开了 / 有一张关了"，连开关都不递 —— 屏幕上藏没藏由配置那一格说了算，只能有一个权威。
+        onVisibleChanged: visible ? win.session.dialogOpened() : win.session.dialogClosed()
         onAccepted: {
             win.session.savePin(
                 win.pinId,

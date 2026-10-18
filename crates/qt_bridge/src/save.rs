@@ -263,7 +263,7 @@ pub fn reminder_for_format(frame: &Frame, format: encode::Format, subject: &str)
 /// 另存为 reports, and P35 is on this file's head for what two spellings of "this picture
 /// went to that file" cost - one of them said it in English while ignoring
 /// `[output] jpeg_quality`.
-fn write_decided(
+pub(crate) fn write_decided(
     frame: &Frame,
     target: std::path::PathBuf,
     format: encode::Format,

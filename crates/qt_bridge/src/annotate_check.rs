@@ -2727,7 +2727,292 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
     );
 }
 
-/// §5.5.4's 快速保存 (PRD 491, §10 第 44 项 ①), read against the directory it wrote, the
+/// §5.5.6 的圆角与 §5.5.7 的阴影/边框，判在**盘上那一个文件**上。
+///
+/// 这两档曾经是一句没有读者的承诺：`[output] corner_radius` 与 `shadow_size` 声明过、
+/// 默认过、也按范围收敛过，而 `imageops::{rounded, plate}` 在产品的调用图里一次都没有出现
+/// —— 只有单测在跑它们。所以对这一档唯一的诚实读法是"文件里到底有没有这道效果"，而六枚
+/// 键各自可烂，就各自占一格：出厂值不变的字节、圆角切出来的透明、按配置填进去的颜色、阴影
+/// 长出来的边距、边框落在边缘的那两行、以及 JPG 那一趟该说的数（PRD §5.5.6 规则的第二条）。
+///
+/// 每一格都从 [`crate::mask::MaskState::save_out`] 那一扇门出去，读回的是文件系统，比较的
+/// 基准是 [`crate::annotate::Layer::deliver`] 交回的那张**未装饰**原图 —— 装饰后的像素由产品
+/// 自己算，这一行只负责数它落下的字节。判据对面是操作系统，不是这段代码的记忆（§9.1）。
+///
+/// 那些键在动手之前整份存下、动手之后原样放回，而且**每一趟只设一枚**、其余回到出厂值：
+/// `--ink` 那趟会在流程末尾走 [`crate::settings::Settings::write_back`]，一枚留在盘上的
+/// 圆角会被当作用户自己设的写进他的配置里（`jpeg quality knob` 那一格立的就是这条规矩）；
+/// 而两枚键同时开着的时候，一格红了说不出是哪一枚的错。
+fn decoration_rows(rep: &mut Report, shipped: Option<&Frame>) {
+    const LABELS: [&str; 7] = [
+        "decor identity keeps the bytes",
+        "decor rounded corners reach the file",
+        "decor corner fill reaches the file",
+        "decor shadow grows the file",
+        "decor border rings the file",
+        "decor jpg says what it filled",
+        "decor settings came back",
+    ];
+    let absent = |rep: &mut Report, verdict: Check, why: String| {
+        for label in LABELS {
+            rep.row(label, verdict, why.clone());
+        }
+    };
+    let Some(raw) = shipped else {
+        absent(
+            rep,
+            Check::Fail,
+            "选区没有拼出图来，也就没有一张图可以被装饰".to_string(),
+        );
+        return;
+    };
+    let dir = save_gauge_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        absent(
+            rep,
+            Check::Blocked,
+            format!("{} 准备不起来（{e}），这一档没有文件可读", dir.display()),
+        );
+        return;
+    }
+    // 半径、边距、边框宽度各取一枚小值：这一档要判的是"效果在不在文件里"，而一枚 64 px 的
+    // 阴影只会把一张全屏选区推到 `MAX_DIM` 那道界外面 —— 判据够不着的越界不是判据。
+    let (radius, margin, edge) = (6u32, 4u32, 2u32);
+    let before = crate::settings::with(|s| s.config.output.clone());
+    let want_view = falcon_core::imageops::Decoration::from(&before);
+    let snap = mask::with(|m| m.decor);
+
+    let decoded = |path: &std::path::Path| -> Option<Frame> {
+        std::fs::read(path)
+            .ok()
+            .map(|bytes| falcon_core::encode::decode(&bytes))
+            .and_then(|r| r.ok())
+    };
+    let clear_of = |f: &Frame| {
+        f.pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|p| p[3] != 255)
+            .count()
+    };
+    // 每一趟：把出厂值放回去、按这一格的读数改这几枚键、再把 mask 的快照重新取一次 ——
+    // 与 `open` 同一条路，所以量具不会比产品自己更会读配置。
+    let arm = |reset: bool, f: &dyn Fn(&mut falcon_core::config::Output)| {
+        crate::settings::with(|s| {
+            if reset {
+                s.config.output = before.clone();
+            }
+            f(&mut s.config.output);
+        });
+        let d = crate::settings::decoration();
+        mask::with(|m| m.decor = d);
+    };
+    let write = |name: &'static str| {
+        let path = dir.join(name);
+        let _ = std::fs::remove_file(&path);
+        let done = mask::with(|m| m.save_out(&path.to_string_lossy(), ""));
+        let said = mask::with(|m| m.message.clone());
+        let pre = mask::with(|m| m.pre_notice.clone());
+        (path, done, said, pre)
+    };
+
+    // ---- 出厂值：写下的字节就是那张图本身。
+    arm(true, &|_| {});
+    let (p_id, ok_id, _, _) = write("decor-identity.png");
+    let back_id = decoded(&p_id);
+    let same_bytes = back_id
+        .as_ref()
+        .map(|f| f.width == raw.width && f.height == raw.height && f.pixels == raw.pixels)
+        .unwrap_or(false);
+    rep.row(
+        LABELS[0],
+        Check::from(ok_id && same_bytes),
+        format!(
+            "三枚键全关着（半径 0、边距 0、边框 0）⇒ 文件读回来是 {}，与 {}×{} 的原图逐字节相同\
+             ={same_bytes}，门={ok_id}。这一格守的是「这两枚键曾经没有读者」那段历史的反面：默认值\
+             一旦开始生效，也不能生效成另一张图。",
+            back_id
+                .as_ref()
+                .map(|f| format!("{}×{}", f.width, f.height))
+                .unwrap_or_else(|| "没读回来".into()),
+            raw.width,
+            raw.height,
+        ),
+    );
+
+    // ---- 圆角切在文件上：四枚角自此透明，而中心一个像素没动。
+    arm(true, &|o| o.corner_radius = radius);
+    let (p_r, ok_r, _, _) = write("decor-round.png");
+    let back_r = decoded(&p_r);
+    let corners_clear = back_r
+        .as_ref()
+        .map(|f| {
+            f.width == raw.width
+                && f.height == raw.height
+                && [
+                    f.get(0, 0),
+                    f.get(f.width - 1, 0),
+                    f.get(0, f.height - 1),
+                    f.get(f.width - 1, f.height - 1),
+                ]
+                .iter()
+                .all(|p| p[3] == 0)
+                && f.get(f.width / 2, f.height / 2) == raw.get(raw.width / 2, raw.height / 2)
+        })
+        .unwrap_or(false);
+    // 独立的算术：切角**应当多出**透明来。原图是一张屏幕截图，本来就全不透明，所以
+    // "变多"这一格不需要复制 `rounded` 的圆弧公式也能把一枚失效的半径抓出来。
+    let added = back_r.as_ref().map(|f| clear_of(f) > clear_of(raw));
+    let cut = added.unwrap_or(false) && corners_clear && ok_r;
+    let corners = back_r.as_ref().map(clear_of).unwrap_or(0);
+    rep.row(
+        LABELS[1],
+        Check::from(cut),
+        format!(
+            "半径 {radius} ⇒ 文件仍是 {}×{}，四枚角 alpha=0 且中心与未装饰原图同色={corners_clear}；\
+             透明像素 {} → {corners}（切角新增透明={:?}），门={ok_r}",
+            raw.width,
+            raw.height,
+            clear_of(raw),
+            added,
+        ),
+    );
+
+    // ---- §5.5.6 规则的第一条还有另一半："或按配置填充背景色"。
+    arm(true, &|o| {
+        o.corner_radius = radius;
+        o.corner_fill = "#FF000080".into();
+    });
+    let (p_f, ok_f, _, _) = write("decor-fill.png");
+    let filled = decoded(&p_f)
+        .map(|f| {
+            f.get(0, 0) == [255, 0, 0, 128]
+                && f.get(f.width - 1, f.height - 1) == [255, 0, 0, 128]
+                && f.get(f.width / 2, f.height / 2) == raw.get(raw.width / 2, raw.height / 2)
+        })
+        .unwrap_or(false);
+    rep.row(
+        LABELS[2],
+        Check::from(ok_f && filled),
+        format!(
+            "同一枚半径、`corner_fill = \"#FF000080\"` ⇒ 四枚角落成 #FF000080 本身（alpha 也要跟着：\
+             填色是「按配置」，不是「按不透明」），中心仍与未装饰原图同色={filled}，门={ok_f}"
+        ),
+    );
+
+    // ---- §5.5.7 的阴影：文件被**撑大**，边距里带着渐隐的那圈，而画面挪到 margin 之内。
+    arm(true, &|o| {
+        o.shadow_size = margin;
+        o.shadow_strength = 100;
+    });
+    let (p_s, ok_s, _, _) = write("decor-shadow.png");
+    let back_s = decoded(&p_s);
+    let grew = back_s
+        .as_ref()
+        .map(|f| f.width == raw.width + margin * 2 && f.height == raw.height + margin * 2)
+        .unwrap_or(false);
+    let shadow_in_margin = back_s
+        .as_ref()
+        .map(|f| {
+            // 最外一圈是干净的（阴影不许把自己的边距填满），而贴着画面那一圈有黑色半透明。
+            let outer = f.get(0, f.height / 2);
+            let mid = f.get(margin - 1, f.height / 2);
+            outer[3] == 0 && mid[3] > 0 && mid[..3] == [0, 0, 0]
+        })
+        .unwrap_or(false);
+    let content_moved = back_s
+        .as_ref()
+        .map(|f| {
+            f.get(margin + raw.width / 2, margin + raw.height / 2)
+                == raw.get(raw.width / 2, raw.height / 2)
+        })
+        .unwrap_or(false);
+    let plate_ok = ok_s && grew && shadow_in_margin && content_moved;
+    rep.row(
+        LABELS[3],
+        Check::from(plate_ok),
+        format!(
+            "边距 {margin}、强度 100 ⇒ 文件 {}×{} → {}，最外圈 alpha=0 而边距内一层是黑色半透明 \
+             ={shadow_in_margin}，画面中心的像素挪到 ({margin}, {margin}) 之后仍是原来那一枚\
+             ={content_moved}，门={ok_s}",
+            raw.width,
+            raw.height,
+            back_s
+                .as_ref()
+                .map(|f| format!("{}×{}", f.width, f.height))
+                .unwrap_or_else(|| "没读回来".into()),
+        ),
+    );
+
+    // ---- §5.5.7 的边框：宽度加在画面自己的边缘**之内**，所以文件尺寸不动。
+    arm(true, &|o| {
+        o.border_width = edge;
+        o.border_color = "#00FF00".into();
+    });
+    let (p_b, ok_b, _, _) = write("decor-border.png");
+    let bordered = decoded(&p_b)
+        .map(|f| {
+            f.width == raw.width
+                && f.height == raw.height
+                && f.get(0, 0) == [0, 255, 0, 255]
+                && f.get(f.width / 2, 0) == [0, 255, 0, 255]
+                && f.get(f.width - 1, f.height - 1) == [0, 255, 0, 255]
+                && f.get(edge, edge) == raw.get(edge, edge)
+        })
+        .unwrap_or(false);
+    rep.row(
+        LABELS[4],
+        Check::from(ok_b && bordered),
+        format!(
+            "边框宽 {edge}、颜色 #00FF00 ⇒ 文件尺寸不变（边框画在边缘之内，不是又一层边距），\
+             上边中点与两枚对角都是那个绿，而第 {edge} 行起是原画={bordered}，门={ok_b}"
+        ),
+    );
+
+    // ---- PRD §5.5.6 规则的第二条：切成 JPG 的时候要说出被填掉的数目。
+    // 那个数不由产品自己报：它数的是上一趟 PNG（同一枚半径）读回来的透明像素，两扇门
+    // 隔着一种编码对同一个数 —— 这一格烂的时候，先烂的是"提醒说的是别人的数字"那一句。
+    arm(true, &|o| o.corner_radius = radius);
+    let (p_j, ok_j, said_j, pre_j) = write("decor-round.jpg");
+    let named = format!("{corners} px 透明");
+    let dims_ok = decoded(&p_j)
+        .map(|f| f.width == raw.width && f.height == raw.height)
+        .unwrap_or(false);
+    let said_pre = pre_j.contains(&named) && pre_j.contains("将被填成白色");
+    let said_post = said_j.contains(&named) && said_j.contains("已填成白色");
+    rep.row(
+        LABELS[5],
+        Check::from(ok_j && dims_ok && said_pre && said_post),
+        format!(
+            "半径 {radius} 存成 {} ⇒ 文件读回来是 {}×{}，与未装饰原图同尺寸={dims_ok}；写前那句 pre_notice 含 {named:?} 与\
+             \"将被填成白色\"={said_pre}，写后那句含同一枚数与\"已填成白色\"={said_post}。\
+             JPG 的**颜色**不判（编码器自有往返测试，这一档 never chose 一条阈值），判的是它有没有\
+             把自己丢掉多少说出来 —— 门={ok_j}",
+            p_j.file_name().unwrap_or_default().to_string_lossy(),
+            raw.width,
+            raw.height,
+        ),
+    );
+
+    // ---- 收尾：盘上那份配置和 mask 手里那份快照都回到动手之前。
+    crate::settings::with(|s| s.config.output = before.clone());
+    mask::with(|m| m.decor = snap);
+    let live = crate::settings::decoration();
+    let back_snap = mask::with(|m| m.decor);
+    let same_cfg = crate::settings::with(|s| s.config.output == before);
+    rep.row(
+        LABELS[6],
+        Check::from(same_cfg && live == want_view && back_snap == snap),
+        format!(
+            "七枚键整份放回（`output` 逐字段相同={same_cfg}）；放回之后再读一次 settings ⇒ 装饰视图\
+             与放回前同一枚={}，mask 手里那份快照也回到 open 拿走的那一枚={}",
+            live == want_view,
+            back_snap == snap,
+        ),
+    );
+}
+
 /// window census it owes, and the sentence the *other* door already says about the same
 /// picture.
 ///
@@ -4430,6 +4715,7 @@ pub fn measure() -> (Check, String) {
     // against the files the mask wrote.
     clipboard_rows(&mut rep, shipped.as_ref());
     save_rows(&mut rep, shipped.as_ref());
+    decoration_rows(&mut rep, shipped.as_ref());
 
     let (mask_problems, ink_problems) =
         mask::with(|m| (m.problems.clone(), m.ink.problems.clone()));
@@ -6010,10 +6296,13 @@ mod tests {
     fn an_unstitched_selection_says_its_block_was_absent_instead_of_vanishing() {
         let mut rep = Report::new();
         save_rows(&mut rep, None);
+        decoration_rows(&mut rep, None);
         let (worst, text) = rep.finish("save block");
         assert_eq!(worst, Check::Fail, "{text}");
 
         // 九格是这一段本来就发的（两格落盘 + 七格贴图），第十格是本轮补的那句"没跑"。
+        // 最后七格是 §5.5.6/§5.5.7 那一段的同一件事：一张拼不出来的图也装饰不了，
+        // 而那两档曾经没有读者，所以它们的缺席最容易被读成"没有这一档"。
         for label in [
             "saved png",
             "saved jpg",
@@ -6025,6 +6314,13 @@ mod tests {
             "pin file damaged",
             "pin file format",
             "quick save block ran",
+            "decor identity keeps the bytes",
+            "decor rounded corners reach the file",
+            "decor corner fill reaches the file",
+            "decor shadow grows the file",
+            "decor border rings the file",
+            "decor jpg says what it filled",
+            "decor settings came back",
         ] {
             let pad = format!("{label:<22} ");
             assert_eq!(
@@ -6033,10 +6329,10 @@ mod tests {
                 "{label} 在这份归档里的出席次数：\n{text}"
             );
         }
-        // 十格 + `finish` 的标题行：多一格少一格都要在这里被说出来，否则"发行"又多又少都没人知道。
+        // 十七格 + `finish` 的标题行：多一格少一格都要在这里被说出来，否则"发行"又多又少都没人知道。
         assert_eq!(
             text.lines().filter(|l| !l.trim().is_empty()).count(),
-            11,
+            18,
             "{text}"
         );
         let line = text

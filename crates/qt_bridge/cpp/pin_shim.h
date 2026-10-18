@@ -21,6 +21,8 @@
 // with the `image` crate (plan §3.3 bans QImage::save for product bitmaps) and
 // hands the PNG over. Qt only ever *decodes*.
 
+class QScreen;
+
 /// QSurfaceFormat::setDefaultFormat with an 8-bit alpha buffer. Must run before
 /// the first window or the pin windows come back with a black rectangle where
 /// the transparent margin should be.
@@ -107,6 +109,17 @@ QString pinScreenGrabInfo();
 /// order that is a debugging aid, not a contract.
 QString pinTopLevels();
 
+/// The rect of the first visible `#32770` dialog *this process* owns, as
+/// `x,y,w,h` in device pixels - the same walk `pinPushDialogButton` grades, so the
+/// window the linkage hides pins behind is the window the click leg presses.
+///
+/// Empty is the honest answer to three different questions and the caller must not
+/// guess between them: this Qt has not created the native window yet (measured at
+/// roughly 400 ms after it marks the dialog visible), there is no dialog of ours on
+/// the screen, or `GetWindowRect` failed. §5.5.11 步骤 3 reads a miss as "no rect",
+/// which is its conservative arm - hide what is on screen - rather than as zero.
+QString pinDialogRect();
+
 /// Click the *default button* of the native file dialog this process is showing,
 /// and report what was clicked. §10 第 38 项 ① is the reason: until now the gauge
 /// called `accept()` on the dialog, which proves Qt can complete a dialog but not
@@ -126,6 +139,14 @@ QString pinWindowReport();
 
 /// Quit the event loop after ms, so a probe run cannot hang a CI job.
 void pinQuitAfter(std::int32_t ms);
+
+/// How many screen signals the §8.5 watch is connected to, live: `watchScreens()`
+/// counts the pair it made for every screen present when it was armed plus the two
+/// that watch the set itself, and a screen that arrives or leaves moves it again.
+/// Zero means no watch was ever installed - the answer a run that never reached
+/// `main.qml` gives, and the number a probe can read back to tell "the wiring is
+/// there" from "the wiring fired".
+std::int32_t pinScreenWatchConnections();
 
 /// QGuiApplication::setQuitOnLastWindowClosed. A resident session has no window of
 /// its own - §5.1's "无主窗口，一个托盘图标" root is an invisible `Item` - so the
@@ -155,6 +176,30 @@ public:
 
     /// The same field dump as pinWindowReport(), for one window.
     Q_INVOKABLE QString describe(QQuickWindow *window);
+
+    /// §8.5's watch. Connects the two application-level signals that say a screen
+    /// came or went, then the per-screen signals of every screen Qt already knows
+    /// about, and returns how many connections that took. Repeated calls make no
+    /// more of them and answer 0: the watch is one per process, and a second set of
+    /// connections would mean one screen change refitting the pins twice.
+    ///
+    /// Only the signals that move the valid area are on the list, because a
+    /// connection here is an emission and an emission is a reload of every pin
+    /// window. Qt also reports physical dpi, orientation and refresh rate changing;
+    /// none of them moves a pixel of a pin, and `--probe` cannot tell a watch that
+    /// fired from one that only heard something irrelevant.
+    Q_INVOKABLE std::int32_t watchScreens();
+
+signals:
+    /// Something that moves the valid area changed: resolution, scaling, or the
+    /// screen set itself. One signal for all of them because the answer is the same
+    /// every time - ask Rust to refit, then re-read the geometry.
+    void screensChanged();
+
+private:
+    int connectOneScreen(QScreen *screen);
+
+    bool m_watching = false;
 };
 
 class PinImageProvider : public QQuickImageProvider

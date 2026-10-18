@@ -73,6 +73,34 @@ pub enum Theme {
     Dark,
 }
 
+/// §5.19.1 跟随系统主题: `System` is a question to the machine, not a third look.
+///
+/// The expansion lives here rather than at the call site because the machine's answer
+/// can only be read at runtime (one registry value, `apps_use_light_theme` on the
+/// platform side) while the three-way fork has to be gradable in `cargo test` - the
+/// same split as the glyph rasterizer's: core decides, the platform reads.
+///
+/// `system_light` is that answer: `Some(true)` = the machine is on light, `Some(false)` =
+/// dark, `None` = it did not say (value absent, key absent, read failed). `None` lands on
+/// `Light` because light is what Windows itself falls back to when that value is missing:
+/// agreeing with the machine's own default is checkable by anyone, guessing dark would be
+/// wrong in a direction nothing can re-check.
+///
+/// §5.19.2 手动主题 wins over the machine by construction - `Light` and `Dark` ignore the
+/// answer entirely. No arm returns `System`, which is the point: everything downstream of
+/// this function has a drawable result.
+pub const fn resolve_theme(requested: Theme, system_light: Option<bool>) -> Theme {
+    match requested {
+        Theme::Light => Theme::Light,
+        Theme::Dark => Theme::Dark,
+        Theme::System => match system_light {
+            Some(true) => Theme::Light,
+            Some(false) => Theme::Dark,
+            None => Theme::Light,
+        },
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CaptureMode {
@@ -333,13 +361,42 @@ pub struct Output {
     pub collision: Collision,
     /// §5.5.6 rounded corners; 0 off.
     pub corner_radius: u32,
-    /// §5.5.7 drop shadow; 0 off.
+    /// §5.5.7 drop shadow; 0 off. The shadow's own margin in physical pixels - the
+    /// export grows by this much on every side, which is where the fade lives.
     pub shadow_size: u32,
+    /// §5.5.6 规则 ("圆角外部区域应透明，或按配置填充背景色") 的那枚"按配置"。
+    ///
+    /// Empty is 透明, the section's first reading and the shipped one; anything
+    /// [`crate::colors::parse`] reads fills the four corners instead. It is a colour
+    /// *string* rather than an enum because that is how every other colour this file
+    /// carries is spelled (`appearance.accent`, `annotation.stroke_color`), and because
+    /// a fill has to be able to say "partly" — `#00000000` is a thing a user may want.
+    pub corner_fill: String,
+    /// §5.5.7 step 2 的边框宽度, physical pixels; 0 off. Kept separate from
+    /// `annotation.stroke_width`: that one is a pen's, this one is the export's.
+    pub border_width: u32,
+    /// §5.5.7 step 2 的边框颜色. Only read when [`Self::border_width`] is non-zero.
+    pub border_color: String,
+    /// §5.5.7 step 2 的阴影强度, percent of full black. The section asks for 强度 and
+    /// 边距 but no 阴影颜色, so the hue stays the one [`crate::imageops::Plate`] ships
+    /// with (black) and only its alpha moves — inventing a fifth key would be a setting
+    /// the requirement never asked for.
+    pub shadow_strength: u32,
     /// PRD 491（§5.5.4 快速保存）步骤 4 那一档：落盘之后自动把目标打开一次。
     ///
     /// 曾经是一枚没有读者的键（第 35 项 ⑨），P45 起由 `MaskState::quick_out` 读取；
     /// 成功通知上那一次点击不受它管，开关关着通知照样点得开。
     pub reveal_after_save: bool,
+    /// PRD §5.5.11 文件保存对话框联动步骤 1 的那一格开关。
+    ///
+    /// 关着 ⇒ 整段联动不发生（藏 0 枚、恢复 0 枚）；开着 ⇒ 出现保存对话框时把**可能遮挡
+    /// 它**的贴图临时藏起来，对话框关闭后放回。判断本体在 [`crate::dialog_link`]，这里只有
+    /// 用户那一格。`Default` 是 `false`：PRD 把这一条写成"用户在设置中开启"，不是一枚默认行为。
+    ///
+    /// 本节号是对着 PRD 的目录数的（575 行那一节），因此它与下面两枚邻居**不同源**：
+    /// `share_targets` 标的 §5.5.11、`send_to_apps` 标的 §5.5.12 都少了一格，真号是 §5.5.9 /
+    /// §5.5.10 —— 全线错号那一笔账是计划第 175 项，至今 52 处产品码未订正，本轮不顺手改。
+    pub hide_pins_on_dialog: bool,
     /// §5.5.11 share targets shown in the toolbar.
     pub share_targets: Vec<String>,
     /// §5.5.12 "send to app" entries: `name|executable`.
@@ -361,7 +418,12 @@ impl Default for Output {
             collision: Collision::Increment,
             corner_radius: 0,
             shadow_size: 0,
+            corner_fill: String::new(),
+            border_width: 0,
+            border_color: "#000000".into(),
+            shadow_strength: 50,
             reveal_after_save: false,
+            hide_pins_on_dialog: false,
             share_targets: Vec::new(),
             send_to_apps: Vec::new(),
             reuse_last_file: false,
@@ -478,6 +540,14 @@ impl Default for Appearance {
 #[serde(default)]
 pub struct History {
     pub enabled: bool,
+    /// §5.14.1 第二条"用户可开启『保存所有截图记录』，包括被取消的截图"那一枚开关。
+    ///
+    /// 默认 `false` 是按 PRD 的字面来的：它写的是"可开启"，不是"默认开启" —— 一次没要
+    /// 结果的 Esc 就往盘上长一张图，是替用户做了他要不要还没说过的决定。它也不与
+    /// [`Self::enabled`] 合并：`enabled` 管的是"这次截图记不记"，这一枚管的是"没做成
+    /// 的那次记不记"，两个问题各有自己的分岔（Esc 那一头的读者是
+    /// `qt_bridge::mask::esc_owes_row`，确认那一头不看这一枚）。
+    pub save_all: bool,
     /// §5.14.4 the three retention conditions; 0 disables that one.
     pub max_items: u32,
     pub max_age_days: u32,
@@ -494,6 +564,7 @@ impl Default for History {
     fn default() -> Self {
         Self {
             enabled: true,
+            save_all: false,
             max_items: 1000,
             max_age_days: 90,
             max_size_mb: 4096,
@@ -892,6 +963,20 @@ impl Config {
         );
         clamp(
             &mut w,
+            "output.border_width",
+            &mut self.output.border_width,
+            0,
+            64,
+        );
+        clamp(
+            &mut w,
+            "output.shadow_strength",
+            &mut self.output.shadow_strength,
+            0,
+            100,
+        );
+        clamp(
+            &mut w,
             "annotation.stroke_width",
             &mut self.annotation.stroke_width,
             1,
@@ -983,11 +1068,29 @@ impl Config {
                 &mut self.appearance.magnifier_background,
                 "#1F1F1F",
             ),
+            (
+                "output.border_color",
+                &mut self.output.border_color,
+                "#000000",
+            ),
         ] {
             if crate::colors::parse(value).is_none() {
                 w.push(format!("{key}: {value} is not a colour, using {fallback}"));
                 *value = fallback.to_string();
             }
+        }
+        // `output.corner_fill` is the one colour this file lets be blank: §5.5.6's rule
+        // reads 圆角外部应透明 **或** 按配置填充, so "" is a value and not a missing one.
+        // A non-empty one nobody can read still has to be said out loud and cleared — the
+        // alternative is a user who typed a fill, saw no warning, and gets transparency.
+        if !self.output.corner_fill.is_empty()
+            && crate::colors::parse(&self.output.corner_fill).is_none()
+        {
+            w.push(format!(
+                "output.corner_fill: {} is not a colour, the corners stay transparent",
+                self.output.corner_fill
+            ));
+            self.output.corner_fill.clear();
         }
         let palette = std::mem::take(&mut self.annotation.palette);
         for c in palette {
@@ -1501,6 +1604,19 @@ pub fn config_path(cfg: &Config) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(FILE_NAME))
 }
 
+/// The directory `config_path` and `history.db` both live under — the same
+/// resolution rule (empty = platform default under `%APPDATA%`), without the
+/// trailing filename. P75: this is what `--selftest --history` hands to
+/// `history_open_in`, so the probe and the config file always share a home.
+pub fn data_dir(cfg: &Config) -> PathBuf {
+    if !cfg.advanced.data_dir.is_empty() {
+        return PathBuf::from(&cfg.advanced.data_dir);
+    }
+    directories::BaseDirs::new()
+        .map(|d| d.config_dir().join("ai-falconshot"))
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1833,6 +1949,60 @@ actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
         assert_eq!(empty.annotation.palette, default_palette());
     }
 
+    /// §5.5.6's "或按配置填充背景色" and §5.5.7 step 2's 边框颜色、宽度、阴影强度和边距
+    /// are read once, when the mask opens, and never argued with afterwards - so the
+    /// arguing has to happen here, in the one place that runs before the picture exists.
+    #[test]
+    fn decoration_keys_are_read_as_colours_and_clamped_as_numbers() {
+        let mut shipped = Config::default();
+        assert!(
+            shipped.validate().is_empty(),
+            "the shipped decoration needs no repair: {:?}",
+            shipped.validate()
+        );
+        assert!(shipped.output.corner_fill.is_empty());
+        assert_eq!(shipped.output.corner_radius, 0);
+        assert_eq!(shipped.output.shadow_size, 0);
+
+        // An unreadable fill is not the same defect as an unreadable accent: §5.5.6
+        // allows 透明, so "" is a value, and the only honest reading of a typo there is
+        // "the corner you asked for is gone". Cleared *and* said.
+        let mut c = Config::default();
+        c.output.corner_fill = "ivory".into();
+        c.output.border_color = "not-a-colour".into();
+        c.output.border_width = 999;
+        c.output.shadow_strength = 999;
+        let warnings = c.validate();
+        assert!(
+            c.output.corner_fill.is_empty(),
+            "{:?}",
+            c.output.corner_fill
+        );
+        assert_eq!(c.output.border_color, "#000000");
+        assert_eq!(c.output.border_width, 64);
+        assert_eq!(c.output.shadow_strength, 100);
+        for needle in [
+            "output.corner_fill",
+            "output.border_color",
+            "output.border_width",
+            "output.shadow_strength",
+        ] {
+            assert!(
+                warnings.iter().any(|w| w.contains(needle)),
+                "no warning for {needle}: {warnings:?}"
+            );
+        }
+
+        // A fill that reads is kept alpha and all, including an all-transparent one:
+        // `#00000000` is a corner the user asked for, not a parse failure.
+        let mut keep = Config::default();
+        keep.output.corner_fill = "#FFFFFF80".into();
+        keep.output.border_color = "#112233FF".into();
+        assert!(keep.validate().is_empty(), "{:?}", keep.validate());
+        assert_eq!(keep.output.corner_fill, "#FFFFFF80");
+        assert_eq!(keep.output.border_color, "#112233FF");
+    }
+
     #[test]
     fn save_rewrites_values_and_keeps_comments() {
         let dir = tempfile::tempdir().unwrap();
@@ -2003,5 +2173,39 @@ actions = []
         assert_eq!(unknown_token("%Q"), Some('Q'));
         assert_eq!(unknown_token("%"), Some('%'));
         assert_eq!(unknown_token("no tokens"), None);
+    }
+
+    /// §5.19.1's three arms against §5.19.2's override, in one grid: only `System` asks the
+    /// machine, and a silent machine must not turn into a third look.
+    #[test]
+    fn system_expands_while_manual_theme_ignores_the_machine() {
+        use Theme::{Dark, Light, System};
+        assert_eq!(resolve_theme(System, Some(true)), Light);
+        assert_eq!(resolve_theme(System, Some(false)), Dark);
+        assert_eq!(resolve_theme(System, None), Light);
+        assert_eq!(resolve_theme(Light, Some(true)), Light);
+        assert_eq!(resolve_theme(Light, Some(false)), Light);
+        assert_eq!(resolve_theme(Light, None), Light);
+        assert_eq!(resolve_theme(Dark, Some(true)), Dark);
+        assert_eq!(resolve_theme(Dark, Some(false)), Dark);
+        assert_eq!(resolve_theme(Dark, None), Dark);
+    }
+
+    /// The invariant everything downstream leans on: the answer to "which look is this" is
+    /// always drawable. A machine that says nothing is not allowed to leak `System` past
+    /// this function, because every consumer of the return value has to paint something.
+    #[test]
+    fn the_resolver_never_hands_system_back() {
+        for requested in [Theme::System, Theme::Light, Theme::Dark] {
+            for system_light in [Some(true), Some(false), None] {
+                let got = resolve_theme(requested, system_light);
+                assert_ne!(
+                    got,
+                    Theme::System,
+                    "{requested:?} + {system_light:?} -> {got:?}"
+                );
+                assert!(matches!(got, Theme::Light | Theme::Dark));
+            }
+        }
     }
 }

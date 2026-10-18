@@ -44,6 +44,18 @@ Rectangle {
     /// default, so the row says what the pen actually is the first time it appears.
     readonly property var font_sizes: [12, 18, 28]
 
+    /// 「发送到」与「分享」那两行的模型。节号按需求文档现读：§5.5.10 发送到其他应用、
+    /// §5.5.9 原生分享 —— 而本仓库产品码与计划档里惯用的 §5.5.11 / §5.5.12 那一对与文档
+    /// 不同码（那一笔错号是结转中的账，本轮不改邻处，只保证新落的这一行不再添一枚错的）。
+    /// 名字一律由 Rust 现读
+    /// (`sendToMenuNames()` / `shareMenuNames()`)。空集合返回空串，而 `"".split("|")` 在 JS
+    /// 里数出**一段空串**而不是零段（`mask_view.rs` 里那句注释钉的就是这一格），所以先滤零长段：
+    /// 空配置 = 零枚芯片，不是一枚空芯片。两枚都随本面板的创建求值一次，与遮罩同生同灭。
+    readonly property var send_to_menu: bar.view.sendToMenuNames().split("|")
+                                                      .filter(function (s) { return s.length > 0 })
+    readonly property var share_menu: bar.view.shareMenuNames().split("|")
+                                                  .filter(function (s) { return s.length > 0 })
+
     /// Whether the last thing that left the program - 复制 or 保存 - got through. Kept
     /// for one thing only: the colour of the sentence Rust wrote beside it. It is this
     /// panel's own answer to the call this panel made, not a second copy of a Rust fact,
@@ -122,7 +134,165 @@ Rectangle {
     // already run - it has to, because the freeze happens before any window exists - so a
     // session that asked for the leg has an answer here, and every other session gets the
     // one field that turns the leg's timer off.
-    Component.onCompleted: bar.gauge = bar.session.maskGaugePlan().split("|")
+    //
+    // `historyGauge` is the same shape from a different door (`--autosave`, §10 第 99 项) and
+    // it has to stay a separate field: the two plans report to two different sinks, and one
+    // toolbar answering two gauges with one plan is how a reading ends up booked to the door
+    // that never asked for it.
+    property var historyGauge: []
+
+    Component.onCompleted: {
+        bar.gauge = bar.session.maskGaugePlan().split("|")
+        bar.historyGauge = bar.session.historyGaugePlan().split("|")
+        bar.readHistory()
+        bar.dropHistory()
+        bar.restoreHistory()
+        bar.batchHistory()
+    }
+
+    /// §5.14.2 step 1「打开历史记录」的第一条**界面**腿，P98 起：这一格自己问一次清单，
+    /// 再拿档那一条腿种下的那一行回放一次。两件事都只在这枚档说"要量历史"时跑
+    /// （`historyGaugePlan()` 在产品会话和另外六道门里都是空串，而空串 `split` 出来是一段空的
+    /// `[0]` 而不是一段没有 ⇒ 判的是那一段等不等 `"hist"`，不是数组长不长）。
+    ///
+    /// 报回去的是**段数**和第一段那句话，不是整份清单：`historyGaugeReport` 那一条通道是
+    /// `key|value` 一行一条，而清单自己也是 `|` 分隔的，两份 `|` 混在一行里数出来的段就既不是
+    /// 清单的也不是报告的了。
+    function readHistory() {
+        if (bar.historyGauge[0] !== "hist") {
+            return
+        }
+        const limit = Number(bar.historyGauge[1]) || 8
+        const row = Number(bar.historyGauge[2])
+        if (!(row > 0)) {
+            return
+        }
+        const said = bar.session.historyRows(limit)
+        const seg = said === "" ? [] : said.split("|")
+        bar.session.historyGaugeReport("rows|" + seg.length + "|" + seg[0])
+        // 屏幕那句话从这里走：`historyReplay` 的答法就是 `status`，所以这一格递回去的是产品
+        // 当场说的那一句，而不是工具条自己复述一遍。
+        bar.session.historyGaugeReport("replay|" + bar.session.historyReplay(row))
+    }
+
+    /// §5.14.4 的第一条**界面**腿，P101 起：把「没点头的清空 → 锁一行 → 删这一行」三条产品桥
+    /// 各走一次。它们自 P99/P100 建起来之后，读它们的一直是量具自己与 Rust 单测，`qml/` 里 0 处。
+    ///
+    /// 点名的是计划**第四段**那一枚行号——档在 `arm()` 里替这一条腿专门种下的那一行，不是第三段
+    /// 那一枚：那一枚是上面清单与回放那两格的前置，界面把它锁掉或删掉，量具读回来的就成了
+    /// 「自己的前置被自己判的那条腿改过」，那两格就此不再说话。
+    ///
+    /// 顺序是定的，而锁与删落在同一行上也是故意的：`false` 那一次递的是规则 1 的二次确认没点头
+    /// （产品那一头连库都不打开），接着把这一行锁上，再按名字删掉它 —— §5.14.4 那两半相反的口径
+    /// 「清空不许碰锁定项」与「手动删除点名时锁定项也在点名里」自此在同一条界面腿上各走了一次。
+    ///
+    /// 三条报回去的都是产品当场说的那句话，不是工具条自己的复述（同 `replay|` 那条的理由）。
+    function dropHistory() {
+        if (bar.historyGauge[0] !== "hist") {
+            return
+        }
+        const row = Number(bar.historyGauge[3])
+        if (!(row > 0)) {
+            return
+        }
+        bar.session.historyGaugeReport("clearunconfirmed|" + bar.session.historyClear(false))
+        bar.session.historyGaugeReport("lock|" + bar.session.historyLock(row, true))
+        bar.session.historyGaugeReport("delete|" + bar.session.historyDelete(String(row)))
+    }
+
+    /// §5.14.3 step 4「重新进入原选区」的第一条**界面**腿，P103 起：把遮罩的选区交出去一次、
+    /// 再收回原位一次。`restore_history_selection` 自 P102 建起来之后，读它的一直是量具自己与
+    /// Rust 单测，`qml/` 里 0 处 —— 而 §5.14.3 那句话对面本来就是屏幕上那个框。
+    ///
+    /// 点名的是计划**第五、第六段**那两枚行号，都是档在 `arm()` 里替这一条腿专门种下的：第三段
+    /// 那一枚是上面清单与回放两格的前置，第四段那一枚已经被 `dropHistory()` 删掉了（删掉的行恢复
+    /// 不回来，那条腿只剩"读不到"一臂可走，什么也证不了）。
+    ///
+    /// 顺序是定的，而第二次回到**原位**也是定的：第六段那一行记的矩形就是 `arm()` 读到的那只框，
+    /// 所以两次恢复加起来，遮罩此刻的选区必须和这一格开跑之前一字不差。这不是收尾好看的问题——
+    /// `Component.onCompleted` 跑在 `engine.load()` 里，也就是比本档所有 `measure()` 的读数都早，
+    /// 这条腿要是把框改了就再也改不回来，别的格会集体答非所问。
+    ///
+    /// 每一段报回去的是**两句**：产品当场说的话（同 `replay|` 那一条的理由，工具条不复述），加上
+    /// 那一刻 `maskHole()` 读回来的框。只要前一句的话，量具就只能信产品的自称；后一句才是遮罩
+    /// 真拿着的东西，选区到底动没动，判的是这一枚。
+    function restoreHistory() {
+        if (bar.historyGauge[0] !== "hist") {
+            return
+        }
+        const pick = Number(bar.historyGauge[4])
+        const back = Number(bar.historyGauge[5])
+        if (!(pick > 0) || !(back > 0)) {
+            return
+        }
+        bar.session.historyGaugeReport(
+            "restorepick|" + bar.session.historyRestore(pick) + "|" + bar.session.maskHole())
+        bar.session.historyGaugeReport(
+            "restoreback|" + bar.session.historyRestore(back) + "|" + bar.session.maskHole())
+        // P113：上面那两段是**代码直接调用** `historyRestore`；这两段起的是 `chord()`，也就是
+        // 一次真按键在 Qt 那里被翻成 (key, modifiers) 之后走的同一个函数，递的正是
+        // `Ctrl+Up` / `Ctrl+Down` 那两个数值。差别就是这一格唯一新东西：直接按桥只能证明桥通，
+        // 从 `chord()` 走才能证明**这枚按键会被认领、并且派发到那一档**。合成按键本轮仍不做
+        // （第 46 项 ② 那句理由一字未改：注入的按键会落进当时有焦点的应用，而跑级时焦点在谁那里
+        // 产品说不出）。锚点因此不是工具条给的 —— 它由 Rust 从遮罩自己读，工具条连行号也不递。
+        //
+        // 每段报回三样：`chord()` 的返回值（这枚按键认没认领）、屏幕上此刻那句话
+        // （`session.status` 原文，工具条不复述，同 `replay|` 那条理由）、以及那一刻的框。
+        // 顺序也是判据的一部分：先翻回去、再翻回来，两次之后遮罩的选区必须仍是上面那一段留下的
+        // 那一枚 —— 本档其余各格的前置同 P103 那两段的理由，一次也没被这条腿改过。
+        const upActed = bar.chordHost
+            ? bar.chordHost.chord(Qt.Key_Up, Qt.ControlModifier)
+            : false
+        bar.session.historyGaugeReport(
+            "flipup|" + String(upActed) + "|" + bar.session.status + "|" + bar.session.maskHole())
+        const downActed = bar.chordHost
+            ? bar.chordHost.chord(Qt.Key_Down, Qt.ControlModifier)
+            : false
+        bar.session.historyGaugeReport(
+            "flipdown|" + String(downActed) + "|" + bar.session.status
+            + "|" + bar.session.maskHole())
+        // P114：上面四条腿把这一场带到了历史里某一行的原选区上，而这一条问的是**那一行自己的**
+        // 左右 —— `historyNeighborsAt` 自 P112 建起来之后，`qml/` 里 0 处读者，判它的一直是
+        // Rust 单测与启动 banner（那一枚拿的是库里最新那一行，不是屏幕上这一行）。
+        //
+        // 行号从 `session.historyAnchor()` 取，工具条一个号也不自己编：它与上面两次翻页用的是
+        // 同一枚锚点（Rust 从遮罩读），所以这一句问的必然是"此刻这只框所在的那一行"。这一格是
+        // 这条腿唯一新东西 —— 桥收 id，而 id 的来源第一次由产品当场答，不由界面回忆。
+        //
+        // 报回两段：产品那句话原文（同前面每一段的理由，工具条不复述），加上读完之后那一刻的框。
+        // 后一段是本档唯一能给「这一枚读侧是不是纯读」的证人：它必须与上面 `flipdown` 那一段
+        // 留下的那一枚一字不差，读邻居读动了选区就是这一腿自己撒的谎。
+        const anchorRow = bar.session.historyAnchor()
+        bar.session.historyGaugeReport(
+            "neighbors|" + bar.session.historyNeighborsAt(anchorRow) + "|"
+            + bar.session.maskHole())
+    }
+
+    /// §5.14.4 步骤 2 那句「选择单条或多条记录删除」里的**多条**那一半，P115 起才有第一条界面腿：
+    /// 上面 `dropHistory()` 让界面删过**一行**，而产品那一头三处本来就收得下一串 ——
+    /// `Session::history_delete` 的 `split('|')`、`MaskState::delete_history` 的 `&[i64]`、
+    /// `History::delete` 的 `&[i64]`。一次递两枚行号过去，读到的才是「多条」；递一枚过去，
+    /// 「多条」与「单条」在盘上长得一模一样，而工具条自己删两次不算那一问的对面。
+    ///
+    /// 点名的是计划**第七、第八段**那两枚行号，都是档在 `arm()` 里专门替这一条腿种下的：第三段
+    /// 那一枚是清单与回放两格的前置，第四段那一枚已经被 `dropHistory()` 删掉了，第五、六段那两枚
+    /// 是恢复、翻页与邻居三格的行号。界面碰掉别人的行号，其余各格读回来的就成了「前置被自己判的
+    /// 那条腿改过」。
+    ///
+    /// 报回的是产品当场说的那一句原文（同前面每一段的理由，工具条不复述）。这条腿挂在这条链的
+    /// **末尾**：它一执行就把两行收走，放在任何一格之前都会让那一格读不到自己的前置。
+    function batchHistory() {
+        if (bar.historyGauge[0] !== "hist") {
+            return
+        }
+        const first = Number(bar.historyGauge[6])
+        const second = Number(bar.historyGauge[7])
+        if (!(first > 0) || !(second > 0)) {
+            return
+        }
+        bar.session.historyGaugeReport(
+            "deletebatch|" + bar.session.historyDelete(first + "|" + second))
+    }
 
     function commit() {
         if (view.commitHole()) {
@@ -857,6 +1027,58 @@ Rectangle {
             }
         }
 
+        // 那两行菜单的名字，P122 起第一次走到屏幕上：`sendToMenuNames()` 与 `shareMenuNames()`
+        // 自 P91/P92 建起，`qml/` 里 0 处读者，判它们的一直是 Rust 单测与启动 banner（那两枚读的是
+        // 库里那份解析结果，不是此刻这一行）。模型是 `[output] send_to_apps` / `share_targets`
+        // 校验过的那一段，第 i 枚芯片只能是第 i 个目标。
+        //
+        // 芯片是 Text 而不是 Cell：派发那一腿还欠着（`main.rs` 的那句注释钉的就是这一件事），而本档
+        // 的 Caption 注释钉着「一枚点不动的按钮就是在邀请人点它」。所以这一行只让「有哪些目标」先在
+        // 屏幕上有出处，点击要等 Session/MaskView 上真长出 dispatch 的 invokable。
+        //
+        // 两枚名单都空时整行不占高度（与橡皮、字号那两行同一口径：visible 与 height 成对写）。
+        Row {
+            spacing: 6
+            visible: bar.send_to_menu.length > 0 || bar.share_menu.length > 0
+            height: visible ? implicitHeight : 0
+
+            Caption {
+                label: "发送到"
+            }
+
+            Repeater {
+                model: bar.send_to_menu
+
+                delegate: Text {
+                    required property var modelData
+
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: modelData
+                    font.pixelSize: 12
+                    color: "#f2f2f2"
+                }
+            }
+
+            Item { width: 8; height: 1 }
+
+            Caption {
+                label: "分享"
+            }
+
+            Repeater {
+                model: bar.share_menu
+
+                delegate: Text {
+                    required property var modelData
+
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: modelData
+                    font.pixelSize: 12
+                    color: "#f2f2f2"
+                }
+            }
+        }
+
         // Edits, then the ways out. 确认选区 is the same thing Enter already
         // does; the crop-and-new-pin that §5.7 asks for after it is M4b, which is why
         // this says 选区 and not 完成.
@@ -964,6 +1186,7 @@ Rectangle {
             Rectangle {
                 id: notice
                 visible: bar.view.message.length > 0 || bar.view.pre_notice.length > 0
+                         || bar.view.history_last.length > 0
                 anchors.verticalCenter: parent.verticalCenter
                 color: "transparent"
                 radius: 3
@@ -1013,6 +1236,16 @@ Rectangle {
                         font.pixelSize: 12
                         color: "#8e8e96"
                     }
+
+                    // §5.14.1 的那一句同理：历史那一行记没记住、没记住是因为什么，是第三
+                    // 件事，既不该顶掉"已保存到 …"，也不该只留在 Rust 侧那枚没人读的字段里。
+                    Text {
+                        visible: bar.view.history_last.length > 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: bar.view.history_last
+                        font.pixelSize: 12
+                        color: "#8e8e96"
+                    }
                 }
 
                 MouseArea {
@@ -1040,6 +1273,12 @@ Rectangle {
         title: "另存为"
         fileMode: FileDialog.SaveFile
         nameFilters: ["PNG 图片 (*.png)", "JPG 图片 (*.jpg)", "BMP 图片 (*.bmp)"]
+        // §5.5.11 步骤 3/4 的事件源，与 `PinWindow.qml` 那一张同一条腿、同一个理由：绑
+        // `visible` 而不是 `accepted`/`rejected`，因为"这张对话框不在了"就是那一步的全部
+        // 条件，而谁藏、藏几层、什么时候放回一律由 Rust 那一头记账（`state::PinState::dialog_opened`），
+        // 这里只报"有一张开了 / 有一张关了"。遮罩这一侧也照样要报：贴图藏起来之后，
+        // 用户在这张框上能看见的就没有自己刚才那一屏。
+        onVisibleChanged: visible ? bar.session.dialogOpened() : bar.session.dialogClosed()
         onAccepted: {
             // `String()` rather than `.toLocalFile()`: this Qt hands JS a `QUrl` object
             // with no members at all - `toLocalFile`, `isFile` and `path` all measured

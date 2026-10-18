@@ -29,6 +29,7 @@ pub mod qobject {
         #[qproperty(i32, pos_y)]
         #[qproperty(i32, size_w)]
         #[qproperty(i32, size_h)]
+        #[qproperty(f64, dpr)]
         #[qproperty(i32, zoom)]
         #[qproperty(i32, opacity)]
         #[qproperty(bool, smooth)]
@@ -158,7 +159,6 @@ use falcon_core::pin::{PinId, THUMB_FIXED_DEFAULT};
 
 use crate::state;
 
-#[derive(Default)]
 pub struct PinViewRust {
     pin_id: i64,
     live: bool,
@@ -166,6 +166,7 @@ pub struct PinViewRust {
     pos_y: i32,
     size_w: i32,
     size_h: i32,
+    dpr: f64,
     zoom: i32,
     opacity: i32,
     smooth: bool,
@@ -173,6 +174,30 @@ pub struct PinViewRust {
     click_through: bool,
     revision: i32,
     image_key: QString,
+}
+
+/// `dpr` is the one field that must not start at zero: QML divides the physical
+/// size by it, so a window that has not been told its ratio yet would otherwise
+/// ask for an infinite width for the moment before the first `reload()`.
+impl Default for PinViewRust {
+    fn default() -> Self {
+        Self {
+            pin_id: 0,
+            live: false,
+            pos_x: 0,
+            pos_y: 0,
+            size_w: 0,
+            size_h: 0,
+            dpr: 1.0,
+            zoom: 0,
+            opacity: 0,
+            smooth: false,
+            topmost: false,
+            click_through: false,
+            revision: 0,
+            image_key: QString::default(),
+        }
+    }
 }
 
 impl qobject::PinView {
@@ -187,6 +212,7 @@ impl qobject::PinView {
         self.as_mut().set_pos_y(view.pos_y);
         self.as_mut().set_size_w(view.size_w);
         self.as_mut().set_size_h(view.size_h);
+        self.as_mut().set_dpr(view.dpr);
         self.as_mut().set_zoom(view.zoom);
         self.as_mut().set_opacity(view.opacity);
         self.as_mut().set_smooth(view.smooth);

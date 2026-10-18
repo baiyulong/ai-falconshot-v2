@@ -1,6 +1,6 @@
 //! §10 第 46 项 ③ 的那一扇门：把"揭示"这一步真的开一次窗。
 //!
-//! 前面五道门都写在 `mask::GAUGE_FLAGS` 里，而 `MaskState::gauge_run` 在
+//! 前面六道门都写在 `mask::GAUGE_FLAGS` 里，而 `MaskState::gauge_run` 在
 //! [`platform_windows::reveal::select`] 之前把那一步结构性地拒掉。于是
 //! `quick save reveal opened a window` 那一格自 P44 起**永远**是 Blocked：它说的话是真的，
 //! 但它一次也没有被证伪过——"开关开着会走几次"量得到次数，量不到那一次到底开不开了窗。

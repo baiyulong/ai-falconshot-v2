@@ -8,15 +8,21 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let shader_qrc = bake_shaders(Path::new(&out_dir));
 
-    // The recipe M0 proved, applied for real: one QML module holding the four
+    // The recipe M0 proved, applied for real: one QML module holding the five
     // documents, the three cxx-qt bridges, and the thin C++ shim nothing else can
     // be (QQuickImageProvider, QWindow::winId, the Win32 extended styles).
+    //
+    // A document that is not listed here is not in the binary: `main.qml` referencing
+    // it is a `module "dev.falconshot" does not have a type named "HintWindow"` at
+    // load time, which the engine reports through the message handler and `--probe`
+    // fails on - so the registration is checked by a run rather than by eye.
     CxxQtBuilder::new_qml_module(
         QmlModule::new("dev.falconshot")
             .qml_file("qml/main.qml")
             .qml_file("qml/PinWindow.qml")
             .qml_file("qml/CaptureMask.qml")
-            .qml_file("qml/AnnotationToolbar.qml"),
+            .qml_file("qml/AnnotationToolbar.qml")
+            .qml_file("qml/HintWindow.qml"),
     )
     .files(["src/session.rs", "src/pin_view.rs", "src/mask_view.rs"])
     .include_dir("cpp")

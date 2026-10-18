@@ -134,6 +134,7 @@ QString describeWindow(QWindow *window)
     out += QString::fromLatin1(" TRANSPARENT=%1").arg((exStyle & WS_EX_TRANSPARENT) ? 1 : 0);
     out += QString::fromLatin1(" TOPMOST=%1").arg((exStyle & WS_EX_TOPMOST) ? 1 : 0);
     out += QString::fromLatin1(" TOOLWINDOW=%1").arg((exStyle & WS_EX_TOOLWINDOW) ? 1 : 0);
+    out += QString::fromLatin1(" NOACTIVATE=%1").arg((exStyle & WS_EX_NOACTIVATE) ? 1 : 0);
     out += QString::fromLatin1(" APPWINDOW=%1").arg((exStyle & WS_EX_APPWINDOW) ? 1 : 0);
 #endif
     return out;
@@ -277,6 +278,12 @@ QRect screenGeometry(std::int32_t index)
     const QScreen *screen = screenAt(index);
     return screen ? screen->geometry() : QRect();
 }
+
+/// The watch's live connection count, and the number `--probe` reads back: armed-time
+/// pairs plus whatever a later plug or unplug moved. A counter rather than a bool
+/// because "the wiring is there" and "the wiring heard this machine's two screens" are
+/// different claims, and only the first one is answerable without unplugging a monitor.
+int g_screenWatchConnections = 0;
 } // namespace
 
 std::int32_t pinScreenCount()
@@ -356,6 +363,11 @@ void pinQuitAfter(std::int32_t ms)
 void pinSetQuitOnLastWindowClosed(bool on)
 {
     QGuiApplication::setQuitOnLastWindowClosed(on);
+}
+
+std::int32_t pinScreenWatchConnections()
+{
+    return g_screenWatchConnections;
 }
 
 // ---------------------------------------------------------------- grab
@@ -599,6 +611,37 @@ QString pinPushDialogButton()
 #endif
 }
 
+QString pinDialogRect()
+{
+#ifdef Q_OS_WIN
+    // The same walk, for the same reason: §5.5.11's hide decision and 第 38 项 ①'s
+    // click have to be taken about one window, not about two candidates that happen
+    // to agree. A foreign pid's dialog is counted and never measured - this process
+    // has no claim on the window another one is showing.
+    DialogWalk dialogs;
+    EnumWindows(walkDialog, reinterpret_cast<LPARAM>(&dialogs));
+    if (dialogs.first == nullptr) {
+        return QString();
+    }
+    RECT r{};
+    if (!GetWindowRect(dialogs.first, &r)) {
+        return QString();
+    }
+    const qint64 w = static_cast<qint64>(r.right) - r.left;
+    const qint64 h = static_cast<qint64>(r.bottom) - r.top;
+    // A dialog created but not yet sized is not a rectangle anything can be graded
+    // against: `covering` reads a zero-area box as covering nothing, which is the one
+    // answer that would let a window the user is looking at keep a pin on top of it.
+    // Miss for miss, the caller takes its 没有矩形 arm and hides what is on screen.
+    if (w <= 0 || h <= 0) {
+        return QString();
+    }
+    return QString::fromLatin1("%1,%2,%3,%4").arg(r.left).arg(r.top).arg(w).arg(h);
+#else
+    return QString();
+#endif
+}
+
 // ---------------------------------------------------------------- provider
 
 PinImageProvider::PinImageProvider()
@@ -684,4 +727,50 @@ void PinShim::applyStyle(QQuickWindow *window, bool topmost, bool clickThrough)
 QString PinShim::describe(QQuickWindow *window)
 {
     return describeWindow(window);
+}
+
+int PinShim::connectOneScreen(QScreen *screen)
+{
+    if (!screen) {
+        return 0;
+    }
+    // Signal relayed to signal. Qt lets the receiver take fewer arguments than the
+    // sender gives, so a resolution change and a scaling change both arrive as the
+    // same argument-free "go ask Rust" instead of as two handlers that would then
+    // have to agree with each other about what a screen is now.
+    int made = connect(screen, &QScreen::geometryChanged, this, &PinShim::screensChanged) ? 1 : 0;
+    made += connect(screen, &QScreen::logicalDotsPerInchChanged, this, &PinShim::screensChanged) ? 1 : 0;
+    return made;
+}
+
+std::int32_t PinShim::watchScreens()
+{
+    if (m_watching) {
+        return 0;
+    }
+    m_watching = true;
+    int made = 0;
+    const auto screens = QGuiApplication::screens();
+    for (QScreen *screen : screens) {
+        made += connectOneScreen(screen);
+    }
+    // The set itself. `screenAdded` takes a lambda rather than another relay because
+    // a monitor that just appeared has no per-screen connections yet - the watch has
+    // to own it from this moment on, or the *next* change on it goes unheard.
+    made += connect(qApp, &QGuiApplication::screenAdded, this, [this](QScreen *screen) {
+                  g_screenWatchConnections += connectOneScreen(screen);
+                  emit screensChanged();
+              }) ? 1
+                  : 0;
+    // Qt deletes the QScreen, and the two per-screen connections die with it, so the
+    // counter has to let them go too: a number that only ever rises would read as
+    // "wired" after the desktop had already shrunk under it. The 2 is the same pair
+    // `connectOneScreen()` makes, and every screen this can name was counted by it.
+    made += connect(qApp, &QGuiApplication::screenRemoved, this, [this](QScreen *) {
+                  g_screenWatchConnections -= 2;
+                  emit screensChanged();
+              }) ? 1
+                  : 0;
+    g_screenWatchConnections = made;
+    return made;
 }

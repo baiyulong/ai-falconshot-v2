@@ -85,12 +85,14 @@ pub const PUSH_TRIES_MAX: i32 = 10;
 
 /// The waits the leg actually spends, once its window exists: one for the exposure and
 /// the leg's first half, up to [`PUSH_TRIES_MAX`] for the native dialog's window, one for
-/// the tail that reads what `onAccepted` left behind, and one more after the leg says it
+/// the tail that reads what `onAccepted` left behind, one for the tail of the close -
+/// §10 第 55 项's census taken a loop turn after `closePin`, because a window Qt has not
+/// retired yet is not a window the screen lost - and one more after the leg says it
 /// is finished, which is the grace [`report`] arms so the run ends when the measurement
 /// does rather than when a guessed budget runs out. They are phases rather than one
 /// straight run because a door that is opened by a real click cannot be driven inside a
 /// single event-loop turn: the click has to land while the dialog's own loop is running.
-pub const LEG_WAITS: i32 = PUSH_TRIES_MAX + 3;
+pub const LEG_WAITS: i32 = PUSH_TRIES_MAX + 4;
 
 /// What the leg is allowed to spend *besides* its own schedule.
 ///
@@ -285,13 +287,18 @@ pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "dlg-push",
     "dlg-push-tries",
     "dlg-push-log",
+    "dlg-probe",
     "dlg-accepted",
     "accept",
     "dlg-filter",
     "dlg-after",
     "dlg-dismiss",
     "dlg-rejected",
+    "dlg-probe-gone",
     "f-jpg",
+    "close-before",
+    "close",
+    "close-after",
     "done",
 ];
 
@@ -387,6 +394,19 @@ struct Plan {
     bad: PinId,
     /// What the pin asked Qt to show, in device pixels, as the state machine saw it.
     rect: Option<PhysRect>,
+    /// §10 第 55 项: the pin this run *closes*, and the rect it held while it lived.
+    ///
+    /// It is planted between the two graded pins, so it is neither the bottom of the pile
+    /// nor the top, and closing it is the only shape of close that can disagree with the
+    /// QML slot bookkeeping: `PinSet` is bottom-first, so a close shifts every later pin
+    /// down one index, while an `Instantiator` over an `int` model can only retire its
+    /// *last* object. Closing the topmost pin moves nothing and therefore proves nothing.
+    ///
+    /// No sentinel and no "not armed" value: a gauge run always plants it (the plant
+    /// fails the run when it cannot) and the plan always carries its id, because id 0 is a
+    /// real pin - the first one the set hands out.
+    xid: PinId,
+    xrect: Option<PhysRect>,
     lines: Vec<String>,
 }
 
@@ -409,6 +429,8 @@ impl Plan {
             id: 0,
             bad: 0,
             rect: None,
+            xid: 0,
+            xrect: None,
             lines: Vec::new(),
         }
     }
@@ -432,7 +454,7 @@ fn with<R>(f: impl FnOnce(&mut Plan) -> R) -> R {
 ///
 /// The fields are in one order and QML reads them by index, so both are written out
 /// here: `目录 | qml.png | qml.jpg | never.png | 贴图 id | 不存在的 id | 延迟 ms |
-/// 对话框默认名 | 推开尝试上限`. The id that has no pin travels with the plan rather than
+/// 对话框默认名 | 推开尝试上限 | 要关掉的那枚 id`. The id that has no pin travels with the plan rather than
 /// being recomputed in QML, because `NEVER_OFFSET` is this file's business and a second
 /// copy of a number in the other language is a pair that drifts without either side
 /// looking wrong. The last two fields are the same argument for a string and for a
@@ -445,7 +467,7 @@ pub fn plan_line() -> String {
             return String::new();
         }
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             p.dir.display(),
             p.qml_png.display(),
             p.qml_jpg.display(),
@@ -454,7 +476,8 @@ pub fn plan_line() -> String {
             p.bad,
             LEG_DELAY_MS,
             DIALOG_STEM,
-            PUSH_TRIES_MAX
+            PUSH_TRIES_MAX,
+            p.xid
         )
     })
 }
@@ -473,13 +496,39 @@ pub fn plan_line() -> String {
 /// never arrives a finite run - P38's first passing-looking run is the counter-example,
 /// where a dialog's own modal loop outlived the floor and the tail survived on luck
 /// rather than on arithmetic.
+///
+/// The two census keys are this file's answer rather than QML's: the leg names the moment to
+/// look (§10 第 55 项), and the list of windows belongs to [`shim::top_levels`], which is a
+/// Rust-side call - a QML delegate has no door to it, and opening one for a reading that has
+/// no business leaving this file would be a second way to ask the same question. So what QML
+/// sent is kept as a prefix and the dump [`pin_census`] reads is appended after a `#`, in the
+/// same event-loop turn the leg wrote in. Which turn that is is the leg's claim; what is in it
+/// is this file's. The prefix is the delegate's own `pinId`: a leg that closes a pin retires a
+/// window, and the first run of this leg could not say afterwards *which* window had said the
+/// line before it, which is the difference between a defect in the door and one in the leg.
+///
+/// Each line is printed the moment it arrives, not only in the report at the end. The reason is
+/// the run this round had first: a leg that dies midway leaves no `done`, and the floor that is
+/// supposed to make such a run finite did not fire at all - P38's counter-example, quoted above,
+/// was exactly a native dialog's own loop outliving it. A run that cannot be trusted to reach its
+/// own read-back therefore has to speak while it goes, and the transcript lands in the same
+/// archive as the rows.
 pub fn report(line: &str) {
-    let done = matches!(line.split_once('|'), Some((key, _)) if key == "done");
+    let key = line.split_once('|').map(|(k, _)| k).unwrap_or(line);
+    let line = match key {
+        "close-before" | "close-after" => {
+            let tail = line.split_once('|').map(|(_, v)| v).unwrap_or("");
+            format!("{key}|{tail}#{}", shim::top_levels())
+        }
+        _ => line.to_string(),
+    };
+    let done = key == "done";
+    println!("[pin leg] {line}");
     with(|p| {
         if p.lines.is_empty() {
             state::stamp("pin leg");
         }
-        p.lines.push(line.to_string());
+        p.lines.push(line);
     });
     if done {
         state::stamp("pin done");
@@ -525,6 +574,38 @@ pub fn plant() -> Result<String, String> {
         view.size_h.max(1) as u32,
     );
 
+    // §10 第 55 项: the doomed pin, planted *between* the two the rows above already grade.
+    //
+    // It goes through `PinState::add` with its own point rather than through
+    // [`state::add_demo`], because `add_demo` parks its pin at the middle of the primary
+    // screen - which is exactly where the subject already sits, and [`pin_window`] chooses
+    // by overlap, so two windows sharing one rect would make every reading below
+    // ambiguous. The spot below the subject is clear of both neighbours on this desktop
+    // and of the file pin's offset to the right and down; a desktop too small for it says
+    // so through the two rects the rows print, the same way `plant_file_pin` lets a clamp
+    // speak.
+    //
+    // Being second of three is the whole point: the pin set is bottom-first, so closing it
+    // is the only shape of close that moves the *slot* of a pin that survives - and a slot
+    // is what [`qml/main.qml`]'s window bookkeeping used to be keyed by. The topmost pin
+    // would move nothing and prove nothing.
+    //
+    // The subject stays at index 0 through it, which is what its own window's `gaugeLeg`
+    // test reads. That was not enough: the first run of this leg had the windows made by an
+    // `Instantiator` over `model: app.session.count`, and P55 measured that a change to that
+    // `int` rebuilds *every* window, so the subject kept its index and lost its window
+    // mid-sentence (`.qoder/scratch/p55_pin_diag4.log`). The rows below are the census that
+    // says whether the two survivors are the same two windows they were before the close.
+    let xat = PhysPoint::new(rect.x, rect.y + rect.h as i32 + 16);
+    let xid = state::with(|s| s.add(state::demo_frame(DEMO_W, DEMO_H), xat))?;
+    let xview = state::with(|s| s.view_data(xid));
+    let xrect = PhysRect::new(
+        xview.pos_x,
+        xview.pos_y,
+        xview.size_w.max(1) as u32,
+        xview.size_h.max(1) as u32,
+    );
+
     // §10 第 43 项 ①: 存完再钉图, planted the way a user's flow reaches it - the
     // product's own write owner, then the product's own file-to-pin door, in that order,
     // with nothing of this file's in between. Both steps run *here* rather than in
@@ -549,10 +630,12 @@ pub fn plant() -> Result<String, String> {
         p.id = id;
         p.bad = bad;
         p.rect = Some(rect);
+        p.xid = xid;
+        p.xrect = Some(xrect);
         p.lines.clear();
     });
     Ok(format!(
-        "贴图 {id} 的窗在 {rect}，写进 {}，另有一个不存在的 id {bad}，真点击那一格交给 {} 的对话框自己取名，{} 先由 `save::write_to` 写成再交 `add_from_file` 钉成贴图 {fid}",
+        "贴图 {id} 的窗在 {rect}，写进 {}，另有一个不存在的 id {bad}，真点击那一格交给 {} 的对话框自己取名，{} 先由 `save::write_to` 写成再交 `add_from_file` 钉成贴图 {fid}，贴图 {xid} 在 {xrect} 是腿最后要关掉的那一枚",
         dir.display(),
         DIALOG_STEM,
         NAMES[6]
@@ -625,6 +708,45 @@ fn plant_file_pin(
 /// this file cannot account for.
 pub fn push_dialog_button() -> String {
     shim::push_dialog_button()
+}
+
+/// 一枚 [`crate::state::PinState::dialog_probe`] 行里的 `key=value` 字段。行是空格分隔的，
+/// 所以"这一枚键压根没来"读 `None`，与产品自己写的"没有一枚盖得住"（`-`）是两种答案——
+/// 把它们并成一格，门就没法说清是哪一种缺席（#238 那一族：空值与被判的缺席不同种）。
+pub(crate) fn probe_field(line: Option<&str>, key: &str) -> Option<String> {
+    let prefix = format!("{key}=");
+    line?
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix(&prefix))
+        .map(str::to_owned)
+}
+
+/// 行里那枚矩形，读成 `(x, y, w, h)`。`None` 有三种：这一格压根没有 `rect=`、产品写的是
+/// `-`、或那四枚数解析不出来。**零面积也算 `None`**，与 [`crate::session`] 的 `dialog_rect`
+/// 同一读法：门不该判一枚产品自己拒绝看见的窗。
+pub(crate) fn probe_rect(line: Option<&str>) -> Option<(i32, i32, u32, u32)> {
+    let said = probe_field(line, "rect")?;
+    let mut it = said.split(',');
+    let x = it.next()?.parse::<i32>().ok()?;
+    let y = it.next()?.parse::<i32>().ok()?;
+    let w = it.next()?.parse::<u32>().ok()?;
+    let h = it.next()?.parse::<u32>().ok()?;
+    if it.next().is_some() || w == 0 || h == 0 {
+        return None;
+    }
+    Some((x, y, w, h))
+}
+
+/// 一枚逗号名单读成 id 集合：`-`、空串、`None` 都是"一枚也没有"，而不是"有一枚叫 `-`"。
+pub(crate) fn probe_ids(said: Option<&str>) -> Vec<String> {
+    match said {
+        None | Some("") | Some("-") => Vec::new(),
+        Some(list) => list
+            .split(',')
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    }
 }
 
 /// A push report with its `desc=<n>` field removed, for the text of a judgement row.
@@ -847,6 +969,217 @@ fn within_slack(got: &PhysRect, want: &PhysRect) -> bool {
         && (got.h as i32 - want.h as i32).abs() <= RECT_SLACK
 }
 
+/// Every pin window this process was showing at one moment, read from the dump the leg
+/// reported rather than from the one taken after `app.exec()`.
+///
+/// The same two filters [`pin_window`] applies - visible, and not a mask's title - applied
+/// to a whole list instead of reduced to the best overlap. That reduction is what a
+/// single-window row needs and what a census must not do: §10 第 55 项's claim is about *how
+/// many* windows survived a close and *which* rects they sit on, and one rect cannot be
+/// within [`RECT_SLACK`] of two of the wants below (the pile is planted at least 16 px
+/// apart), so matching each want independently is the same as matching them distinctly.
+///
+/// The `#` is [`report`]'s doing and the part before it is the delegate's own `pinId`, so this
+/// reads the census out of the value rather than the whole line: the prefix carries who spoke,
+/// not what was on the screen.
+fn pin_census(raw: Option<&str>) -> Vec<crate::r13::Top> {
+    let mut levels = raw
+        .map(|s| s.split_once('#').map(|(_, dump)| dump).unwrap_or(s))
+        .map(parse_levels)
+        .unwrap_or_default();
+    levels.retain(|t| t.visible && !t.title.starts_with(TITLE));
+    levels
+}
+
+/// The window sitting on `want`, if the census has one.
+fn window_at<'a>(census: &'a [crate::r13::Top], want: &PhysRect) -> Option<&'a crate::r13::Top> {
+    census.iter().find(|t| within_slack(&t.phys, want))
+}
+
+/// Which delegate said a census line, in its own words. The prefix is whatever QML sent, so an
+/// older shape (no prefix at all) reads as unsigned rather than as a wrong id.
+fn close_speaker(raw: Option<&str>) -> &str {
+    raw.and_then(|s| s.split_once('#').map(|(sp, _)| sp))
+        .filter(|sp| !sp.is_empty())
+        .unwrap_or("未署名")
+}
+
+/// The five rows the close leg registers (§10 第 55 项 ①), in the order the leg reaches them.
+const CLOSE_ROWS: [&str; 5] = [
+    "pin pile before close",
+    "pin close",
+    "pin pile after close",
+    "pin closed pin has no window",
+    "pin survivors keep their windows",
+];
+
+/// 关掉非最上层的一枚, as five rows: what the pile looked like, what the close answered,
+/// what the pile looks like now, whether the closed pin's own rect is empty, and whether the
+/// two pictures still on the screen are the same two windows they were.
+///
+/// The pair that carries the claim is row 3 and row 4: closing a pin in the middle moves
+/// the *slot* of every pin after it while leaving those pins on the screen, and a bookkeeping
+/// keyed by the slot gets that pair wrong twice over - the window that was showing the
+/// topmost pin is retired (row 3 finds no window on its rect) and the window that was
+/// showing the closed pin survives, parked where the dead pin was (row 4). Closing the
+/// topmost pin instead would move nothing and pass both rows for free, which is why
+/// [`plant`] puts the doomed pin in the middle.
+///
+/// The two rows are also what the shape before them failed on, and not the way this
+/// paragraph first predicted: with the windows made by an `Instantiator` over
+/// `model: app.session.count`, the run never *reached* row 3 to find anything out. The
+/// delegate that said `close-before` was destroyed inside the `closePin` call it had just
+/// made - this Qt rebuilds every object of that `Instantiator` when the `int` changes - and
+/// the fresh window at index 0, reading `pinId 0` like the leg's own subject, started the
+/// whole leg again from `menu` (P55, `.qoder/scratch/p55_pin_diag4.log`). `main.qml` keys
+/// its windows by pin id now, which is the difference rows 1 and 3 read as two identical
+/// hwnds rather than as two new ones.
+///
+/// Row 1 is the witness that the pile was three, so that row 3's two is read as a close
+/// rather than as a leg that never planted. Row 2 is the product's own answer, kept out of
+/// the others' way: a close that said `0` would otherwise show up only as a pile that did
+/// not shrink, which is this file's reading and not the door's.
+///
+/// `Blocked` for a row whose census never arrived, and the rows below a missing one say so
+/// under their own names - the rule 第 42 项 ② set for the file-pin rows, reused here
+/// because a QML leg that stops mid-function stops silently.
+fn close_rows(
+    lines: &[String],
+    rect: Option<PhysRect>,
+    xrect: Option<PhysRect>,
+    frect: Option<PhysRect>,
+) -> Vec<(Check, &'static str, String)> {
+    let (Some(rect), Some(xrect), Some(frect)) = (rect, xrect, frect) else {
+        return CLOSE_ROWS
+            .iter()
+            .map(|name| {
+                (
+                    Check::Blocked,
+                    *name,
+                    "这一格没有问：计划里没有那三枚贴图的位置。".to_string(),
+                )
+            })
+            .collect();
+    };
+    let before = pin_census(said(lines, "close-before"));
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+
+    // Each of the three wants read by name, so a pile that came back short says *which*
+    // rect was missing rather than only that the count was.
+    let pile = |census: &[crate::r13::Top]| -> Vec<String> {
+        [rect, xrect, frect]
+            .iter()
+            .map(|want| {
+                window_at(census, want)
+                    .map(|t| format!("{want}=0x{:x}", t.hwnd))
+                    .unwrap_or_else(|| format!("{want}=没有窗"))
+            })
+            .collect()
+    };
+
+    out.push(match said(lines, "close-before") {
+        None => (
+            Check::Blocked,
+            CLOSE_ROWS[0],
+            "这一格没有问：腿没有报上关窗前的点名。".to_string(),
+        ),
+        Some(_) => {
+            let complete = [rect, xrect, frect]
+                .iter()
+                .all(|w| window_at(&before, w).is_some());
+            (
+                Check::from(before.len() == 3 && complete),
+                CLOSE_ROWS[0],
+                format!(
+                    "{} 扇可见顶层，那句由贴图 {} 报上；{}",
+                    before.len(),
+                    close_speaker(said(lines, "close-before")),
+                    pile(&before).join(" ")
+                ),
+            )
+        }
+    });
+
+    out.push(match said(lines, "close") {
+        Some(said) => (
+            Check::from(said == "1"),
+            CLOSE_ROWS[1],
+            format!("closePin 答 {said:?}（要求 1 枚）"),
+        ),
+        None => (
+            Check::Blocked,
+            CLOSE_ROWS[1],
+            "这一格没有问：腿没有报上 closePin 的回答。".to_string(),
+        ),
+    });
+
+    let Some(after_raw) = said(lines, "close-after") else {
+        let why = said(lines, "close")
+            .map(|s| format!("腿在报完 close({s:?}) 之后就停了"))
+            .unwrap_or_else(|| "腿没有报上关窗的那一句".to_string());
+        for name in &CLOSE_ROWS[2..] {
+            out.push((
+                Check::Blocked,
+                *name,
+                format!("这一格没有问：{why}，关窗后的点名没有读到。"),
+            ));
+        }
+        return out;
+    };
+
+    let after = pin_census(Some(after_raw));
+    out.push((
+        Check::from(
+            after.len() == 2 && [rect, frect].iter().all(|w| window_at(&after, w).is_some()),
+        ),
+        CLOSE_ROWS[2],
+        format!(
+            "{} 扇可见顶层；还活着的两格 {}",
+            after.len(),
+            pile(&after).join(" ")
+        ),
+    ));
+    out.push((
+        Check::from(window_at(&after, &xrect).is_none()),
+        CLOSE_ROWS[3],
+        format!(
+            "关掉那枚的 {xrect} 上还有窗={}",
+            window_at(&after, &xrect).is_some()
+        ),
+    ));
+
+    // The two survivors by *handle*. Rows 3 and 4 ask which rects have a window, and a
+    // pile whose windows were all rebuilt underneath the close answers them exactly like a
+    // pile that kept them - two windows, the right two rects - so the half of 第 55 项 that
+    // reaches a user ("the pictures you did not close are still the ones you were looking
+    // at, not a redraw of them") is only sayable of the hwnds. P55 measured the rebuild this
+    // row is written against: `model: app.session.count` answered the close by destroying
+    // every window and making two new ones, and the leg died with the one that was speaking
+    // (`.qoder/scratch/p55_pin_diag4.log`).
+    let hwnd_of = |census: &[crate::r13::Top], want: &PhysRect| {
+        window_at(census, want)
+            .map(|t| format!("0x{:x}", t.hwnd))
+            .unwrap_or_else(|| "没有窗".to_string())
+    };
+    let kept: Vec<(bool, String)> = [rect, frect]
+        .iter()
+        .map(|want| {
+            let (then, now) = (hwnd_of(&before, want), hwnd_of(&after, want));
+            let same = then == now;
+            (same, format!("{want} {then} -> {now} 同一扇={same}"))
+        })
+        .collect();
+    out.push((
+        Check::from(kept.iter().all(|(same, _)| *same)),
+        CLOSE_ROWS[4],
+        kept.iter()
+            .map(|(_, line)| line.clone())
+            .collect::<Vec<_>>()
+            .join("；"),
+    ));
+    out
+}
+
 /// Per-channel distance still counted as the same colour, and the share of a window's
 /// opaque pixels that has to answer to it for the row to pass. Both numbers are R13's,
 /// whose matrix of four capture paths settled the tolerance at one rounding per channel
@@ -1032,21 +1365,46 @@ fn file_pin_rows(
                 centre.x, centre.y, t.hwnd
             ),
         ),
-        Some(there) => (
-            Check::from(close && there == t.hwnd),
-            "pin from file window",
-            format!(
-                "同一位置两条路读回 0x{there:x} vs Qt 0x{:x}，一致={}；顶层 {}x{}@{},{} 和要求的 {rect} 相差在 {RECT_SLACK} px 内={}（class={}）",
-                t.hwnd,
-                there == t.hwnd,
-                t.phys.w,
-                t.phys.h,
-                t.phys.x,
-                t.phys.y,
-                close,
-                t.class
-            ),
-        ),
+        Some(there) => {
+            // Who the shell puts there, named, because the two numbers disagreeing is
+            // the question and *which* window answered it is what tells a defect in this
+            // product's stacking apart from a session no click can reach. `--r13` has
+            // spelled the reading this way since P39 and [`crate::capture::is_lock`] is
+            // the one rule for it (§10 第 41 项 ④); a locked workstation covers the whole
+            // desktop with `LockApp`, so 这一格在本机本次问不了 - and per §10 第 41 项 ⑤
+            // that is this row's input, not a verdict over the round: the same run reads
+            // the pixels of the same window two rows below and passes.
+            let app = platform_windows::proc::pid_of_window(there)
+                .and_then(platform_windows::proc::process_name)
+                .unwrap_or_else(|| "未知进程".to_string());
+            let title = platform_windows::proc::window_title(there).unwrap_or_default();
+            let same = there == t.hwnd;
+            let check = match (same, crate::capture::is_lock(&app)) {
+                (true, _) => Check::from(close),
+                (false, true) => Check::Blocked,
+                (false, false) => Check::Fail,
+            };
+            (
+                check,
+                "pin from file window",
+                format!(
+                    "同一位置两条路读回 0x{there:x}（{app}「{title}」）vs Qt 0x{:x}，一致={}；顶层 {}x{}@{},{} 和要求的 {rect} 相差在 {RECT_SLACK} px 内={}（class={}）{}",
+                    t.hwnd,
+                    same,
+                    t.phys.w,
+                    t.phys.h,
+                    t.phys.x,
+                    t.phys.y,
+                    close,
+                    t.class,
+                    if check == Check::Blocked {
+                        "；会话已锁屏，桌面那一条路在本机本次问不了"
+                    } else {
+                        ""
+                    },
+                ),
+            )
+        }
     });
 
     // 3. The same window's pixels as *the window itself* paints them, against the file -
@@ -1225,6 +1583,9 @@ pub fn measure() -> (Check, String) {
             p.file_said.clone(),
         )
     });
+    // Read in its own call rather than lengthening the one above: that one is already at
+    // the arity a Rust tuple can be.
+    let (xid, xrect) = with(|p| (p.xid, p.xrect));
 
     // Every other row reads a value, so this one reads whether there is a value to
     // read: a document that failed to build, a delegate that never matched the plan,
@@ -1362,6 +1723,59 @@ pub fn measure() -> (Check, String) {
     rep.note(
         "push 每次尝试",
         format!("原始 {push:?}；每次 {:?}", said(&lines, "dlg-push-log")),
+    );
+
+    // §5.5.11 步骤 3 在这一格里第一次对面是**一扇真窗**：`dlg-probe` 取在按下之前那一手的
+    // 开头，而同一手随后就答出 `pushed=yes` —— 那一句要求本进程确有一扇 #32770、且它的
+    // IDOK 真被点了。所以这枚矩形不是从"等了三次终于有了"推出来的：它读的就是按下那一手。
+    //
+    // 两格各问一件事，不并成一格。第一格只问"读到了没有"（#176 自 P123 起欠的就是这一枚证人）；
+    // 第二格问"藏与放有没有在这扇窗上真走过"。开关关着时第二格答**问不了**而不是答通过：
+    // 出厂 `false` 那一臂是 §5.5.11 步骤 1 的用户决定，不是这一格的成就。
+    // 名字不叫 `rect`：这一层早已有一枚 `rect`（本趟那枚贴图自己的矩形，来自 `Plan`），而下面
+    // `close_rows` 读的就是它。同名 shadow 会把那三格的几何判据换成一枚对话框的矩形，类型不同
+    // 才被编译挡住 —— 挡住之前它是一枚会自己改判据的名字，所以这里从源头避开。
+    let probe = said(&lines, "dlg-probe");
+    let gone = said(&lines, "dlg-probe-gone");
+    let dlg_rect = probe_rect(probe);
+    let covers = probe_ids(probe_field(probe, "covering").as_deref());
+    let hidden = probe_ids(probe_field(probe, "hidden").as_deref());
+    let enabled = probe_field(probe, "enabled");
+    let layers = probe_field(probe, "layers");
+    rep.row(
+        "pin dialog rect read",
+        if asked != Ask::Pressed {
+            Check::Blocked
+        } else if dlg_rect.is_some() {
+            Check::Pass
+        } else {
+            Check::Fail
+        },
+        format!(
+            "按下之前现读 rect={:?}（要求四枚数、且面积非零）；probe 行 {probe:?}；press 答 {}；几何挑出 {:?} 而账上藏着 {:?}",
+            dlg_rect,
+            ask_said(asked),
+            covers,
+            hidden
+        ),
+    );
+    let gone_layers = probe_field(gone, "layers");
+    let gone_hidden = probe_ids(probe_field(gone, "hidden").as_deref());
+    let hid_one =
+        enabled.as_deref() == Some("1") && layers.as_deref() == Some("1") && !hidden.is_empty();
+    let gave_back = gone_layers.as_deref() == Some("0") && gone_hidden.is_empty();
+    rep.row(
+        "pin dialog hide and restore",
+        if enabled.as_deref() != Some("1") || probe.is_none() || gone.is_none() {
+            Check::Blocked
+        } else if hid_one && gave_back {
+            Check::Pass
+        } else {
+            Check::Fail
+        },
+        format!(
+            "开时 enabled={enabled:?} layers={layers:?} hidden={hidden:?}（要求 1、1、非空）；关后 layers={gone_layers:?} hidden={gone_hidden:?}（要求 0、空）；两行任一没读到、或那枚键关着 ⇒ 本格答\"问不了\"而不是答通过"
+        ),
     );
 
     // §10 第 41 项 ②: this door now reads its before-state the way the mask door has since
@@ -1661,6 +2075,10 @@ pub fn measure() -> (Check, String) {
         format!("{} 存在={}", never.display(), never.exists()),
     );
 
+    for (verdict, label, detail) in close_rows(&lines, rect, xrect, frect) {
+        rep.row(label, verdict, detail);
+    }
+
     // QML's voice, and the state machine's own list of complaints - both shared with
     // the mask gauge, because the shape of the silence is the same.
     crate::mask_check::qml_row(&mut rep);
@@ -1677,16 +2095,17 @@ pub fn measure() -> (Check, String) {
     // plan that should have produced them is the rest of the context.
     (
         verdict,
-        format!("{text}\npin plan: id={id} bad={bad} rect={want}"),
+        format!("{text}\npin plan: id={id} bad={bad} rect={want} close={xid}"),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ask, ask_check, ask_said, census_blames_earlier_phase, dialog_hygiene, file_pin_rows,
-        leg_order, qml_leg_keys, real_click, said, same_file, unasked_rows, Ask, Check, PhysRect,
-        FILE_PIN_ROWS, PIN_SCHEDULE,
+        ask, ask_check, ask_said, census_blames_earlier_phase, close_rows, dialog_hygiene,
+        file_pin_rows, leg_order, probe_field, probe_ids, probe_rect, qml_leg_keys, real_click,
+        said, same_file, unasked_rows, Ask, Check, PhysRect, CLOSE_ROWS, FILE_PIN_ROWS,
+        PIN_SCHEDULE,
     };
     use std::path::Path;
 
@@ -1940,6 +2359,122 @@ mod tests {
         assert!(unasked_rows(2, "下面没有格了").is_empty());
     }
 
+    /// §10 第 55 项 ①'s grading half, headless: the shapes the same binary can come back
+    /// in, told apart by *which* rects survive and by *which windows* they are.
+    ///
+    /// The dumps are written in `pinTopLevels`'s own field spelling because that string is all
+    /// the leg hands over - `close_rows` reads a census, not a fact about Qt. Three runs of
+    /// this mode on this desktop put the pile at these three rects, and both shapes below have
+    /// exactly two windows left, which is the reason a count is not the row: the fixed one has
+    /// the two live pins' rects, the broken one has one live rect and the dead pin's. The
+    /// third has the two right rects too and answers for them with two different handles, which
+    /// is the fourth row's question rather than the second's.
+    #[test]
+    fn a_middle_close_is_graded_by_which_rects_survive_not_how_many() {
+        let rect = PhysRect::new(608, 380, 320, 200);
+        let xrect = PhysRect::new(608, 596, 320, 200);
+        let frect = PhysRect::new(944, 596, 320, 200);
+        let win = |hwnd: u64, r: PhysRect| {
+            format!(
+                "hwnd=0x{hwnd:x} class=[PinWindow_QMLTYPE_17] phys={},{},{},{} visible=1 title=[]",
+                r.x, r.y, r.w, r.h
+            )
+        };
+        let before = [win(1, rect), win(2, xrect), win(3, frect)].join("\n");
+        let legs = |after: &str| {
+            vec![
+                format!("close-before|{before}"),
+                "close|1".to_string(),
+                format!("close-after|{after}"),
+            ]
+        };
+
+        let fixed = close_rows(
+            &legs(&[win(1, rect), win(3, frect)].join("\n")),
+            Some(rect),
+            Some(xrect),
+            Some(frect),
+        );
+        let names: Vec<&str> = fixed.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, CLOSE_ROWS.to_vec(), "{names:?}");
+        for (grade, name, detail) in &fixed {
+            assert_eq!(*grade, Check::Pass, "{name} 修好之后该绿：{detail}");
+        }
+
+        let broken = close_rows(
+            &legs(&[win(1, rect), win(2, xrect)].join("\n")),
+            Some(rect),
+            Some(xrect),
+            Some(frect),
+        );
+        assert_eq!(broken[0].0, Check::Pass, "点名那格两种跑法都该绿");
+        assert_eq!(broken[1].0, Check::Pass, "关掉的枚数两种跑法都一样");
+        assert_eq!(broken[2].0, Check::Fail, "最上面那枚没有窗了，该红");
+        assert_eq!(broken[3].0, Check::Fail, "关掉那枚还留着窗，该红");
+
+        // The third shape the same binary can come back in, and the one the two rect rows are
+        // blind to: the close leaves two windows, on the two right rects, and they are not the
+        // two windows that were there - which is what an `int` model did to this pile, rebuilding
+        // every object under a close that removed one (§10 第 55 项, P55). Row 4 is the only one
+        // that reads handles, so row 4 is the only one that goes red.
+        let rebuilt = close_rows(
+            &legs(&[win(7, rect), win(8, frect)].join("\n")),
+            Some(rect),
+            Some(xrect),
+            Some(frect),
+        );
+        assert_eq!(rebuilt[2].0, Check::Pass, "两格都还有窗，点名那格看不出差");
+        assert_eq!(
+            rebuilt[3].0,
+            Check::Pass,
+            "关掉那枚的位置也空着，那一格同样看不出差"
+        );
+        assert_eq!(
+            rebuilt[4].0,
+            Check::Fail,
+            "换过窗该由第五格报红：{:?}",
+            rebuilt[4]
+        );
+        assert!(rebuilt[4].2.contains("同一扇=false"), "{:?}", rebuilt[4]);
+
+        // The leg stopped after the close: the two rows under it keep their names and say
+        // they were never asked, which is 第 42 项 ②'s rule read against this leg too.
+        let stopped = close_rows(
+            &["close|1".to_string()],
+            Some(rect),
+            Some(xrect),
+            Some(frect),
+        );
+        assert_eq!(stopped[0].0, Check::Blocked, "{:?}", stopped[0]);
+        assert_eq!(stopped[2].0, Check::Blocked, "{:?}", stopped[2]);
+        assert_eq!(stopped[3].0, Check::Blocked, "{:?}", stopped[3]);
+        assert_eq!(stopped[4].0, Check::Blocked, "{:?}", stopped[4]);
+        assert!(stopped[2].2.contains("close(\"1\")"), "{:?}", stopped[2]);
+        // …and a census the leg did report but that was empty is a *reading*, not a stop:
+        // the two windows the close should have left are absent, so both rows go red.
+        let none_left = close_rows(&legs(""), Some(rect), Some(xrect), Some(frect));
+        assert_eq!(none_left[2].0, Check::Fail, "{:?}", none_left[2]);
+        assert_eq!(none_left[3].0, Check::Pass, "{:?}", none_left[3]);
+        // The signed shape is what `report` now writes: the delegate's own id sits before the
+        // `#`, so the census reads the same and the row says who said it. An unsigned line is
+        // read as unsigned rather than as an id of 0 - 0 is a pin id the set really hands out.
+        assert!(fixed[0].2.contains("未署名"), "{:?}", fixed[0]);
+        let signed = close_rows(
+            &[
+                format!("close-before|1#{before}"),
+                "close|1".to_string(),
+                format!("close-after|1#{}", [win(1, rect), win(3, frect)].join("\n")),
+            ],
+            Some(rect),
+            Some(xrect),
+            Some(frect),
+        );
+        for (grade, name, detail) in &signed {
+            assert_eq!(*grade, Check::Pass, "{name} 署了名不该改判：{detail}");
+        }
+        assert!(signed[0].2.contains("贴图 1"), "{:?}", signed[0]);
+    }
+
     /// §10 第 47 项 ④'s grading half, headless. Every string below is shaped by one of
     /// `pinPushDialogButton()`'s four returns, because the verdict column hands its three
     /// answers out by reading those strings and nothing else - so a shim that reworded itself
@@ -2053,5 +2588,83 @@ mod tests {
         // The dialog phase never ran, so there is no earlier phase to point at - the row that
         // counts has to keep the blame itself rather than hand it to a phase that did not exist.
         assert!(!census_blames_earlier_phase(left, opening, false));
+    }
+
+    /// 两枚新行读的是同一枚字符串，所以**读法**先于判据：`None`（这一格压根没来）与 `-`
+    /// （产品说它没有）必须分成两种答案，把它们并成一格，门就在替产品说它没说过的话。
+    ///
+    /// 三格反例都是真会来的形状，而不是稻草人：腿被别的腿提前中止（`None`）、联动关着的
+    /// 那一趟（`-`）、以及键名相近——日程里 `dlg-push` 正是 `dlg-push-tries` 的前缀，
+    /// 前缀匹配会把一枚键的读数记到另一枚名下。
+    #[test]
+    fn a_probe_field_separates_the_two_ways_a_key_can_be_missing() {
+        let line = "rect=45,35,300,200 covering=7 pins=2 enabled=1 layers=1 hidden=7";
+        assert_eq!(probe_field(Some(line), "covering").as_deref(), Some("7"));
+        assert_eq!(probe_field(Some(line), "layers").as_deref(), Some("1"));
+        assert_eq!(probe_field(Some(line), "hidden").as_deref(), Some("7"));
+
+        // 产品没有窗可读时自己写 `-`，这一格是来了并答"没有"。
+        let silent = "rect=- covering=- pins=2 enabled=0 layers=0 hidden=-";
+        assert_eq!(probe_field(Some(silent), "enabled").as_deref(), Some("0"));
+        assert_eq!(probe_field(Some(silent), "covering").as_deref(), Some("-"));
+
+        // 这一格压根没来：判据读 `None`，读不出 `-`。
+        assert_eq!(probe_field(None, "covering"), None);
+        // 整行不是它的那一行，同样 `None`——两件事都发生在"腿提前中止"那一趟里。
+        assert_eq!(probe_field(Some(""), "covering"), None);
+        assert_eq!(probe_field(Some("pushed=no dialogs=0"), "covering"), None);
+
+        // 前缀不算命中：`pin` 与 `pins`、`layer` 与 `layers` 各问各的。
+        assert_eq!(probe_field(Some(line), "pin"), None);
+        assert_eq!(probe_field(Some(line), "layer"), None);
+    }
+
+    /// 那枚矩形只有四枚数都成其为一次测量才算读到。**零面积也算没读到**，与
+    /// [`crate::session`] 的 `dialog_rect` 同一读法：那扇窗存在过而量不出尺寸时，门要说
+    /// "这趟没量到"，不能说"量到一枚 0×0 的窗"——同一事实两处口径，正是 #281 那一族。
+    #[test]
+    fn a_probe_rect_refuses_the_window_the_product_refused_to_see() {
+        let real = "rect=45,35,300,200 covering=- pins=2 enabled=0 layers=0 hidden=-";
+        assert_eq!(probe_rect(Some(real)), Some((45, 35, 300, 200)));
+        // 负坐标是真的：多屏桌面左上角那块就在原点之外。
+        let offscreen = "rect=-1280,-200,400,300 covering=3 pins=2 enabled=1 layers=1 hidden=3";
+        assert_eq!(probe_rect(Some(offscreen)), Some((-1280, -200, 400, 300)));
+
+        assert_eq!(probe_rect(None), None);
+        assert_eq!(
+            probe_rect(Some("rect=- covering=- pins=1 enabled=0 layers=0 hidden=-")),
+            None
+        );
+        assert_eq!(probe_rect(Some("covering=- pins=1")), None);
+
+        // 三枚与五枚都不是这一格的形状；把它们补成四枚，是把排版当成了测量。
+        assert_eq!(probe_rect(Some("rect=45,35,300 covering=-")), None);
+        assert_eq!(probe_rect(Some("rect=45,35,300,200,1 covering=-")), None);
+        // 不是数：宽为负、高为字母、段为空。
+        assert_eq!(probe_rect(Some("rect=45,35,-300,200 covering=-")), None);
+        assert_eq!(probe_rect(Some("rect=45,35,300,x covering=-")), None);
+        assert_eq!(probe_rect(Some("rect=45,,300,200 covering=-")), None);
+        // 零面积：产品自己拒绝交出这枚窗，门不许替它交。
+        assert_eq!(probe_rect(Some("rect=45,35,0,0 covering=7")), None);
+        assert_eq!(probe_rect(Some("rect=45,35,300,0 covering=7")), None);
+    }
+
+    /// 名单这一格与上面两格相反：`None`、空串与 `-` 都读成"一枚也没有"，因为这里没有两种
+    /// 缺席可分——门判的是**集合**，而集合为空只有一种说法。把 `-` 当成一枚 id 才会出的那
+    /// 种红（"隐藏了名为 `-` 的贴图"）比它的绿更贵。
+    #[test]
+    fn a_probe_list_reads_no_id_from_the_word_that_means_none() {
+        assert!(probe_ids(None).is_empty());
+        assert!(probe_ids(Some("")).is_empty());
+        assert!(probe_ids(Some("-")).is_empty());
+
+        assert_eq!(probe_ids(Some("7")), vec!["7".to_string()]);
+        assert_eq!(
+            probe_ids(Some("7,9")),
+            vec!["7".to_string(), "9".to_string()]
+        );
+        // 产品 `join(",")` 的名单里若混进空段，它不算一枚 id；一枚也没有也不算空。
+        assert_eq!(probe_ids(Some("7,")), vec!["7".to_string()]);
+        assert!(probe_ids(Some(",")).is_empty());
     }
 }

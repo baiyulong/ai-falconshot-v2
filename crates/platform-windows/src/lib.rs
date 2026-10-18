@@ -3,6 +3,8 @@
 #[cfg(windows)]
 pub mod clip;
 
+pub mod cursor;
+
 #[cfg(windows)]
 pub mod glyphs;
 
@@ -12,6 +14,7 @@ pub mod hotkey;
 pub mod print;
 pub mod proc;
 pub mod reveal;
+pub mod theme;
 pub mod win;
 
 /// The font here is DirectWrite's, and the MVP is Windows-only. Same arrangement as

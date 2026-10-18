@@ -174,6 +174,26 @@ pub fn foreground_window() -> Option<u64> {
     None
 }
 
+/// Whether `hwnd` is minimised, as the shell draws it.
+///
+/// A separate question from "does it have a rectangle": a minimised window keeps
+/// the bounds it had when it went down, so a size read says *something* while
+/// `IsIconic` says the thing that matters - there is nothing of it on the desktop
+/// to photograph (PRD §5.2.6 refuses a minimised window as an active-window target).
+pub fn is_minimized(hwnd: u64) -> bool {
+    #[cfg(windows)]
+    {
+        // SAFETY: the handle is read, never owned or freed, and the answer is a
+        // plain boolean the API returns directly.
+        unsafe { windows::Win32::UI::WindowsAndMessaging::IsIconic(to_hwnd(hwnd)).as_bool() }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+        false
+    }
+}
+
 /// `(executable name, full path)` of the app the user is in, or `None` when either
 /// half is unavailable.
 ///

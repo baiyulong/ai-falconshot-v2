@@ -53,12 +53,21 @@ impl WindowExtras for WinExtras {
         Vec::new()
     }
 
-    /// The system cursor as a small frame, for "capture with cursor".
+    /// PRD §5.4.3 - the system cursor as a small frame, for "capture with cursor".
     ///
-    /// Empty for the same reason as above: drawing nothing is honest, drawing the
-    /// wrong arrow is not.
-    fn cursor_image(&self, _: PhysPoint) -> Option<(falcon_core::frame::Frame, PhysPoint)> {
-        None
+    /// The leg is [`crate::cursor`]: `GetCursorInfo` for which pointer, `GetIconInfo` for
+    /// its size and hotspot, one `DrawIconEx` into a 32-bit DIB this process owns. It
+    /// reads no screen pixels, so unlike the freeze it costs nothing and cannot catch the
+    /// mask window in the picture.
+    ///
+    /// `None` here is **two** states and the caller cannot tell them apart: the desktop
+    /// was not showing a pointer (`CURSOR_SHOWING` clear - a hidden pointer is not
+    /// something the user saw, so it is not something the picture may claim), or the GDI
+    /// leg could not produce a bitmap. Both are reported as "no overlay to stamp", which
+    /// is why the door still has no witness for the key-on side.
+    fn cursor_image(&self, at: PhysPoint) -> Option<(falcon_core::frame::Frame, PhysPoint)> {
+        let r = crate::cursor::read(at).ok()?;
+        r.showing.then_some((r.frame, r.at))
     }
 
     /// `(executable name, full path)` of the process owning `hwnd`.

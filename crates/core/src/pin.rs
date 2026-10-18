@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::{AlphaBg, Pin as PinConfig};
 use crate::encode::{self, EncodeOptions, Format};
 use crate::frame::{Frame, FrameError};
-use crate::geometry::{self, PhysPoint, PhysRect, PhysSize};
+use crate::geometry::{self, PhysPoint, PhysRect, PhysSize, Scale};
 use crate::imageops;
 
 pub type PinId = u64;
@@ -282,25 +282,54 @@ impl PlayState {
     }
 }
 
+/// One monitor of [`Desktop`]: its rect in physical pixels, plus the ratio a
+/// window placed on it needs to be sized in QML. The ratio lives here rather
+/// than being read from a `Screen` attached object because the latter depends on
+/// which screen a window ended up on, which depends on the window's size, which
+/// depends on the ratio — a cycle. Sourced from the enumeration instead, the
+/// chain is one-directional and stays physical until QML (§5.9.1, plan §6.1
+/// "几何只用物理像素").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Monitor {
+    pub rect: PhysRect,
+    pub dpr: Scale,
+}
+
+impl Monitor {
+    /// `Scale::of` re-clamps, so a driver's zero or NaN cannot reach a division.
+    pub fn new(rect: PhysRect, dpr: Scale) -> Self {
+        Self {
+            rect,
+            dpr: Scale::of(dpr.0),
+        }
+    }
+
+    pub fn contains(&self, p: PhysPoint) -> bool {
+        self.rect.contains(p)
+    }
+}
+
 /// §5.9.1 — the screen layout a pin is allowed to be put on. A plain list of
 /// rectangles, because a state machine must not need a display server to be
 /// tested. `bounds` is the union of the monitors, in physical pixels.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Desktop {
     pub bounds: PhysRect,
-    pub monitors: Vec<PhysRect>,
+    /// Enumeration order. Index 0 is the primary by the convention the capture
+    /// service already keeps (`CaptureService::monitors` sorts primary first),
+    /// which is what lets a dead-space query resolve without a second field.
+    pub monitors: Vec<Monitor>,
 }
 
 impl Desktop {
-    pub fn new(bounds: PhysRect, monitors: Vec<PhysRect>) -> Self {
+    pub fn new(bounds: PhysRect, monitors: Vec<Monitor>) -> Self {
         Self { bounds, monitors }
     }
 
-    pub fn from_monitors<'a>(rects: impl Iterator<Item = &'a PhysRect>) -> Self {
-        let monitors: Vec<PhysRect> = rects.copied().collect();
+    pub fn from_monitors(monitors: Vec<Monitor>) -> Self {
         let bounds = monitors
             .iter()
-            .cloned()
+            .map(|m| m.rect)
             .reduce(|a, b| a.union(&b))
             .unwrap_or_default();
         Self { bounds, monitors }
@@ -325,6 +354,18 @@ impl Desktop {
 
     pub fn monitor_at(&self, p: PhysPoint) -> Option<usize> {
         self.monitors.iter().position(|m| m.contains(p))
+    }
+
+    /// The ratio a window placed at `p` is sized with. A point on no monitor —
+    /// the dead space between two staggered screens, which §5.9.1 lets a pin be
+    /// dragged through — still has to answer, because a pin with no ratio has no
+    /// size: the primary's ratio is used, and `Scale::ONE` only when there is no
+    /// table to consult at all.
+    pub fn dpr_at(&self, p: PhysPoint) -> Scale {
+        match self.monitor_at(p) {
+            Some(i) => self.monitors[i].dpr,
+            None => self.monitors.first().map(|m| m.dpr).unwrap_or(Scale::ONE),
+        }
     }
 
     /// §8.5: a monitor was unplugged or the resolution changed, so a remembered
@@ -1914,7 +1955,10 @@ mod tests {
     }
 
     fn screen(w: u32, h: u32) -> Desktop {
-        Desktop::new(PhysRect::new(0, 0, w, h), vec![PhysRect::new(0, 0, w, h)])
+        Desktop::new(
+            PhysRect::new(0, 0, w, h),
+            vec![Monitor::new(PhysRect::new(0, 0, w, h), Scale::ONE)],
+        )
     }
 
     /// A 1:1 pin with no file behind it, its top-left at the origin.
@@ -2027,13 +2071,48 @@ mod tests {
 
     #[test]
     fn the_monitor_under_a_point_is_the_one_containing_it() {
-        let a = PhysRect::new(0, 0, 1000, 600);
-        let b = PhysRect::new(1000, 0, 1000, 600);
-        let desk = Desktop::from_monitors([a, b].iter());
+        let a = Monitor::new(PhysRect::new(0, 0, 1000, 600), Scale::ONE);
+        let b = Monitor::new(PhysRect::new(1000, 0, 1000, 600), Scale::of(2.0));
+        let desk = Desktop::from_monitors(vec![a, b]);
         assert_eq!(desk.bounds, PhysRect::new(0, 0, 2000, 600));
         assert_eq!(desk.monitor_at(PhysPoint::new(1500, 10)), Some(1));
         assert_eq!(desk.monitor_at(PhysPoint::new(10, 10)), Some(0));
         assert_eq!(desk.monitor_at(PhysPoint::new(3000, 10)), None);
+    }
+
+    // The window's `dpr` is answered from this table, so a per-screen ratio has
+    // to survive the trip and a point on no screen has to answer anyway: an
+    // unknown ratio is an unsizable pin (plan §6.1 "几何只用物理像素").
+    #[test]
+    fn the_ratio_is_the_one_of_the_monitor_under_the_point() {
+        let desk = Desktop::from_monitors(vec![
+            Monitor::new(PhysRect::new(0, 0, 1000, 600), Scale::ONE),
+            Monitor::new(PhysRect::new(1000, 0, 1000, 600), Scale::of(2.0)),
+        ]);
+        assert_eq!(desk.dpr_at(PhysPoint::new(500, 300)).ratio(), 1.0);
+        assert_eq!(desk.dpr_at(PhysPoint::new(1500, 300)).ratio(), 2.0);
+    }
+
+    #[test]
+    fn the_dead_space_inside_a_staggered_desktop_still_answers_a_ratio() {
+        let desk = Desktop::from_monitors(vec![
+            Monitor::new(PhysRect::new(0, 0, 1000, 600), Scale::ONE),
+            Monitor::new(PhysRect::new(1000, 200, 1000, 600), Scale::of(2.0)),
+        ]);
+        assert_eq!(desk.bounds, PhysRect::new(0, 0, 2000, 800));
+        let dead = PhysPoint::new(1500, 100);
+        assert_eq!(desk.monitor_at(dead), None);
+        assert_eq!(desk.dpr_at(dead), Scale::ONE);
+    }
+
+    #[test]
+    fn a_zero_or_absent_ratio_cannot_reach_a_division() {
+        let desk = Desktop::from_monitors(vec![Monitor::new(
+            PhysRect::new(0, 0, 1000, 600),
+            Scale(0.0),
+        )]);
+        assert_eq!(desk.dpr_at(PhysPoint::new(10, 10)), Scale::ONE);
+        assert_eq!(Desktop::default().dpr_at(PhysPoint::new(0, 0)), Scale::ONE);
     }
 
     // ---------------------------------------------------------------- §5.9.2
