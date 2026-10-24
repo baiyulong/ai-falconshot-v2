@@ -32,9 +32,10 @@
 //! so the census is the nine the plan counts rather than the four that happen to work.
 
 use std::pin::Pin;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use cxx_qt::CxxQtThread;
 use cxx_qt_lib::QString;
@@ -44,6 +45,7 @@ use platform_windows::hotkey::{bind, Event, Pump, Request, Started, TraySpec};
 
 use crate::capture;
 use crate::delay;
+use crate::hot_corner::{self, Runner};
 use crate::mask;
 use crate::r13::Report;
 use crate::session;
@@ -76,6 +78,29 @@ pub enum Work {
     Repeat,
     /// §5.8.2: turn the clipboard into a pin.
     PastePin,
+    /// §5.11: put every pin the current list does not keep out of the way - and take
+    /// them back on the same key. The list is the whole input, which is why this work
+    /// reaches [`session::qobject::Session::toggle_solo_selection`] rather than an id:
+    /// a keystroke has no 被点中的那一枚窗.
+    Solo,
+    /// §5.15「隐藏 / 显示全部贴图」，也是快捷动作表里那枚 `toggle_pins`（默认 `ctrl+shift+p`）
+    /// 一直悬空的那条路由：P137 之前它列在 [`crate::config`] 的 `ACTIONS` 里、能配键，却没有任何
+    /// 一只 `Work` 接得住 ⇒ 按下去走「未接线」。这一臂落成的就是 [`session::qobject::Session::toggle_all_pins`]：
+    /// 一次按下翻一次全局收起，同键再按翻回来 —— 与 §5.11 独显同一形状（一枚键两态），无被点中的窗。
+    TogglePins,
+    /// §5.15「显示全部贴图」—— 热区那五枚动作里的第二枚。`toggle_pins` 是「翻」，而角落要的
+    /// 是「置」：一次扫过角落不能像一次按键那样被读成「再翻回来」，因为角落没有按下与抬起，
+    /// 只有停留。归宿是 [`session::qobject::Session::show_all_pins`]，恒交回 0（已放开）。
+    ShowAllPins,
+    /// §5.15「隐藏全部贴图」，[`session::qobject::Session::hide_all_pins`] 的归宿，恒交回
+    /// 1（已收起）。与上一枚成对：五枚 `HOT_CORNER_ACTIONS` 自此每一枚都有一只手接得住，
+    /// 而「配得上却什么都不做」那一族在热区这一头被关闭（`hot_corner::check` 里逐名判）。
+    HideAllPins,
+    /// §5.20.1 那一页的入口，托盘里那一枚「首选项」。与 [`Work::Quit`] 同族：只从托盘抵达，
+    /// 因为 `config::ACTIONS` 里压根没有一枚叫 settings 的动作 —— 给一扇窗编一枚可绑定动作，
+    /// 是替 §5.16.1 那一张表发明第十二名。归宿是 [`session::qobject::Session::settings_open`]
+    /// 那一格：Rust 只写「该不该有一扇窗」，造与毁都在 `main.qml`。
+    Settings,
     /// §5.1.1's tray menu entry. Tray-only: no key binding means "quit", because a
     /// binding that could end the resident process from the keyboard is not
     /// something to hand out before a settings page has asked about it.
@@ -92,6 +117,11 @@ impl Work {
             Work::ActiveWindow => Some("capture_active_window"),
             Work::Repeat => Some("capture_repeat"),
             Work::PastePin => Some("paste_pin"),
+            Work::Solo => Some("solo"),
+            Work::TogglePins => Some("toggle_pins"),
+            Work::ShowAllPins => Some("show_all_pins"),
+            Work::HideAllPins => Some("hide_all_pins"),
+            Work::Settings => None,
             Work::Quit => None,
         }
     }
@@ -103,17 +133,33 @@ impl Work {
             Work::ActiveWindow => "活动窗口截图",
             Work::Repeat => "重复上次截图",
             Work::PastePin => "贴出剪贴板",
+            Work::Solo => "独显",
+            Work::TogglePins => "隐藏/显示全部贴图",
+            Work::ShowAllPins => "显示全部贴图",
+            Work::HideAllPins => "隐藏全部贴图",
+            // PRD 第 1439 行那一列菜单建议里的写法就是「首选项」，而 §5.15 步骤 1 写的也是
+            // 「用户打开"首选项 > 热区"」。这一枚名字不叫「设置」：文档自己用的那一列字，
+            // 在这一档里就是判据的一部分（#455 的反面 —— 措辞在这里是读数，不是读数之外的修饰）。
+            Work::Settings => "首选项",
             Work::Quit => "退出",
         }
     }
 
-    /// The work an action id names, if this build performs it.
-    fn of(action: &str) -> Option<Work> {
+    /// The work an action id names, if this build performs it. `pub(crate)` 不是因为外部要构造
+    /// 一只手，而是因为 §5.15 那一族热区动作名来自 `config::HOT_CORNER_ACTIONS` 而不是来自
+    /// [`Work`] —— [`crate::hot_corner::check`] 要在装配时逐名问一次「这枚名字有没有一只手」，
+    /// 而那是这一张路由表唯一的真相来源，另抄一份名单就是 #281。
+    pub(crate) fn of(action: &str) -> Option<Work> {
         [
             Work::Capture,
             Work::ActiveWindow,
             Work::Repeat,
             Work::PastePin,
+            Work::Solo,
+            Work::TogglePins,
+            Work::ShowAllPins,
+            Work::HideAllPins,
+            Work::Settings,
             Work::Quit,
         ]
         .into_iter()
@@ -267,12 +313,32 @@ fn plan(actions: &std::collections::BTreeMap<String, String>) -> Plan {
     out
 }
 
-/// The tray menu: the two works a key can start, then 退出. An entry whose key
-/// never got an id (unbound, reserved, unwired) is given a menu-only id, because the
-/// icon is the other way to reach the same feature - and the only way to reach 退出.
+/// §5.18.1 的托盘菜单：把「本 build 真做得动、且 PRD 明写要一个托盘入口」的那几件逐一列出，
+/// 末尾接 退出。P138 之前这里只有 截图 / 贴出剪贴板 两只可键启动的工作，于是 PRD 菜单建议里
+/// 「显示或隐藏全部贴图」那一条、以及 §5.2.5 第 215 行明写「重复上次截图快捷键**或托盘菜单**」
+/// 那一条，都在托盘上无处可点 —— P137 已给 `toggle_pins` 装上真归宿（[`Work::TogglePins`]），
+/// 这一轮把这两枚接到托盘。
+///
+/// **只接有归宿的**：菜单建议里的 自定义截图 / 图片分组 / 历史记录 / 帮助 / 检查更新 五条，
+/// 本 build 都还没有能跑的那只手（自定义截图框 §5.3.5、分组面板 §5.12.4、历史浏览 §5.14、
+/// 关于/更新 §5.21 均未见码），挂上去就是一行点了什么都不干的死菜单（#433
+/// 那一族：死行是装饰，不是功能）。它们因此记作 §5.18.1 的**欠账**移交，而不是这一格假装有。
+///
+/// 「首选项」自 P142 起不在这份欠账里了：它的那只手是 [`Work::Settings`]，落点是 §5.20.1 那扇
+/// 窗。它进的是下面那个**有归宿者**的循环，而不是一枚 Rust 自己 `show()` 的窗 —— 托盘写的只是
+/// 「该不该有一扇窗」那一格。
+///
+/// An entry whose key never got an id (unbound, reserved, unwired) is given a menu-only id,
+/// because the icon is the other way to reach the same feature - and the only way to reach 退出.
 fn tray_menu(plan: &mut Plan) -> Vec<(u32, String)> {
     let mut menu = Vec::new();
-    for work in [Work::Capture, Work::PastePin] {
+    for work in [
+        Work::Capture,
+        Work::Repeat,
+        Work::PastePin,
+        Work::TogglePins,
+        Work::Settings,
+    ] {
         let id = match plan.routes.iter().find(|route| route.work == work) {
             Some(route) => route.id,
             None => {
@@ -333,7 +399,12 @@ fn tray_from(show_tray: bool, tip: String, items: Vec<(u32, String)>) -> Option<
 /// Returns the census rather than printing it, so the caller decides what a census
 /// is for: a door grades the rows, the app just tells the user what it took over. An
 /// `Err` is a run that installed nothing.
-pub fn install() -> Result<Launch, String> {
+///
+/// `plain` 是 `main` 那一枚「这一趟是产品会话，不是量具门」的读数，原样递给角落那条采样腿：
+/// 一枚绑了 `capture` 的角落会在 `--hotkeys` 的历史里添上它自己的行，而那一门回读的就是那些行。
+/// 测量跑动了被测的东西，读回来的就不是那一门自己的数 —— 与 [`crate::hot_corner::measure`]
+/// 一次也不派发是同一条规矩（#281：一句规矩写一处，两半都从这一枚布尔读数）。
+pub fn install(plain: bool) -> Result<Launch, String> {
     if held(&PUMP).is_some() {
         return Err("这个进程已经有一个热键泵了：一条线程一个窗口，不注册两次".to_string());
     }
@@ -415,7 +486,7 @@ pub fn install() -> Result<Launch, String> {
     };
     let listener = std::thread::Builder::new()
         .name("falconshot-hotkey-listen".into())
-        .spawn(move || listen(events, handle));
+        .spawn(move || listen(events, handle, plain));
     let listener = match listener {
         Ok(handle) => handle,
         Err(err) => {
@@ -450,66 +521,231 @@ pub fn install() -> Result<Launch, String> {
 /// The listener: pump messages in, GUI-thread work out. It never blocks on the
 /// queue, so a busy event loop delays a screenshot rather than stalling the pump -
 /// and a stalled pump would stop the tray icon answering its own clicks.
-fn listen(events: Receiver<Event>, handle: Gui) {
-    while let Ok(event) = events.recv() {
-        let through = matches!(event, Event::Menu(_));
-        let (what, work) = match &event {
-            Event::TrayLeft => ("托盘左键".to_string(), Some(Work::Capture)),
-            Event::Hotkey(id) | Event::Menu(id) => {
-                let route = held(&ROUTES).iter().find(|route| route.id == *id).cloned();
-                let name = format!(
-                    "{} id={} {}",
-                    if through { "菜单" } else { "热键" },
-                    id,
-                    route.as_ref().map_or(String::new(), |r| r.action.clone())
-                );
-                (name, route.map(|route| route.work))
-            }
-            // §5.19.1 第 3 步：机器自己播了一次设置变更。这一枚不进下面那张 `Work` 表，因为它
-            // 没有「哪个动作」的归宿，也不该被遮罩挡住（遮罩开着也不会多冻一次画面）—— 它唯一的
-            // 活是让界面那一枚词重新问一次机器。名字原样印出来当证人，本层不拿它当判据。
-            Event::SettingChange(name) => {
-                let shown = if name.is_empty() {
-                    "(无名)".to_string()
-                } else {
-                    name.clone()
-                };
-                note(format!("设置变更 {shown}：排队到 GUI 线程重问主题"));
-                // 名字要跟着闭包走，所以给 GUI 线程一份自己的副本；`shown` 留在这一条线程上，
-                // 为的是「GUI 线程没接住」那一格也要能把名字说出来。
-                let tagged = shown.clone();
-                if let Err(e) = handle.queue(move |session| theme_refresh(&tagged, session)) {
-                    note(format!("设置变更 {shown}：GUI 线程没接住（{e}）"));
-                }
-                continue;
-            }
-        };
-        let Some(work) = work else {
-            note(format!("{what}：没有归宿，不动手"));
-            continue;
-        };
-        if let Some(why) = silenced(work) {
-            note(format!("{what} {}：被静音（{why}）", work.tag()));
-            continue;
-        }
-        if work != Work::Quit && mask::with(|m| m.shown) {
-            // A second freeze would photograph the mask it is about to cover, which
-            // is the one thing §5.3's whole design avoids. Escape still closes it.
-            note(format!("{what} {}：遮罩已经开着，这一次不动手", work.tag()));
-            continue;
-        }
-        note(format!(
-            "{what} {}：排队到 GUI 线程（{}）",
-            work.tag(),
-            work.label()
-        ));
-        // `queue` neither blocks this thread nor panics on a destroyed object when
-        // its result is read rather than unwrapped - cxx-qt's own guidance.
-        if let Err(e) = handle.queue(move |session| run(work, session)) {
-            note(format!("{what} {}：GUI 线程没接住（{e}）", work.tag()));
+///
+/// P140 起这一手不再「一直睡着等人敲门」：`recv()` 换成 `recv_timeout(POLL_MS)`，于是**没人敲
+/// 门的那些格**也有一次读数。这是 §5.15 唯一可能的形状 —— 热区不产生任何一条 Win32 消息，
+/// 它要的是一次**问**（指针此刻在哪），而这一枚泵的循环是全进程里唯一既常驻、又不占 GUI 线程、
+/// 又肯每秒醒十几次的地方。没有新增线程，也没有新增 `Event` 变体：一台机器借了另一台的闹钟。
+fn listen(events: Receiver<Event>, handle: Gui, plain: bool) {
+    let mut corner = CornerPoll::new(plain);
+    loop {
+        match events.recv_timeout(Duration::from_millis(hot_corner::POLL_MS)) {
+            Ok(event) => route(event, &handle),
+            Err(RecvTimeoutError::Timeout) => corner.tick(&handle),
+            Err(RecvTimeoutError::Disconnected) => break,
         }
     }
     note("事件流结束：泵停了，监听线程收工".to_string());
+}
+
+/// 一次敲门怎么办：认门牌（`ROUTES`）→ 过闸（[`gate`]）→ 排队到 GUI 线程。
+///
+/// `Event::SettingChange` 是这一手里唯一不进 [`Work`] 表的一枚，因为它没有「哪个动作」的归宿，
+/// 也不该被遮罩挡住（见下面那一格的注释）。
+fn route(event: Event, handle: &Gui) {
+    let through = matches!(event, Event::Menu(_));
+    let (what, work) = match &event {
+        Event::TrayLeft => ("托盘左键".to_string(), Some(Work::Capture)),
+        Event::Hotkey(id) | Event::Menu(id) => {
+            let route = held(&ROUTES).iter().find(|route| route.id == *id).cloned();
+            let name = format!(
+                "{} id={} {}",
+                if through { "菜单" } else { "热键" },
+                id,
+                route.as_ref().map_or(String::new(), |r| r.action.clone())
+            );
+            (name, route.map(|route| route.work))
+        }
+        // §5.19.1 第 3 步：机器自己播了一次设置变更。这一枚不进下面那张 `Work` 表，因为它
+        // 没有「哪个动作」的归宿，也不该被遮罩挡住（遮罩开着也不会多冻一次画面）—— 它唯一的
+        // 活是让界面那一枚词重新问一次机器。名字原样印出来当证人，本层不拿它当判据。
+        Event::SettingChange(name) => {
+            let shown = if name.is_empty() {
+                "(无名)".to_string()
+            } else {
+                name.clone()
+            };
+            note(format!("设置变更 {shown}：排队到 GUI 线程重问主题"));
+            // 名字要跟着闭包走，所以给 GUI 线程一份自己的副本；`shown` 留在这一条线程上，
+            // 为的是「GUI 线程没接住」那一格也要能把名字说出来。
+            let tagged = shown.clone();
+            if let Err(e) = handle.queue(move |session| theme_refresh(&tagged, session)) {
+                note(format!("设置变更 {shown}：GUI 线程没接住（{e}）"));
+            }
+            return;
+        }
+    };
+    let Some(work) = work else {
+        note(format!("{what}：没有归宿，不动手"));
+        return;
+    };
+    dispatch(&what, work, handle);
+}
+
+/// 一把键或一枚角落进门后要过的两道关，和过关之后那一句排队。
+///
+/// 这一枚函数是 P140 从 `route` 的手心里抠出来的：§5.16.2 的前台静音与 §5.3 的「遮罩已经开着
+/// 就不许再冻一次」这两判，热键要过、热区也要过，而**一枚判据只许写一份**（#281）。留在原来
+/// 那一只手里的话，角落那一路就得另抄一份两份都改不动的名单。
+fn dispatch(what: &str, work: Work, handle: &Gui) {
+    if let Some(why) = gate(work) {
+        note(format!("{what} {}：{why}", work.tag()));
+        return;
+    }
+    note(format!(
+        "{what} {}：排队到 GUI 线程（{}）",
+        work.tag(),
+        work.label()
+    ));
+    // `queue` neither blocks this thread nor panics on a destroyed object when
+    // its result is read rather than unwrapped - cxx-qt's own guidance.
+    let tagged = what.to_string();
+    if let Err(e) = handle.queue(move |session| run(work, session)) {
+        note(format!("{tagged} {}：GUI 线程没接住（{e}）", work.tag()));
+    }
+}
+
+/// 两道关。交回 `None` = 放行；交回 `Some` 就是要打进历史的那半句，所以措辞与 P140 之前
+/// `listen` 里那两行逐字相同 —— `--hotkeys` 门读的就是这些行。
+fn gate(work: Work) -> Option<String> {
+    if let Some(why) = silenced(work) {
+        return Some(format!("被静音（{why}）"));
+    }
+    if work != Work::Quit && mask::with(|m| m.shown) {
+        // A second freeze would photograph the mask it is about to cover, which
+        // is the one thing §5.3's whole design avoids.
+        return Some("遮罩已经开着，这一次不动手".to_string());
+    }
+    None
+}
+
+/// §5.15 的采样腿：把「问 Windows」这一件事集中到三处，算术全部留给 core 那台机器。
+///
+/// * 配置、显示器、全屏那三问**一秒一次**（[`hot_corner::SNAPSHOT_MS`]）。角落方块的几何是插
+///   拔显示器才会动的东西，一台游戏也不会在一格里起落，而全屏那一问要两枚 syscall。
+/// * 指针与修饰键**每格一次**（[`hot_corner::POLL_MS`]）：「停留」由这两枚的时序定义，别的都
+///   不是。
+///
+/// 每格都重建机器是一个 bug 装扮成配置刷新：[`hot_corner::Runner::refresh`] 因此只在快照真的
+/// 变了才重建，而「没换快照不许清停留」由 `hot_corner::check` 里按名字判的两行盯着。
+///
+/// 整段关掉（`enabled = false`，出厂默认那一侧）走最短的一条路：数一下时间就回去，既不读指针
+/// 也不落一行历史 —— 这一族唯一的输出就是历史，一条都没有的噪声不算功能（#433 的反面）。
+struct CornerPoll {
+    /// 这一趟是不是产品会话。假 = 一扇量具门借用了这条泵的闹钟，角落一律不问也不动。
+    plain: bool,
+    /// `None` = 这一段没开，或这一台机器连显示器都读不出来。
+    runner: Option<Runner>,
+    /// 与 `runner` 同一节奏重问的一次，缓存下来供每一格的 `poll` 用。
+    screen: hot_corner::Fullscreen,
+    /// 上一次问那三问的时刻；`None` = 这一条腿还没问过，所以第一格就要问。
+    ///
+    /// 「没有机器就每一格重问」是这段代码自己之前的写法，而它违反本档注释钉的节奏：配置那一问
+    /// 一秒一次。出厂默认是 `enabled = false`，那一写法等于在整场会话里每 80 ms 复制一遍
+    /// `[hot_corner]` 的表 —— 一件没人要求的事，而且它不会让角落更早生效到值得付。
+    last_snapshot: Option<u64>,
+    /// 「显示器读不出来」那一句说过没有。一台永远答不出的机器每秒会被再问一次，而这一族的唯一
+    /// 输出就是历史：同一句话落十二行不叫读数。改口（读回来了）才是第二件事实，所以这一枚只在
+    /// 两问之间翻转。
+    missing_said: bool,
+}
+
+impl CornerPoll {
+    fn new(plain: bool) -> Self {
+        CornerPoll {
+            plain,
+            runner: None,
+            screen: hot_corner::Fullscreen::Unknown,
+            last_snapshot: None,
+            missing_said: false,
+        }
+    }
+
+    fn tick(&mut self, handle: &Gui) {
+        if !self.plain {
+            // 一扇门借了这条泵的闹钟，不等于这一扇门的读数里该有角落。见 [`install`] 的 `plain`。
+            return;
+        }
+        let now = delay::clock_ms();
+        let due = self
+            .last_snapshot
+            .is_none_or(|at| now.saturating_sub(at) >= hot_corner::SNAPSHOT_MS);
+        if due {
+            self.last_snapshot = Some(now);
+            self.refresh_snapshot();
+        }
+        let Some(runner) = self.runner.as_mut() else {
+            return;
+        };
+        let point = platform_windows::proc::cursor_pos();
+        let sample = point.map(|p| (p, platform_windows::proc::modifiers_down()));
+        if let Some(firing) = runner.poll(self.screen, sample, now) {
+            let what = format!("热区 {}", firing.corner.key());
+            let Some(work) = Work::of(&firing.action) else {
+                // core 只把档里认过的动作名递出来，所以走到这里就是名单与路由表脱了钩：
+                // 说出来当证人，而不是替用户动一枚别的什么手。
+                note(format!("{what} {}：没有归宿，不动手", firing.action));
+                return;
+            };
+            dispatch(&what, work, handle);
+        }
+    }
+
+    /// 重问那三问，并按需要建/换机器。只在**真的换了**的时候往历史落一行。
+    fn refresh_snapshot(&mut self) {
+        let cfg = crate::settings::hot_corner_cfg();
+        if !cfg.enabled {
+            if self.runner.is_some() {
+                note("热区：这一场把 [hot_corner] enabled 关了，机器放下".to_string());
+            }
+            self.runner = None;
+            self.screen = hot_corner::Fullscreen::Unknown;
+            return;
+        }
+        let monitors = match capture::monitor_table() {
+            Ok(m) => m,
+            Err(e) => {
+                // 读不出显示器就没法算出角落方块。这不是「角落坏了」，是「这一问没答」：
+                // 落下一次证人，然后让每一格的指针那一问自然作废 —— 一次，不是每一格一次。
+                if !self.missing_said {
+                    self.missing_said = true;
+                    note(format!("热区：显示器读不出来（{e}），这一场不建机器"));
+                }
+                self.runner = None;
+                self.screen = hot_corner::Fullscreen::Unknown;
+                return;
+            }
+        };
+        self.missing_said = false;
+        // 一次问，两枚读数都用它：问两遍就是拿两次可能不一致的答案拼一个判断。
+        let foreground = platform_windows::proc::foreground_window();
+        self.screen = hot_corner::fullscreen_of(
+            foreground,
+            foreground.and_then(platform_windows::proc::window_rect),
+            &monitors,
+        );
+        match self.runner.as_mut() {
+            None => {
+                let (count, screen) = (monitors.len(), self.screen);
+                let runner = Runner::new(cfg, monitors);
+                let (dwell, guard, pause) = (
+                    runner.config().dwell_ms,
+                    runner.config().repeat_guard_ms,
+                    runner.config().pause_on_fullscreen,
+                );
+                note(format!(
+                    "热区：建机器，{count} 屏，dwell={dwell} ms，护栏={guard} ms，\
+                     全屏暂停={pause}，全屏={screen:?}"
+                ));
+                self.runner = Some(runner);
+            }
+            Some(runner) => {
+                if runner.refresh(cfg, monitors) {
+                    note(format!("热区：快照换了，机器重开第 {} 次", runner.rebuilds));
+                }
+            }
+        }
+    }
 }
 
 /// 让界面那一枚词重新问一次机器，并把前后两枚词打出来。
@@ -585,6 +821,50 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
             }
             note(format!("GUI 线程 {tag}：剪贴板贴图 id={id}"));
         }
+        // §5.11：`ctrl+shift+s` 自此真的有归宿（P135 之前这一枚动作名排在下面那张「未接线」
+        // 名单里，按下去什么都没发生）。这一支不冻画面、不碰剪贴板、也不动成员，所以它没有
+        // 任何一枚 `id=` 可交回：它交回的是**改了几枚**，而「留哪几枚」由此刻的名单答
+        // （[`crate::state::PinState::solo_kept_table`] 那一条 `None` 臂）。一枚也没选中时 core
+        // 直接拒绝，`n=0` 在那里是实话而不是「没做」——屏幕上出现的是那句拒绝，而 #455 要的
+        // 就是这两件事不许读成同一个数。
+        Work::Solo => {
+            let n = session.as_mut().toggle_solo_selection();
+            let kept = *session.solo_kept();
+            note(format!("GUI 线程 {tag}：独显改动 {n} 枚，留 {kept} 枚"));
+        }
+        // §5.15：`ctrl+shift+p`（`toggle_pins`）自此真的有归宿。与 Solo 同一形状 —— 一枚键两态、
+        // 无被点中的窗，交回的是**翻之后的全局态**（1 藏 / 0 显）而不是「改了几枚」：全局收起不进
+        // core 的自身可见性，`ids()` 一枚也不会少，所以「几枚」在这里是误导性读数。`all_hidden`
+        // 那格由 [`crate::session::SessionRust::refresh`] 在同一只手内写回，读它就是把「翻了没有」
+        // 交给 qproperty 那一侧复核，而不是只信这只手的返回值。
+        Work::TogglePins => {
+            let flipped = session.as_mut().toggle_all_pins();
+            let said = *session.all_hidden();
+            note(format!(
+                "GUI 线程 {tag}：全局收起翻成 {flipped}，qproperty 读回 {said}"
+            ));
+        }
+        // §5.15 热区那五枚动作里的另外两枚。与 `toggle_pins` 同一读数形状（交回的是置完之后
+        // 的全局态，而 `all_hidden` 那一格由同一只手内的 `refresh` 写回，读它就是把「置了没有」
+        // 交给 qproperty 那一侧复核），但语义不同一处：角落只能「置」不能「翻」—— 一次扫过没有
+        // 按下与抬起，若走 `toggle_all_pins`，同一个角落扫两次就会把刚收起的又放开，而用户要的
+        // 是「隐藏」。所以这一对是两枚独立的 `Work`，不是 `TogglePins` 的别名（#316 的反面：
+        // 两名一实才该合并，一实两名不该）。
+        Work::ShowAllPins => {
+            let put = session.as_mut().show_all_pins();
+            let said = *session.all_hidden();
+            note(format!(
+                "GUI 线程 {tag}：全局收起置成 {put}，qproperty 读回 {said}"
+            ));
+        }
+        // 与上一枚成对，恒交回 1（已收起）。
+        Work::HideAllPins => {
+            let put = session.as_mut().hide_all_pins();
+            let said = *session.all_hidden();
+            note(format!(
+                "GUI 线程 {tag}：全局收起置成 {put}，qproperty 读回 {said}"
+            ));
+        }
         // Both legs end in a picture of something the desktop is showing right now,
         // so both answer with an id and the sentence the door prints beside it. A
         // refusal is `id=-1` for the same reason `pin_clipboard`'s is: the door grades
@@ -608,6 +888,19 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
                     note(format!("GUI 线程 {tag}：{leg}贴图 id=-1，{e}"));
                 }
             }
+        }
+        // §5.20.1 / §5.1.1：托盘那一枚「首选项」接的是**那一格**，不是这扇窗。Rust 这一路
+        // 一次 `show()` 也不叫：谁造这扇窗，销毁就归谁（`main.qml` 的 `syncSettings`），而
+        // 从这里替它 `show()` 就是同一件事的两处做。交回的是写之前与写之后各读一次的
+        // qproperty —— 「托盘点了一下，屏幕上那扇窗该在了没有」这件事只有这一格答得出，
+        // 而它是同步 notify，所以下一环 `syncSettings` 一定看得见。
+        Work::Settings => {
+            let before = *session.settings_open();
+            session.as_mut().set_settings_open(1);
+            let said = *session.settings_open();
+            note(format!(
+                "GUI 线程 {tag}：设置窗 settings_open {before} -> {said}"
+            ));
         }
         Work::Quit => {
             // The mask's frames and windows go first: leaving them in a process on
@@ -1248,11 +1541,13 @@ mod tests {
                 "capture",
                 "capture_active_window",
                 "capture_repeat",
-                "paste_pin"
+                "paste_pin",
+                "solo",
+                "toggle_pins"
             ],
             "接线表变了"
         );
-        assert_eq!(planned.routes.len(), 4, "路由表该和注册表一样长");
+        assert_eq!(planned.routes.len(), 6, "路由表该和注册表一样长");
         assert_eq!(
             rows_of_actions(&planned.rows) + planned.requests.len(),
             actions.len()
@@ -1260,24 +1555,17 @@ mod tests {
         for row in &planned.rows {
             assert!(row.contains("未接线"), "{row}");
         }
-        assert_eq!(planned.next, 5, "id 从 1 连续发到注册的下一个");
-        // The five that stay the user's, by name: this is the census the report
-        // prints, and a row that dropped out of it would take a key with it.
+        assert_eq!(planned.next, 7, "id 从 1 连续发到注册的下一个");
+        // The three that stay the user's, by name: this is the census the report
+        // prints, and a row that dropped out of it would take a key with it. `solo`
+        // left this list in P135, `toggle_pins` in P137 — §5.11 与 §5.15 的两枚默认键
+        // 自此都有归宿了。
         let unwired: Vec<&str> = planned
             .rows
             .iter()
             .map(|row| row.split(' ').next().unwrap_or_default())
             .collect();
-        assert_eq!(
-            unwired,
-            vec![
-                "capture_custom",
-                "pin_edit",
-                "solo",
-                "switch_group",
-                "toggle_pins"
-            ]
-        );
+        assert_eq!(unwired, vec!["capture_custom", "pin_edit", "switch_group"]);
     }
 
     /// Census rule the report asserts: every configured action gets exactly one row,
@@ -1355,17 +1643,28 @@ mod tests {
         assert_eq!(Work::of("capture_custom"), None);
     }
 
-    /// The tray menu always offers three entries and every one of them routes: an
-    /// entry with no destination would be a menu item that does nothing when
-    /// clicked, which is the failure this table exists to avoid.
+    /// The tray menu offers every wired, tray-reachable work plus 退出, and every one of
+    /// them routes: an entry with no destination would be a menu item that does nothing
+    /// when clicked, which is the failure this table exists to avoid. §5.18.1 的建议清单里
+    /// 那五件本 build 还没有归宿的手（自定义截图 / 分组 / 历史 / 帮助 / 更新）故**一枚也不列**
+    /// —— 列进来就是这一句要防的死行（#433）。「首选项」自 P142 起在列：它列的是 [`Work::Settings`]
+    /// 那一枚有归宿的手，而它**不带括起来的按键名** —— `action()` 是 `None`，场上没有一枚键
+    /// 通向它，写一个名字进去就是替 §5.16.1 那张表发明第十二名。
     #[test]
     fn every_menu_entry_has_a_destination() {
         let mut planned = plan(&Config::default().hotkey.actions);
         let menu = tray_menu(&mut planned);
-        assert_eq!(menu.len(), 3);
+        assert_eq!(menu.len(), 6);
         assert_eq!(
             menu.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>(),
-            vec!["截图（Ctrl+Shift+A）", "贴出剪贴板（Ctrl+Shift+V）", "退出"]
+            vec![
+                "截图（Ctrl+Shift+A）",
+                "重复上次截图（Ctrl+Shift+X）",
+                "贴出剪贴板（Ctrl+Shift+V）",
+                "隐藏/显示全部贴图（Ctrl+Shift+P）",
+                "首选项",
+                "退出",
+            ]
         );
         for (id, _) in &menu {
             let route = planned
@@ -1376,7 +1675,8 @@ mod tests {
             assert!(!route.work.label().is_empty());
             assert!(!route.work.tag().is_empty());
         }
-        // 退出 is the one entry no key answers, and its id is not a hot key id.
+        // 托盘里那两枚没有键的手：退出与首选项。它们的 id 一律不是热键 id（下面这两段是同一条
+        // 判据的两个名字，不是一项判据写两遍 —— #281）。
         let quit = planned
             .routes
             .iter()
@@ -1385,6 +1685,26 @@ mod tests {
         assert_eq!(quit.action, "");
         assert!(quit.display.is_empty());
         assert!(!planned.requests.iter().any(|request| request.id == quit.id));
+        let settings = planned
+            .routes
+            .iter()
+            .find(|route| route.work == Work::Settings)
+            .unwrap();
+        assert_eq!(settings.action, "");
+        assert!(settings.display.is_empty());
+        assert!(!planned
+            .requests
+            .iter()
+            .any(|request| request.id == settings.id));
+        // 一枚也没有任何动作名指向它：`Work::of` 是那张路由表唯一的真相来源，而它递不出
+        // 一只手来开设置窗 —— 「配得上却什么都不做」那一族在设置页这一头同样不许存在。
+        for action in falcon_core::config::ACTIONS {
+            assert_ne!(
+                Work::of(action),
+                Some(Work::Settings),
+                "{action} 通向设置窗"
+            );
+        }
 
         // An unbound `capture` still gets a menu entry - the icon is the other half
         // of §5.2.2 - and that entry takes an id the shell was never asked about, so
@@ -1557,11 +1877,15 @@ mod tests {
         let mut actions = Config::default().hotkey.actions;
         actions.insert("capture".to_string(), "win+d".to_string());
         actions.insert("paste_pin".to_string(), "ctrl+shift+,.".to_string());
-        // The two the previous round left unwired are wired now, so a config that wants
-        // *no* registrations has to refuse those as well - the denominator this test
-        // counts is the config's nine, not the four this build can perform.
+        // The two the previous round left unwired are wired now, and P135 wired the third
+        // one (`solo`), so a config that wants *no* registrations has to refuse those as
+        // well - the denominator this test counts is the config's nine, not the six this
+        // build can perform. P137 wired `toggle_pins` too, so it joins the refusal set:
+        // left at its default it would register and the row count would drop below nine.
         actions.insert("capture_active_window".to_string(), "".to_string());
         actions.insert("capture_repeat".to_string(), "".to_string());
+        actions.insert("solo".to_string(), "".to_string());
+        actions.insert("toggle_pins".to_string(), "".to_string());
         let planned = plan(&actions);
         assert_eq!(rows_of_actions(&planned.rows), actions.len());
         assert_eq!(planned.requests.len(), 0, "这趟一个都注册不了");

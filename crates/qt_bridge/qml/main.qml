@@ -36,6 +36,87 @@ Item {
     readonly property int dialogTick: app.session.dialog_epoch
     onDialogTickChanged: app.redrawPins()
 
+    /// §5.10.1 的那一声"选中变了"，走的正是上面那一封信教的形状：绑**值**、handler 长在本
+    /// 对象根上。为什么选中需要单独一枚号而不能搭 `count` 那一条腿：加/减一枚选中时集里
+    /// 还是那些枚贴图，`count` 一动不动，`Instantiator` 也就不会重建任何窗 —— 而"所有选中
+    /// 的贴图显示同一种状态"要的恰恰是**没被点中的那些窗**也重读一遍自己的那一格。
+    readonly property int selectionTick: app.session.selection_epoch
+    onSelectionTickChanged: app.redrawPins()
+
+    /// §5.10.2 的那一声"有贴图被搬走了"，还是上面那两封信教的形状（绑**值**、handler 长在本
+    /// 对象根上、那个场上不存在的驼峰名一枚也不写 —— cxx-qt 生成的 notify 是 `move_epochChanged`，
+    /// 而把它写成 `on` + 驼峰的那一枚没有信号可连，静默失灵，#316）。为什么搬动需要第三枚号而不能
+    /// 搭 `selectionTick` 那一条腿：一次拖动**不改名单**，`selectPin` 一次也没被叫，那一声 notify
+    /// 压根不发；而 §5.10.2 要的恰恰是名单里其余那几扇**没被按住**的窗也跟着重读自己该画在哪儿。
+    /// 为什么也不搭 `count`：集里还是那些枚贴图，`count` 一动不动，`Instantiator` 不会重建任何窗。
+    readonly property int moveTick: app.session.move_epoch
+    onMoveTickChanged: app.redrawPins()
+
+    /// §5.10.3 的那一声「有一批窗的不透明度变了」，还是上面那三封信教的形状（绑**值**、handler
+    /// 长在**声明它的那个对象**的根上、那个场上不存在的驼峰名一枚也不写 —— #316）。为什么调透明度
+    /// 不能搭 `moveTick` 那一条腿：两只手是两件事，而号是**读者**在数的那件事 —— 量规那一腿
+    /// (`op-epoch-*`) 数的就是「透明度这一手走了几步」，让它读搬动的号就会把拖动也算进去（#281）。
+    /// 为什么也不搭 `count`：调透明度既不改集，也不改任何一扇窗的位置，`count` 与 pos 一动不动，
+    /// 而 §5.10.3 要的恰恰是名单里**没被按住**的那几扇窗也跟着重读自己该画得多透。
+    readonly property int opacityTick: app.session.opacity_epoch
+    onOpacityTickChanged: app.redrawPins()
+
+    /// §5.10.4「重置视图」的那一声，形状与上面三封信同一枚：别名绑在**值**上，handler 长在
+    /// 声明它的那个对象的根上（#316）。为什么重置不能搭 `moveTick` 或 `opacityTick`：那是三只
+    /// 手，而号是**读者**在数的那件事 —— 量规那一腿 (`rst-epoch-*`) 数的就是「重置这一手走了
+    /// 几步」，借别人的号就会把拖动也算进重置的步数里（#281）。为什么也不搭 `count`：重置一枚
+    /// 贴图既不带走也不带来任何一枚，`count` 一动不动，而 §5.10.4 要的恰恰是名单里**没被点中**
+    /// 的那几扇窗也跟着重读自己的缩放、角度与位置。
+    ///
+    /// 关闭与销毁**不在**这一条腿上：它们改的是成员，`count` 一动 `pinSync` 就重建那批窗，
+    /// 借号反而是让两种因由挤进同一格（#281）。
+    readonly property int resetTick: app.session.reset_epoch
+    onResetTickChanged: app.redrawPins()
+
+    /// §5.11 独显的那一声「有一批窗被带走/被放回了」，形状与上面四封信同一枚：别名绑在**值**
+    /// 上、handler 长在声明它的那个对象的根上、那个场上不存在的驼峰名一枚也不写（#316）。
+    /// 为什么独显需要单独一枚号而不能搭 `opacityTick`：压暗那一臂确实改了不透明度，但隐藏那一臂
+    /// 改的是 `live`，两只手挤进同一枚号，量规 (`solo-epoch-*`) 读到的「走了几步」就答不出是哪
+    /// 一手走的（#281，与 `resetTick` 头顶那封信同一枚道理）。为什么也不搭 `count`：独显一枚也
+    /// 不从集里带走，`count` 一动不动，`Instantiator` 不会重建任何窗 —— 而 §5.11 步骤 3 要的
+    /// 恰恰是名单**之外**的那些窗自己把自己藏起来：被带走的那些枚根本不在名单里，这是这一族与
+    /// §5.10 那三手最大的不同，所以扇出只能走全体。
+    readonly property int soloTick: app.session.solo_epoch
+    onSoloTickChanged: app.redrawPins()
+
+    /// §5.12.4「显示 / 隐藏整组」的那一声，形状与上面四封信同一枚：别名绑在**值**上、handler 长
+    /// 在根上、那个场上不存在的驼峰名一枚也不写（#316）。为什么分组要单独一枚号而不能搭 `soloTick`：
+    /// 两者改的虽都是 `live`，但是两件事 —— 借同一枚号，量规 (`grp-epoch-*`) 就答不出「这一拍是
+    /// 独显走的还是分组走的」（#281，与 `resetTick` / `soloTick` 头顶那两封信同一枚道理）。为什么不搭
+    /// `count`：隐藏整组一枚也不从集里带走，`count` 一动不动、`Instantiator` 不重建任何窗 —— 而
+    /// §5.12.4 步骤 3 要的恰恰是「该组那些枚自己把自己藏起来」：被藏的那些枚是这一手的目标本身，
+    /// 所以扇出走全体（每一扇重读自己的 `view.live`，`core::PinItem::visible` 已把 `group_hidden` 算进去）。
+    readonly property int groupTick: app.session.group_epoch
+    onGroupTickChanged: app.redrawPins()
+
+    /// §5.15「隐藏 / 显示 / 切换全部贴图」的那一声，形状与上面六封信同一枚：别名绑**值**、handler
+    /// 长在根上、场上不存在的驼峰名一枚不写（#316）。为什么全局收起要单独第三枚号，不能搭
+    /// `soloTick` 或 `groupTick`：三族改的虽都是 `live`，但是三件事 —— 借同一枚号，量规就答不出
+    /// 「这一拍是独显、分组还是全局走的」（#281）。为什么不搭 `count`：全局收起一枚也不从集里带走
+    /// （`ids()` 一动不动、`Instantiator` 不重建任何窗），而 §5.15 要的恰恰是「所有窗自己把自己藏
+    /// 起来 / 放回来」——被藏的那些是这一手的目标本身，所以扇出走全体重读 `view.live`。
+    readonly property int pinsTick: app.session.pins_epoch
+    onPinsTickChanged: app.redrawPins()
+
+    /// §5.20.1 的那一声「该不该有一扇设置窗」，形状与上面那七封信同一枚：别名绑**值**、handler
+    /// 长在声明它的那个对象的根上、场上不存在的驼峰名一枚也不写（#316）。
+    ///
+    /// 为什么是**造与毁**而不是 `show()` / `hide()`：一扇永远在场却藏着的窗仍是一枚顶层窗，
+    /// `pin_check::pin_window` 那一格问「谁盖得住贴图」就会问到它 —— `HintWindow` 靠
+    /// `hintAnchor()` 交空串把自己从别的门的清点里摘出去，而这一扇窗要的是同一件事的另一种做法：
+    /// 没有真人要它的时候，它压根不存在。销毁排在下一环（那枚 `interval: 0` 的 Timer），因为
+    /// 「关掉」这一手常常正是窗里那一枚按钮按出来的，`close()` 还在自己这扇窗的栈上。
+    readonly property int settingsTick: app.session.settings_open
+    onSettingsTickChanged: settingsSync.restart()
+
+    /// 那一扇窗，同一趟最多一扇：`settings_open` 是一枚布尔的现在时，不是一个计数。
+    property var settingsWindow: null
+
     Component.onCompleted: {
         // First, because it is the one thing here that another thread is waiting for:
         // the hot key pump can only reach this object through the handle cxx-qt gives
@@ -61,6 +142,10 @@ Item {
         app.syncPins()
         app.session.refreshMasks()
         app.session.refreshWarm()
+        // §5.20.1：问一次「这一趟该不该有一扇设置窗」。它排在 `refreshWarm` 之后、`watchScreens`
+        // 之前：造窗走的是 `settingsSync` 那一枚 0 毫秒的 Timer，所以这一句只是把 `settings_open`
+        // 抬起来，真正建窗在下一环 —— 而那一环一定要在事件环跑起来之后才到。
+        app.session.refreshSettings()
         // §8.5's watch, last: the screen set and the geometry of every screen in it
         // are only worth listening to once there is a session to answer and windows
         // to reload. What it connected to is counted in C++ and printed by `--probe`,
@@ -137,6 +222,14 @@ Item {
 
         PinWindow {
             shim: app.shim
+            session: app.session
+        }
+    }
+
+    Component {
+        id: settingsWindowComponent
+
+        SettingsWindow {
             session: app.session
         }
     }
@@ -282,6 +375,34 @@ Item {
 
         function onCountChanged() {
             pinSync.restart()
+        }
+    }
+
+    // §5.20.1 那一扇窗的造与毁。`interval: 0` 与 `pinSync` 同一枚理由、同一封信：写
+    // `settings_open = 0` 的那一只手常常就在窗里（「关闭」那一枚按钮），所以销毁不能压在
+    // 那一句还在跑的时候 —— 一个被销毁的 QML 对象底下继续跑 JS 是什么样子，P55 那趟
+    // `p55_pin_diag4.log` 已经替这一路付过学费。
+    Timer {
+        id: settingsSync
+        interval: 0
+        repeat: false
+        onTriggered: app.syncSettings()
+    }
+
+    /// 把「有没有一扇设置窗」对齐 `settings_open`：要就造一枚，不要就 `close()` 再 `destroy()`。
+    ///
+    /// 先摘掉手里那一枚、再 close/destroy，是为了这一趟里 notify 若连着来两次也不会第二次拿着
+    /// 同一枚已毁的对象再毁一遍。造出来的窗父对象是 `shim`，理由与 `syncPins` 那一段完全相同：
+    /// 一扇 `Window` 不是场景内容，它要的只是一个能一起死的 lifetime。
+    function syncSettings() {
+        if (app.settingsTick > 0) {
+            if (!app.settingsWindow)
+                app.settingsWindow = settingsWindowComponent.createObject(app.shim)
+        } else if (app.settingsWindow) {
+            const w = app.settingsWindow
+            app.settingsWindow = null
+            w.close()
+            w.destroy()
         }
     }
 

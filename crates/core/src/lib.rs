@@ -3,6 +3,7 @@
 
 pub mod annotation;
 pub mod capture;
+pub mod card;
 pub mod clip;
 pub mod colors;
 pub mod config;
@@ -10,6 +11,7 @@ pub mod dialog_link;
 pub mod encode;
 pub mod frame;
 pub mod geometry;
+pub mod gif;
 pub mod history;
 pub mod hotcorner;
 pub mod hotkeys;

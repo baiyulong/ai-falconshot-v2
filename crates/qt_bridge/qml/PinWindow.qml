@@ -45,7 +45,8 @@ Window {
     //
     // The fields are read by index, and the order is `pin_check::plan_line`'s:
     // 0 目录, 1 qml.png, 2 qml.jpg, 3 never.png, 4 贴图 id, 5 一个不存在的 id,
-    // 6 延迟 ms, 7 对话框默认名, 8 推开尝试上限, 9 这一腿最后要关掉的那枚 id.
+    // 6 延迟 ms, 7 对话框默认名, 8 推开尝试上限, 9 这一腿最后要关掉的那枚 id,
+    // 10 会动的那枚贴图 id, 11 那一腿自己的起步 ms.
     property var gauge: []
 
     // True only between the moment the dialog leg asked for a real dialog and the moment
@@ -77,6 +78,23 @@ Window {
     // window that is already gone. One line, reported under the attempt that actually pressed
     // (or under the last one, when none did) - see `dlg-probe` below.
     property string pushProbe: ""
+
+    // §5.9.14's own leg, and the three numbers it exists to produce.
+    //
+    // `gifArmed` is the window: the clip's clock runs the whole time this window is alive, so
+    // a counter that counted always would count the waits that belong to no leg. It opens when
+    // the clip's delegate starts and closes when it reports, and it is the same kind of guard
+    // `dlgLeg` is for `dlg-accepted`.
+    //
+    // `gifTurns` counts `gif_frameChanged` emissions; `gifSeen` keeps the *different frame
+    // indices* the window was showing while armed. Both, because the ledger's reason is
+    // specific (see `pin gif clock` in `pin_check.rs`): a signal count alone can be produced by
+    // a setter that notifies without anything moving, while the set of indices seen cannot be -
+    // and the index read at the end of the wait could legitimately be back at 0 for a clip that
+    // played perfectly, since the fixture's cycle is 180 ms against this window's 400 ms wait.
+    property bool gifArmed: false
+    property int gifTurns: 0
+    property var gifSeen: ({})
 
     color: "transparent"
 
@@ -118,6 +136,123 @@ Window {
         shim.applyStyle(win, view.topmost, view.click_through)
     }
 
+    // §5.10.1 的那一手，也是量规那一段走的同一处落点：`selectPin` 在本档只出现这一次，
+    // 用户按下的是这一条语句，量的也是这一条（P130 那枚 `copyAction` 教的形状 —— 一只手声明
+    // 一次，几个读者都指它）。分成两处写就会有一处迟早是装饰。
+    //
+    // 落点收的是 id 而不是「本窗」：§5.10.1 第 2 步「依次单击多个贴图窗口」在真机上的形状是同
+    // 一句话被不同的窗各叫一次，而量规要问的是**另一扇窗**被选中之后自己说不说得出亮了。把 id
+    // 藏进签名里，那一问就只能再写一处 `selectPin` —— 正是上面那句不许的事。
+    function selectTarget(id, add) {
+        return win.session.selectPin(id, add)
+    }
+
+    function selectSelf(add) {
+        return win.selectTarget(win.pinId, add)
+    }
+
+    // §5.10.2 的那一手，同样在本档只出现一次：`dragPin` 收的是 id，而**搬几枚由名单决定**，
+    // 不由这一扇窗决定 —— 所以这一句里不许有「本窗在不在名单上」之类的前置（窗的章程：它不回答
+    // "这一拖算几枚"，那一问只有 `state::drag_pin` 一处答案）。上面 `selectTarget`
+    // 那封信在这里同样成立：分成两处写就会有一处迟早是装饰，而这里的读者有四枚 —— 鼠标那一腿、
+    // 量规的「拖一枚」「拖一枚不存在的」「拖两枚里的一枚」，四枚指的都是下面这一句。
+    function dragTarget(id, dx, dy) {
+        return win.session.dragPin(id, dx, dy)
+    }
+
+    // §5.10.3 的同一封信：透明度那两只手在本档也只各出现一句落点。两只手分工是「阶梯」与
+    // 「绝对值」，而不是「一枚」与「一批」—— 分岔由 `state::batch_hand` 判一次，窗不许在这里
+    // 问「本窗在不在名单上」（章程同上）。读者：菜单两枚 + Ctrl+滚轮一枚 + 量规那几枚。
+    function opacityStepTarget(id, up) {
+        return win.session.stepPinOpacity(id, up)
+    }
+
+    function opacitySetTarget(id, pct) {
+        return win.session.setPinOpacity(id, pct)
+    }
+
+    // §5.10.4 的同一封信，三只手各一句落点：重置 / 销毁 / 撤销销毁。带走几枚由**名单**决定，
+    // 不由这一扇窗决定 —— 窗在这里不许问「本窗在不在名单上」（章程同上；判据
+    // `state::batch_hand` 与那张 `hand_targets` 全仓各只写一处）。关闭那一只手没有新落点：
+    // 菜单与量规走的本来就是 `session.closePin`，P134 改的是它背后那只手，不是这两句字面。
+    //
+    // 撤销不收 id：还回来的是**最近一手**带走的那一批，那一叠槽位是桥侧那一格的账
+    // （`state::trash`），窗手里压根没有它 —— 让窗传一个 id 去撤销，就是把「撤销什么」交给
+    // 了一处没有这份知识的地方。
+    function resetTarget(id) {
+        return win.session.resetPin(id)
+    }
+
+    function destroyTarget(id) {
+        return win.session.destroyPin(id)
+    }
+
+    function undoDestroyTarget() {
+        return win.session.undoDestroy()
+    }
+
+    // §5.11 独显的那一手，同一封信：窗只把 id 交过去，「留哪几枚」由
+    // `state::hand_targets` 答（名单里的一枚＝那一批，名单外的一枚＝只这一枚）。窗在这里
+    // 不许问「本窗该不该被藏起来」—— 那一问的答案是 `view.live`，而它是桥侧 `p.visible()`
+    // 读回来的**结果**，不是本窗自己判的（#281）。
+    function soloTarget(id) {
+        return win.session.toggleSolo(id)
+    }
+
+    // PRD 第 1149 行「批量销毁时应提示影响数量」的那一句字面数。本窗不许自己数名单（那是
+    // `batch_hand` 的第二份，#281），它问的是桥侧那一格 `destroy_answer` —— 与按下「销毁」时
+    // 真正带走的那些枚读的是同一张表。
+    //
+    // 问的**时刻**是菜单要出现的那一刻：早了（在绑定里）读到的是上一次打开时的名单，晚了
+    // （在 `onTriggered` 里）贴图已经被带走了。所以这一格是显示缓存，不是判据；它由下面
+    // `pinMenu` 的 `onAboutToShow` 写，而初值是 1 —— 一枚也没有选时那一手带走的就是本窗这一枚。
+    property int destroyReach: 1
+
+    // §5.11 独显那一枚字面的两格显示缓存，与上面同一封信教的形状：都在 `pinMenu` 的
+    // `onAboutToShow` 里现问桥侧，窗一个也不数。
+    //
+    // - `soloReach`：**这一手会带走几枚**（`soloCountFor` → `state::solo_answer` → 同一张
+    //   `solo_kept_table`），所以菜单上印着的数与按下之后真被带走的那些枚不可能各走各的。
+    //   独显已经开着时它是 0 —— 那不是「这一手不带东西」，而是「放回几枚」的账在 core 的
+    //   `Solo::saved` 里、桥侧一层也不留副本，所以退出那一支的字面不带数目（#455）。
+    // - `soloWay`：这一场是**压暗**还是**隐藏**，读的是配置键 `pin.solo_dim_opacity` 的本体。
+    //   把 PRD 步骤 3 那句「隐藏」写死在自己的字面上，在默认配置（35 ⇒ 压暗）下就是一句假话。
+    property int soloReach: 0
+    property string soloWay: "压暗"
+
+    // §5.12 分组那一串字在本窗解码成的表：`{id, name, shown, count}` 逐组一枚，顺序与
+    // `session.groups` 那串（core 的 `groups` vec 本体）一致。它是**绑定**、不是缓存 ——
+    // 绑在 `session.groups` 的值上，notify 一到就重解（#316 那一族：别名/绑定绑值，不绑调用）。
+    // 窗自己一个也不数（谁进哪组、有几枚，是 core 答过的事，桥侧只是抬过来）。
+    readonly property var groupList: win.decodeGroups(win.session.groups)
+
+    // 两枚控制字符与 `session::group_encode` 一一对上：组内字段用 `\u001c`（文件分隔），
+    // 组之间用 `\u001d`（组分隔）。用它们而不是 `,`／`|`：分组名是用户自己打的自由文本，
+    // 任何可见分隔符都可能出现在名字里把解码拆坏，而名字里出现控制字符的性能忽略。
+    function decodeGroups(raw) {
+        var out = []
+        if (!raw || raw.length === 0)
+            return out
+        var recs = raw.split("\u001d")
+        for (var i = 0; i < recs.length; ++i) {
+            var f = recs[i].split("\u001c")
+            if (f.length < 4)
+                continue
+            out.push({
+                id: Number(f[0]),
+                name: f[1],
+                shown: f[2] === "1",
+                count: Number(f[3])
+            })
+        }
+        return out
+    }
+
+    // 新建与重命名共用的那一格弹窗的状态：`editId` 是 -1 就是新建、否则是改哪一组；
+    // 提交那只手按 `editId` 分派 `createGroup` / `renameGroup`，两只手各一次调用、不合并（#281）。
+    property int groupDialogEditId: -1
+    property string groupDialogSeed: ""
+
     // One line to the `--pin` gauge, in the `key|value` shape `pin_check` grades.
     function gaugeSay(key, value) {
         win.session.pinGaugeReport(key + "|" + value)
@@ -145,6 +280,361 @@ Window {
     // its own timed phase, because a door has to be *on the screen* while something
     // presses its button and that cannot be fitted into this event-loop turn.
     function runGauge() {
+        // §5.10.1 的第一次真机对面。这一腿不新开 `win.gauge` 的槽位，也不要求第二扇窗：它问的
+        // 是**本窗自己**那两格在三次手势之间怎么变。
+        //
+        // 判得了的是：`selection_count` 这枚 qproperty 从 QML 读得到数（不是一次数完就不动的
+        // 死数）；而 `sel-plain-self` / `sel-cleared-self` 两枚读的是**这一扇窗没有自己 reload 过**
+        // 的那一格 —— 手势只叫了 `selectPin`，边会亮、会灭，只能是 `selection_epoch` 那一声
+        // 扇到 `main.qml` 的 `redrawPins()` 再回到本窗的 `view.reload()`。扇出没跑，这两枚就停在
+        // false 上，档里读得出。
+        //
+        // 判不了的也点名，不假装：真按键注入没有（本仓没有一枚 SendInput），所以 Ctrl 那一路的
+        // 加/减在本腿里是由 `selectPin(…, 0)` 这一手代替的，Esc 那一门是由 `trigger()` 代替的 ——
+        // 两枚都只到 Action/invokable 为止，没有摸到鼠标与键盘。逐字记在门档里（#455）。
+        // `mov-pos-before` 是本窗在这一段开头自报的**落点**（物理像素，读 `view.pos_x/pos_y` 而不
+        // 是 `win.x` —— 后者是前者的商）。它唯一的用处是段末那一枚 `mov-pos-after`：两枚相等才叫
+        // 「本轮插进来的这几拖没有把堆挪走」。上一趟真机不相等，盘证是 `pin window` 交回「顶层
+        // 320x200@648,400 和要求的 608,380 相差在 2 px 内=false」，648-608=17+23、400-380=9+11 正是
+        // 下面那两拖之和（`.qoder\scratch\p132_door_A.txt`）。
+        gaugeSay("mov-pos-before", String(win.view.pos_x) + "," + String(win.view.pos_y))
+        gaugeSay("sel-before-count", String(win.session.selection_count))
+        gaugeSay("sel-before-self", String(win.view.selected))
+        gaugeSay("sel-plain", String(win.selectSelf(0)))
+        gaugeSay("sel-plain-count", String(win.session.selection_count))
+        gaugeSay("sel-plain-self", String(win.view.selected))
+        // §5.10.2 的第一次真机对面，长在多选那三腿**中间**而不是另起一段：这三问要的名单长度
+        // 恰好就是上面那两手跑出来的状态 —— `sel-plain` 之后场上只有本窗一枚（拖它该交回 1），
+        // `sel-add` 之后有本窗与被点名那一枚两枚（拖本窗该交回 2）。另起一段自己再 `selectPin`
+        // 会把 `sel-observe-on` 那一声多扇一遍，而 `sel_rows` 数的正是「一次也没被点过的那扇窗
+        // 自己说了几次」—— 尺不该给自己的证人添一枚（#281 那一族）。
+        //
+        // 四问里能被本窗自己判的三件环境不参与的事：**交回几枚**、`move_epoch` 那枚号**走没走**、
+        // 以及本窗那枚纹理号**动没动**。为什么号可以当证人而**位置**不行：本窗的 `x` 是
+        // `view.pos_x / win.dpr` 那一枚绑定的结果，它在这扇窗被分配给另一枚贴图时也会动 —— 一枚
+        // 在别的因由下也会动的读数供不出「这一手扇到了那一扇窗」这一句（#271）。所以「另一扇窗
+        // 自己说它被搬走了」在本轮是一问**没有证人**的，逐名记进门档的 blocked，而不是拿一枚弱尺
+        // 冒充。
+        //
+        // 位移本身（含「撞墙那一枚不停下其余」）由 `state.rs` selftest 那四臂判：那里能现读
+        // `desk.keep_visible` 算每一枚该落在哪儿，本窗算不出 —— 桌面的界没有送到 QML 这一侧。
+        gaugeSay("mov-epoch-before", String(win.session.move_epoch))
+        // `revision` 是本窗自己那枚「纹理换了几次」的号：搬动只改位置，而 `content_key` 不含
+        // 位置 —— 所以两拖之间它必须一动不动。它动了就是每一次鼠标移动事件都在重画一张 PNG
+        // （§5.10.2 那一句「一起移动」在 8 枚贴图上的代价）。
+        gaugeSay("mov-rev-before", String(win.view.revision))
+        gaugeSay("mov-lone", String(win.dragTarget(win.pinId, 17, 9)))
+        gaugeSay("mov-epoch-lone", String(win.session.move_epoch))
+        gaugeSay("mov-rev-lone", String(win.view.revision))
+        // §5.10.3 的第一问长在 §5.10.2 的 `mov-rev-lone` 之后而不是另起一段：此刻名单里**只有本窗
+        // 一枚**（上面 `sel-plain` 点中的就是本窗），所以这一手该交回 1 —— 它正是 Ctrl+滚轮 与菜单
+        // 那三枚入口在用户只选了一枚时走的那一路，本腿不叫它就不能算被真机问过。承上面那封信：
+        // 另起一段自己再 `selectPin` 会把 `sel-observe-on` 那一声多扇一遍，尺不许给自己的证人添一枚
+        // （#281）。
+        //
+        // 归位读的是本窗自己现读到的那枚 `opLoneStart` 而不是写死 100：默认不透明度是配置里的
+        // 那一格，写死就是拿本档的假设去改用户的环境（#261）。目标值 50 是阶梯中间的一格，与
+        // 上面那两拖写死 (17,9) / (23,11) 同一族：它不是「环境给的数」，是这一腿自己要的一个
+        // **离两端都远**的落点，好让下面那两步永远碰不到阶梯的端（贴了端反手就回不来，那是环境的
+        // 答而不是产品的错，#453 那一族）。
+        const opLoneStart = win.view.opacity
+        gaugeSay("op-lone-start", String(opLoneStart))
+        gaugeSay("op-lone-epoch-before", String(win.session.opacity_epoch))
+        gaugeSay("op-lone-set", String(win.opacitySetTarget(win.pinId, 50)))
+        gaugeSay("op-lone-opacity", String(win.view.opacity))
+        gaugeSay("op-lone-restore", String(win.opacitySetTarget(win.pinId, opLoneStart)))
+        gaugeSay("op-lone-restored", String(win.view.opacity))
+        gaugeSay("op-lone-epoch-end", String(win.session.opacity_epoch))
+        // §5.10.4「重置」的单枚那一臂，长在 `op-lone-*` 之后而不是另起一段：此刻名单里只有本窗
+        // 一枚，这一手该交回 1 —— 它就是菜单那一枚「重置视图」在用户只选了一枚时走的那一路。
+        //
+        // 为什么用 `zoom` 而不是 `rotation` 供「几何被重读回来了」这一句：`rotation` 没有送到
+        // QML 这一侧（`PinView` 那一列里没有它），而 `zoom` 与 `pos` 都不进 `content_key`
+        // —— 所以「重置不重编像素」这一问在这一格才判得动（下面那两枚 `rst-*-rev-*` 读的就是它）。
+        // 先把本窗的缩放往下迈一档（§5.9.2 那一列的单枚手势，不是批量）， reset 才有的还；
+        // 迈不动（已经贴着下限）时这一格由 `rst_rows` 读成 Blocked，不读成一次成立（#433）。
+        const rstLoneBase = win.view.zoom
+        gaugeSay("rst-lone-base", String(rstLoneBase))
+        win.view.zoomStep(false)
+        gaugeSay("rst-lone-turned", String(win.view.zoom))
+        gaugeSay("rst-lone-epoch-before", String(win.session.reset_epoch))
+        gaugeSay("rst-lone-rev-before", String(win.view.revision))
+        gaugeSay("rst-lone", String(win.resetTarget(win.pinId)))
+        gaugeSay("rst-lone-zoom", String(win.view.zoom))
+        gaugeSay("rst-lone-rev", String(win.view.revision))
+        gaugeSay("rst-lone-epoch-end", String(win.session.reset_epoch))
+        // 一扇已经关掉的窗剩下的那一次鼠标事件：id 不在集里。取场上最大那枚 id 加一 —— 那是本档
+        // 唯一一枚保证还没被发出去的数，写死一枚数是猜（#261）。
+        let top = 0
+        for (let i = 0; i < win.session.count; ++i) {
+            const one = win.session.pinId(i)
+            if (one > top) top = one
+        }
+        gaugeSay("mov-ghost", String(win.dragTarget(top + 1, 5, 5)))
+        gaugeSay("mov-epoch-ghost", String(win.session.move_epoch))
+        // §5.10.3 的 ghost 那一问长在搬动的 ghost 后面：同一枚还没被发出去的 id，透明度那一手
+        // 也必须交 0 **且不发号** —— 一扇已关的窗剩下的那一次滚轮不该让全场重读一遍（承
+        // `Session.dragPin` 那一判据，#455 的反面：0 不许扮成一次悄悄的成功）。
+        gaugeSay("op-epoch-ghost-before", String(win.session.opacity_epoch))
+        gaugeSay("op-ghost", String(win.opacityStepTarget(top + 1, false)))
+        gaugeSay("op-epoch-ghost", String(win.session.opacity_epoch))
+        // §5.10.4「重置」的 ghost 那一问，与上面两族同一枚还没被发出去的 id：菜单上那一行
+        // 是活的（用户可以让一扇已经关掉的窗的最后一次点击落到「重置视图」上），所以那只手
+        // 也必须交 0 **且不发号** —— 一扇没有窗的贴图不该让全场重读一遍自己该被转成什么样子。
+        // 三枚键同族同一形状：`rst-ghost` 关的是「交回几枚」，`rst-epoch-ghost` 关的是「那一声
+        // 扇没扇」，两问在 §5.10.3 那一族已经被拆开判过一次，这里只是换一只手（#281 的反面：
+        // 同一格问两只手，不是同一只手问两次）。
+        gaugeSay("rst-epoch-ghost-before", String(win.session.reset_epoch))
+        gaugeSay("rst-ghost", String(win.resetTarget(top + 1)))
+        gaugeSay("rst-epoch-ghost", String(win.session.reset_epoch))
+        // §5.10.1 第 2 步「依次单击多个贴图窗口」的那一记 Ctrl+单击。本腿没有鼠标也没有键盘
+        // （仓里一枚 SendInput 也没有），所以走的是同一处落点 `selectTarget`，只是把 id 换成
+        // **另一扇窗**的：这一格量的不是那句能不能选中，而是选中之外的那一声扇出没扇到。
+        //
+        // 别的窗的 id 从 `count` / `pinId(i)` 现读，和 `main.qml` 记账用的是同一条问法；本档
+        // 不写死任何 id。场上只有一枚贴图时 `other` 是 -1，那三枚键就一次也不说 —— 缺席由
+        // `sel_rows` 读成「这一格没有问」，不读成 0（#453）。
+        const total = win.session.count
+        let other = -1
+        for (let i = 0; i < total; ++i) {
+            const one = win.session.pinId(i)
+            if (one !== win.pinId) {
+                other = one
+                break
+            }
+        }
+        gaugeSay("sel-add-target", String(other))
+        if (other >= 0) {
+            // `sel-observe-on` 就在这一行里面说：`selectPin` 返回之前那一声 notify 已经扇完。
+            gaugeSay("sel-add", String(win.selectTarget(other, 1)))
+            gaugeSay("sel-add-count", String(win.session.selection_count))
+            gaugeSay("sel-add-self", String(win.view.selected))
+            // 这一格问的是 §5.10.2 那一句里唯一能被本窗判的那半：**这一拖那只手报了几枚**。
+            // 名单此刻是两枚（本窗 + 上面刚点名那一枚），被拖的是本窗，所以交回 2 才叫「搬几枚
+            // 由名单决定」；交回 1 就是那只手偷偷把批量降成了单枚。`mov-batch-target` 是这一问
+            // 的证人是谁，场上只有一枚贴图时这三枚键一次也不说，缺席由 `mov_rows` 读成「这一格
+            // 没有问」而不是读成 1（#453）。
+            gaugeSay("mov-batch-target", String(other))
+            gaugeSay("mov-batch", String(win.dragTarget(win.pinId, 23, 11)))
+            gaugeSay("mov-batch-epoch", String(win.session.move_epoch))
+            // §5.10.3 的第一次真机对面，长在批量那一拖**之后**而不是另起一段：这一问要的名单长度
+            // 恰好就是上面那两手跑出来的状态（本窗 + 刚点名那一枚 = 两枚）。另起一段自己再
+            // `selectPin` 会把 `sel-observe-on` 那一声多扇一遍，而尺不该给自己的证人添一枚
+            // （#281 那一族，承上面 §5.10.2 那一封信）。
+            //
+            // 本窗能判的四件：**交回几枚**（名单里有第二枚时必须交 2，交 1 就是那只手偷偷把批量
+            // 降成了单枚）、`opacity_epoch` 那枚号**走没走**、本窗那枚纹理号**动没动**（`opacity`
+            // 不进 `content_key`，动了就是每按一次「更透明」重编一张 PNG）、以及本窗自己的
+            // `view.opacity` 有没有跟着**重读**到那一步 —— 最后这一枚才是 `main.qml` 那一声明的
+            // 证人：窗没有自己 reload 过，值只可能是扇出之后 `redrawPins()` 替它问回来的。
+            //
+            // 判不了的逐名记进门档的 blocked，不拿弱尺冒充：①「另一扇窗自己说它被调了」——QML
+            // 里没有别的窗的 opacity，那一半的证人是 `state.rs` selftest 那一只手的四臂；
+            // ②「两枚起点不同时各自迈一步」——本窗只能报自己那一级，起点摆不开（这里先用绝对值
+            // 那一手把两枚钉在同一步上，反手才判得齐）。
+            const opStart = win.view.opacity
+            gaugeSay("op-start", String(opStart))
+            gaugeSay("op-epoch-before", String(win.session.opacity_epoch))
+            gaugeSay("op-rev-before", String(win.view.revision))
+            gaugeSay("op-set-batch", String(win.opacitySetTarget(win.pinId, 50)))
+            gaugeSay("op-opacity-set", String(win.view.opacity))
+            gaugeSay("op-epoch-set", String(win.session.opacity_epoch))
+            gaugeSay("op-rev-set", String(win.view.revision))
+            // 阶梯的两步走在一枚**内部**的起点（上面那手刚把它钉在 50）上，反手才必定回到原值：
+            // 阶梯在两端是停住的（20 再往下还是 20），拿一个可能贴着底的读数判「反手到位」就会
+            // 在环境给的那一端红成产品的错（#453 那一族：环境的答与产品的错要分开）。
+            gaugeSay("op-step-down", String(win.opacityStepTarget(win.pinId, false)))
+            gaugeSay("op-opacity-down", String(win.view.opacity))
+            gaugeSay("op-step-up", String(win.opacityStepTarget(win.pinId, true)))
+            gaugeSay("op-opacity-up", String(win.view.opacity))
+            // 归位用现读到的那枚 `opStart` 而不是写死 100：默认不透明度是配置里的那一格，写死
+            // 就是拿本档的假设去改用户的环境（#261）。
+            gaugeSay("op-set-back", String(win.opacitySetTarget(win.pinId, opStart)))
+            gaugeSay("op-opacity-end", String(win.view.opacity))
+            gaugeSay("op-epoch-end", String(win.session.opacity_epoch))
+            // §5.10.4「重置」的批量那一臂，长的还是上面那两手跑出来的名单（本窗 + 刚点名那一枚
+            // = 两枚）。这一格只问两件「单枚那一臂问不动」的事：**这一手报了几枚**（名单里有
+            // 第二枚时必须交 2，交 1 就是那只手偷偷把批量降成了单枚）和**一次批量只发一声**
+            //（两枚贴图各 sync 一遍，号却是一手一次 —— 与 `op-epoch-set` 同一形状）。
+            //
+            // 这里不重读 `zoom`：「把手势改过的那一档还回去」那一问在 `rst-lone-*` 那一格已经判过
+            // 一次了（#281：一枚判据一个格），批量这一臂的证据是枚数与号，不是几何。纹理号也不在
+            // 这里读，理由同一封。
+            gaugeSay("rst-batch-target", String(other))
+            gaugeSay("rst-batch-epoch-before", String(win.session.reset_epoch))
+            gaugeSay("rst-batch", String(win.resetTarget(win.pinId)))
+            gaugeSay("rst-batch-epoch", String(win.session.reset_epoch))
+        }
+        // 这枚就是「按 Esc」那扇门背后那只手：门（上面那一枚标准取消键序的 Shortcut）本腿按
+        // 不了，手按得。于是那只 Action 在场上一共有**三枚读者** —— 空白那一支、Esc 那一门、
+        // 和本腿。第三枚不是第三扇门，是同一只手多出来的一个测量读者；这件事由 `pin_check.rs`
+        // 那枚判据逐枚点名（它把 Esc 的 handler 单独数一遍），而不是靠把数改回去。
+        clearSelectionAction.trigger()
+        gaugeSay("sel-cleared-count", String(win.session.selection_count))
+        gaugeSay("sel-cleared-self", String(win.view.selected))
+        // 反手两拖，长在这里而不是紧跟那两拖：名单此刻是空的（`trigger()` 刚清过），所以每一拖走的
+        // 都是**单枚**那一路 —— 一次只搬被拖的那一扇，正好能按每一枚各自的累计位移一枚一枚抹回去
+        // （本窗被单枚拖 + 批量拖 = (40,20)，另一枚只被批量拖 = (23,11)）。若把它们挤在名单还两枚
+        // 的时候，任何一反手都是「按名单搬两枚」，本窗那一枚多出来的 (17,9) 就永远抹不掉：批量
+        // 反手的和只能同时归零两枚中的一枚。
+        //
+        // 这两拖也各发一次号，所以 `mov-epoch-undo` 读 e0+4（单枚、批量、反手两拖；ghost 那一拖不发）。
+        // 另一枚贴图被搬回哪儿，本窗读不到（QML 里没有别的窗的 pos），那一半的证人是 `pin window`
+        // 与 `pin pile *` 那三枚行：它们从产品这一侧数场上每一扇的落点。
+        if (other >= 0) {
+            gaugeSay("mov-undo-self", String(win.dragTarget(win.pinId, -40, -20)))
+            gaugeSay("mov-undo-other", String(win.dragTarget(other, -23, -11)))
+            gaugeSay("mov-epoch-undo", String(win.session.move_epoch))
+            gaugeSay("mov-pos-after", String(win.view.pos_x) + "," + String(win.view.pos_y))
+        }
+        // §5.9.18 的「销毁」「撤销」「影响数量」三格，加 §5.10.4 那一族里最后两只手。这一腿
+        // 取的是场上除本窗以外的那些枚，理由与第 55 项那一封同一枚：**说这些话的窗不能正是被
+        // 带走的那一扇** —— 窗一走，`syncPins()` 就把它从名单里摘掉，后面没有腿了。
+        //
+        // 还有一枚例外，写在这里而不是埋在代码里：`win.gauge[10]` 是那扇会动的贴图，它自己
+        // 长着一段腿（§5.9.14），那段腿的计时器绑的是「本窗 id == 那一格」。把它销毁再撤销
+        // 回来，新造的那一扇会以为轮到自己说话，于是 `gif-frames` 在 `gif-turns` 之后重说一遍、
+        // 还顺手在量规要数窗的时候开着一枚 popup。这一条是**量规**的约束，不是产品的：用户
+        // 销毁会动的贴图完全可以（`state::destroy_pin` 对四枚贴图一视同仁），付代价的是这段排期。
+        //
+        // 名单里点几枚由 `selectTarget` 那两扇门决定，本窗不数（窗的章程）；交回的枚数全部
+        // 由桥侧那一只手的答复读，包括菜单字面上那一个数。
+        const victim = []
+        for (let i = 0; i < win.session.count; ++i) {
+            const one = win.session.pinId(i)
+            if (String(one) !== String(win.pinId) && String(one) !== String(win.gauge[10])) {
+                victim.push(one)
+            }
+        }
+        // 场上凑不出两枚时这一格一次也不说：`des_rows` 把它们读成「这一格没有问」，而不是
+        // 读成一次交回 0 的销毁（#453/#433 —— 环境给不出证人，不是产品答错）。
+        if (victim.length >= 2) {
+            gaugeSay("des-target-a", String(victim[0]))
+            gaugeSay("des-target-b", String(victim[1]))
+            gaugeSay("des-pile-before", String(win.session.count))
+            // 第一问：同一张表的两臂。名单里是**别的**两枚、本窗不在名单里，所以「销毁本窗
+            // 这一枚」答 1；而「销毁 victim[0] 这一枚」答 2 —— 带走几枚由名单定，不由哪一扇
+            // 窗被点定。
+            win.selectTarget(victim[0], 0)
+            win.selectTarget(victim[1], 1)
+            gaugeSay("des-reach-self", String(win.session.destroyCountFor(win.pinId)))
+            gaugeSay("des-reach-batch", String(win.session.destroyCountFor(victim[0])))
+            // 第二问：那一枚数**印不印在字面上**。这一手里名单换成 {本窗, victim[0]}，于是
+            // `destroyCountFor(本窗)` 答 2，而 `destroyReach` 进门时是 1 —— 字面读回 2 只有
+            // `onAboutToShow` 真跑过这一条路（一枚读不出差别的最初值就是 #433 那一族）。
+            // 这一手不点下去：点了带走的就是本窗。
+            win.selectTarget(win.pinId, 0)
+            win.selectTarget(victim[0], 1)
+            pinMenu.open()
+            gaugeSay("des-menu-shape", "open=" + String(pinMenu.visible)
+                     + ";reach=" + String(win.destroyReach)
+                     + ";undo=" + String(undoItem.visible))
+            gaugeSay("des-menu-label", destroyItem.text)
+            gaugeSay("des-undo-absent", String(undoItem.visible))
+            pinMenu.close()
+            // 第三问：按下去真带走几枚。名单换回 {victim[0], victim[1]}（本窗不在里面），
+            // 点的是 `victim[0]` 那一级 —— 批量那一臂的act。
+            win.selectTarget(victim[0], 0)
+            win.selectTarget(victim[1], 1)
+            gaugeSay("des-batch", String(win.destroyTarget(victim[0])))
+            gaugeSay("des-pile-gone", String(win.session.count))
+            gaugeSay("des-trashed", String(win.session.trashed))
+            // 撤销那一行只在账上欠着东西时出现（菜单里那一枚死行是装饰）。
+            // 这一枚读数必须**在菜单开着的时候**取：`MenuItem.visible` 跟着祖先走，菜单一关
+            // 它就恒为 false，读到的就不是「这一行在不在」而是「菜单开没开」。上一趟就是在
+            // 关着的时候读的（`p125_pin_p134doorA.log` 第 140 行：账上欠 2 枚而它答 false，
+            // 同一档第 133 行那句 `undo=false` 是账还空着时开菜单读的——两枚读的不是同一件事）。
+            pinMenu.open()
+            gaugeSay("des-undo-shown", String(undoItem.visible))
+            pinMenu.close()
+
+            // ghost：一枚还没被发出去的 id（计划第五格就是这一枚），那一手交 0 **且不清账**
+            // —— 清了对用户就是「点了一枚不存在的贴图，结果把刚才那批撤销的机会弄丢了」。
+            gaugeSay("des-ghost", String(win.destroyTarget(Number(win.gauge[5]))))
+            gaugeSay("des-trashed-kept", String(win.session.trashed))
+            // 第四问：回头路。还回来的是**成员**，所以 `count` 跟着走，而 `trashed` 归零；
+            // 账空了再按一次撤销交回 0 而不是把上一批还第二次（只认最近一手）。
+            gaugeSay("des-undo", String(win.undoDestroyTarget()))
+            gaugeSay("des-pile-back", String(win.session.count))
+            gaugeSay("des-trashed-after", String(win.session.trashed))
+            gaugeSay("des-undo-again", String(win.undoDestroyTarget()))
+            // 名单收回到空：本腿之后的每一格（`menu` 往上那几枚读对话框的）都跑在
+            // 「没有一枚在名单里」这个前提下，用的是 `sel` 那一腿同一只手。这一句故意不写出
+            // 下一行的字面串：那枚判据数的是**读者**，把字面串抄进注释会让尺多读出一枚。
+            clearSelectionAction.trigger()
+        }
+        // §5.11 独显的四臂，长在销毁那一族之后而不是另起一段：此刻场上是满的（上面刚撤销回来）、
+        // 名单是空的（`trigger()` 刚清过），而独显要的正是这个起点 —— 四臂的每一枚读数都由它
+        // 决定，别处再摆一遍就是给尺多添一枚证人（#281 的反面）。
+        //
+        // 本窗判得了的，逐件都是 §5.11 自己的话：
+        // ①「应记录进入 Solo 前各贴图的显示状态」与 ②「退出后应恢复原状态，而不是无条件显示
+        // 全部」—— 第二臂把本窗自己放进**不被留着**那一侧，进门时记下自己的 `view.opacity`，
+        // 退出后再读同一格：不等于起点就是没恢复。
+        // ③「在屏幕提示中显示当前处于 Solo 状态」—— 读的是 `session.status` 上产品自己那句
+        // 活话（`HintWindow.qml` 绑的就是那一格），不是本腿替它编的一句。
+        // ④「用户再次执行 Solo 或退出命令」—— 同一枚 `soloTarget` 按两下，第二下交回的是
+        // **放回了**几枚，而 `solo_kept` 归零。
+        //
+        // 判不了的逐名记进门档的 blocked：别的窗各自被压暗/藏成什么样，QML 里没有第二扇窗的
+        // `view`；那一半的证人是 `state.rs` 的 selftest，以及 `pin pile *` 那几枚从产品外侧数
+        // 桌面上还剩几扇窗的行 —— 藏起来的那些枚自此不在场，那是**别人**也看得见的唯一证据。
+        if (victim.length >= 2) {
+            gaugeSay("solo-dims", String(win.session.soloDims()))
+            gaugeSay("solo-pile", String(win.session.count))
+            gaugeSay("solo-reach-self", String(win.session.soloCountFor(win.pinId)))
+            gaugeSay("solo-epoch-before", String(win.session.solo_epoch))
+            // 第一臂：留着本窗。被带走的是**别人**，所以本窗这一句全程看得见。
+            gaugeSay("solo-enter", String(win.soloTarget(win.pinId)))
+            gaugeSay("solo-epoch-enter", String(win.session.solo_epoch))
+            gaugeSay("solo-kept", String(win.session.solo_kept))
+            gaugeSay("solo-hidden-self", String(win.view.solo_hidden))
+            gaugeSay("solo-live-self", String(win.view.live))
+            gaugeSay("solo-said", win.session.status)
+            pinMenu.open()
+            gaugeSay("solo-menu-shape", "open=" + String(pinMenu.visible)
+                     + ";reach=" + String(win.soloReach)
+                     + ";way=" + win.soloWay)
+            gaugeSay("solo-menu-label", soloItem.text)
+            pinMenu.close()
+            // 同一枚入口的第二下：PRD 步骤 4 那一句「再次执行 Solo 或退出命令」。
+            gaugeSay("solo-exit", String(win.soloTarget(win.pinId)))
+            gaugeSay("solo-epoch-exit", String(win.session.solo_epoch))
+            gaugeSay("solo-kept-after", String(win.session.solo_kept))
+            // 第二臂：留着**别人**。本窗这一句被带走，于是它读回来的每一格都只可能是扇出替它
+            // 问的（本腿一次也没 `reload` 过自己）—— `main.qml` 那声明 `soloTick` 的证人就是这个
+            // 形状，与 `op-opacity-set` 同一封信。
+            gaugeSay("solo-target-other", String(victim[0]))
+            const soloOpStart = win.view.opacity
+            gaugeSay("solo-op-start", String(soloOpStart))
+            gaugeSay("solo-enter-other", String(win.soloTarget(victim[0])))
+            gaugeSay("solo-hidden", String(win.view.solo_hidden))
+            gaugeSay("solo-live", String(win.view.live))
+            gaugeSay("solo-opacity", String(win.view.opacity))
+            gaugeSay("solo-epoch-other", String(win.session.solo_epoch))
+            gaugeSay("solo-exit-other", String(win.soloTarget(victim[0])))
+            gaugeSay("solo-op-end", String(win.view.opacity))
+            gaugeSay("solo-hidden-end", String(win.view.solo_hidden))
+            gaugeSay("solo-live-end", String(win.view.live))
+            // 第三臂：空名单上按热键那一支（`toggleSoloSelection`，`ctrl+shift+s` 的唯一落点）。
+            // core 直接拒绝，于是这一手交 0、**不发号**，屏幕上出现的是那句拒绝而不是
+            // 「全场暗掉」—— §5.11 步骤 1 没满足时该产品的是这一句。
+            clearSelectionAction.trigger()
+            gaugeSay("solo-refuse-before", String(win.session.solo_epoch))
+            gaugeSay("solo-refuse", String(win.session.toggleSoloSelection()))
+            gaugeSay("solo-refuse-epoch", String(win.session.solo_epoch))
+            gaugeSay("solo-refuse-kept", String(win.session.solo_kept))
+            gaugeSay("solo-refuse-said", win.session.status)
+            // 第四臂：一枚还没被发出去的 id（`win.gauge[5]`，与 `des-ghost` 同一枚证人）。
+            // 菜单上那一行对它是活的，所以那只手也必须交 0、不动别人的窗、也不把本窗自己
+            // 记成「留着的一枚」（#455：0 不许扮成一次悄悄的成功）。
+            gaugeSay("solo-ghost", String(win.soloTarget(Number(win.gauge[5]))))
+            gaugeSay("solo-epoch-ghost", String(win.session.solo_epoch))
+            gaugeSay("solo-ghost-kept", String(win.session.solo_kept))
+            // 名单与独显都收回到本腿进门时的样子：后面每一格（读对话框的那几枚）跑在
+            // 「没有一枚在名单里、也没有独显压着」的前提下。
+            clearSelectionAction.trigger()
+        }
         gaugeSay("menu", saveAsItem.text)
         gaugeSay("filters", saveAs.nameFilters.join(";;"))
         // The members are read rather than assumed: `selectedNameFilter` came back as
@@ -170,6 +660,13 @@ Window {
         gaugeSay("png-url", url)
         gaugeSay("png", win.session.savePin(win.pinId, url, ""))
         gaugeSay("jpg", win.session.savePin(win.pinId, win.gauge[2], ""))
+        // §5.9.16 的两条门（菜单那一项、Ctrl+C）如今点的是同一枚 Action，所以这一腿不另写
+        // 一遍 `copyPin`：它 `trigger()` 的就是那枚 Action，然后把 `session.status` 上那句用户
+        // 会看见的话原样交回去——和 §5.9.13 起 `accept-was` 用的是同一种读法。开不开
+        // `output.copy_as_file` 由产品自己那份配置决定，这一腿两种话都只负责供出，判那两句不同
+        // 的话的是 `pin_check` 的 `copy_rows`（它读的是同一份活配置，不是本轮的记忆）。
+        copyAction.trigger()
+        gaugeSay("copy-drawn", win.session.status)
         // The two legs that have to fail: an id the set never handed out, so the
         // door answers before it reaches the clipboard or the disk.
         gaugeSay("never-copy", win.session.copyPin(Number(win.gauge[5])))
@@ -342,6 +839,160 @@ Window {
         gaugeSay("done", win.gauge[0])
     }
 
+    // §5.9.14's leg, and the only leg of this run that belongs to a window other than the
+    // subject's: it is armed by the delegate whose `pinId` is the plan's field 10, i.e. the one
+    // window that has frames at all. It reads nothing Win32 owns - frames, play state and the
+    // menu's items are Qt-side values the state machine filled at `assign` - which is why it
+    // can start at the plan's eighth-of-a-delay (field 11) instead of the full exposure wait
+    // field 6 is for. That early start is what gives these eight keys a place in
+    // `pin_check::PIN_SCHEDULE` decided by arithmetic rather than by which of two timers expiring
+    // in the same event-loop step Qt dispatches first.
+    function gifRunLeg() {
+        win.gifArmed = true
+        win.gifTurns = 0
+        win.gifSeen = ({})
+        gaugeSay("gif-frames", String(win.view.gif_frames))
+        gaugeSay("gif-frame", String(win.view.gif_frame))
+        gaugeSay("gif-playing", String(win.view.gif_playing))
+        // The menu's own read-back, taken twice: once with the door shut, which is what
+        // P128's C 档 found answering 0 on *both* windows, and once with it open, which is the
+        // reading the graded row is allowed to rest on. Opening is the product's own call - a
+        // user's right-click reaches the same `Menu.open` - so the second count is not a gauge
+        // invention, it is the menu the user would see.
+        gaugeSay("gif-items-closed", String(win.gifMenuItemCount()))
+        pinMenu.open()
+        gifTail.restart()
+    }
+
+    // One wait later, which is the whole of the wait's reason: `gifClock` is the product's own
+    // timer and this leg does not drive it - it only counts what the event loop did to the
+    // frame while nobody was calling anything. A leg that called `gifTick` itself would be
+    // measuring this file, exactly as the CLI selftest does; the claim §5.9.14 makes to a user
+    // is that the picture changes by itself, and only a witness taken from outside the call
+    // can say that.
+    function gifTailLeg() {
+        gaugeSay("gif-items", String(win.gifMenuItemCount()))
+        // The mechanism, in the reading's own words rather than in a comment: whether the
+        // popup says it is shown, how many items it counts, and how many children its content
+        // item has. Those three are what tells a future round whether `gif-items` is a count
+        // of realized rows or of declared ones.
+        gaugeSay("gif-menu-shape", "open=" + String(pinMenu.visible)
+                 + ";count=" + String(pinMenu.count)
+                 + ";cc=" + String(pinMenu.contentChildren.length))
+        gaugeSay("gif-turns", String(win.gifTurns))
+        gaugeSay("gif-distinct", String(Object.keys(win.gifSeen).length))
+        win.gifArmed = false
+        // Shut before the census. `close-before` counts this process's top-levels and the
+        // `pin pile` rows match them against four rects; a popup this leg opened and nobody
+        // closed would be a fifth window, and the row would blame the pin.
+        pinMenu.close()
+    }
+
+    // The same two readings on the window that has *no* clip. §5.9.14's counter-example is
+    // that this pin came from `add_demo`, so the section has to read zero here - and P128's
+    // C 档 showed that a shut menu reads zero on *both* windows, which makes a zero taken
+    // that way no counter-example at all. So this leg opens its own menu the way the clip's
+    // does and reports the pair, two hundred and fifty milliseconds of arithmetic ahead of
+    // the clip's tail; `pin_check::GIF_STILL_MS` says why the arm is not the clip's arm.
+    function gifStillRunLeg() {
+        gaugeSay("gif-items-still-closed", String(win.gifMenuItemCount()))
+        // §5.9.15's shut reading, taken on the same turn as the clip's: a row that is not
+        // realized cannot be counted, and P128's C 档 is the reason the *closed* reading is
+        // kept next to the open one instead of being dropped as noise.
+        gaugeSay("alpha-closed", win.alphaReport())
+        pinMenu.open()
+        stillTail.restart()
+    }
+
+    // Shut again on the same turn it speaks, for the same reason the clip's tail does: the
+    // census at `close-before` counts this process's top-levels, and a popup nobody closed
+    // would be one more window than the four rects it matches.
+    function gifStillTailLeg() {
+        gaugeSay("gif-items-still", String(win.gifMenuItemCount()))
+        // The open reading, which is the graded half: four rows, one of them marked.
+        gaugeSay("alpha-open", win.alphaReport())
+        // 步骤 2/3 on this window. Three writes rather than one: the board mode, the
+        // transparent mode, and the mode the leg found - because §5.9.15's promise is about
+        // 点击区域, and only two of those four rows have different answers to give. Reading
+        // the before-state instead of setting it would tie the row to whatever `pin.alpha_bg`
+        // this user's config says, and a run that reddened because someone prefers a
+        // checkerboard is grading a person, not a product.
+        const found = win.view.alpha_bg
+        const turned = win.view.setAlphaBg(2)
+        const board = win.alphaReport()
+        const cleared = win.view.setAlphaBg(0)
+        const transparent = win.alphaReport()
+        const back = win.view.setAlphaBg(found)
+        gaugeSay("alpha-turn", "found=" + String(found)
+                 + ";took=" + String(turned)
+                 + ";board=" + board
+                 + ";cleared=" + String(cleared)
+                 + ";transparent=" + transparent
+                 + ";restored=" + String(back)
+                 + ";after=" + win.alphaReport())
+        pinMenu.close()
+    }
+
+    // How many of §5.9.14's 播放控制 items this window is actually showing. Each of the seven is
+    // named by `id` and read by `visible`, so the count is taken from the items themselves
+    // rather than from the condition they share - a window that reuses the condition here would
+    // be grading this file's arithmetic, not the menu a user sees.
+    function gifMenuItemCount() {
+        const items = [gifPauseItem, gifPrevItem, gifNextItem, gifFirstItem,
+                       gifSlowItem, gifFastItem, gifOriginalItem]
+        let n = 0
+        for (const it of items) {
+            if (it.visible) {
+                n += 1
+            }
+        }
+        return n
+    }
+
+    // §5.9.15's four 背景模式 rows, counted the same way: from the items' own `visible`. The
+    // section is on the menu only for a picture with a hole in it, so the count is the read-back
+    // of that condition on a live window rather than a restatement of it.
+    function alphaMenuItemCount() {
+        const items = [alphaTransparentItem, alphaPseudoItem, alphaDarkItem, alphaLightItem]
+        let n = 0
+        for (const it of items) {
+            if (it.visible) {
+                n += 1
+            }
+        }
+        return n
+    }
+
+    // How many of the four say "this is the mode". Four is a section that cannot be read and
+    // none is a mode the menu does not know it is in, so this is graded as a count rather than
+    // as which one - `mode=` in the same report names the one.
+    function alphaMarkedCount() {
+        const items = [alphaTransparentItem, alphaPseudoItem, alphaDarkItem, alphaLightItem]
+        let n = 0
+        for (const it of items) {
+            if (it.checked) {
+                n += 1
+            }
+        }
+        return n
+    }
+
+    // One §5.9.15 reading of this window, in one shape so the three places it is taken differ
+    // only by the moment. `hole`/`body` are two points of the demo picture: its own 2 px
+    // transparent margin, and a pixel inside it - the two answers the section promises change
+    // together with the mode, read through the same call the press handler makes. `rev` is in
+    // it too, because 显示那一半 of the promise is a new texture going out, and a mode that
+    // repaints nothing is the failure this reading exists to catch.
+    function alphaReport() {
+        return "holes=" + String(win.view.has_transparent_pixels)
+                + ";items=" + String(win.alphaMenuItemCount())
+                + ";marked=" + String(win.alphaMarkedCount())
+                + ";mode=" + String(win.view.alpha_bg)
+                + ";rev=" + String(win.view.revision)
+                + ";hole=" + String(win.view.hitAt(0, 0))
+                + ";body=" + String(win.view.hitAt(4, 4))
+    }
+
     // `selectedNameFilter` three times, because it is read-only (assigning to it is a
     // hard `TypeError`, P38's probe E) and the three readings are the story: empty
     // before any dialog, the shell's default while one is up, and whatever the accepted
@@ -375,7 +1026,7 @@ Window {
         // Stopped for every delegate that is not the planned pin, and for every
         // ordinary session: `pinId` is -1 until `assign` and a plan with no gauge run
         // is one field long, not ten.
-        running: win.gauge.length === 10 && String(win.gauge[4]) === String(win.pinId)
+        running: win.gauge.length === 13 && String(win.gauge[4]) === String(win.pinId)
         onTriggered: win.runGauge()
     }
 
@@ -407,6 +1058,65 @@ Window {
         onTriggered: win.closeAfterLeg()
     }
 
+    // §5.9.14's two waits. The start comes from field 11 and the tail from field 6, both of
+    // them written by `pin_check` - the eighth-of-a-delay is that file's arithmetic, and a
+    // second copy here would be a schedule with two authors.
+    Timer {
+        id: gifLeg
+        interval: Number(win.gauge[11]) || 50
+        repeat: false
+        // Only the window that owns the clip arms this: every other delegate of this run reads
+        // a still picture and would report 0 frames for a leg that was never its question.
+        running: win.gauge.length === 13 && String(win.gauge[10]) === String(win.pinId)
+        onTriggered: win.gifRunLeg()
+    }
+
+    Timer {
+        id: gifTail
+        interval: Number(win.gauge[6]) || 400
+        repeat: false
+        onTriggered: win.gifTailLeg()
+    }
+
+    // §5.9.14's counter-example, on the window that has no clip. Both the arm and the tail
+    // take field 12, so the shut reading lands at a hundred and the open one at two hundred:
+    // after the clip's shut reading and before this window's own `menu`. Field 11 is not
+    // used here because two timers expiring in the same event-loop step have a dispatch order
+    // nobody can read off the source - which is the argument `pin_check::GIF_ARM_MS` itself
+    // was written for.
+    Timer {
+        id: stillLeg
+        interval: Number(win.gauge[12]) || 100
+        repeat: false
+        // Only the planned pin reads its own menu for the counter-example: the clip's leg is
+        // the graded half, and a third window would speak a key the schedule has no place for.
+        running: win.gauge.length === 13 && String(win.gauge[4]) === String(win.pinId)
+        onTriggered: win.gifStillRunLeg()
+    }
+
+    Timer {
+        id: stillTail
+        interval: Number(win.gauge[12]) || 100
+        repeat: false
+        onTriggered: win.gifStillTailLeg()
+    }
+
+    // §5.9.14: the clip's clock. This window only ever says "so much time went
+    // by" - which frame that adds up to, and whether it is the last of them, is
+    // the state machine's answer, and the new picture comes back as a revision.
+    //
+    // 20 ms is a polling rate, not a frame delay: no clip is asked to hold still
+    // for it. `gif_frames > 1` is the half that keeps a still's window from
+    // asking at all, so the encoder is never reached fifty times a second for a
+    // picture that has no second frame.
+    Timer {
+        id: gifClock
+        interval: 20
+        repeat: true
+        running: win.view.gif_playing && win.view.gif_frames > 1
+        onTriggered: win.view.gifTick(gifClock.interval)
+    }
+
     // The gauge's witness that the signal fired, taken from outside the door so the
     // `onAccepted` below stays the one statement §5.9.17 asks for. It is not the whole
     // claim: this object cannot write a file, so the bytes at `dialog.png` are what say
@@ -419,10 +1129,10 @@ Window {
     Connections {
         target: saveAs
         function onAccepted() {
-            if (win.gauge.length === 10 && win.dlgLeg) win.gaugeSay("dlg-accepted", String(saveAs.selectedFile))
+            if (win.gauge.length === 13 && win.dlgLeg) win.gaugeSay("dlg-accepted", String(saveAs.selectedFile))
         }
         function onRejected() {
-            if (win.gauge.length === 10 && win.dlgLeg) win.gaugeSay("dlg-rejected", String(saveAs.selectedFile))
+            if (win.gauge.length === 13 && win.dlgLeg) win.gaugeSay("dlg-rejected", String(saveAs.selectedFile))
         }
     }
 
@@ -430,6 +1140,17 @@ Window {
         target: win.view
         function onTopmostChanged() { win.restyle() }
         function onClick_throughChanged() { win.restyle() }
+        // §5.9.14's witness, taken from outside every call this leg makes: nothing in
+        // `gifRunLeg`/`gifTailLeg` ticks the clip, so what arrives here arrived because
+        // `gifClock` and the event loop did it. Counted only while a leg is watching
+        // (`gifArmed`), and counted two ways - how many times the signal came, and how many
+        // different frame indices were on the window while it did.
+        function onGif_frameChanged() {
+            if (win.gifArmed) {
+                win.gifTurns += 1
+                win.gifSeen[String(win.view.gif_frame)] = true
+            }
+        }
     }
 
     // The picture. `revision` is inside the URL, so a content change is the only
@@ -447,6 +1168,39 @@ Window {
         source: win.view.image_key !== ""
                 ? "image://falconshot/" + win.view.image_key
                 : ""
+    }
+
+    // §5.10.1 步骤 3 的「统一选中状态」：这一圈边绑的就是状态机那份名单里属于本窗的那一格。
+    // 窗侧**不另存名单**——`visible` 之外没有第二处读它，所以「所有选中对象显示同一种状态」
+    // 这件事只有一份数据可跟。填色是 transparent：一枚描边不该把底下那些本来能看穿像素
+    // （§5.9.15）堵成不透明。
+    Rectangle {
+        id: selRing
+        anchors.fill: parent
+        visible: win.view.selected
+        color: "transparent"
+        border.color: "#cc1e90ff"
+        border.width: 3
+
+        // §5.10.1 步骤 3 的真机证人只能由**被描边的那扇窗**自己开口。主体那一腿读别人的
+        // `view.selected` 读到的是 Rust 那份权威值（`view_data`），扇出有没有跑到这一扇窗它
+        // 分不出来；而这一枚 handler 读的是本窗自己那枚绑定算完的结果，它亮 = `selection_epoch`
+        // 那一声经 `main.qml` 的 `redrawPins()` 回到本窗的 `view.reload()`。
+        //
+        // 只在「本窗不是量规主体」时说话：主体自己的亮/灭由它那一腿的 `sel-*-self` 两格读，
+        // 两处都报就成了同一件事两枚数（#281）。门是既有那两枚形状（日程在场 且 不是主体）。
+        //
+        // 两枚键而不是一枚 `visible ? "…" : "…"`：`qml_leg_keys` 认的是 `gaugeSay(` 后面紧跟
+        // 的那一串字面量，写在三元的分支里日程表就少读两枚键 —— 改名也追不到（#316 同族）。
+        onVisibleChanged: {
+            if (win.gauge.length === 13 && String(win.gauge[4]) !== String(win.pinId)) {
+                if (visible) {
+                    win.gaugeSay("sel-observe-on", String(win.pinId) + "=" + String(visible))
+                } else {
+                    win.gaugeSay("sel-observe-off", String(win.pinId) + "=" + String(visible))
+                }
+            }
+        }
     }
 
     // §5.9.11 step 2: the right-drag selection, shown while it is being drawn.
@@ -470,6 +1224,10 @@ Window {
         property real startX
         property real startY
         property bool bandOn: false
+        // A left press that landed in a hole (§5.9.15): recorded so the rest of that
+        // press - the moves that follow it, the release - is refused as one gesture
+        // rather than re-asked at every stage.
+        property bool refused: false
 
         // `globalX`/`globalY` were the Qt 5 names and are not on this type - qmllint:
         // `Member "globalX" not found on type "QQuickMouseEvent"`. Its members are x,
@@ -480,8 +1238,28 @@ Window {
             return dragArea.mapToGlobal(event.x, event.y)
         }
 
+        // §5.9.15's 点击区域 for this window: the cursor arrives in device-independent
+        // units and the state machine is asked in physical ones, the same conversion
+        // `freeThumbnailWindow` and `wheelZoom` are handed. 透明模式 answers false inside a
+        // hole; 伪透明 and the two boards answer true everywhere, so this is the one place
+        // the mode is asked about a press.
+        function takesClick(event) {
+            return win.view.hitAt(Math.round(event.x * win.dpr),
+                                  Math.round(event.y * win.dpr))
+        }
+
         onPressed: (event) => {
             win.view.reload()
+            dragArea.refused = false
+            if (event.button === Qt.LeftButton && !dragArea.takesClick(event)) {
+                dragArea.bandOn = false
+                dragArea.refused = true
+                // §5.10.1 步骤 4 的第一扇门。这一支本来就已经是「这扇窗不吃这一击」——
+                // 透明模式里的那个洞就是本窗唯一一块**空白**，所以退出多选就长在这里，
+                // 而不是另找一处"空白"（其余三档模式整窗都吃点击，窗内压根没有空白可点）。
+                clearSelectionAction.trigger()
+                return
+            }
             const g = globalAt(event)
             dragArea.lastX = g.x
             dragArea.lastY = g.y
@@ -495,6 +1273,9 @@ Window {
         }
 
         onPositionChanged: (event) => {
+            if (dragArea.refused) {
+                return
+            }
             if (dragArea.bandOn && (event.buttons & Qt.RightButton)) {
                 band.x = Math.min(dragArea.startX, event.x)
                 band.y = Math.min(dragArea.startY, event.y)
@@ -509,7 +1290,7 @@ Window {
                 var dx = Math.round((g.x - dragArea.lastX) * win.dpr)
                 var dy = Math.round((g.y - dragArea.lastY) * win.dpr)
                 if (dx !== 0 || dy !== 0) {
-                    win.view.dragMove(dx, dy)
+                    win.dragTarget(win.pinId, dx, dy)
                     dragArea.lastX += dx / win.dpr
                     dragArea.lastY += dy / win.dpr
                 }
@@ -517,6 +1298,24 @@ Window {
         }
 
         onReleased: (event) => {
+            // 按下那一击被拒过（落在那个洞里），这一整个手势就不算一次选中 —— 拒的是手势，
+            // 不是这一刻的按键，所以要在把 `refused` 抹掉之前问。
+            var refusedThis = dragArea.refused
+            dragArea.refused = false
+            if (event.button === Qt.LeftButton) {
+                if (refusedThis) {
+                    return
+                }
+                var moved = Math.abs(event.x - dragArea.startX)
+                          + Math.abs(event.y - dragArea.startY)
+                // 没拖动才是单击（§5.10.1 步骤 1/2）。拖动不动名单：§5.9.1 那一手要的是位移，
+                // 把"拖完一扇窗"也算成一次选中，就会让搬动顺手提走别人的边。
+                // Ctrl 按着 = 加/减，没按 = 只留这一枚；两只手势共用这**一处**落点。
+                if (moved < 4) {
+                    win.selectSelf(event.modifiers & Qt.ControlModifier ? 1 : 0)
+                }
+                return
+            }
             if (!dragArea.bandOn) {
                 return
             }
@@ -541,9 +1340,18 @@ Window {
         // §5.9.2 - the pixel under the cursor is the one that stays put.
         // §5.9.4 - the same wheel with Ctrl held is opacity instead of zoom, and
         // how low it may go is the state machine's floor, not this file's.
+        // §5.10.3 - 这一手从 P133 起走的是 `Session.stepPinOpacity`：滚轮落在哪一扇窗上，不决定
+        // 这次调整改几枚贴图，**名单**才决定（判据在 Rust 那一侧只写一次，`batch_hand`）。本窗不
+        // 在这里分「调一枚」与「调一批」—— 那件事本窗的章程说了它不决定，而分岔一旦有两处，
+        // 场上一处改了判据另一处没改就是 #281 那一族。
+        // §5.9.14 - and with Alt held it is the clip's 播放速度: the section asks
+        // for the wheel to adjust it, and plain and Ctrl were spoken for first.
+        // Alt only answers for a pin that has frames to run through.
         onWheel: (wheel) => {
-            if (wheel.modifiers & Qt.ControlModifier) {
-                win.view.opacityStep(wheel.angleDelta.y > 0)
+            if (wheel.modifiers & Qt.AltModifier && win.view.gif_frames > 1) {
+                win.view.gifSpeedStep(wheel.angleDelta.y > 0)
+            } else if (wheel.modifiers & Qt.ControlModifier) {
+                win.opacityStepTarget(win.pinId, wheel.angleDelta.y > 0)
             } else {
                 win.view.wheelZoom(wheel.angleDelta.y > 0,
                                    Math.round(wheel.x * win.dpr),
@@ -555,7 +1363,13 @@ Window {
         // §5.9.10 - Shift+double-click is the shortcut the requirement names.
         // Leaving a thumbnail mode is the menu's, or another press of the same
         // shortcut for the fixed one; a plain double-click is not spoken for.
+        // A double-click the pin refused to take (§5.9.15: both presses fell in a hole)
+        // is not a shortcut either - the flag is the second press's answer, which is the
+        // one this gesture is made of.
         onDoubleClicked: (event) => {
+            if (dragArea.refused) {
+                return
+            }
             if (event.modifiers & Qt.ShiftModifier) {
                 win.view.toggleThumbnail()
             }
@@ -564,12 +1378,71 @@ Window {
 
     // The single-pin menu (§5.9.12 to §5.9.18). §5.10's batch menu acts on a
     // selection instead of on this window and is Phase 2.
+
+    // §5.9.16 step 2 names two doors to one thing - 「按 `Ctrl+C` 或选择"复制图片"」 - so
+    // the thing is declared once and both doors point at it. An `Action` rather than a
+    // second copy of the call, because a duplicated `onTriggered` is a second route that
+    // can drift, and `trigger()` is the half a `Shortcut` can fire.
+    Action {
+        id: copyAction
+
+        text: "复制图片"
+        onTriggered: win.session.copyPin(win.pinId)
+    }
+
+    // `StandardKey.Copy` rather than the string "Ctrl+C": a "copy" chord depends on the
+    // platform and the layout, and this type's own answer is the one that already accounts
+    // for both. Window scope on purpose - `ApplicationShortcut` would take Ctrl+C away from
+    // every other window in the process, and the PRD puts the gesture on the 贴图.
+    // 一枚标准键序在 Qt 里可以对应**多枚** native 键绑定（`StandardKey.Copy` 这一路就有
+    // Ctrl+C 与 Ctrl+Ins 两枚），而 `sequence:` 只抬第一枚 —— Qt 会为这一手在每趟跑完时抱怨
+    // 一句，而那一句正是量规 `no qml complaints` 那枚行判红的证人（盘证：从
+    // `p125_pin_p130doorD.log` 起就红，本轮 `p125_pin_p131doorF.log` 两臂皆红）。改用
+    // `sequences:`，把这一路的**全部**键绑定都接上，而不是只接第一枚。
+    Shortcut {
+        sequences: [StandardKey.Copy]
+        context: Qt.WindowShortcut
+        onActivated: copyAction.trigger()
+    }
+
+    // §5.10.1 步骤 4 要的是**两只门、一只手**：「点空白区域」与「按 Esc」都退出多选，所以
+    // 与 `copyAction` 同一形状 —— 声明一次，两扇门都 `trigger()`，而 `win.session.clearSelection`
+    // 在场上一处也不会多。它不挂进菜单（§5.10 的批量菜单是 Phase 2），但**不能**因此
+    // `enabled: false`：一枚 disabled 的 Action 的 `trigger()` 是空转，两扇门就一起哑了。
+    Action {
+        id: clearSelectionAction
+
+        text: "取消选中"
+        onTriggered: win.session.clearSelection()
+    }
+
+    // Esc 这一支走的是 Qt 的**标准取消键序**，与上面那枚复制用的标准键序同一形状：键位交给
+    // Qt 按平台与键盘布局自己答，本档不硬写码点 —— 硬写一枚码点还会把「Esc」这一问写成
+    // 只在这一种布局上成立的答案。同一枚理由也把它从 `sequence:` 抬进 `sequences:`。
+    Shortcut {
+        sequences: [StandardKey.Cancel]
+        context: Qt.WindowShortcut
+        onActivated: clearSelectionAction.trigger()
+    }
+
     Menu {
         id: pinMenu
 
-        MenuItem { text: "复制图片"; onTriggered: win.session.copyPin(win.pinId) }
+        // §5.10.4 的影响数量在这一刻问一次桥侧（见上面 `destroyReach` 那一封信）。菜单每开一次
+        // 问一次，所以名单在两趟开菜单之间变了也不会印错 —— 这一句不是装饰：量规那一腿就是
+        // 先 `pinMenu.open()` 再读 `des-reach-*` 的数，读的正是这一行写进去的那一格。
+        //
+        // §5.11 的两格显示缓存走的是同一时刻、同一理由：独显开着与关闭着之间隔着的可能就是
+        // 一趟开菜单，而「这一手带走几枚」在名单变过之后就不再是上一次那个数了。
+        onAboutToShow: {
+            win.destroyReach = win.session.destroyCountFor(win.pinId)
+            win.soloReach = win.session.soloCountFor(win.pinId)
+            win.soloWay = win.session.soloDims() ? "压暗" : "隐藏"
+        }
+
+        MenuItem { action: copyAction }
         // `id` for the `--pin` gauge, which reports the text it is shown rather than
-        // assuming the menu still says what §5.9.17 calls it.
+        // assuming the menu still says what §5.5.5 calls it.
         MenuItem { id: saveAsItem; text: "另存为…"; onTriggered: saveAs.open() }
 
         MenuSeparator {}
@@ -601,13 +1474,83 @@ Window {
         MenuItem { text: "撤销裁剪"; onTriggered: win.view.undoCrop() }
         MenuItem { text: "恢复原图"; onTriggered: win.view.restoreOriginal() }
 
+        MenuSeparator { visible: win.view.has_transparent_pixels }
+
+        // §5.9.15 背景模式, the four rows in the order the requirement lists them. The
+        // section is on the menu only for a picture that has a hole in it: 步骤 1 opens it
+        // from the 贴图菜单 of a 透明图片, and four rows that change nothing on an opaque
+        // pin are a section the user has to read to learn it says nothing.
+        //
+        // `has_transparent_pixels` is the state machine's answer about the picture it
+        // renders, not a file-type guess here, and it is read once per content change
+        // rather than once per reload.
+        //
+        // The four are `checked` rather than plain actions because they are one choice, not
+        // four effects: a menu that marks nothing cannot be read for which mode the pin is
+        // in. `checked` comes back from `alpha_bg`, so a row the pin refused to take leaves
+        // the mark where the pin actually is.
+        MenuItem { id: alphaTransparentItem
+                   text: "背景：透明（洞不吃点击）"
+                   visible: win.view.has_transparent_pixels
+                   checkable: true; checked: win.view.alpha_bg === 0
+                   onTriggered: win.view.setAlphaBg(0) }
+        MenuItem { id: alphaPseudoItem
+                   text: "背景：伪透明（整窗可点）"
+                   visible: win.view.has_transparent_pixels
+                   checkable: true; checked: win.view.alpha_bg === 1
+                   onTriggered: win.view.setAlphaBg(1) }
+        MenuItem { id: alphaDarkItem
+                   text: "背景：深色棋盘格"
+                   visible: win.view.has_transparent_pixels
+                   checkable: true; checked: win.view.alpha_bg === 2
+                   onTriggered: win.view.setAlphaBg(2) }
+        MenuItem { id: alphaLightItem
+                   text: "背景：浅色棋盘格"
+                   visible: win.view.has_transparent_pixels
+                   checkable: true; checked: win.view.alpha_bg === 3
+                   onTriggered: win.view.setAlphaBg(3) }
+
         MenuSeparator {}
 
-        MenuItem { text: "更透明"; onTriggered: win.view.opacityStep(false) }
-        MenuItem { text: "更实"; onTriggered: win.view.opacityStep(true) }
+        // §5.9.14 播放控制, the whole of it: 暂停/继续, 上一帧/下一帧, 回到第一帧,
+        // and the speed. The section is only on the menu when the pin has frames
+        // to run through - `gif_frames` is 0 for every still, and 1 for a GIF the
+        // file made only one picture of. 逐帧查看 pauses the clip: that is the
+        // state machine's decision (`PlayState::step`), and the timer follows it
+        // because `gif_playing` is what it binds `running` to.
+        // The seven carry an `id` for one reason: `gifMenuItemCount` above counts *these
+        // objects*, so the count is the menu's own visibility read back rather than the
+        // condition restated. The condition itself stays written once per item, as it was - a
+        // single shared `visible` binding would have been the easier edit and the weaker
+        // witness.
+        MenuItem { id: gifPauseItem
+                   text: win.view.gif_playing ? "暂停播放" : "继续播放"
+                   visible: win.view.gif_frames > 1
+                   onTriggered: win.view.gifToggle() }
+        MenuItem { id: gifPrevItem; text: "上一帧"; visible: win.view.gif_frames > 1
+                   onTriggered: win.view.gifStep(-1) }
+        MenuItem { id: gifNextItem; text: "下一帧"; visible: win.view.gif_frames > 1
+                   onTriggered: win.view.gifStep(1) }
+        MenuItem { id: gifFirstItem; text: "回到第一帧"; visible: win.view.gif_frames > 1
+                   onTriggered: win.view.gifFirst() }
+        MenuItem { id: gifSlowItem; text: "放慢一档（现在 " + win.view.gif_speed + "%）"
+                   visible: win.view.gif_frames > 1
+                   onTriggered: win.view.gifSpeedStep(false) }
+        MenuItem { id: gifFastItem; text: "加快一档"; visible: win.view.gif_frames > 1
+                   onTriggered: win.view.gifSpeedStep(true) }
+        MenuItem { id: gifOriginalItem; text: "按文件原速播放"; visible: win.view.gif_frames > 1
+                   onTriggered: win.view.gifApplySpeed(100) }
+
+        MenuSeparator {}
+
+        // §5.10.3：这三枚从 P133 起叫的是同一列里的两只手（`opacityStepTarget` /
+        // `opacitySetTarget`）。名单里有第二枚时它们改的是**那一批**，不是本窗 —— 而"这一手算
+        // 几枚"本窗一次也没问（窗的章程；判据 `state::batch_hand` 全仓只写那一次）。
+        MenuItem { text: "更透明"; onTriggered: win.opacityStepTarget(win.pinId, false) }
+        MenuItem { text: "更实"; onTriggered: win.opacityStepTarget(win.pinId, true) }
         // §5.9.4 asks for a one-key way back to fully opaque, which the two steps
         // above are not: from the floor they need ten presses.
-        MenuItem { text: "不透明度 100%"; onTriggered: win.view.applyOpacity(100) }
+        MenuItem { text: "不透明度 100%"; onTriggered: win.opacitySetTarget(win.pinId, 100) }
         MenuItem { text: "始终置顶"; checkable: true; checked: win.view.topmost
                    onTriggered: win.view.applyTopmost(checked) }
         MenuItem { text: "鼠标穿透"; checkable: true; checked: win.view.click_through
@@ -615,8 +1558,188 @@ Window {
 
         MenuSeparator {}
 
-        MenuItem { text: "重置视图"; onTriggered: win.view.resetView() }
+        // §5.10.4 的三只手在这一段落成三枚入口。P134 之前这里的「重置视图」叫的是
+        // `win.view.resetView()` —— 窗自己那一格手势，所以名单里有第二枚时它也只改本窗；
+        // 现在叫的是 `win.resetTarget`，带走几枚由名单定（判据在 `state::batch_hand`，窗不数）。
+        MenuItem { text: "重置视图"; onTriggered: win.resetTarget(win.pinId) }
+        // §5.11 独显：一条字面两只手，进与退是**同一枚入口**（PRD 步骤 4「用户再次执行 Solo 或
+        // 退出命令」说的就是这一枚）。两格字面都读桥侧的答案，窗一个也不数：
+        // `win.session.solo_kept` 答「在不在这 mode」（0＝不在，而它不可能是「开着却留 0 枚」，
+        // core 对空名单直接拒绝），`win.soloReach` / `win.soloWay` 答「这一手带走几枚、怎么带走」。
+        // 退出那一支不带数目，理由写在上面 `soloReach` 那一封信里。
+        MenuItem { id: soloItem
+                   text: win.session.solo_kept > 0
+                         ? "退出独显"
+                         : "独显（" + win.soloWay + " " + win.soloReach + " 枚）"
+                   onTriggered: win.soloTarget(win.pinId) }
+        // §5.15「隐藏 / 显示全部贴图」：一条字面两只手，与独显同一形状（进与退是同一枚入口）。
+        // 字面读的是桥侧那一格 `session.all_hidden`（1 已收起 / 0 没有），窗一个也不数也不判 ——
+        // 它叫的是 `toggleAllPins`，翻完由 `pins_epoch` 让全场每扇窗重读 `view.live`。全局收起
+        // 与对话框遮挡、整组隐藏各占一格理由（#281），所以这一手放开时那两批不会跟着回来。
+        // 注：全部收起后场上没有可见窗可点开这枚菜单，再按一次 `ctrl+shift+p` 热键是回程 —— 这枚
+        // 入口负责的是「看得见时收起」，热键负责「看不见时放开」，两半合起来才是 §5.15 的往返。
+        MenuItem { id: allPinsItem
+                   text: win.session.all_hidden > 0 ? "显示全部贴图" : "隐藏全部贴图"
+                   onTriggered: win.session.toggleAllPins() }
+        // 这一句字面没动，动的是它背后那只手：`closePin` 自 P134 起走 `state::close_pin`，
+        // 名单里有第二枚且本窗在名单里时，关的是那一批而不是本窗一枚。
         MenuItem { text: "关闭"; onTriggered: win.session.closePin(win.pinId) }
+        // §5.9.18 / PRD 第 1149 行「批量销毁时应提示影响数量」：字面上印着的数由桥侧那一格答
+        // （`destroyCountFor` → `state::destroy_answer` → 同一张 `hand_targets`），所以它与
+        // 按下之后真正带走的那些枚不可能各走各的。第 1148 行「应显示确认或支持撤销」走的是
+        // 下面那一枚撤销：销毁在状态机里有回头路（`PinSet::restore`），于是这一手不需要一扇
+        // 确认对话框替用户兜住一只本可以撤销的手。
+        MenuItem { id: destroyItem
+                   text: "销毁（影响 " + win.destroyReach + " 枚）"
+                   onTriggered: win.destroyTarget(win.pinId) }
+        // 撤销的是**最近一手**带走的那一批，而「有几枚还欠着」由桥侧那一格账答
+        // （`Session.trashed` = `state::trashed`）；窗自己一个也不数。一枚也没有时这一条不出现，
+        // 而不是出现了再答一句「没有可撤销的」—— 那一枚死行是装饰，#433 那一族。
+        MenuItem { id: undoItem
+                   text: "撤销刚才销毁的 " + win.session.trashed + " 枚"
+                   visible: win.session.trashed > 0
+                   onTriggered: win.undoDestroyTarget() }
+
+        MenuSeparator {}
+
+        // §5.12 图片分组管理：这一枚子菜单是 §5.12.1 新建、§5.12.2 移动到分组、§5.12.3
+        // 删除/重命名/排序、§5.12.4 显示/隐藏 四节在窗上的落点。每一行叫的都是桥侧那一只手，
+        // 窗自己一不数名、二不判重名、三不决定「贴图如何处理」—— 那些都是 core 已答过的事
+        // （#281）。`model` 绑的是 `win.groupList` 那一枚绑定值，`session.groups` 一到 notify
+        // 就重建这些行，所以「排序变化同步反映到快捷切换菜单」在这里只是重新读同一张表。
+        Menu {
+            id: groupMenu
+            title: "分组"
+
+            // §5.12.2 移动到分组：选中若干枚（名单由 core 那一份持有）→ 点其中一组 → 归属变。
+            // `（未分组）`那一行叫的是 `moveSelectionToGroup(0)`，0 在桥侧翻成 `None`。
+            Menu {
+                id: moveToMenu
+                title: "移动到分组"
+                Repeater {
+                    model: win.groupList
+                    MenuItem {
+                        text: modelData.name
+                        onTriggered: win.session.moveSelectionToGroup(modelData.id)
+                    }
+                }
+                MenuItem { text: "（未分组）"; onTriggered: win.session.moveSelectionToGroup(0) }
+            }
+
+            // §5.12.4 显示 / 隐藏整组：一行一组，字面把它此刻显不显说出来，点一下切换。这一手
+            // 真的改组内每一枚的可见性 ⇒ 桥侧发 `group_epoch`，`main.qml` 那一圈 handler 让全场
+            // 重读 `view.live`（被藏起来的那些枚正是这一手的目标，所以扇出走全体）。
+            Menu {
+                id: shownMenu
+                title: "整组显隐"
+                visible: win.groupList.length > 0
+                Repeater {
+                    model: win.groupList
+                    MenuItem {
+                        text: modelData.name + "（" + (modelData.shown ? "显示中" : "已隐藏") + "）"
+                        onTriggered: win.session.toggleGroupShown(modelData.id)
+                    }
+                }
+            }
+
+            MenuSeparator {}
+
+            Menu {
+                id: manageMenu
+                title: "管理"
+
+                // §5.12.1 新建分组：开一格栅窗问名字，提交走 `createGroup`。空名/重名由 core 判，
+                // 失败那句话由 `session.status` 说回来（窗不自己判命名规则）。
+                MenuItem {
+                    text: "新建分组…"
+                    onTriggered: {
+                        win.groupDialogEditId = -1
+                        win.groupDialogSeed = ""
+                        groupPrompt.open()
+                    }
+                }
+                // §5.12.3 重命名：逐组一行，复用同一格栅窗（`editId` 非 -1 就走 `renameGroup`）。
+                Repeater {
+                    model: win.groupList
+                    MenuItem {
+                        text: "重命名 " + modelData.name
+                        onTriggered: {
+                            win.groupDialogEditId = modelData.id
+                            win.groupDialogSeed = modelData.name
+                            groupPrompt.open()
+                        }
+                    }
+                }
+                MenuSeparator {}
+                // §5.12.3 排序：逐组「上移 / 下移」各一行（`delta` ∓1，core 饱和夹边）。拖动排序
+                // 在窗菜单这一路用「上移/下移」落地；PRD 那句「拖动」的语义就是换相邻两格。
+                Repeater {
+                    model: win.groupList
+                    MenuItem {
+                        text: "上移 " + modelData.name
+                        onTriggered: win.session.moveGroup(modelData.id, -1)
+                    }
+                }
+                Repeater {
+                    model: win.groupList
+                    MenuItem {
+                        text: "下移 " + modelData.name
+                        onTriggered: win.session.moveGroup(modelData.id, 1)
+                    }
+                }
+                MenuSeparator {}
+                // §5.12.3 删除 +「删除非空分组应询问贴图如何处理」：这一问不在弹窗里、而在菜单
+                // 落成的**两行显式选择**上 —— 「只删组（退回未分组）」交 `destroy=0`，
+                // 「连贴图一起销毁」交 `destroy=1`。用户点哪一行就是他的答复；空组时两行结果相同
+                // （core 那格交回 0 枚），但字面仍把枚数印出来（`count` 来自 `group_rows`）。
+                Repeater {
+                    model: win.groupList
+                    MenuItem {
+                        text: "删除组 " + modelData.name + "（" + modelData.count + " 枚退回未分组）"
+                        onTriggered: win.session.deleteGroup(modelData.id, 0)
+                    }
+                }
+                Repeater {
+                    model: win.groupList
+                    MenuItem {
+                        text: "删除组 " + modelData.name + " 并销毁 " + modelData.count + " 枚"
+                        visible: modelData.count > 0
+                        onTriggered: win.session.deleteGroup(modelData.id, 1)
+                    }
+                }
+            }
+        }
+    }
+
+    // §5.12.1 / §5.12.3 新建与重命名共用的那一格栅窗。一枚 `Dialog` 两只手：`win.groupDialogEditId`
+    // 是 -1 就 `createGroup`、否则 `renameGroup(id, text)`。命名规则（trim、非空、同级不重名）
+    // 一律在 core，这里只把用户打的串递过去，失败读 `session.status` 那句话。
+    Dialog {
+        id: groupPrompt
+        title: win.groupDialogEditId < 0 ? "新建分组" : "重命名分组"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        modal: true
+        anchors.centerIn: parent
+        onOpened: {
+            groupField.text = win.groupDialogSeed
+            groupField.forceActiveFocus()
+        }
+        onAccepted: {
+            if (win.groupDialogEditId < 0)
+                win.session.createGroup(groupField.text)
+            else
+                win.session.renameGroup(win.groupDialogEditId, groupField.text)
+        }
+        contentItem: Column {
+            spacing: 8
+            Label { text: "分组名称：" }
+            TextField {
+                id: groupField
+                width: 240
+                placeholderText: "输入分组名称"
+                onAccepted: groupPrompt.accept()
+            }
+        }
     }
 
     // §5.9.17. The dialog decides the name and the extension; `savePin` reads the

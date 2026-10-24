@@ -16,6 +16,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use falcon_core::capture::{
     CaptureService, MonitorInfo, ScreenSnapshot, WindowExtras, WindowInfo, XcapCapture,
 };
+use falcon_core::frame::Frame;
 use falcon_core::geometry::{PhysPoint, PhysRect};
 use falcon_core::pin::PinId;
 use platform_windows::proc::{
@@ -244,14 +245,21 @@ pub fn forget_region() {
 /// A region that no longer fits - a monitor unplugged, the resolution changed - is
 /// clipped by `ScreenSnapshot::capture` and the clipping is said out loud, which is
 /// what PRD §5.2.5 asks for ("自动裁剪到有效范围并提示").
-pub fn pin_last_region() -> Result<(PinId, String), String> {
+///
+/// The frame owner behind both §5.17's output arms: [`pin_last_region`] pins what this
+/// returns, and `-o clipboard` / `-o file` hand the same `(frame, rect, line)` to
+/// [`crate::platform_windows::clip`] or [`crate::save`] without opening a window. It
+/// does NOT `remember` — that stays in [`pin_last_region`], so a repeat that ends on the
+/// clipboard does not re-leg the memory as "重复" out from under a pin that has to keep
+/// the original geometry. The freeze here is deliberate and shared: one new photograph,
+/// three possible destinations.
+pub fn last_frame() -> Result<(Frame, PhysRect, String), String> {
     let last = last_region().ok_or("还没有截图过：先把要重复的范围截出来")?;
     let f = freeze()?;
     let cap = f.snap.capture(&last.rect).map_err(|e| e.to_string())?;
-    let id = state::with(|s| s.add(cap.frame, PhysPoint::new(cap.rect.x, cap.rect.y)))?;
-    remember(cap.rect, "重复");
     Ok((
-        id,
+        cap.frame,
+        cap.rect,
         format!(
             "重复{}的上一次区域 {:?}：{} 的 {} ms 新冻结{}",
             last.leg,
@@ -265,6 +273,14 @@ pub fn pin_last_region() -> Result<(PinId, String), String> {
             }
         ),
     ))
+}
+
+/// §5.2.5: the last region again, as a pin — [`last_frame`]'s picture presented.
+pub fn pin_last_region() -> Result<(PinId, String), String> {
+    let (frame, rect, line) = last_frame()?;
+    let id = state::with(|s| s.add(frame, PhysPoint::new(rect.x, rect.y)))?;
+    remember(rect, "重复");
+    Ok((id, line))
 }
 
 /// Why `hwnd` cannot be §5.2.6's 活动窗口, or `None` when it can.
@@ -304,12 +320,15 @@ pub fn active_window_refusal(
 }
 
 /// `capture_active_window` (§5.2.6): the window the shell is giving keystrokes to,
-/// as its own picture.
+/// as its own picture — the frame owner, with no window opened.
 ///
-/// This leg does not read the freeze. A window shot goes to the DWM for that
-/// window's own content, which is what makes it survive being partly behind
-/// something else - and what makes the mask's frozen frame irrelevant here.
-pub fn pin_active_window() -> Result<(PinId, String), String> {
+/// Split from [`pin_active_window`] so §5.17's `-o clipboard` / `-o file` can reach the
+/// same DWM content the pin reaches. The refusal table is [`active_window_refusal`]'s and
+/// runs before any pixels are asked for, so a protected or minimised foreground is a
+/// clean `Err` on this path too. Like [`last_frame`] it does not `remember`: legging the
+/// memory stays with the pin, so a clipboard copy of the active window cannot silently
+/// change what a later §5.2.5 repeat pulls up.
+pub fn active_frame() -> Result<(Frame, PhysRect, String), String> {
     let hwnd = foreground_window().ok_or("前台没有窗口：这一趟连焦点在谁那里都问不出来")?;
     let owner = pid_of_window(hwnd);
     let app = owner.and_then(process_name);
@@ -321,26 +340,50 @@ pub fn pin_active_window() -> Result<(PinId, String), String> {
     ) {
         return Err(why);
     }
-    let id = pin_window(hwnd as u32)?;
+    let (frame, rect) = window_frame(hwnd as u32)?;
     let title = window_title(hwnd).unwrap_or_default();
     Ok((
-        id,
+        frame,
+        rect,
         format!("活动窗口「{title}」[{}] {hwnd:#x}", app.unwrap_or_default()),
     ))
 }
 
-/// §5.3's output for one rectangle: stitched across monitors, clipped to the
-/// desktop, and pinned where it was on screen.
+/// §5.2.6 as a pin — [`active_frame`]'s picture presented.
+pub fn pin_active_window() -> Result<(PinId, String), String> {
+    let (frame, rect, line) = active_frame()?;
+    remember(rect, "窗口");
+    let id = state::with(|s| s.add(frame, PhysPoint::new(rect.x, rect.y)))?;
+    Ok((id, line))
+}
+
+/// §5.3's output for one rectangle: stitched across monitors and clipped to the
+/// desktop, as pixels rather than as a window.
+///
+/// The frame owner for a named rectangle: [`pin_rect`] presents it, and §5.17's
+/// `-o clipboard` / `-o file` hand the same `(frame, rect)` to the clipboard or the
+/// encoder. It `remember`s here (before any presenter runs) because this is the leg that
+/// decides "the region that just became a picture" — a `--region` that lands on the
+/// clipboard has earned a §5.2.5 repeat exactly as much as one that lands on the desktop.
+/// The reuse of `working_frame` (a fresh freeze only if none is cached) is preserved
+/// unchanged from the pin path, so `--snap`/`--rect` timing is not this function's to
+/// alter.
+pub fn region_frame(want: &PhysRect) -> Result<(Frame, PhysRect), String> {
+    let snap = working_frame()?;
+    let cap = snap.capture(want).map_err(|e| e.to_string())?;
+    remember(cap.rect, "矩形");
+    Ok((cap.frame, cap.rect))
+}
+
+/// One rectangle, pinned where it was on screen — [`region_frame`]'s pixels presented.
 ///
 /// Also the region `capture_repeat` will ask for next time (§5.2.5): what is
 /// remembered is `cap.rect`, the crop that actually became a picture, rather than
 /// `want`. A request that ran off the edge of the desktop has already been answered
 /// once by clipping it, and repeating the answer is what the user saw.
 pub fn pin_rect(want: &PhysRect) -> Result<PinId, String> {
-    let snap = working_frame()?;
-    let cap = snap.capture(want).map_err(|e| e.to_string())?;
-    remember(cap.rect, "矩形");
-    state::with(|s| s.add(cap.frame, PhysPoint::new(cap.rect.x, cap.rect.y)))
+    let (frame, rect) = region_frame(want)?;
+    state::with(|s| s.add(frame, PhysPoint::new(rect.x, rect.y)))
 }
 
 /// §5.3.2 - the window under a point, as the user sees it: topmost in z-order.
@@ -412,10 +455,20 @@ pub fn rect_arg(raw: &str) -> Option<PhysRect> {
 /// The re-cropped bounds are what goes into §5.2.5's memory, not the window's
 /// geometry as the shell reported it: the picture the user got is the region they
 /// will ask to see again.
-pub fn pin_window(hwnd: u32) -> Result<PinId, String> {
+///
+/// The DWM read itself, with no window opened and no memory written — [`pin_window`]
+/// and [`active_frame`] are its two presenters, so §5.17's clipboard/file arms and a hot
+/// key all ask the shell the same one question about a handle.
+pub fn window_frame(hwnd: u32) -> Result<(Frame, PhysRect), String> {
     let cap = service().capture_window(hwnd).map_err(|e| e.to_string())?;
-    remember(cap.rect, "窗口");
-    state::with(|s| s.add(cap.frame, PhysPoint::new(cap.rect.x, cap.rect.y)))
+    Ok((cap.frame, cap.rect))
+}
+
+/// A whole window as its own pin — [`window_frame`]'s picture presented.
+pub fn pin_window(hwnd: u32) -> Result<PinId, String> {
+    let (frame, rect) = window_frame(hwnd)?;
+    remember(rect, "窗口");
+    state::with(|s| s.add(frame, PhysPoint::new(rect.x, rect.y)))
 }
 
 /// `monitor id  WxH @x,y scale` per line, plus the union. Printed by `--capture`

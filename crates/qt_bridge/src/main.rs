@@ -72,8 +72,10 @@ mod annotate;
 mod annotate_check;
 mod autosave_check;
 mod capture;
+mod cli;
 mod delay;
 mod hint_check;
+mod hot_corner;
 mod hotkey;
 mod mask;
 mod mask_check;
@@ -85,6 +87,7 @@ mod reveal_check;
 mod save;
 mod session;
 mod settings;
+mod settings_view;
 mod state;
 
 use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
@@ -133,11 +136,80 @@ fn exe_stamp() -> String {
     format!("exe={} B @{when}s", meta.len())
 }
 
+/// §5.17's frame for a named capture, with the sentence that says what it is — the
+/// clipboard and file legs' shared first step, kept out of `main` so both arms ask the
+/// capture layer the same one question rather than spelling the freeze twice.
+///
+/// Module level, not inside `main`, for the reason [`exe_stamp`] gives: `fn main` is
+/// invisible to `cargo test`. The contract this reaches is tested in [`cli`]; what is
+/// tested *here* is only that the two output arms go through one frame owner. The pixels
+/// still need a desktop, so a real-machine run grades them, not a unit test.
+fn cli_frame(select: cli::Select) -> Result<(falcon_core::frame::Frame, String), String> {
+    match select {
+        cli::Select::Region(rect) => {
+            capture::region_frame(&rect).map(|(frame, got)| (frame, format!("区域 {got:?}")))
+        }
+        cli::Select::Last => capture::last_frame().map(|(frame, _, line)| (frame, line)),
+        cli::Select::Active => capture::active_frame().map(|(frame, _, line)| (frame, line)),
+        // `--new` is refused any `-o` at [`cli::classify`], so no argv reaches here with
+        // New; the arm exists because the match has to be total, and it says so plainly
+        // rather than pretending a mask has a finished picture to hand over.
+        cli::Select::New => Err("--new 开的是遮罩，没有可直接写出的画面".to_string()),
+    }
+}
+
+/// §5.17's 贴图 output for the three named captures: put the picture in the pin table
+/// before the QML engine exists, so the window renders when the event loop starts —
+/// exactly the ordering `--snap` uses (freeze and `state::add` ahead of `engine.load`).
+/// It returns the line to print; the caller then falls through to the loop rather than
+/// exiting, because a pin is only a promise until a window shows it.
+fn cli_capture_to_pin(select: cli::Select) -> Result<String, String> {
+    match select {
+        cli::Select::Region(rect) => capture::pin_rect(&rect)
+            .map(|id| format!("贴图 {id} 已钉：区域 {rect:?}（关掉那扇窗即退出）")),
+        cli::Select::Last => {
+            capture::pin_last_region().map(|(_, line)| format!("{line}（关掉那扇窗即退出）"))
+        }
+        cli::Select::Active => {
+            capture::pin_active_window().map(|(_, line)| format!("{line}（关掉那扇窗即退出）"))
+        }
+        cli::Select::New => Err("--new 走遮罩".to_string()),
+    }
+}
+
 /// 要点名、要给数字、但**不进** `mask::GAUGE_FLAGS` 的门。写两次是这一整段的病根，所以这张
 /// 表是它们唯一的名单：`refusals` 的 `numbered` 与 `main` 结尾那条"点了就得有闹钟"的判定都
 /// 读它。（`--hotkeys` 也要数字、也在 `numbered` 里，但它不在这一列：它不进那串 `quit_after`
 /// 的对照表，是 §10 第 58 项带着走的一笔账。）
-const EXTRA_DOORS: [&str; 2] = ["--reveal", "--autosave"];
+///
+/// P140 进来的是 `--hotcorner`：它要给数字（不给就退化成一次等真人的零字节日志，同 ⑭），
+/// 但它不开遮罩 —— 角落读的是指针、显示器清单与前台矩形，三样都不经屏幕采集那一条路，
+/// 留在 `GAUGE_FLAGS` 之外也就是留在 `gauge_run` 那道结构性拒绝之外。
+///
+/// P142 进来的是 `--settings-window`：它也不开遮罩，它开的是**一扇正常的窗**（有边框、接键盘），
+/// 而那一扇窗是 QML 造的 —— Rust 只写「这一趟该不该有一扇设置窗」那一格。它要给数字同 ⑭：
+/// 不给就没有 `quit_after`，`app.exec()` 等的是真人，而 `settings_view::window_measure` 一行也读不到。
+///
+/// P143 进来的是 `--settings-io`：同一扇窗、同一副骨架，量的是 §5.20.3 那五步 —— 页上那两枚钮
+/// 「导出配置 / 导入配置」。它比上面那一档多两件事：真的往盘上写一份导出的档、真的把一份档
+/// 应用进 settings，所以它的写回同样要钉起来（`--settings-io` 那一档自己印 `[settings-io pin]`）。
+/// 两档点的是**同一枚 `settings_open`**，所以并列要拒（见 `refusals`）。
+const EXTRA_DOORS: [&str; 5] = [
+    "--reveal",
+    "--autosave",
+    "--hotcorner",
+    "--settings-window",
+    "--settings-io",
+];
+
+/// `EXTRA_DOORS` 里那两档**要一扇真窗**的：`--settings-window` 量页上的一行跟不跟着值走
+/// （§5.20.2），`--settings-io` 量页上那两枚钮交不交得出、收不收得回一份档（§5.20.3）。
+///
+/// 这一枚名单存在的理由是 `refusals` 那一格问的问题：那里判的不是「某一档有没有并列」，而是
+/// **「这一趟被点名了几扇窗那一档」** —— 给每档各写一条 `if`，两档同开时就会交两句同样的话
+/// （P142 那一个 `2 != 1` 正是这个形状）。名单从 `EXTRA_DOORS` 里挑，挑的是「谁开窗」这一件事，
+/// 而不是两档各自的名字。
+const WINDOW_DOORS: [&str; 2] = ["--settings-window", "--settings-io"];
 
 /// 点了门而没人设闹钟 ⇒ 当场退出 3，而不是把这一趟交给一个看不见的等待。
 ///
@@ -343,6 +415,92 @@ fn refusals(args: &[String], gauge_mode: bool) -> Vec<String> {
              并列时读数是别人的"
                 .to_string(),
         );
+    }
+    // §5.15 的两条腿。`--hotcorner` 观测而**不派发**，产品那一趟（`--hotkeys` 装起来的常驻采样
+    // 腿）会真派发：并列时这一档读到的触发次数就不是它自己那台机器的读数，那一次停留已经被
+    // 别人消耗掉了。`--selftest` / `--desktop` 是同一条理由的另一面——它们在 `engine.load()`
+    // 之前就 exit，这一档的报告永远排不到，并列时印出来的只是别人的读数。
+    if flag("--hotcorner")
+        && ["--hotkeys", "--selftest", "--desktop"]
+            .iter()
+            .any(|name| flag(name))
+    {
+        orphans.push(
+            "--hotcorner 不能和 --hotkeys / --selftest / --desktop 一起用：那一档里常驻的采样腿会真派发角落动作，\
+             而 --selftest / --desktop 在这档报告之前就退了；并列时印出来的都不是这一档自己的读数"
+                .to_string(),
+        );
+    }
+    // §5.20 的这一档两条理由都齐：它在 `engine.load()` 之前打完报告就退（同 `--selftest`），
+    // 而且它会**真写一份文件**（同 `--autosave` 的写回）。并列时那一趟报的落盘次数、`saves=`
+    // 与写回路径都不是它自己的读数——而 `saves=` 恰好是这一档「拒了的写不落盘」那一格的读数，
+    // 别人多写一次就把它变成一句假话。所以这一档只许单独点。
+    if flag("--settings") {
+        let mut others: Vec<&str> = mask::GAUGE_FLAGS.to_vec();
+        others.extend(EXTRA_DOORS);
+        others.extend([
+            "--selftest",
+            "--desktop",
+            "--hotkeys",
+            "--export-config",
+            "--import-config",
+            "--snap",
+            "--rect",
+            "--snap-window",
+        ]);
+        let hit: Vec<&str> = others.into_iter().filter(|n| flag(n)).collect();
+        if !hit.is_empty() {
+            orphans.push(format!(
+                "--settings 会真写设置档、且在 engine 之前就退，不与 {:?} 同开：\
+                 并列时落盘次数与写回路径都不是这一档自己的读数",
+                hit
+            ));
+        }
+    }
+    // §5.20.1 的那一扇窗，与 §5.20.3 的那两枚钮 —— 它们点的是同一扇窗。骨架与上面那一档相同
+    // （会真写设置档、且它自己的报告要等 `app.exec()` 之后才读得到），多出来的是**一扇正常的窗
+    // 在整个这一趟里都摆在桌面上**。场上每一扇别的门都在问「屏幕上此刻有哪些顶层窗」或「整屏
+    // 照片里有什么」：`--pin` 挑的是与贴图矩形重叠的那一枚，`--hint` 按标题去照片里找它自己那一
+    // 扇，`--mask` / `--ink` / `--autosave` / `--reveal` 拍的是整屏，`--probe` 与 `--r13` 数的是
+    // 窗的清点，`--hotkeys` 按下那一瞬「前台是谁」决定静音。并列时这些读数里都多了一扇谁也没要
+    // 的窗，而 `saves=` 那一格（本档「拒了的写不落盘」的读数）也会被别人的那一次写变成一句假话。
+    // 所以两档与 `--settings` 同一条规矩：只许单独点。`--settings` 本身不在下面这张名单里 ——
+    // 那一档的规矩是「拒一切并列」，而它的名单读的正是 `EXTRA_DOORS`，本档一进去它就先拦了，那
+    // 一句也照样点名双方；同一件并列在此处再拦一次，是同一枚判据写两份（#281）。
+    // `--export-config` / `--import-config` 也不在这张名单里，同一条理由：§5.20.3 那一族自己那条
+    // 「不与任何门同开」的规矩读的也是 `GAUGE_FLAGS` + `EXTRA_DOORS`，本档一进去那一句就先拦了。
+    // 这一枚不是事后补的说法——本轮第一次把两条并列写进单测时，那一对各交了**两句**话，红的就是
+    // 那一个 `2 != 1`。
+    //
+    // P143 把第二扇窗那一档带进来时，同一枚 `2 != 1` 在这里等着：两档各写一个 `if`，并列时每个
+    // `if` 都会拦一次、各交一句。所以这一格判的是**「这一趟被点名了几扇窗那一档」**，一句里把
+    // 点名的都写出来，而不是给每档各修一条自己的规矩。两档同开还要另外拦一句：`settings_open`
+    // 只有一枚、窗也只有一扇，两副计划递进同一扇窗是「谁的说法作数」没有答案的那种坏。
+    let window_doors: Vec<&str> = WINDOW_DOORS.into_iter().filter(|n| flag(n)).collect();
+    if window_doors.len() > 1 {
+        orphans.push(format!(
+            "{} 不同时点：一趟只有一扇设置窗、也只有一副计划，两档并列时窗那侧说的话没有作者",
+            window_doors.join(" / ")
+        ));
+    }
+    if !window_doors.is_empty() {
+        let mut others: Vec<&str> = mask::GAUGE_FLAGS.to_vec();
+        others.extend(
+            EXTRA_DOORS
+                .iter()
+                .copied()
+                .filter(|n| !window_doors.contains(n)),
+        );
+        others.extend(["--selftest", "--desktop", "--hotkeys"]);
+        let hit: Vec<&str> = others.into_iter().filter(|n| flag(n)).collect();
+        if !hit.is_empty() {
+            orphans.push(format!(
+                "{} 会开一扇真的窗、也会真写设置档，不与 {:?} 同开：\
+                 并列时窗清点、整屏照片与落盘次数都不是这一档自己的读数",
+                window_doors.join(" / "),
+                hit
+            ));
+        }
     }
     orphans
 }
@@ -653,6 +811,127 @@ fn main() {
         }
     }
 
+    // §5.17's command-line capture interface. Placed after the two config commands and
+    // before `--selftest`: a bad parameter has to exit the process (rule 2) before any
+    // window, screen, clipboard or gauge gets a turn — and after `refusals`, so a
+    // mis-typed call is still refused in the door's own voice first. The reserved list is
+    // built from the SAME `GAUGE_FLAGS`/`EXTRA_DOORS` the other refusals read, so a §5.17
+    // verb sharing a flag with a measurement door is refused rather than run twice.
+    let cli_reserved: Vec<&str> = mask::GAUGE_FLAGS
+        .iter()
+        .copied()
+        .chain(EXTRA_DOORS)
+        .chain([
+            "--selftest",
+            "--desktop",
+            "--hotkeys",
+            "--snap",
+            "--snap-window",
+            "--rect",
+            "--export-config",
+            "--import-config",
+        ])
+        .collect();
+    match cli::classify(&args, &cli_reserved) {
+        cli::Decision::Help => {
+            print!("{}", cli::help());
+            std::process::exit(cli::EXIT_OK);
+        }
+        cli::Decision::Error(msg) => {
+            println!("[falconshot] {msg}");
+            print!("{}", cli::help());
+            std::process::exit(cli::EXIT_USAGE);
+        }
+        cli::Decision::Run { select, output } => match output {
+            // Clipboard: no window, so it finishes here. A frame that could not be
+            // captured is `run_code(false, _)` = EXIT_FAIL; a clipboard the holder would
+            // not take is `run_code(_, false)` = EXIT_FAIL. Neither is ever a success.
+            cli::Output::Clipboard => {
+                let code = match cli_frame(select) {
+                    Err(e) => {
+                        println!("[cli] 截图失败：{e}");
+                        std::process::exit(cli::run_code(false, false));
+                    }
+                    Ok((frame, what)) => match platform_windows::clip::write_image(&frame) {
+                        Ok(_) => {
+                            println!("[cli] 已把{what}写入剪贴板。");
+                            cli::run_code(true, true)
+                        }
+                        Err(e) => {
+                            println!("[cli] 写剪贴板失败：{e}");
+                            cli::run_code(true, false)
+                        }
+                    },
+                };
+                std::process::exit(code);
+            }
+            // File: same shape, with §5.17's two failure kinds split. A name the encoder
+            // cannot write (`BadName`) is a parameter error — rule 2's code and the help.
+            // A write that actually ran and failed (`Write`) is rule 3's: EXIT_FAIL, and
+            // under no reading a success.
+            cli::Output::File(path) => {
+                let code = match cli_frame(select) {
+                    Err(e) => {
+                        println!("[cli] 截图失败：{e}");
+                        std::process::exit(cli::run_code(false, false));
+                    }
+                    Ok((frame, _)) => {
+                        match save::write(&frame, &path, &settings::export(), "截图", "") {
+                            Ok(said) => {
+                                println!("[cli] {said}");
+                                cli::run_code(true, true)
+                            }
+                            Err(save::Refusal::BadName(why)) => {
+                                println!("[falconshot] {why}");
+                                print!("{}", cli::help());
+                                cli::EXIT_USAGE
+                            }
+                            Err(save::Refusal::Write(why)) => {
+                                println!("[cli] 写文件失败：{why}");
+                                cli::run_code(true, false)
+                            }
+                        }
+                    }
+                };
+                std::process::exit(code);
+            }
+            // 贴图 and 启动普通截图 both open a window, so neither can finish before the
+            // event loop. The picture goes into the pin table now (the ordering `--snap`
+            // already proves — freeze and `state::add` before `engine.load`), then the run
+            // falls through to `engine.load` + `app.exec` to show it; `--new` opens the
+            // interactive mask instead. `plain` is false here, so Qt keeps its default of
+            // quitting when the last window closes — closing the pin (or finishing the
+            // mask) ends the run. The interactive completion is a real-machine A/B leg, not
+            // this round's headless verifier.
+            cli::Output::Pin => {
+                if select == cli::Select::New {
+                    match mask::open_from_freeze(true) {
+                        Ok(opened) => println!(
+                            "[cli] 启动普通截图：遮罩开了 {} 屏（{} ms）——拖完或关掉即退出",
+                            opened.slots, opened.ms
+                        ),
+                        Err(e) => {
+                            println!("[cli] 启动普通截图开不起来：{e}");
+                            std::process::exit(cli::EXIT_FAIL);
+                        }
+                    }
+                } else {
+                    match cli_capture_to_pin(select) {
+                        Ok(line) => println!("[cli] {line}"),
+                        Err(e) => {
+                            println!("[cli] 截图失败：{e}");
+                            std::process::exit(cli::run_code(false, false));
+                        }
+                    }
+                }
+            }
+        },
+        // No §5.17 token in argv: selftest, the measurement doors, the resident app and
+        // the config commands all land here and continue exactly as they did before this
+        // round — the guarantee that makes the whole module additive.
+        cli::Decision::NotCli => {}
+    }
+
     if flag("--selftest") {
         let (ok, report) = state::selftest();
         println!("{report}");
@@ -693,6 +972,21 @@ fn main() {
             );
         }
         std::process::exit(code);
+    }
+
+    // §5.20.1 / §5.20.2 的那一扇门：设置页的模型。它不开窗，因为在它这一层上「页上显示的是
+    // 哪一行」、「改完之后谁读到了它」、「拒了的写动没动过值」三件事都不必经过像素；一扇真窗
+    // 接的是同一套读数，那是下一轮的账。
+    //
+    // 排在 `--selftest` 之后、`--desktop` 之前：这一档会**真写一份文件**，所以它必须在任何
+    // 会开遮罩、会走 `write_back` 的腿之前把落点钉走（[`settings_view::pin`]），也必须在这
+    // 一台机器开始等真人之前退。
+    if flag("--settings") {
+        let pinned = settings_view::pin();
+        println!("[settings pin] 写回钉到 {}", pinned.display());
+        let (verdict, report) = settings_view::measure();
+        println!("{report}");
+        std::process::exit(verdict_code(0, verdict));
     }
 
     if flag("--desktop") {
@@ -891,6 +1185,52 @@ fn main() {
         }
     }
 
+    // §5.15 热区那一档。它与上面几档最不一样的一处是**它不需要一张遮罩**：角落读的是指针、
+    // 显示器清单和前台窗的矩形，三样都不经屏幕采集那一条路，也就没有 `gauge_run` 可挡它。
+    // 它也不派发任何动作 —— 派发是产品那一条常驻采样腿的事，量它的那一趟要是顺手收起一次
+    // 全桌贴图，这一趟读的就不是桌面而是自己的手。
+    let corner_want = after("--hotcorner");
+    let corner_ms = corner_want.map(|ms| ms.max(hot_corner::MIN_LIVE_MS));
+
+    // §5.20.1 的那一扇窗那一档。它与 `--hotcorner` 同一族（不开遮罩、不冻屏），与 `--autosave`
+    // 同一副骨架（**前置必须写在 `engine.load()` 之前**：`SettingsWindow.qml` 只在
+    // `Component.onCompleted` 读一次计划，晚一行窗就照着没有计划的那一面长）。
+    // 写回先钉到本档自己的档上 —— 这一档的三条腿里有一条是真写值，用户的
+    // `%APPDATA%\ai-falconshot\config.toml` 不是这一趟的草稿纸（§9.1 第十五条）。
+    let window_want = after("--settings-window");
+    let window_ms = window_want.map(|ms| ms.max(settings_view::MIN_WINDOW_MS));
+    if let Some(ms) = window_ms {
+        let pinned = settings_view::pin();
+        println!("[settings-window pin] 配置写回钉到 {}", pinned.display());
+        // 计划里那一枚腿等待与本档等的总时长是两个数：前者是窗开起来之后隔多久跑腿，后者是
+        // `quit_after` 的闹钟。各印在各自行里，不合并成一枚读数（同 `--hotcorner` 那一档）。
+        println!("[settings-window arm] {}", settings_view::arm());
+        println!(
+            "[settings-window wait] 窗与三条腿等 {ms} ms（计划给的那枚腿等待 {} ms，地板 {} ms）",
+            settings_view::LEG_MS,
+            settings_view::MIN_WINDOW_MS
+        );
+    }
+
+    // §5.20.3 那一档：同一扇窗，另一副计划。前置与上面那一档同一形状（**写在 `engine.load()`
+    // 之前**，窗只在 `Component.onCompleted` 读一次计划），写回也钉在同一枚落点上 —— 这一档的
+    // 腿里有一次是真的 `apply_import` 加一次真的 `save`，用户那份 `%APPDATA%` 档不是草稿纸。
+    //
+    // `arm_io` 会把要导入的那份档**现在就种在盘上**（一行日志说出种了哪两枚键），因为步骤 3 说
+    // 的是「在另一台设备上选一份档」：本机上没有第二台，只有种出来的这一份能问出「会盖掉哪几枚」。
+    let io_want = after("--settings-io");
+    let io_ms = io_want.map(|ms| ms.max(settings_view::MIN_IO_MS));
+    if let Some(ms) = io_ms {
+        let pinned = settings_view::pin();
+        println!("[settings-io pin] 配置写回钉到 {}", pinned.display());
+        println!("[settings-io arm] {}", settings_view::arm_io());
+        println!(
+            "[settings-io wait] 窗与那两枚钮等 {ms} ms（计划给的那枚腿等待 {} ms，地板 {} ms）",
+            settings_view::LEG_MS,
+            settings_view::MIN_IO_MS
+        );
+    }
+
     // Extra rounds of the same freeze-and-open, run once the process is warm. The
     // plan has to be written before the engine loads, because QML reads it in
     // `Component.onCompleted` and only a QML timer can fire afterwards.
@@ -939,7 +1279,7 @@ fn main() {
         // mask, would take the registered keys and the icon away after a single
         // screenshot.
         session::qobject::set_quit_on_last_window_closed(false);
-        launch = match hotkey::install() {
+        launch = match hotkey::install(plain) {
             Ok(done) => Some(done),
             Err(e) => {
                 println!("[hotkeys] 一个也没装：{e}");
@@ -1055,10 +1395,31 @@ fn main() {
         state::quit_after(ms);
         armed.push("--autosave");
     }
+    if let Some(ms) = corner_ms {
+        // 这一档等的不是任何一条腿：它要的只是「这一趟会自己结束」，而不是把一个只读指针的门
+        // 变成一次等真人的会话。真正的采样跑在 `exec()` 之后，所以这一趟的墙钟是 `ms + live`
+        // —— 那两个数各自印在自己的行里，不在这里合并成一枚读数。
+        state::quit_after(ms);
+        armed.push("--hotcorner");
+    }
     if let Some(ms) = hotkeys_ms {
         // The presses are already posted by now, so the wait is the chain's: pump to
         // listener, listener to the Qt queue, and a freeze plus N presented frames.
         state::quit_after(ms);
+    }
+    if let Some(ms) = window_ms {
+        // 这一档等的是窗自己：`createObject` → 第一帧 → 计划里那一枚腿等待 → 三条腿过一次桥。
+        // 地板 `MIN_WINDOW_MS` 已经把这三段都算在里面（它比 `LEG_MS` 宽四倍），所以这里加的
+        // 不是宽限而是**这一趟会自己结束**那一格 —— 缺了它，`app.exec()` 就变成一次等真人的
+        // 会话，而那一副样子正是 ⑭ 与上面那张闹钟表一起挡的。
+        state::quit_after(ms);
+        armed.push("--settings-window");
+    }
+    if let Some(ms) = io_ms {
+        // 与上面那一档同一个理由：这一趟会自己结束，而不是开一张窗等真人。窗那一侧的三条腿
+        // 与这一档的四步（导出、预览、确认、还原）都在 `MIN_IO_MS` 这块地板里算过。
+        state::quit_after(ms);
+        armed.push("--settings-io");
     }
     // 点了门而没人设闹钟 ⇒ 当场退出 3，而不是把这一趟交给一个看不见的等待。名单只有一个来源：
     // `GAUGE_FLAGS` 加 `EXTRA_DOORS`，与 `refusals` 里那张 `numbered` 同源。
@@ -1286,6 +1647,54 @@ fn main() {
         );
         code = verdict_code(code, verdict);
     }
+    if let Some(ms) = corner_ms {
+        // 报告的四格里只有两格是判据（headless 与 sweep），另外两格印的是这台机器此刻的几何
+        // 与指针 —— 「这一台答不出」在那两格里是 BLOCKED 而不是 FAIL，锁屏与会话 0 都读得出
+        // 前两格，正是 §9.1 那一族门要的分工。
+        let (verdict, report) = hot_corner::measure(corner_want.unwrap_or(ms));
+        println!("{report}");
+        println!(
+            "[hotcorner after {ms} ms] 要求 {} ms 生效 {ms} ms，派发=0（本档只观测），qml_loaded={} {} {}",
+            corner_want.unwrap_or(ms),
+            state::qml_loaded(),
+            exe_stamp(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
+    }
+    if let Some(ms) = window_ms {
+        // 六格里读的全是**窗那一侧**递回来的话：本档手里那份模型只用来对，不用来说（与
+        // `--settings` 那一档的分工写在 `settings_view::window_measure` 头顶）。窗没递回任何
+        // 一行 ⇒ BLOCKED 而不是 FAIL：那一格问的是「这一台机器上有没有那扇窗」，而 QML 文档
+        // 编译不过与页上少一行是两种坏。
+        let (verdict, report) = settings_view::window_measure(window_want.unwrap_or(ms));
+        println!("{report}");
+        println!(
+            "[settings-window after {ms} ms] 要求 {} ms 生效 {ms} ms，腿等待 {} ms，qml_loaded={} {} {}",
+            window_want.unwrap_or(ms),
+            settings_view::LEG_MS,
+            state::qml_loaded(),
+            exe_stamp(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
+    }
+    if let Some(ms) = io_ms {
+        // 这一档读的还是**窗那一侧**递回来的话，但记的是另一批行名（`settings io` 开头那五格）。
+        // 与上面那一档同一分工：本档手里那份模型只用来对，不用来说。窗没递回任何一行 ⇒
+        // BLOCKED —— 这一档的对面同样是那扇真窗，而 QML 编译不过与页上少一格是两种坏。
+        let (verdict, report) = settings_view::io_measure(io_want.unwrap_or(ms));
+        println!("{report}");
+        println!(
+            "[settings-io after {ms} ms] 要求 {} ms 生效 {ms} ms，腿等待 {} ms，qml_loaded={} {} {}",
+            io_want.unwrap_or(ms),
+            settings_view::LEG_MS,
+            state::qml_loaded(),
+            exe_stamp(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
+    }
     if let Some(ms) = hotkeys_ms {
         // The report is the pump's own numbers - what the shell took, what the icon
         // says, and what each injected press did to the product - graded against the
@@ -1385,8 +1794,8 @@ mod tests {
         doors.extend(crate::EXTRA_DOORS);
         assert_eq!(
             doors.len(),
-            8,
-            "本轮的门是八枚：多一枚少一枚都要先改这条再改代码"
+            11,
+            "本轮的门是十一枚（P143 加进 `--settings-io`）：多一枚少一枚都要先改这条再改代码"
         );
 
         for name in doors {
@@ -1508,6 +1917,187 @@ mod tests {
             .iter()
             .any(|s| s.contains("gauge_run")));
         assert!(refusals(&argv(&["--reveal", "1500"]), false).is_empty());
+
+        // §5.15 那一档的拒绝臂。它自己那一枚数是被 ⑭ 那条通用规则接住的（少了 `<ms>` 就落在
+        // `numbered` 那句里），这一条管的是**组合**：`--hotkeys` 那一趟里常驻的采样腿会真派发，
+        // `--selftest` 与 `--desktop` 则在这档报告之前就 exit —— 两种并列都印不出这一档自己的
+        // 读数，而那正是 第 47 项 ⑭ 那一族"看着像测量、其实是别人的场次"。
+        for (other, number) in [
+            ("--hotkeys", Some("1500")),
+            ("--selftest", None),
+            ("--desktop", None),
+        ] {
+            // 双方都要带齐自己那一枚数：`--hotkeys` 少了自己的毫秒数时，⑭ 那条通用规则也会
+            // 拒一句，于是这一格读的是「少数字」而不是「并列」——证人要证的那一件事只有一件。
+            let mut flat = vec!["--hotcorner", "1500", other];
+            if let Some(ms) = number {
+                flat.push(ms);
+            }
+            let clash = refusals(&argv(&flat), false);
+            assert_eq!(clash.len(), 1, "{other} 并列时拒了几句：{clash:?}");
+            assert!(
+                clash[0].contains("--hotcorner") && clash[0].contains(other),
+                "{other} 的并列没在自己那句里点名双方：{}",
+                clash[0]
+            );
+        }
+        // 单独点它、带着数字，必须一句都不拒：这一档不开遮罩，也就没有 `gauge_run` 那道结构性
+        // 拒绝——上面 `--reveal` 那两条正是反面的样子。
+        assert!(refusals(&argv(&["--hotcorner", "1500"]), false).is_empty());
+        assert!(
+            refusals(&argv(&["--hotcorner", "1500"]), true).is_empty(),
+            "--hotcorner 读的是指针与显示器，不该被量具模式拒"
+        );
+    }
+
+    /// §5.20 那一档两条理由都在上一条注释里写过了，所以它的判据也就那两件：**单独点它必须
+    /// 沉默**（否则这一档在真机上跑不起来，而它是这一轮唯一的运行证人），**与别人并列必须点名
+    /// 双方且只拒一句**（否则一句写错的调用会被归档到别的模式名下，⑭ 那一条讲的正是这件事）。
+    /// `--mask` 那一条走的是 `GAUGE_FLAGS` 那张表，`--selftest` 走的是显式名单，两族各测一枚 ——
+    /// 这张表以后少列了一族时，红的会是这一格而不是下一次真机运行。
+    #[test]
+    fn the_settings_door_refuses_company_and_names_both_sides() {
+        assert!(
+            refusals(&argv(&["--settings"]), false).is_empty(),
+            "单独点 --settings 被拒了：它不开遮罩，也不该被量具模式拒"
+        );
+        assert!(
+            refusals(&argv(&["--settings"]), true).is_empty(),
+            "--settings 读的是配置模型自己，gauge_run 那道结构性拒绝与它无关"
+        );
+        for (other, extra) in [
+            ("--selftest", None),
+            ("--desktop", None),
+            ("--hotkeys", Some("1500")),
+            ("--export-config", Some("out.toml")),
+        ] {
+            // 双方都要带齐自己那一份参数：`--hotkeys` 少了自己的毫秒数时，⑭ 那条通用规则也会
+            // 拒一句，于是这一格读的是「少数字」而不是「并列」——证人要证的那一件事只有一件。
+            let mut flat = vec!["--settings", other];
+            if let Some(x) = extra {
+                flat.push(x);
+            }
+            let clash = refusals(&argv(&flat), false);
+            assert_eq!(clash.len(), 1, "{other} 并列时拒了几句：{clash:?}");
+            assert!(
+                clash[0].contains("--settings") && clash[0].contains(other),
+                "{other} 的并列没在自己那句里点名双方：{}",
+                clash[0]
+            );
+        }
+        let mask = refusals(&argv(&["--settings", "--mask", "1500"]), false);
+        assert_eq!(mask.len(), 1, "{mask:?}");
+        assert!(
+            mask[0].contains("--settings") && mask[0].contains("--mask"),
+            "{}",
+            mask[0]
+        );
+    }
+
+    /// §5.20.1 那一扇窗那一档：与上面那一档同样的两条，外加一条它自己独有的。**单独点它、带着
+    /// 数字必须沉默**（这一趟唯一的运行证人就是它自己），**与别人并列必须点名双方且只拒一句**。
+    /// 多出来的那一条是：它与 `--settings` 是两档、读的同一枚模型却各问各的问题，所以并列时
+    /// `saves=` 那一格会被别人那一次写变成假话 —— 这一格专门盯着那一枚组合，因为它是这一轮新
+    /// 加的门与上一轮那一档之间唯一真的会互相污染的一处。
+    /// 一枚并列只交一句话，且那一句点名双方。这一格本轮真的抓到过一次双份：`--export-config`
+    /// 与 `--settings-window` 各说了一句（两条规则读着同一批门名），红的是 `2 != 1`——修的是码
+    /// （把那条已经覆盖这一对的名单从这里摘掉），不是把断言改成 2。
+    #[test]
+    fn the_settings_window_door_refuses_company_and_names_both_sides() {
+        assert!(
+            refusals(&argv(&["--settings-window", "1500"]), false).is_empty(),
+            "单独点 --settings-window 带着数字被拒了：{:?}",
+            refusals(&argv(&["--settings-window", "1500"]), false)
+        );
+        assert!(
+            refusals(&argv(&["--settings-window", "1500"]), true).is_empty(),
+            "那一扇窗不开遮罩，gauge_run 那道结构性拒绝与它无关"
+        );
+        for (other, extra) in [
+            ("--settings", None),
+            ("--selftest", None),
+            ("--desktop", None),
+            ("--hotkeys", Some("1500")),
+            ("--export-config", Some("out.toml")),
+            ("--import-config", Some("in.toml")),
+            ("--mask", Some("1500")),
+            ("--hint", Some("1500")),
+            ("--autosave", Some("1500")),
+        ] {
+            let mut flat = vec!["--settings-window", "1500", other];
+            if let Some(x) = extra {
+                flat.push(x);
+            }
+            let clash = refusals(&argv(&flat), false);
+            assert_eq!(clash.len(), 1, "{other} 并列时拒了几句：{clash:?}");
+            assert!(
+                clash[0].contains("--settings-window") && clash[0].contains(other),
+                "{other} 的并列没在自己那句里点名双方：{}",
+                clash[0]
+            );
+        }
+        // `--settings` 那一条规则是反向的（它自己拒一切），所以并列的那一句由它那侧先说；
+        // 这一格问的是「两种点法都得有人拦」，而不是谁拦的。
+        let flipped = refusals(&argv(&["--settings", "--settings-window", "1500"]), false);
+        assert_eq!(flipped.len(), 1, "{flipped:?}");
+        assert!(flipped[0].contains("--settings-window"), "{}", flipped[0]);
+    }
+
+    /// §5.20.3 那一档点的是**同一扇窗**，所以它的拒绝与上面那一档同形。多出来的那一条是这一轮
+    /// 特有的：两档同开时只能有**一句**。P142 那一个 `2 != 1` 就埋在这里 —— 给每档各写一条自己
+    /// 的规矩时，`--settings-window --settings-io` 会拿到两句各说各的话，而 `settings_open` 只有
+    /// 一枚、窗也只有一扇，「窗那侧说的话是谁的」当场没有作者。这一格不改判据的宽严，它问的是
+    /// 那句话的数量与点名的双方。
+    #[test]
+    fn the_settings_io_door_refuses_company_once_and_names_both_windows() {
+        assert!(
+            refusals(&argv(&["--settings-io", "3000"]), false).is_empty(),
+            "单独点 --settings-io 带着数字被拒了：{:?}",
+            refusals(&argv(&["--settings-io", "3000"]), false)
+        );
+        assert!(
+            refusals(&argv(&["--settings-io", "3000"]), true).is_empty(),
+            "那一扇窗也不开遮罩，gauge_run 那道结构性拒绝与它无关"
+        );
+        for (other, extra) in [
+            ("--settings", None),
+            ("--selftest", None),
+            ("--desktop", None),
+            ("--hotkeys", Some("1500")),
+            ("--export-config", Some("out.toml")),
+            ("--import-config", Some("in.toml")),
+            ("--mask", Some("1500")),
+            ("--hint", Some("1500")),
+            ("--autosave", Some("1500")),
+        ] {
+            let mut flat = vec!["--settings-io", "3000", other];
+            if let Some(x) = extra {
+                flat.push(x);
+            }
+            let clash = refusals(&argv(&flat), false);
+            assert_eq!(clash.len(), 1, "{other} 并列时拒了几句：{clash:?}");
+            assert!(
+                clash[0].contains("--settings-io") && clash[0].contains(other),
+                "{other} 的并列没在自己那句里点名双方：{}",
+                clash[0]
+            );
+        }
+        // 两扇窗那一档同开：一句，且那一句里两个名字都在 —— 次序换过来还是那一句。
+        let both = refusals(
+            &argv(&["--settings-window", "1500", "--settings-io", "3000"]),
+            false,
+        );
+        assert_eq!(both.len(), 1, "两档同开拒了几句：{both:?}");
+        assert!(
+            both[0].contains("--settings-window") && both[0].contains("--settings-io"),
+            "那一句没点名双方：{}",
+            both[0]
+        );
+        let flipped = refusals(
+            &argv(&["--settings-io", "3000", "--settings-window", "1500"]),
+            false,
+        );
+        assert_eq!(flipped.len(), 1, "次序反过来又拒了几句：{flipped:?}");
     }
 
     /// P75：`--history` 那一枚 opt-in 档与 `--clipboard` / `--capture` 共用同一句 orphan ——

@@ -53,6 +53,12 @@ pub const THUMB_FIXED_DEFAULT: PhysSize = PhysSize::new(240, 240);
 pub const CHECKER_CELL_PX: u32 = 8;
 /// §5.9.14: speed is a percentage of the GIF's own frame delays.
 pub const GIF_SPEED_STEPS: &[u32] = &[25, 50, 75, 100, 150, 200, 300, 400];
+/// A frame whose delay field says nothing is a broken file, not an instruction
+/// to spin: this is how long a viewer holds it.
+pub const GIF_DEFAULT_FRAME_DELAY_MS: u32 = 100;
+/// The same file read the other way - no frame may be shown for less than this,
+/// however the user's speed multiplies it.
+pub const GIF_MIN_FRAME_DELAY_MS: u32 = 10;
 pub const STATE_FILE: &str = "pins.state.toml";
 /// Where a pin with no file behind it gets its pixels written, so §7.2 can
 /// actually restore it. Same data directory as `history.db`.
@@ -238,6 +244,11 @@ pub struct PlayState {
     /// Percent of the file's own pace (§5.9.14 "调整播放速度").
     pub speed: u32,
     pub playing: bool,
+    /// Milliseconds already spent on the frame that is on screen. The one field
+    /// with `#[serde(default)]`: a session saved before this clock existed has
+    /// no such number, and §7.2 must still read it.
+    #[serde(default)]
+    pub elapsed_ms: u32,
 }
 
 impl PlayState {
@@ -247,15 +258,19 @@ impl PlayState {
             frame: 0,
             speed: 100,
             playing: frames > 1,
+            elapsed_ms: 0,
         }
     }
 
-    /// §5.9.14 上一帧/下一帧. Stepping is an inspection action, so it pauses.
+    /// §5.9.14 上一帧/下一帧. Stepping is an inspection action, so it pauses -
+    /// and the half-spent frame it interrupts is spent, not carried over to the
+    /// frame being looked at.
     pub fn step(&mut self, dir: i32) {
         if self.frames < 2 {
             return;
         }
         self.playing = false;
+        self.elapsed_ms = 0;
         let n = self.frames as i64;
         let cur = self.frame as i64;
         let next = if dir < 0 { cur - 1 } else { cur + 1 };
@@ -264,21 +279,73 @@ impl PlayState {
 
     pub fn first_frame(&mut self) {
         self.frame = 0;
+        self.elapsed_ms = 0;
     }
 
+    /// Resuming starts the wait again from now: the minute a paused pin sat
+    /// there is not a minute of frames it owes.
     pub fn toggle_play(&mut self) -> bool {
         if self.frames > 1 {
             self.playing = !self.playing;
         }
+        self.elapsed_ms = 0;
         self.playing
     }
 
     pub fn set_speed(&mut self, pct: u32) {
         self.speed = pct.clamp(1, 1000);
+        self.elapsed_ms = 0;
     }
 
     pub fn speed_step(&mut self, up: bool) {
         self.speed = step_on(GIF_SPEED_STEPS, self.speed, up);
+        self.elapsed_ms = 0;
+    }
+
+    /// §5.9.14: the frame moves with time. This is the whole clock, and it has
+    /// no thread of its own because a [`PinItem`] is numbers and the window's
+    /// timer is the thing that knows how long a frame has been up. `delays` is
+    /// the decoded file's own per-frame pace, which lives with the picture
+    /// rather than in here: this struct is what a restored session writes, and a
+    /// frame list would not survive re-pasting a file.
+    ///
+    /// Returns whether the frame on screen moved. Paused, nothing accumulates.
+    /// One tick may advance at most one lap of the clip, so a delta that arrives
+    /// late - a window that was hidden, a machine that slept - is spent rather
+    /// than owed.
+    pub fn tick(&mut self, delta_ms: u32, delays: &[u32]) -> bool {
+        if !self.playing || self.frames < 2 {
+            self.elapsed_ms = 0;
+            return false;
+        }
+        let mut spent = self.elapsed_ms.saturating_add(delta_ms);
+        let mut moved = false;
+        for _ in 0..self.frames {
+            let due = self.delay_ms(delays);
+            if spent < due {
+                break;
+            }
+            spent -= due;
+            self.frame = (self.frame + 1) % self.frames;
+            moved = true;
+        }
+        self.elapsed_ms = if moved && spent >= self.delay_ms(delays) {
+            0
+        } else {
+            spent
+        };
+        moved
+    }
+
+    /// The file's pace for the frame on screen, scaled by the user's speed and
+    /// floored: a delay of 0 is a broken file, and 400% of a 1 ms frame is not a
+    /// request to redraw forever.
+    fn delay_ms(&self, delays: &[u32]) -> u32 {
+        let base = match delays.get(self.frame) {
+            Some(&d) if d >= GIF_MIN_FRAME_DELAY_MS => d,
+            _ => GIF_DEFAULT_FRAME_DELAY_MS,
+        };
+        (u64::from(base) * 100 / u64::from(self.speed.max(1))).clamp(1, u64::from(u32::MAX)) as u32
     }
 }
 
@@ -623,6 +690,16 @@ impl PinItem {
         self.set_opacity(100);
     }
 
+    /// Put the rect back on the point it was standing around. Every hand that
+    /// changes the *size* of a pin through a view change (`rotate` swaps w/h,
+    /// `reset_view` returns the zoom to the default) owes the user this: the
+    /// middle stays, the edges grow. Written once because two spellings of it
+    /// drift — P134 found the second one missing.
+    fn restick_about(&mut self, centre: PhysPoint) {
+        let n = self.window_rect();
+        self.pos_phys = PhysPoint::new(centre.x - (n.w as i32) / 2, centre.y - (n.h as i32) / 2);
+    }
+
     /// §5.9.5 — a quarter turn about the centre, so the pin does not run off to
     /// one side every time the key is pressed.
     pub fn rotate(&mut self, quarter_turns: i32) {
@@ -630,8 +707,7 @@ impl PinItem {
         let centre = r.center();
         self.rotation = (self.rotation + quarter_turns * 90).rem_euclid(360);
         self.sync_size();
-        let n = self.window_rect();
-        self.pos_phys = PhysPoint::new(centre.x - (n.w as i32) / 2, centre.y - (n.h as i32) / 2);
+        self.restick_about(centre);
     }
 
     pub fn rotate_cw(&mut self) {
@@ -834,9 +910,15 @@ impl PinItem {
 
     /// §5.10.4 "重置": the way the pin is being looked at, not what it is. The
     /// crop survives because cropping is content, and the position survives
-    /// because a reset is not a move — the pin grows or shrinks from its own
-    /// top-left rather than sliding somewhere else.
+    /// because a reset is not a move — which for a size change means the **centre**
+    /// stays where it was, the same rule [`Self::rotate`] and [`Self::reset_zoom`]
+    /// follow. Holding the top-left instead was P134's finding: `zoomStep` shrinks
+    /// about the centre, so `-` then 「重置视图」left the picture 16 px right and
+    /// 10 px down from where the user had it, and the gauge's own round trip
+    /// (`rst-lone-turned` → `reset_pin`) opened a window up to another row's
+    /// geometry check.
     pub fn reset_view(&mut self, cfg: &PinConfig) {
+        let centre = self.window_rect().center();
         self.rotation = 0;
         self.flip_h = false;
         self.flip_v = false;
@@ -849,6 +931,7 @@ impl PinItem {
         self.opacity = clamp_opacity(cfg.default_opacity);
         self.zoom = clamp_zoom(cfg.default_zoom);
         self.sync_size();
+        self.restick_about(centre);
     }
 
     /// The window point back to the picture point, undoing thumbnail, zoom,
@@ -1241,6 +1324,24 @@ impl PinSet {
         for id in ids {
             if let Some(p) = self.get_mut(id) {
                 p.set_opacity(pct);
+                n += 1;
+            }
+        }
+        n
+    }
+
+    /// §5.10.3 — one rung of [`OPACITY_STEPS`], taken by each selected pin from
+    /// **its own** current opacity. This is not `set_selection_opacity` with a
+    /// value picked off the first pin: two pins at 30% and 80% that both get
+    /// "more transparent" go to 20% and 70%, and flattening them onto one number
+    /// would silently restyle the second one. Same rule as §5.10.2's 相同位移 — the
+    /// batch shares the *adjustment*, never the resulting position or opacity.
+    pub fn step_selection_opacity(&mut self, up: bool) -> usize {
+        let ids = self.selected_ids();
+        let mut n = 0;
+        for id in ids {
+            if let Some(p) = self.get_mut(id) {
+                p.opacity_step(up);
                 n += 1;
             }
         }
@@ -2564,6 +2665,96 @@ mod tests {
         assert_eq!(ps.speed, 150);
     }
 
+    #[test]
+    fn the_clock_moves_only_when_a_frame_has_run_out_of_its_own_time() {
+        let mut p = pin(10, 10);
+        let delays = [100, 200, 50];
+        let ps = p.set_gif(3).expect("gif");
+        assert!(ps.playing);
+        assert!(!ps.tick(50, &delays));
+        assert_eq!(ps.frame, 0);
+        assert!(ps.tick(60, &delays));
+        assert_eq!(ps.frame, 1);
+        assert_eq!(ps.elapsed_ms, 10);
+        assert!(!ps.tick(100, &delays));
+        assert_eq!(ps.frame, 1);
+        assert!(ps.tick(100, &delays));
+        assert_eq!(ps.frame, 2);
+        assert_eq!(ps.elapsed_ms, 10);
+        assert!(ps.tick(40, &delays));
+        assert_eq!(ps.frame, 0);
+        assert_eq!(ps.elapsed_ms, 0);
+    }
+
+    #[test]
+    fn the_file_s_own_pace_is_scaled_by_the_speed_the_user_chose() {
+        let mut p = pin(10, 10);
+        let delays = [100, 100];
+        let ps = p.set_gif(2).expect("gif");
+        ps.set_speed(200);
+        assert!(ps.tick(50, &delays));
+        assert_eq!(ps.frame, 1);
+        ps.set_speed(50);
+        assert!(!ps.tick(190, &delays));
+        assert_eq!(ps.frame, 1);
+        assert!(ps.tick(10, &delays));
+        assert_eq!(ps.frame, 0);
+    }
+
+    #[test]
+    fn a_paused_clock_does_not_bank_the_time_it_was_stopped_for() {
+        let mut p = pin(10, 10);
+        let delays = [100, 100, 100, 100];
+        let ps = p.set_gif(4).expect("gif");
+        ps.tick(50, &delays);
+        assert!(!ps.toggle_play());
+        assert!(!ps.tick(10_000, &delays));
+        assert_eq!(ps.frame, 0);
+        assert_eq!(ps.elapsed_ms, 0);
+        assert!(ps.toggle_play());
+        assert!(!ps.tick(50, &delays));
+        assert!(ps.tick(50, &delays));
+        assert_eq!(ps.frame, 1);
+    }
+
+    #[test]
+    fn one_tick_cannot_run_the_clock_around_the_clip() {
+        let mut p = pin(10, 10);
+        let delays = [10, 10, 10];
+        let ps = p.set_gif(3).expect("gif");
+        assert!(ps.tick(100_000, &delays));
+        assert!(ps.frame < 3);
+        assert_eq!(ps.elapsed_ms, 0);
+        // A file that declares no delay at all is a broken file, not a spin loop.
+        let ps = p.set_gif(3).expect("gif");
+        assert!(!ps.tick(90, &[0, 0, 0]));
+        assert_eq!(ps.frame, 0);
+        assert!(ps.tick(10, &[0, 0, 0]));
+        assert_eq!(ps.frame, 1);
+        assert_eq!(ps.elapsed_ms, 0);
+    }
+
+    #[test]
+    fn stepping_by_hand_spends_the_partial_frame_the_clock_had_banked() {
+        let mut p = pin(10, 10);
+        let delays = [100; 4];
+        let ps = p.set_gif(4).expect("gif");
+        assert!(!ps.tick(70, &delays));
+        assert_eq!(ps.elapsed_ms, 70);
+        ps.step(1);
+        assert_eq!(ps.elapsed_ms, 0);
+        assert!(ps.toggle_play());
+        assert!(!ps.tick(30, &delays));
+        assert!(ps.tick(70, &delays));
+        assert_eq!(ps.frame, 2);
+        ps.tick(50, &delays);
+        assert_eq!(ps.elapsed_ms, 50);
+        ps.first_frame();
+        assert_eq!(ps.frame, 0);
+        assert_eq!(ps.elapsed_ms, 0);
+        assert!(!ps.tick(50, &delays));
+    }
+
     // --------------------------------------------------------------- §5.9.15
 
     #[test]
@@ -2717,6 +2908,7 @@ mod tests {
         p.set_opacity(30);
         p.set_click_through(true);
         p.enter_fixed_thumbnail(PhysSize::new(40, 40));
+        let stood_around = p.window_rect().center();
         let where_it_stood = p.pos_phys;
         p.reset_view(&cfg());
         assert_eq!(p.rotation, 0);
@@ -2728,8 +2920,32 @@ mod tests {
         assert!(p.smooth_zoom);
         assert_eq!(p.zoom, 100);
         assert_eq!(p.src_rect, PhysRect::new(20, 10, 100, 50));
-        assert_eq!(p.pos_phys, where_it_stood);
+        assert_eq!(p.window_rect().center(), stood_around);
         assert_eq!(p.size_phys, PhysSize::new(100, 50));
+        // 圆心那句话不是从「尺寸没变」里白来的：40x40 → 100x50 那一手必须先把左上角挪走，
+        // 否则上面那问是一枚空尺（#433），而 P134 之前红的就是它没挪。
+        assert_ne!(p.pos_phys, where_it_stood);
+    }
+
+    /// P134 的落空：改尺寸的两只手对「锚在哪儿」不许各说各话。`zoomStep` 照圆心缩，
+    /// 「重置视图」照左上角长，用户按 `-` 再按重置，贴图就自己走了 (+16,+10)；真机那一趟
+    /// 是 `rst-lone-turned` → `reset_pin` 把这 16x10 留在了场上，接着把别家的
+    /// `pin window` / `pin drag undo` / `pin pile *` 四枚行一起弄红。
+    #[test]
+    fn a_zoom_step_and_a_reset_leave_the_pin_exactly_where_it_stood() {
+        let mut p = pin(320, 200);
+        let stood = p.pos_phys;
+        let size = p.size_phys;
+        p.zoom_step(false, None);
+        assert_eq!(p.zoom, 90);
+        assert_ne!(
+            p.size_phys, size,
+            "那一手得真把尺寸改小，不然下面那问没有证人"
+        );
+        assert_ne!(p.pos_phys, stood, "缩是照着圆心挪的，左上角不动才是旧的错");
+        p.reset_view(&cfg());
+        assert_eq!(p.pos_phys, stood);
+        assert_eq!(p.size_phys, size);
     }
 
     // --------------------------------------------------------------- §5.9.18
@@ -2819,6 +3035,21 @@ mod tests {
         assert_eq!(s.get(2).expect("pin").opacity, 100);
         assert_eq!(s.get(3).expect("pin").opacity, 50);
         assert_eq!(s.reset_selection(&cfg()), 2);
+    }
+
+    #[test]
+    fn a_batch_opacity_step_keeps_each_pin_on_its_own_rung() {
+        let mut s = pile(3, 10, 10);
+        s.get_mut(1).expect("pin").set_opacity(30);
+        s.get_mut(3).expect("pin").set_opacity(80);
+        s.set_selection(&[1, 3]);
+        assert_eq!(s.step_selection_opacity(false), 2);
+        assert_eq!(s.get(1).expect("pin").opacity, 20);
+        assert_eq!(s.get(3).expect("pin").opacity, 70);
+        assert_eq!(s.get(2).expect("pin").opacity, 100);
+        assert_eq!(s.step_selection_opacity(true), 2);
+        assert_eq!(s.get(1).expect("pin").opacity, 30);
+        assert_eq!(s.get(3).expect("pin").opacity, 80);
     }
 
     #[test]

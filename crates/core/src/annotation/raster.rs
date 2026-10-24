@@ -1079,7 +1079,12 @@ fn layout(r: &PhysRect, text: &str, style: &Style, glyphs: &dyn Glyphs) -> Vec<(
 
 /// Break a paragraph so no line runs past the box. With no font there is nothing
 /// to measure, so a paragraph stays one line.
-fn wrap(para: &str, width: u32, style: &Style, glyphs: &dyn Glyphs) -> Vec<String> {
+///
+/// Public because §5.8.5's text card lays its column out with this same breaker
+/// ([`crate::card`]): two word-splitters would be two answers to where a line ends,
+/// and the card's box is exactly the kind of fixed column [`text_extent`] cannot
+/// measure. The mask's own lines and a pasted card now break at the same place.
+pub fn wrap(para: &str, width: u32, style: &Style, glyphs: &dyn Glyphs) -> Vec<String> {
     let mut out = Vec::new();
     let mut cur = String::new();
     for word in para.split_whitespace() {

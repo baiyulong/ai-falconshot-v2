@@ -112,6 +112,25 @@ impl Frame {
         PhysRect::new(0, 0, self.width, self.height)
     }
 
+    /// The alpha of one point. A point outside the picture has nothing to show,
+    /// so it answers `0` rather than panicking — §5.9.15's click rule is asked
+    /// about window corners the crop never covered.
+    pub fn alpha_at(&self, x: u32, y: u32) -> u8 {
+        if x >= self.width || y >= self.height {
+            return 0;
+        }
+        self.get(x, y)[3]
+    }
+
+    /// §5.9.15: whether this picture has a hole at all. The menu section that
+    /// offers the four modes asks this instead of appearing for every pin, and
+    /// `alpha == 0` is the same condition [`crate::pin::PinItem::paint_alpha_bg`]
+    /// fills and [`crate::pin::PinItem::hit`] refuses — one definition of
+    /// see-through, spelled once here.
+    pub fn has_transparent_pixels(&self) -> bool {
+        self.pixels.as_chunks::<4>().0.iter().any(|p| p[3] == 0)
+    }
+
     pub fn rect(&self, at: crate::geometry::PhysPoint) -> PhysRect {
         PhysRect::new(at.x, at.y, self.width, self.height)
     }
@@ -415,5 +434,40 @@ mod tests {
             blend_rgba([10, 10, 10, 255], [200, 0, 0, 0], 255),
             [10, 10, 10, 255]
         );
+    }
+
+    /// §5.9.15 asks two questions of a picture before the menu shows itself: is
+    /// any of it see-through, and is this particular pixel. Both have to answer
+    /// with the same `alpha == 0` the painter and [`crate::pin::PinItem::hit`]
+    /// use, or a pin can offer a mode that changes nothing on it.
+    #[test]
+    fn a_frame_names_the_pixels_it_is_see_through_by() {
+        let solid = Frame::filled(8, 6, [10, 20, 30, 255]).unwrap();
+        assert!(!solid.has_transparent_pixels());
+        assert_eq!(solid.alpha_at(0, 0), 255);
+        assert_eq!(solid.alpha_at(7, 5), 255);
+
+        // A half-transparent pixel is not see-through: only a zero alpha is.
+        let mut dimmed = solid.clone();
+        dimmed.set(3, 3, [10, 20, 30, 1]);
+        assert!(!dimmed.has_transparent_pixels(), "{:?}", dimmed.get(3, 3));
+        assert_eq!(dimmed.alpha_at(3, 3), 1);
+
+        // One cleared corner makes the whole frame answer yes, and the point
+        // query still answers per pixel rather than by that global flag.
+        let mut holed = solid.clone();
+        holed.set(0, 5, [0, 0, 0, 0]);
+        assert!(holed.has_transparent_pixels());
+        assert_eq!(holed.alpha_at(0, 5), 0);
+        assert_eq!(holed.alpha_at(7, 5), 255);
+
+        // Out of range is see-through, not a panic: the click arrives in the
+        // window's space and can land past the picture.
+        assert_eq!(holed.alpha_at(8, 0), 0);
+        assert_eq!(holed.alpha_at(0, 6), 0);
+        assert_eq!(holed.alpha_at(u32::MAX, u32::MAX), 0);
+
+        // An empty frame is not a transparent one.
+        assert!(!Frame::new(0, 0).unwrap().has_transparent_pixels());
     }
 }

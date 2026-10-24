@@ -68,6 +68,58 @@ pub const NEVER_OFFSET: PinId = 999_999;
 /// without either file looking wrong.
 pub const LEG_DELAY_MS: i32 = 400;
 
+/// When the *clip's* own delegate reads its GIF state: one eighth of [`LEG_DELAY_MS`].
+///
+/// The fraction is the schedule, not a speed-up. Every other leg of this run waits a full
+/// `LEG_DELAY_MS` after its window was built, and two timers expiring inside the same
+/// event-loop step are dispatched in an order this file cannot read from the source - so a
+/// clip leg armed at the same delay would arrive at an undetermined place in
+/// [`PIN_SCHEDULE`], and the graded row would then be grading Qt's timer list. Armed at
+/// an eighth it is certain to speak before the subject's first line, and its one tail wait
+/// still lands before the dialog's first press, which is where the schedule puts it.
+///
+/// It reads nothing Win32 owns, so it does not need the exposure the full delay is for:
+/// frames, play state and the menu's own visibility are Qt-side values the state machine
+/// filled when the pin was assigned.
+///
+/// The number travels to QML inside [`plan_line`] for the usual reason: `/ 8` written in
+/// two languages is a pair that drifts.
+pub const GIF_ARM_MS: i32 = LEG_DELAY_MS / 8;
+
+/// How many items §5.9.14's 播放控制 section is, as read from this round's
+/// `PinWindow.qml`. A `#[cfg(test)]` test counts the occurrences of the section's own
+/// visibility condition in the file, so this number cannot outlive the menu it describes;
+/// the graded row compares the *live* window's count against it, on a clip (all of them)
+/// and on a still (none).
+pub const GIF_MENU_ITEMS: usize = 7;
+
+/// How many items §5.9.15's 背景模式 section is. Counted the same way as the number above —
+/// a `#[cfg(test)]` test reads the section's own click handler out of `PinWindow.qml` — for
+/// the same reason: four is also [`falcon_core::config::AlphaBg::index`]'s domain, and a menu
+/// that grew a fifth row while this constant stayed at four would have the *state machine*
+/// refuse the row (`AlphaBg::from_index(4)` is `None`) and this row still print PASS.
+pub const ALPHA_MENU_ITEMS: usize = 4;
+
+/// How the *subject's* menu leg waits: this interval twice, once to arm the leg and once for
+/// its tail, so its shut count is read at a hundred milliseconds and its open count at two
+/// hundred.
+///
+/// P128 C 档的真机读数把这件事钉住了：同一枚 `gifMenuItemCount()` 在两扇窗上都答 0，因为那一节
+/// 的七枚 `MenuItem` 在菜单没打开时不交出可见性——所以两枚计数都要在**菜单开着**的时候读，而
+/// 「静置窗读回 0」这一枚反例必须由同一个读法供，否则它只是一个没被实例化的形状。
+///
+/// 所以计数必须落在 `open()` 之后的**另一个**事件循环轮次里，而那一轮不能排在那扇对话框后面：
+/// `saveAs.open()` 交出去的是 shell 自己的模态循环，本文件对它没有任何承诺。臂也不取
+/// [`GIF_ARM_MS`]：那一毫秒是**会动的那一扇**读它自己那枚关着的计数的时刻，两扇窗的定时器在同一个
+/// 事件循环步里到期时谁先跑，本文件从源码读不出来（[`GIF_ARM_MS`] 存在的同一个理由）。一枚本常数
+/// 隔开两扇的臂，两条反证之间就有了一个由算术决定的先后；静置窗那一读落在第二百毫秒，在它自己那枚
+/// `menu`（第四百）之前，也在会动的那一扇的尾读（第四百五十）之外整整二百五十。
+///
+/// A quarter of the delay, and it is spent inside the subject's own pre-dialog phase: the
+/// first thing that can disturb a timer here is the shell's modal loop, and that is two full
+/// waits away.
+pub const GIF_STILL_MS: i32 = LEG_DELAY_MS / 4;
+
 /// How many times the leg may ask the shell for its button before it stops asking.
 ///
 /// The wait is not a courtesy: Qt returns from `open()` with the dialog marked visible
@@ -92,6 +144,11 @@ pub const PUSH_TRIES_MAX: i32 = 10;
 /// does rather than when a guessed budget runs out. They are phases rather than one
 /// straight run because a door that is opened by a real click cannot be driven inside a
 /// single event-loop turn: the click has to land while the dialog's own loop is running.
+///
+/// §5.9.14's clip legs are deliberately *not* counted here: they run beside the subject's
+/// chain on their own window (`GIF_ARM_MS` plus one wait, both of which fit inside the
+/// subject's second wait), so the longest path of this run is unchanged and a budget grown
+/// for them would be a number this schedule does not owe.
 pub const LEG_WAITS: i32 = PUSH_TRIES_MAX + 4;
 
 /// What the leg is allowed to spend *besides* its own schedule.
@@ -212,13 +269,16 @@ impl LegTiming {
     }
 }
 
-/// The seven names this run owns inside [`DIR`], in the order the plan keeps them.
+/// The eight names this run owns inside [`DIR`], in the order the plan keeps them.
 /// `never.png` is written by the leg that must *not* write it; `dialog.png` is written
 /// by the door a real click closed, and is the only file here whose name the gauge did
 /// not choose - the dialog picked the extension off its own filter list. `from-file.png`
 /// is written by this file's own plant (§10 第 43 项 ①), and is the only one here that is
 /// *read* back in: the pin on the other side of it is the thing under test.
-const NAMES: [&str; 7] = [
+/// `from-gif.gif` is §5.9.14's: two frames this file writes through the same fixture the
+/// selftest uses, pinned through the same door a dropped file goes through, so the window
+/// on the other side of it is a clip rather than a picture.
+const NAMES: [&str; 8] = [
     "qml.png",
     "qml.jpg",
     "rust.png",
@@ -226,6 +286,7 @@ const NAMES: [&str; 7] = [
     "never.png",
     "dialog.png",
     "from-file.png",
+    "from-gif.gif",
 ];
 
 /// The name the real-click leg hands the dialog, as a `currentFile` without an
@@ -264,7 +325,218 @@ const RECT_SLACK: i32 = 2;
 /// that did not run costs nothing - while a leg that runs and is *not* in this list costs
 /// the row. That is the point of keeping the list in Rust instead of in a comment: adding a
 /// leg means saying where it runs.
+///
+/// The ten `gif-*` keys are §5.9.14's, and six of them sit at the very front: the clip's
+/// delegate speaks the first four, armed at [`GIF_ARM_MS`], and the subject's own menu leg
+/// speaks the next two, armed at [`GIF_STILL_MS`] - places decided by arithmetic rather than
+/// by timer dispatch order, which is the whole reason those two constants exist.
+///
+/// C 档那一趟真机把这五枚的位置全部改过一次，而判据一枚没动（#302/#353）：`MenuItem` 的可见性在
+/// 菜单没打开时读不回那七项，两扇窗都答 0，于是「开着的读法」成了唯一能供出 7 与 0 那一读的读法。
+/// 两枚开着的计数各按自己的算术落位——静置窗那一枚在第二百毫秒（两枚 [`GIF_STILL_MS`]，赶在它自己
+/// 那枚 `menu` 之前），会动的那一枚在第四百五十（[`GIF_ARM_MS`] 加一整枚 [`LEG_DELAY_MS`]）——两枚
+/// 关着的计数各留在自己那一腿的最前当反证，而静置窗那一枚的臂取本常数而非 [`GIF_ARM_MS`]，正是为了
+/// 让两条反证之间也有一个算术决定的先后；`gif-menu-shape` 则是那一读的机制证人。
+///
+/// 三枚 `alpha-*` 不在 §5.9.14 的算术里，也不在自己新立的定时器里：它们挨着静置窗那一双腿跑（同
+/// 一腿、同一事件循环步、代码顺序在前一枚之后），因为 §5.9.15 的读数要的是「菜单开着的那一瞬」，
+/// 而全门只有静置那两枚定时器开这扇窗的菜单。为定时器再添一枚常数会造出两条反证之间新的先后问题，
+/// 而这一轮的判据不需要新的先后 —— 它需要的是同一枚 `pinMenu.open()` 之内的一次读。
+///
+/// `copy-drawn` 是 §5.9.16 那两条门的第一次真机对面：它不另写一遍 `copyPin`，而是 `trigger()`
+/// 菜单与快捷键共用的那枚 `Action`，所以它落在 `runGauge()` 里 `jpg` 之后、两枚反证之前——和
+/// `never-copy` 用的是同一条腿的同一事件循环步，两句不同的话因此由同一趟供出，无需新的定时器。
+/// 它排在 `pre-save` 之前是必须的：`pre-save` 读的是「点击前最后一句」，而那一句自 P41 起就是
+/// `never-save` 的拒绝；把成功的一句插在更后面会让那枚已有的行比较两句不相干的话（P40 的 `f-jpg`
+/// 就是这么被这枚日程抓住的）。
+/// 十三枚 `sel-*` 排在 `menu` 之前、`alpha-turn` 之后，位置由它们长在哪儿决定：这一组是
+/// `runGauge()` 的**头一段**，所以实测里它们必然与 `menu` 同一腿、同一事件循环步，只是走在它前面。
+/// 为什么必须在同一段的最前：`sel-before-*` 与三次手势之间不许插进任何别的 `reload` —— 一旦有别的
+/// 腿在中间叫过一次 `view.reload()`，"边亮了"就既可以由本轮那一声 `selection_epoch` 扇出来、也可以
+/// 由那一叫来，这一枚读数就分不开两件事（#281 那一族）。而排在 `dlg-*` 与 `close-*` 之前，是给
+/// 后面每一条腿留原状：这一段跑完名单是空的，`close-before` 读的 `covering=` / `pins=` 那几格
+/// 因此一个字节也没被本轮动过。
+///
+/// 两枚 `sel-observe-*` 夹在中间，位置不是排出来的而是**叫出来的**：`sel-observe-on` 说在
+/// `selectTarget(other, 1)` 那句的里面——notify 在 invokable 返回之前就扇完了，所以它必然晚于
+/// `sel-add-target`、早于 `sel-add`；`sel-observe-off` 同理说在 `clearSelectionAction.trigger()`
+/// 里面。谁要是把手势挪到别的步上、或把 notify 改成排队发，这两枚键的先后就会当场和日程不符，
+/// 由 [`sel_rows`] 按段报出来（而不是由本段的措辞自证）。
+///
+/// 它们是**可重入的证人而不是腿**（[`REENTRANT_WITNESS`]）：P134 的 `des-*` 那一族要的三种名单
+/// 形状（{a,b}、{本窗,a}、{a,b}）借不来多选那两手的任何一种，只能自己点名，于是同一趟里
+/// `sel-observe-on` 必然被扇三遍。旧文写的是「不许多叫一次」，P134 把它订正成「多叫由段来分」：
+/// 判据一枚没放宽——那一段里照样要恰好一句、且必须是**被点名那一枚**说的（放宽的读法会连
+/// 「别的窗没亮」一起读不出来，那是 #433 的另一面）。
+///
+/// 十五枚 `mov-*`（§5.10.2）不另起一段，而是夹在 `sel-*` 中间：它们要的**名单长度**恰好就是多选
+/// 那两手跑出来的状态——`sel-plain` 之后场上只本窗一枚（拖它该交回 1），`sel-add` 之后有本窗与
+/// 被点名那一枚两枚（拖本窗该交回 2）。另起一段就得自己再 `selectPin` 一遍，而 `selectTarget`
+/// 多叫一次会把 `sel-observe-on` 那一声多扇一遍——那一声是证人不是腿，多出来的那几句由
+/// [`sel_rows`] 按段分开，见上面那封（P134 订正）。`mov-batch-*` 三枚在 `other` 为 -1 时一句也不
+/// 说，由 `mov_rows` 读成「这一格没有问」而不是读成 1（#453）。
+///
+/// 四枚反手读数（`mov-undo-self` / `mov-undo-other` / `mov-epoch-undo` / `mov-pos-after`）排在
+/// `sel-cleared-self` **之后**，因为反手必须走在名单已经
+/// 空了的那一刻：本窗被两拖搬过 (40,20) 而另一枚只被搬过 (23,11)，两者差一枚「单枚那一拖」，而
+/// 名单还两枚时的任何反手都是按名单搬两枚，抹平一枚就多出另一枚。空名单那一路一次只搬被拖的那
+/// 一扇，才谈得上按每一枚各自的位移抹回去。它们不是装饰：上一趟真机没有这四拖，`pin window` 被
+/// 自己这一族的拖动挪到了 648,400（要的是 608,380），`pin pile *` 两枚跟着读「没有窗」——本族
+/// 的腿把别家的行弄红了，盘证 `.qoder\scratch\p132_door_A.txt`。
+///
+/// 两枚 `mov-rev-*` 一前一后夹住 `mov-lone`，读的是本窗自己那枚纹理号：搬动只改位置，而
+/// `content_key` 不含位置，所以两枚必须相等。它不等就是每一次鼠标移动事件都在重画一张 PNG，
+/// 那一问与「搬几枚」和「发不发号」都不是同一件事，因此单独占一枚判据（[`mov_rows`]）。
+///
+/// 二十四枚 `op-*`（§5.10.3）与 `mov-*` 同族，也夹在 `sel-*` 中间，因为它要的名单长度就是那两手
+/// 跑出来的状态：七枚 `op-lone-*` 长在 `mov-rev-lone` **之后**（那时名单里只有本窗一枚，绝对值那一手
+/// 该交回 1），三枚 `op-*-ghost` 长在 `mov-epoch-ghost` 之后（同一枚还没被发出去的 id，透明度那一手
+/// 也必须交 0 且**不发号**），十四枚批量那几枚长在 `mov-batch-epoch` 之后（名单两枚时两只手都该交回
+/// 2）。它们不另起一段的理由与上面那封信同一枚：`selectTarget` 多叫一次会把 `sel-observe-on` 那一声
+/// 多扇一遍，而那一声明白着是属于哪一问的由段界决定（见上面那封 P134 的订正）。
+///
+/// 归位是这一族自己欠的一条：`op-lone-restore` 与 `op-set-back` 把本窗还回它**自己现读到的**那一级
+/// （不是写死 100 —— 默认不透明度是配置里的一格，写死就是拿本档的假设去改用户的环境，#261）。
+/// 名单里**另一枚**的原来那一级本窗读不到（QML 里没有别的窗的 opacity，Session 也没有按 id 问 opacity
+/// 的那只手），所以段末那手 `op-set-back` 把两枚一起钉在本窗的原级上 —— 那一半的得失逐名记在门档，
+/// 不拿一枚弱尺冒充（#261/#440）。
+///
+/// 三十四枚 `solo-*`（§5.11 独显）排在 `des-undo-again` **之后**、`menu` 之前，理由与上面那几封同一枚
+/// 而方向相反：`des-*` 那一族的最后一手把名单收回**空**、把场上收回**满**，而独显四臂要的正是这个起点
+/// —— 第一臂要的「名单空着点一枚窗的菜单」（`hand_targets` 因此交回单枚）与第三臂要的「名单空着按热键」
+/// （core 直接拒绝）都只能从空名单起步，另起一段就得自己再点一遍名，而那一点会把 `sel-observe-on`
+/// 那一声多扇一遍（它是证人不是腿，见上面那封 P134 的订正）。第二臂与第四臂要的「别的那些枚」用的就是
+/// `des-*` 已经点好的那两枚证人，本族不另数（#281）。四臂各走一遍又把名单与独显都收回进门时的样子，
+/// 后面 `menu` 往上那几枚读对话框的行因此一个字节也没被本族动过。
 pub(crate) const PIN_SCHEDULE: &[&str] = &[
+    "gif-frames",
+    "gif-frame",
+    "gif-playing",
+    "gif-items-closed",
+    "gif-items-still-closed",
+    "alpha-closed",
+    "gif-items-still",
+    "alpha-open",
+    "alpha-turn",
+    "mov-pos-before",
+    "sel-before-count",
+    "sel-before-self",
+    "sel-plain",
+    "sel-plain-count",
+    "sel-plain-self",
+    "mov-epoch-before",
+    "mov-rev-before",
+    "mov-lone",
+    "mov-epoch-lone",
+    "mov-rev-lone",
+    "op-lone-start",
+    "op-lone-epoch-before",
+    "op-lone-set",
+    "op-lone-opacity",
+    "op-lone-restore",
+    "op-lone-restored",
+    "op-lone-epoch-end",
+    "rst-lone-base",
+    "rst-lone-turned",
+    "rst-lone-epoch-before",
+    "rst-lone-rev-before",
+    "rst-lone",
+    "rst-lone-zoom",
+    "rst-lone-rev",
+    "rst-lone-epoch-end",
+    "mov-ghost",
+    "mov-epoch-ghost",
+    "op-epoch-ghost-before",
+    "op-ghost",
+    "op-epoch-ghost",
+    "rst-epoch-ghost-before",
+    "rst-ghost",
+    "rst-epoch-ghost",
+    "sel-add-target",
+    "sel-observe-on",
+    "sel-add",
+    "sel-add-count",
+    "sel-add-self",
+    "mov-batch-target",
+    "mov-batch",
+    "mov-batch-epoch",
+    "op-start",
+    "op-epoch-before",
+    "op-rev-before",
+    "op-set-batch",
+    "op-opacity-set",
+    "op-epoch-set",
+    "op-rev-set",
+    "op-step-down",
+    "op-opacity-down",
+    "op-step-up",
+    "op-opacity-up",
+    "op-set-back",
+    "op-opacity-end",
+    "op-epoch-end",
+    "rst-batch-target",
+    "rst-batch-epoch-before",
+    "rst-batch",
+    "rst-batch-epoch",
+    "sel-observe-off",
+    "sel-cleared-count",
+    "sel-cleared-self",
+    "mov-undo-self",
+    "mov-undo-other",
+    "mov-epoch-undo",
+    "mov-pos-after",
+    "des-target-a",
+    "des-target-b",
+    "des-pile-before",
+    "des-reach-self",
+    "des-reach-batch",
+    "des-menu-shape",
+    "des-menu-label",
+    "des-undo-absent",
+    "des-batch",
+    "des-pile-gone",
+    "des-trashed",
+    "des-undo-shown",
+    "des-ghost",
+    "des-trashed-kept",
+    "des-undo",
+    "des-pile-back",
+    "des-trashed-after",
+    "des-undo-again",
+    "solo-dims",
+    "solo-pile",
+    "solo-reach-self",
+    "solo-epoch-before",
+    "solo-enter",
+    "solo-epoch-enter",
+    "solo-kept",
+    "solo-hidden-self",
+    "solo-live-self",
+    "solo-said",
+    "solo-menu-shape",
+    "solo-menu-label",
+    "solo-exit",
+    "solo-epoch-exit",
+    "solo-kept-after",
+    "solo-target-other",
+    "solo-op-start",
+    "solo-enter-other",
+    "solo-hidden",
+    "solo-live",
+    "solo-opacity",
+    "solo-epoch-other",
+    "solo-exit-other",
+    "solo-op-end",
+    "solo-hidden-end",
+    "solo-live-end",
+    "solo-refuse-before",
+    "solo-refuse",
+    "solo-refuse-epoch",
+    "solo-refuse-kept",
+    "solo-refuse-said",
+    "solo-ghost",
+    "solo-epoch-ghost",
+    "solo-ghost-kept",
     "menu",
     "filters",
     "filter",
@@ -275,12 +547,17 @@ pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "png-url",
     "png",
     "jpg",
+    "copy-drawn",
     "never-copy",
     "never-save",
     "pre-save",
     "dlg-folder",
     "dlg-name",
     "dlg-open",
+    "gif-items",
+    "gif-menu-shape",
+    "gif-turns",
+    "gif-distinct",
     "dlg-shown",
     "dlg-shown-filter",
     "accept-was",
@@ -302,6 +579,15 @@ pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "done",
 ];
 
+/// 两枚 `sel-observe-*` 不是腿，是**别的窗**在自己那圈边亮/灭时说的话：值里带着说话那一枚的 id，
+/// 一趟里可以说好几次。P134 起这是必然的而不是失误——`des-*` 那一族要的三种名单形状
+/// （{a,b}、{本窗,a}、{a,b}）借不来多选那两手的任何一种，只能自己点，而每点一次就扇一遍。
+///
+/// 所以这一枚键照旧要在日程里出现（多出来一枚就叫「日程里没有这条腿」），但不进那条单调链：
+/// 「这一声有没有在被点名那一声返回之前扇完、且场上只有被点名那一枚开口」由 [`sel_rows`] 按段
+/// 判——一枚判据只写一次（#281），而按段那一读比全程数次数更贴它要问的事。
+pub(crate) const REENTRANT_WITNESS: [&str; 2] = ["sel-observe-on", "sel-observe-off"];
+
 /// What the observed key order says about its schedule: `None` when every leg that ran is
 /// in the schedule and ran in its relative order, otherwise the problems, joined.
 ///
@@ -309,6 +595,8 @@ pub(crate) const PIN_SCHEDULE: &[&str] = &[
 /// one phase is the same defect as two phases swapping, and a fixed index per line would
 /// call a run that skipped its optional legs out of order. Equal indices are allowed,
 /// because a key a door writes twice is the same leg answering twice, not a schedule change.
+/// [`REENTRANT_WITNESS`] is the one case where a key is not a leg at all; it still has to
+/// be in the schedule, it just cannot be placed at one spot in it.
 pub(crate) fn leg_order(keys: &[&str], schedule: &[&str]) -> Option<String> {
     let mut problems: Vec<String> = Vec::new();
     let mut prev: Option<(&str, usize)> = None;
@@ -319,6 +607,9 @@ pub(crate) fn leg_order(keys: &[&str], schedule: &[&str]) -> Option<String> {
             }
             continue;
         };
+        if REENTRANT_WITNESS.contains(key) {
+            continue;
+        }
         if let Some((before, before_at)) = prev {
             if at < before_at {
                 problems.push(format!(
@@ -387,6 +678,17 @@ struct Plan {
     /// The pin made from [`Self::from_file`], and the rect it asked Qt for.
     fid: PinId,
     frect: Option<PhysRect>,
+    /// §5.9.14's artifact: the two-frame clip this run writes through the *same fixture the
+    /// selftest uses*, then pins through the same [`crate::state::PinState::add_from_file`]
+    /// door. Unlike [`Self::from_file`] this one *is* in [`plan_line`]: the reading of a clip
+    /// is taken by the window it belongs to, and a delegate cannot know which pin it is
+    /// without the id crossing the boundary.
+    from_gif: PathBuf,
+    gid: PinId,
+    grect: Option<PhysRect>,
+    /// Why the run has no clip pin: the owner's own refusal, kept for the same reason as
+    /// [`Self::file_said`].
+    gif_said: String,
     /// Why the run has no file-pin: the owner's own refusal, kept so the row quotes the
     /// sentence the product said rather than this file's guess about it.
     file_said: String,
@@ -426,6 +728,10 @@ impl Plan {
             fid: 0,
             frect: None,
             file_said: String::new(),
+            from_gif: PathBuf::new(),
+            gid: 0,
+            grect: None,
+            gif_said: String::new(),
             id: 0,
             bad: 0,
             rect: None,
@@ -454,20 +760,30 @@ fn with<R>(f: impl FnOnce(&mut Plan) -> R) -> R {
 ///
 /// The fields are in one order and QML reads them by index, so both are written out
 /// here: `目录 | qml.png | qml.jpg | never.png | 贴图 id | 不存在的 id | 延迟 ms |
-/// 对话框默认名 | 推开尝试上限 | 要关掉的那枚 id`. The id that has no pin travels with the plan rather than
+/// 对话框默认名 | 推开尝试上限 | 要关掉的那枚 id | 会动的那枚贴图 id | 会动那一腿的起步 ms |
+/// 静置那一腿的间隔 ms`. The id that has no pin travels with the plan rather than
 /// being recomputed in QML, because `NEVER_OFFSET` is this file's business and a second
 /// copy of a number in the other language is a pair that drifts without either side
-/// looking wrong. The last two fields are the same argument for a string and for a
+/// looking wrong. The last three fields are the same argument for a string and for a
 /// schedule: QML types the name into the dialog and this file reads the file it produces,
 /// and QML counts the waits while this file budgets them - all three only agree if the
 /// values were handed over rather than written twice.
+///
+/// Field 10 is the clip's id, and the gate every delegate reads (`win.gauge.length`) is
+/// thirteen rather than ten *because* it is a field: a window that cannot tell whether this
+/// run planted a clip has no way to stay out of a leg that belongs to one. Field 11 is the
+/// clip leg's own start delay, for the same reason field 6 is the subject's. Field 12 is the
+/// subject's menu leg's interval, which QML spends twice - once to arm the leg, once for its
+/// tail - and it exists so that no two of the four menu readings fall in the same event-loop
+/// step: which of two timers expiring together Qt runs first is not a thing this file can read
+/// from the source, and [`PIN_SCHEDULE`] claims `gif-items-still` before `gif-items`.
 pub fn plan_line() -> String {
     with(|p| {
         if p.dir.as_os_str().is_empty() {
             return String::new();
         }
         format!(
-            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
             p.dir.display(),
             p.qml_png.display(),
             p.qml_jpg.display(),
@@ -477,7 +793,10 @@ pub fn plan_line() -> String {
             LEG_DELAY_MS,
             DIALOG_STEM,
             PUSH_TRIES_MAX,
-            p.xid
+            p.xid,
+            p.gid,
+            GIF_ARM_MS,
+            GIF_STILL_MS
         )
     })
 }
@@ -544,10 +863,10 @@ pub fn plant() -> Result<String, String> {
     let mut dir = std::env::temp_dir();
     dir.push(DIR);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let [qml_png, qml_jpg, rust_png, rust_jpg, never, dialog, from_file] =
+    let [qml_png, qml_jpg, rust_png, rust_jpg, never, dialog, from_file, from_gif] =
         NAMES.map(|n| dir.join(n));
     for p in [
-        &qml_png, &qml_jpg, &rust_png, &rust_jpg, &never, &dialog, &from_file,
+        &qml_png, &qml_jpg, &rust_png, &rust_jpg, &never, &dialog, &from_file, &from_gif,
     ] {
         let _ = std::fs::remove_file(p);
     }
@@ -614,6 +933,13 @@ pub fn plant() -> Result<String, String> {
     // this mode's whole claim is about a window the OS can be asked about.
     let (fid, frect, file_said) = plant_file_pin(id, &from_file, rect);
 
+    // §5.9.14: 会动的贴图, planted the way a user's flow reaches it - the same fixture bytes
+    // the selftest writes, then the same `add_from_file` door. It goes *above* the file pin
+    // and to its side (`rect`'s right, `rect`'s own top) so that no two of the four windows
+    // share a pixel: [`pin_window`] selects by largest overlap and [`close_rows`] names every
+    // rect it expects to find, so an overlap would be one reading answering for two pins.
+    let (gid, grect, gif_said) = plant_gif_pin(&from_gif, rect);
+
     let bad = id + NEVER_OFFSET;
     with(|p| {
         p.dir = dir.clone();
@@ -627,6 +953,10 @@ pub fn plant() -> Result<String, String> {
         p.fid = fid;
         p.frect = frect;
         p.file_said = file_said;
+        p.from_gif = from_gif;
+        p.gid = gid;
+        p.grect = grect;
+        p.gif_said = gif_said;
         p.id = id;
         p.bad = bad;
         p.rect = Some(rect);
@@ -635,10 +965,12 @@ pub fn plant() -> Result<String, String> {
         p.lines.clear();
     });
     Ok(format!(
-        "贴图 {id} 的窗在 {rect}，写进 {}，另有一个不存在的 id {bad}，真点击那一格交给 {} 的对话框自己取名，{} 先由 `save::write_to` 写成再交 `add_from_file` 钉成贴图 {fid}，贴图 {xid} 在 {xrect} 是腿最后要关掉的那一枚",
+        "贴图 {id} 的窗在 {rect}，写进 {}，另有一个不存在的 id {bad}，真点击那一格交给 {} 的对话框自己取名，{} 先由 `save::write_to` 写成再交 `add_from_file` 钉成贴图 {fid}，{} 由同一份两帧夹具写成再交同一扇门钉成会动的贴图 {gid}（窗在 {}），贴图 {xid} 在 {xrect} 是腿最后要关掉的那一枚",
         dir.display(),
         DIALOG_STEM,
-        NAMES[6]
+        NAMES[6],
+        NAMES[7],
+        grect.unwrap_or(PhysRect::new(0, 0, 0, 0))
     ))
 }
 
@@ -694,6 +1026,42 @@ fn plant_file_pin(
         }
         // No pin, so no window: the row says this in the product's own words and the two
         // under it read as absent rather than as wrong.
+        Err(e) => (0, None, e),
+    }
+}
+
+/// §5.9.14's clip, planted the way a file the user dropped reaches the screen: the *same
+/// fixture* the selftest writes ([`state::write_two_frame_gif`]), then the *same door*
+/// ([`crate::state::PinState::add_from_file`]), with nothing of this file's in between. A
+/// gauge that built a clip in memory would be grading a pin the product never made.
+///
+/// Answers the new pin's id, the rect it asked Qt for, and the refusal when there is no
+/// pin - and an empty sentence when there is one, because unlike [`plant_file_pin`] there
+/// is no write of ours whose `已保存到` line could be quoted: the frames are read back from
+/// the state machine by the rows below, not promised here.
+///
+/// The point is to the subject's right and level with its top edge, which is the one spot
+/// on this desktop that is clear of all three neighbours: four windows each owning pixels no
+/// other window owns is what lets [`pin_window`] and [`close_rows`] name one pin per rect.
+fn plant_gif_pin(from_gif: &Path, rect: PhysRect) -> (PinId, Option<PhysRect>, String) {
+    if let Err(e) = state::write_two_frame_gif(from_gif) {
+        return (0, None, format!("{} 写不出来：{e}", from_gif.display()));
+    }
+    let at = PhysPoint::new(rect.x + rect.w as i32 + 16, rect.y);
+    match state::with(|s| s.add_from_file(&from_gif.to_string_lossy(), at)) {
+        Ok(id) => {
+            let view = state::with(|s| s.view_data(id));
+            (
+                id,
+                Some(PhysRect::new(
+                    view.pos_x,
+                    view.pos_y,
+                    view.size_w.max(1) as u32,
+                    view.size_h.max(1) as u32,
+                )),
+                String::new(),
+            )
+        }
         Err(e) => (0, None, e),
     }
 }
@@ -920,6 +1288,21 @@ pub(crate) fn said<'a>(lines: &'a [String], key: &str) -> Option<&'a str> {
     })
 }
 
+/// [`said`] 认键的那一枚尺，单独写一份好让它的两种问法都从这一处走：整字段相等，不读前缀。
+fn line_speaks(l: &str, key: &str) -> bool {
+    l.split_once('|').is_some_and(|(k, _)| k == key)
+}
+
+/// 第一句说出 `key` 的行号（不是值）：`sel_rows` 的证人那一段由两枚这样的行号圈出来。
+fn said_at(lines: &[String], key: &str) -> Option<usize> {
+    lines.iter().position(|l| line_speaks(l, key))
+}
+
+/// `key` 在这几行里说过几句：一段里说过一次、全程说过几句是两个问法，读法必须同一个。
+fn spoke_times(lines: &[String], key: &str) -> usize {
+    lines.iter().filter(|l| line_speaks(l, key)).count()
+}
+
 fn read(path: &Path) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
@@ -1015,7 +1398,7 @@ const CLOSE_ROWS: [&str; 5] = [
 
 /// 关掉非最上层的一枚, as five rows: what the pile looked like, what the close answered,
 /// what the pile looks like now, whether the closed pin's own rect is empty, and whether the
-/// two pictures still on the screen are the same two windows they were.
+/// pictures still on the screen are the same windows they were.
 ///
 /// The pair that carries the claim is row 3 and row 4: closing a pin in the middle moves
 /// the *slot* of every pin after it while leaving those pins on the screen, and a bookkeeping
@@ -1024,6 +1407,13 @@ const CLOSE_ROWS: [&str; 5] = [
 /// showing the closed pin survives, parked where the dead pin was (row 4). Closing the
 /// topmost pin instead would move nothing and pass both rows for free, which is why
 /// [`plant`] puts the doomed pin in the middle.
+///
+/// Since §5.9.14 the pile is **four**, not three, and the counts in rows 1 and 3 are the
+/// run's own claim about it: the clip's window is a top-level like any other, so a census of
+/// four that came back with three after the close would be one pin short of the four this
+/// file planted. That is the reason [`close_rows`] takes the clip's rect rather than ignoring
+/// the window it belongs to - an unlisted fourth window is exactly what a *count* would have
+/// reddened without saying which pin was missing.
 ///
 /// The two rows are also what the shape before them failed on, and not the way this
 /// paragraph first predicted: with the windows made by an `Instantiator` over
@@ -1035,10 +1425,10 @@ const CLOSE_ROWS: [&str; 5] = [
 /// its windows by pin id now, which is the difference rows 1 and 3 read as two identical
 /// hwnds rather than as two new ones.
 ///
-/// Row 1 is the witness that the pile was three, so that row 3's two is read as a close
-/// rather than as a leg that never planted. Row 2 is the product's own answer, kept out of
-/// the others' way: a close that said `0` would otherwise show up only as a pile that did
-/// not shrink, which is this file's reading and not the door's.
+/// Row 1 is the witness that the pile was as full as this run planted it, so that row 3's
+/// count is read as a close rather than as a leg that never planted. Row 2 is the product's
+/// own answer, kept out of the others' way: a close that said `0` would otherwise show up
+/// only as a pile that did not shrink, which is this file's reading and not the door's.
 ///
 /// `Blocked` for a row whose census never arrived, and the rows below a missing one say so
 /// under their own names - the rule 第 42 项 ② set for the file-pin rows, reused here
@@ -1048,15 +1438,16 @@ fn close_rows(
     rect: Option<PhysRect>,
     xrect: Option<PhysRect>,
     frect: Option<PhysRect>,
+    grect: Option<PhysRect>,
 ) -> Vec<(Check, &'static str, String)> {
-    let (Some(rect), Some(xrect), Some(frect)) = (rect, xrect, frect) else {
+    let (Some(rect), Some(xrect), Some(frect), Some(grect)) = (rect, xrect, frect, grect) else {
         return CLOSE_ROWS
             .iter()
             .map(|name| {
                 (
                     Check::Blocked,
                     *name,
-                    "这一格没有问：计划里没有那三枚贴图的位置。".to_string(),
+                    "这一格没有问：计划里没有那四枚贴图的位置。".to_string(),
                 )
             })
             .collect();
@@ -1064,10 +1455,10 @@ fn close_rows(
     let before = pin_census(said(lines, "close-before"));
     let mut out: Vec<(Check, &'static str, String)> = Vec::new();
 
-    // Each of the three wants read by name, so a pile that came back short says *which*
+    // Each of the four wants read by name, so a pile that came back short says *which*
     // rect was missing rather than only that the count was.
     let pile = |census: &[crate::r13::Top]| -> Vec<String> {
-        [rect, xrect, frect]
+        [rect, xrect, frect, grect]
             .iter()
             .map(|want| {
                 window_at(census, want)
@@ -1084,11 +1475,11 @@ fn close_rows(
             "这一格没有问：腿没有报上关窗前的点名。".to_string(),
         ),
         Some(_) => {
-            let complete = [rect, xrect, frect]
+            let complete = [rect, xrect, frect, grect]
                 .iter()
                 .all(|w| window_at(&before, w).is_some());
             (
-                Check::from(before.len() == 3 && complete),
+                Check::from(before.len() == 4 && complete),
                 CLOSE_ROWS[0],
                 format!(
                     "{} 扇可见顶层，那句由贴图 {} 报上；{}",
@@ -1130,11 +1521,14 @@ fn close_rows(
     let after = pin_census(Some(after_raw));
     out.push((
         Check::from(
-            after.len() == 2 && [rect, frect].iter().all(|w| window_at(&after, w).is_some()),
+            after.len() == 3
+                && [rect, frect, grect]
+                    .iter()
+                    .all(|w| window_at(&after, w).is_some()),
         ),
         CLOSE_ROWS[2],
         format!(
-            "{} 扇可见顶层；还活着的两格 {}",
+            "{} 扇可见顶层；还活着的三格 {}",
             after.len(),
             pile(&after).join(" ")
         ),
@@ -1148,20 +1542,21 @@ fn close_rows(
         ),
     ));
 
-    // The two survivors by *handle*. Rows 3 and 4 ask which rects have a window, and a
+    // The survivors by *handle*. Rows 3 and 4 ask which rects have a window, and a
     // pile whose windows were all rebuilt underneath the close answers them exactly like a
-    // pile that kept them - two windows, the right two rects - so the half of 第 55 项 that
+    // pile that kept them - the right count, the right rects - so the half of 第 55 项 that
     // reaches a user ("the pictures you did not close are still the ones you were looking
     // at, not a redraw of them") is only sayable of the hwnds. P55 measured the rebuild this
     // row is written against: `model: app.session.count` answered the close by destroying
     // every window and making two new ones, and the leg died with the one that was speaking
-    // (`.qoder/scratch/p55_pin_diag4.log`).
+    // (`.qoder/scratch/p55_pin_diag4.log`). `main.qml` keys its windows by pin id now, which is what this row reads as three
+    // unchanged handles rather than as three new ones.
     let hwnd_of = |census: &[crate::r13::Top], want: &PhysRect| {
         window_at(census, want)
             .map(|t| format!("0x{:x}", t.hwnd))
             .unwrap_or_else(|| "没有窗".to_string())
     };
-    let kept: Vec<(bool, String)> = [rect, frect]
+    let kept: Vec<(bool, String)> = [rect, frect, grect]
         .iter()
         .map(|want| {
             let (then, now) = (hwnd_of(&before, want), hwnd_of(&after, want));
@@ -1222,6 +1617,1686 @@ fn unasked_rows(after: usize, why: &str) -> Vec<(Check, &'static str, String)> {
         .iter()
         .map(|name| (Check::Blocked, *name, format!("这一格没有问：{why}")))
         .collect()
+}
+
+/// The four rows §5.9.14's clip registers, in the order the flow reaches them: the pin the
+/// file became, the window that pin got, the frame the *screen* saw, the menu the clip puts
+/// up.
+const GIF_PIN_ROWS: [&str; 4] = [
+    "pin gif planted",
+    "pin gif window",
+    "pin gif clock",
+    "pin gif menu",
+];
+
+/// §5.9.14 graded. The rows the clip leg never asked are printed as `Blocked` under their
+/// own names, the rule 第 42 项 ② set for the file-pin rows and 第 55 项 reused here: a
+/// delegate that did not arm, a plan that did not carry the id, and a clip that does not
+/// animate are three different answers, and only the last of them is the product's.
+///
+/// Row 3 is the one this round was waiting for. The CLI selftest has moved a frame since
+/// P128 by calling `tick_gif` from Rust, which proves the arithmetic and proves nothing
+/// about the window: the claim §5.9.14 makes to a user is that the picture *on the screen*
+/// changes by itself, and that is only sayable of what the delegate's own
+/// `gif_frameChanged` handler counted while the event loop was running. Two readings, not
+/// one, and each closes a hole the other leaves open:
+///
+/// - `gif-turns` counts signal emissions. If cxx-qt's setter emits whether or not the
+///   value moved, a count alone would also be produced by a clip whose index never left 0.
+/// - `gif-distinct` counts the *different frame indices* the window was showing during the
+///   wait. That is the half a signal count cannot fake, and it is deliberately not "the
+///   index read at the end": the fixture's cycle is 180 ms against a 400 ms wait, so an
+///   end-sample can land back on frame 0 for a clip that ran perfectly (450 ms of virtual
+///   time is frame 0 again) - a row that asked for the last index would have reddened on a
+///   working product.
+///
+/// Row 3's other half is the guard against a leg that ran on the wrong window: `frames` is
+/// compared against the frame count the *state machine* reports for `gid`, not only against
+/// the number the delegate printed. A delegate bound to some other pin would answer its own
+/// clip's numbers, and on this run the neighbours are PNGs whose frame count is 0.
+fn gif_rows(
+    lines: &[String],
+    grect: Option<PhysRect>,
+    gid: PinId,
+    gif_said: &str,
+    from_gif: &Path,
+) -> Vec<(Check, &'static str, String)> {
+    let named = from_gif.display().to_string();
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+
+    // Rows 2..4 read the same leg, so a clip that never became a pin leaves all three
+    // unasked - and says so one row at a time rather than three rows of the same silence.
+    let Some(rect) = grect else {
+        out.push((
+            Check::Fail,
+            GIF_PIN_ROWS[0],
+            format!("{named} 没有钉成会动的贴图：{gif_said}"),
+        ));
+        out.push((
+            Check::Blocked,
+            GIF_PIN_ROWS[1],
+            format!("贴图 {gid} 没有 rect，那扇窗无从问起"),
+        ));
+        let why = format!("贴图 {gid} 没有钉成，那一腿压根没有窗可报");
+        out.extend(
+            GIF_PIN_ROWS[2..]
+                .iter()
+                .map(|name| (Check::Blocked, *name, format!("这一格没有问：{why}"))),
+        );
+        return out;
+    };
+
+    out.push((
+        Check::Pass,
+        GIF_PIN_ROWS[0],
+        format!(
+            "{named} 由 {} 帧的两色夹具写成、交 `add_from_file` 钉成贴图 {gid}",
+            state::GIF_TEST_FRAMES.len()
+        ),
+    ));
+
+    match pin_window(rect) {
+        None => out.push((
+            Check::Fail,
+            GIF_PIN_ROWS[1],
+            format!("没有一个可见顶层和会动的那枚贴图的 {rect} 重叠"),
+        )),
+        Some(t) => {
+            let close = within_slack(&t.phys, &rect);
+            out.push((
+                Check::from(close),
+                GIF_PIN_ROWS[1],
+                format!(
+                    "顶层 {}x{}@{},{} 和要求的 {rect} 相差在 {RECT_SLACK} px 内={close}（class={}）",
+                    t.phys.w, t.phys.h, t.phys.x, t.phys.y, t.class
+                ),
+            ));
+        }
+    }
+
+    let num = |key: &str| said(lines, key).and_then(|v| v.parse::<i64>().ok());
+    let want_frames = state::GIF_TEST_FRAMES.len() as i64;
+    let rust_frames = state::with(|s| s.view_data(gid).gif_frames) as i64;
+    let asked = said(lines, "gif-turns").is_some();
+    let detail = format!(
+        "qml 报 frames={:?} frame={:?} playing={:?}；本趟信号 {} 次、看到过的帧号 {} 枚；状态机那一边给贴图 {gid} 报 {rust_frames} 帧（要求 {want_frames}）",
+        said(lines, "gif-frames"),
+        said(lines, "gif-frame"),
+        said(lines, "gif-playing"),
+        said(lines, "gif-turns").unwrap_or("<没有读数>"),
+        said(lines, "gif-distinct").unwrap_or("<没有读数>"),
+    );
+    out.push(if !asked {
+        (
+            Check::Blocked,
+            GIF_PIN_ROWS[2],
+            format!("这一格没有问：会动的那一枚自己那一腿没有报上读数。{detail}"),
+        )
+    } else {
+        let ok = num("gif-frames") == Some(want_frames)
+            && said(lines, "gif-playing") == Some("true")
+            && num("gif-turns").is_some_and(|n| n >= 2)
+            && num("gif-distinct") == Some(want_frames)
+            && rust_frames == num("gif-frames").unwrap_or(-1);
+        (
+            Check::from(ok),
+            GIF_PIN_ROWS[2],
+            format!(
+                "{detail}；判据＝帧数与夹具一致、播放中、一等待里信号至少两枚、看到过全部 {want_frames} 枚帧号、且 qml 报的帧数与状态机给 {gid} 的一致"
+            ),
+        )
+    });
+
+    let (clip_items, still_items) = (num("gif-items"), num("gif-items-still"));
+    let text = format!(
+        "菜单开着时：会动的那扇窗上 {} 项可见、静止的那扇上 {} 项可见；菜单关着时同一枚计数读回 {} 与 {}；机制证人={}（要求 {want} 与 0；§5.9.14 那一节的条件是 `gif_frames > 1`）",
+        clip_items.map(|n| n.to_string()).unwrap_or("<没有读数>".into()),
+        still_items.map(|n| n.to_string()).unwrap_or("<没有读数>".into()),
+        said(lines, "gif-items-closed").unwrap_or("<没有读数>"),
+        said(lines, "gif-items-still-closed").unwrap_or("<没有读数>"),
+        said(lines, "gif-menu-shape").unwrap_or("<没有读数>"),
+        want = GIF_MENU_ITEMS,
+    );
+    out.push(if clip_items.is_none() || still_items.is_none() {
+        (
+            Check::Blocked,
+            GIF_PIN_ROWS[3],
+            format!("这一格没有问：两扇窗里有一扇没报上自己看见几项。{text}"),
+        )
+    } else {
+        (
+            Check::from(clip_items == Some(GIF_MENU_ITEMS as i64) && still_items == Some(0)),
+            GIF_PIN_ROWS[3],
+            text,
+        )
+    });
+    out
+}
+
+/// The two rows §5.9.15 registers, in the order the flow reaches them: the section the
+/// menu puts up on a picture with a hole in it, and the writes that change the mode.
+const ALPHA_ROWS: [&str; 2] = ["pin alpha section", "pin alpha turn"];
+
+/// One `alphaReport()`, cut into its `k=v` pairs.
+type AlphaReading = Vec<(String, String)>;
+
+/// The three writes' own answers, then the three readings taken around them: 棋盘格, 透明, 改回来.
+type AlphaTurn = (bool, bool, bool, AlphaReading, AlphaReading, AlphaReading);
+
+/// One `alphaReport()` reading: `k=v;k=v;…`, the seven keys `PinWindow.qml` spells.
+///
+/// A key the report does not carry answers `None` rather than a plausible default, because
+/// "那一腿没说话" and "它说了 0" are two different answers and only the second is the
+/// product's (第 42 项 ②).
+fn alpha_pairs(report: Option<&str>) -> AlphaReading {
+    report
+        .unwrap_or_default()
+        .split(';')
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+        .collect()
+}
+
+fn alpha_field<'a>(pairs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    pairs
+        .iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v.as_str())
+}
+
+fn alpha_num(pairs: &[(String, String)], name: &str) -> Option<i64> {
+    alpha_field(pairs, name).and_then(|v| v.parse().ok())
+}
+
+fn alpha_yes(pairs: &[(String, String)], name: &str) -> Option<bool> {
+    alpha_field(pairs, name).map(|v| v == "true")
+}
+
+/// `alpha-turn` is `found=…;took=…;board=<report>;cleared=…;transparent=<report>;restored=…
+/// ;after=<report>`, so the two nested reports are cut on their own labels rather than by
+/// the `;` inside them. The three answers that are not reports are returned with them:
+/// splitting once per label is also what makes a report that grew a key named `board=` a
+/// broken reading rather than a silent one.
+fn alpha_turn(raw: Option<&str>) -> Option<AlphaTurn> {
+    let t = raw?;
+    let rest = t.strip_prefix("found=")?.split_once(";took=")?.1;
+    let (took, rest) = rest.split_once(";board=")?;
+    let (board, rest) = rest.split_once(";cleared=")?;
+    let (cleared, rest) = rest.split_once(";transparent=")?;
+    let (transparent, rest) = rest.split_once(";restored=")?;
+    let (restored, after) = rest.split_once(";after=")?;
+    Some((
+        took == "true",
+        cleared == "true",
+        restored == "true",
+        alpha_pairs(Some(board)),
+        alpha_pairs(Some(transparent)),
+        alpha_pairs(Some(after)),
+    ))
+}
+
+/// §5.9.15 graded, from the readings the subject window takes on one open menu: shut,
+/// open, and open again around three writes that pick a background mode.
+///
+/// Row 1 is the menu's half: four rows on a window whose picture has a hole in it, exactly
+/// one of them marked, and the count compared against what the *state machine* answers for
+/// that id (`has_transparent_pixels`) rather than against this file's memory of the demo
+/// picture. `alpha-closed` is printed here rather than judged: whether an unopened `Menu`
+/// realizes its items is a fact about this Qt, like the `dlg-open` note, and P128's C 档 had
+/// to learn it twice - which is a thing worth seeing change under one Qt and not a promise
+/// the product makes.
+///
+/// Row 2 is the half no other row in this door can make: 显示 and 点击区域 move on the same
+/// call. It is graded as absolute answers on modes the leg *set* - the board takes the
+/// point in the margin, 透明 refuses it again - and not as the difference between the board
+/// and whatever `pin.alpha_bg` this user's config says, because a run that reddened over a
+/// preference would be grading a person. The revision moving once per write is 显示那一半:
+/// a mode that repaints nothing would answer every click question correctly.
+fn alpha_rows(lines: &[String], id: PinId) -> Vec<(Check, &'static str, String)> {
+    let name = |pairs: &[(String, String)], key: &str| -> String {
+        alpha_field(pairs, key)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+
+    let Some(raw_open) = said(lines, "alpha-open") else {
+        // Neither reading came, so neither question was put: the open and the turned
+        // readings are spoken by one function on one turn of one timer, and a run in which
+        // it did not fire asks nothing below it (第 42 项 ②). Nothing of the state machine
+        // is read on this path, which is also what lets the shape be graded in a test that
+        // has no window.
+        let why = "静置那一腿的尾没有报上开着的读数，四行那一问与三次写那一问都没被问过";
+        return ALPHA_ROWS
+            .iter()
+            .map(|n| (Check::Blocked, *n, format!("这一格没有问：{why}")))
+            .collect();
+    };
+
+    let open = alpha_pairs(Some(raw_open));
+    let closed = alpha_pairs(said(lines, "alpha-closed"));
+    let rust = state::with(|s| s.view_data(id));
+
+    let text = format!(
+        "菜单开着：洞={}、{} 项可见、{} 项打勾、模式 {}、纹理第 {} 次、边界点吃点击={}、画面内点={}；菜单关着时同一份读法报 {} 项；状态机给贴图 {id} 答 has_transparent_pixels={}",
+        name(&open, "holes"),
+        name(&open, "items"),
+        name(&open, "marked"),
+        name(&open, "mode"),
+        name(&open, "rev"),
+        name(&open, "hole"),
+        name(&open, "body"),
+        name(&closed, "items"),
+        rust.has_transparent_pixels,
+    );
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+    let ok = alpha_yes(&open, "holes") == Some(true)
+        && rust.has_transparent_pixels
+        && alpha_num(&open, "items") == Some(ALPHA_MENU_ITEMS as i64)
+        && alpha_num(&open, "marked") == Some(1)
+        && alpha_num(&open, "mode").is_some_and(|m| (0..ALPHA_MENU_ITEMS as i64).contains(&m))
+        && alpha_yes(&open, "body") == Some(true);
+    out.push((
+        Check::from(ok),
+        ALPHA_ROWS[0],
+        format!(
+            "{text}；判据＝这一枚图真有洞（qml 与状态机同答）、四行都在（`ALPHA_MENU_ITEMS`）、只一行打勾、模式落在四枚之内、画面内那一点吃点击"
+        ),
+    ));
+
+    let raw = said(lines, "alpha-turn");
+    let Some((took, cleared, restored, board, transparent, after)) = alpha_turn(raw) else {
+        out.push(if raw.is_none() {
+            (
+                Check::Blocked,
+                ALPHA_ROWS[1],
+                format!(
+                    "这一格没有问：静置那一腿的尾没有报上改过模式的读数。开着的读法={}",
+                    name(&open, "mode")
+                ),
+            )
+        } else {
+            (
+                Check::Fail,
+                ALPHA_ROWS[1],
+                format!(
+                    "那一腿报了 `alpha-turn`，但不是这个形状：{}",
+                    raw.unwrap_or_default()
+                ),
+            )
+        });
+        return out;
+    };
+    let rev = |pairs: &[(String, String)]| alpha_num(pairs, "rev");
+    let (r_open, r_board, r_clear, r_after) =
+        (rev(&open), rev(&board), rev(&transparent), rev(&after));
+    let moved = |to: Option<i64>, from: Option<i64>| to.is_some() && from.is_some() && to > from;
+    let detail = format!(
+        "三次写各答 took/cleared/restored={took}/{cleared}/{restored}；深色棋盘格：模式 {}、{} 项打勾、边界点={}、纹理第 {} 次；透明：模式 {}、边界点={}、纹理第 {} 次；改回来：模式 {}（和开着的读数 {} 一致={}）、纹理第 {} 次；画面内那一点三次各答 {}、{}、{}、{}",
+        name(&board, "mode"),
+        name(&board, "marked"),
+        name(&board, "hole"),
+        name(&board, "rev"),
+        name(&transparent, "mode"),
+        name(&transparent, "hole"),
+        name(&transparent, "rev"),
+        name(&after, "mode"),
+        name(&open, "mode"),
+        alpha_num(&after, "mode") == alpha_num(&open, "mode"),
+        name(&after, "rev"),
+        name(&board, "body"),
+        name(&transparent, "body"),
+        name(&after, "body"),
+        name(&open, "body"),
+    );
+    let ok = took
+        && cleared
+        && restored
+        && alpha_num(&board, "mode") == Some(2)
+        && alpha_num(&board, "marked") == Some(1)
+        && alpha_yes(&board, "hole") == Some(true)
+        && alpha_num(&transparent, "mode") == Some(0)
+        && alpha_yes(&transparent, "hole") == Some(false)
+        && alpha_yes(&board, "body") == Some(true)
+        && alpha_yes(&transparent, "body") == Some(true)
+        && alpha_yes(&after, "body") == Some(true)
+        && alpha_yes(&after, "holes") == Some(true)
+        && alpha_num(&after, "mode") == alpha_num(&open, "mode")
+        && alpha_num(&after, "mode") == Some(rust.alpha_bg as i64)
+        && moved(r_board, r_open)
+        && moved(r_clear, r_board)
+        && r_after.is_some()
+        && r_after >= r_clear;
+    out.push((
+        Check::from(ok),
+        ALPHA_ROWS[1],
+        format!(
+            "{detail}；判据＝三次写都被接受、棋盘格下边界点吃点击而透明下不吃（§5.9.15 的点击区域）、两次写各推出一张新纹理、最后一枚模式与状态机给 {id} 的一致"
+        ),
+    ));
+    out
+}
+
+/// §5.10.1 的三步各占一枚名字：选一枚、扇到另一扇窗、退出多选。
+const SEL_ROWS: [&str; 3] = ["pin select one", "pin select fanout", "pin select exit"];
+
+/// `sel-observe-on` / `sel-observe-off` 的那一句：`<贴图 id>=<true|false>`。
+///
+/// 报的是**哪一扇窗**自己说亮了，所以 id 和布尔是一枚读数而不是两枚：只印布尔的话，档里就分不出
+/// 「亮的是被点名的那一扇」和「亮的是随便哪一扇」——而 §5.10.1 第 3 步要的正是前者。
+fn sel_observer(raw: Option<&str>) -> Option<(i64, bool)> {
+    let (id, seen) = raw?.split_once('=')?;
+    Some((id.parse().ok()?, seen == "true"))
+}
+
+/// §5.10.1「多选贴图」四步里能被真机问出来的那三问，从量规的十三枚 `sel-*` 行里读。
+///
+/// 三枚判据问的是三件不同的事，一枚也不并：本窗选得到（第 1、2 步的落点）、**别的窗**跟着亮
+/// （第 3 步的「统一」）、两只门背后那只手把名单清空且两边都灭（第 4 步）。合起来写就成了一枚
+/// 「多选好像能用」，那一枚读不出只坏掉其中一件的那趟。
+///
+/// 中间那一枚只由另一扇窗自己说的话构成，本档不替它读别人：`view_data(other).selected` 是 Rust
+/// 那份权威值，扇出没跑到那扇窗它照样是 true，所以这一问的证人必须是那扇窗的 `selRing`
+/// （见 `PinWindow.qml` 里那枚 handler）。
+///
+/// 缺席一律读成「这一格没有问」而不是读成 0（#453）：`sel-add-target` 交 -1 时场上只有一枚贴图，
+/// 后面三枚键根本没说过话——那一枚读数是环境的答案，不是产品的红。
+fn sel_rows(lines: &[String], id: PinId) -> Vec<(Check, &'static str, String)> {
+    let num = |k: &str| said(lines, k).and_then(|v| v.parse::<i64>().ok());
+    let yes = |k: &str| match said(lines, k) {
+        Some("true") => Some(true),
+        Some("false") => Some(false),
+        _ => None,
+    };
+    // **证人那一段**：从 `sel-add-target` 那句之后起、到 `sel-cleared-count` 那句之前止（那一声明
+    // 在 Esc 那扇门背后，`sel-observe-off` 就说在它里面）。P134 起 `des-*` 那一族要的三种名单形状
+    // 借不来多选那两手的任何一种，只能自己点名，每点一次别的窗就再说一遍自己亮/灭——全程数次数
+    // 量的已经不是 §5.10.1 这一问了（证人 `p125_pin_p134doorA.log`：本窗之外那五句「自己说亮了」里
+    // 只有两句属于这一问）。改的是尺读哪几行，不是判据的宽严：这一段里照样要**恰好一句**、
+    // 而且必须是**被点名那一枚**说的。
+    let from = said_at(lines, "sel-add-target").map_or(0, |i| i + 1);
+    let to = said_at(lines, "sel-cleared-count").unwrap_or(lines.len());
+    let slice = if to > from {
+        &lines[from..to]
+    } else {
+        &lines[0..0]
+    };
+    let spoke = |k: &str| spoke_times(slice, k);
+    let said_in = |k: &str| said(slice, k);
+    let read = |k: &str| -> String {
+        said(lines, k)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+
+    if said(lines, "sel-before-count").is_none() {
+        let why = "runGauge 那一腿没报上 `sel-before-count`，§5.10.1 的三步都没被问过";
+        return SEL_ROWS
+            .iter()
+            .map(|n| (Check::Blocked, *n, format!("这一格没有问：{why}")))
+            .collect();
+    }
+
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+    let ok = num("sel-before-count") == Some(0)
+        && yes("sel-before-self") == Some(false)
+        && num("sel-plain") == Some(1)
+        && num("sel-plain-count") == Some(1)
+        && yes("sel-plain-self") == Some(true);
+    out.push((
+        Check::from(ok),
+        SEL_ROWS[0],
+        format!(
+            "点本窗之前：名单 {} 枚、本窗边可见={}；点下去之后：`selectPin` 自报 {} 枚、名单 {} 枚、本窗边可见={}；判据＝空场上单击一枚把名单填到 1 且本窗那圈边亮（§5.10.1 第 2 步的落点，Ctrl 那一路见第二格）",
+            read("sel-before-count"),
+            read("sel-before-self"),
+            read("sel-plain"),
+            read("sel-plain-count"),
+            read("sel-plain-self"),
+        ),
+    ));
+
+    let target = num("sel-add-target");
+    let on = sel_observer(said_in("sel-observe-on"));
+    let off = sel_observer(said_in("sel-observe-off"));
+    let spoke_all = |k: &str| spoke_times(lines, k);
+    // 第二格要的四枚数全在 `sel-add-target` 之后说；它们不齐就是这一问没被问过，不是产品答错。
+    // `asked` 同时是第三格的前置：一枚贴图的场上没有别的窗跟着灭，逼它报 `sel-observe-off`
+    // 就是尺读空而不是产品读红。
+    let asked = match (target, num("sel-add")) {
+        (Some(other), Some(said_count)) => {
+            let ok = other >= 0
+                && other != id as i64
+                && on == Some((other, true))
+                && spoke("sel-observe-on") == 1
+                && said_count == 2
+                && num("sel-add-count") == Some(2)
+                && yes("sel-add-self") == Some(true);
+            out.push((
+                Check::from(ok),
+                SEL_ROWS[1],
+                format!(
+                    "本窗点名了 {}（本窗是 {id}）；这一问那一段里有 {} 扇窗自己说亮了（整档该键说过 {} 句），那一句读回={:?}；`selectPin` 自报 {} 枚、名单 {} 枚、本窗边可见={}；判据＝**另一扇窗**的描边由那一声扇出来（它一次也没被点过），且这一段里只有被点名的那一扇亮、且只说了一次",
+                    read("sel-add-target"),
+                    spoke("sel-observe-on"),
+                    spoke_all("sel-observe-on"),
+                    on,
+                    read("sel-add"),
+                    read("sel-add-count"),
+                    read("sel-add-self"),
+                ),
+            ));
+            other >= 0
+        }
+        _ => {
+            out.push((
+                Check::Blocked,
+                SEL_ROWS[1],
+                format!(
+                    "这一格没有问：场上除本窗以外没有别的贴图（`sel-add-target`={})",
+                    read("sel-add-target")
+                ),
+            ));
+            false
+        }
+    };
+
+    if num("sel-cleared-count").is_none() {
+        out.push((
+            Check::Blocked,
+            SEL_ROWS[2],
+            "这一格没有问：`clearSelectionAction.trigger()` 那一句没报上收尾的名单".to_string(),
+        ));
+    } else {
+        // 只有第二问真被问过（场上有另一扇窗被点名），第三问才要求**别人**也灭。
+        let ok = num("sel-cleared-count") == Some(0)
+            && yes("sel-cleared-self") == Some(false)
+            && yes("sel-plain-self") == Some(true)
+            && (!asked
+                || (off.map(|(_, seen)| !seen) == Some(true)
+                    && spoke("sel-observe-off") == 1
+                    && off.map(|(who, _)| who) == target));
+        out.push((
+            Check::from(ok),
+            SEL_ROWS[2],
+            format!(
+                "退出之后：名单 {} 枚、本窗边可见={}、这一问那一段里有 {} 扇窗自己说灭了（整档该键说过 {} 句），那一句读回={:?}；判据＝两只门（点空白 / Esc）共用的那一只手把名单清空，且**两边**的描边都跟着灭——本窗这一格亮过={}（没亮过就灭不成，那一读数是装饰）",
+                read("sel-cleared-count"),
+                read("sel-cleared-self"),
+                spoke("sel-observe-off"),
+                spoke_all("sel-observe-off"),
+                off,
+                yes("sel-plain-self") == Some(true),
+            ),
+        ));
+    }
+    out
+}
+
+/// §5.10.2 的五问各占一枚名字：拖名单里唯一的那一枚、拖两枚里的一枚、拖一枚场上没有的、
+/// 搬动有没有顺手重画一张纹理，以及这一族的腿跑完之后本窗有没有回到它开头站的那个位置。
+const MOV_ROWS: [&str; 5] = [
+    "pin drag one",
+    "pin drag batch",
+    "pin drag ghost",
+    "pin drag repaint",
+    "pin drag undo",
+];
+
+/// §5.10.2「批量移动」里能被真机问出来的那五问，从量规的十五枚 `mov-*` 行里读。
+///
+/// 五枚判据问的是五件不同的事，一枚也不并：**报几枚**由名单决定（第 2 问的红就是那只手偷偷把
+/// 批量降成了单枚）、那一枚号只在真搬动时走（第 3 问的红就是空手也发号，全场为一次什么也没
+/// 发生的手势重读一遍像素）、一枚不在集里的贴图交回的是 0 而不是把 0 扮成一次成功（#455）、
+/// 以及搬动**不许**重画纹理（第 4 问的红就是位置被算进了 `content_key`，于是每一次鼠标移动
+/// 事件都编一张 PNG）。
+///
+/// 第 5 问是本轮自己给自己立的一条规矩：**量规的腿不许把被量的东西弄走**。上一趟真机没有这一问，
+/// 本族的四拖把 `pin window` 从 608,380 拖到 648,400、把 `pin pile *` 两枚拖成「没有窗」，而门
+/// 只是把这三枚红的名字印出来、一枚也没有判红（`.qoder\scratch\p132_door_A.txt`）。所以这一问读
+/// 的是段首与段末那两枚落点是否**同一串字**：不相等就是这一拖没有还回去，相等也只说明**本窗**还
+/// 回去了 —— 另一枚贴图的落点本窗读不到（QML 里没有别的窗的 pos），那一半由 `pin window` /
+/// `pin pile *` 三枚行对面，两枚证人各答各的（#281/#271）。
+///
+/// 为什么这里判的是**枚数与号**而不是**位置**：本窗的 `x` 是 `view.pos_x / win.dpr` 那枚绑定的
+/// 结果，它在这扇窗被分配给另一枚贴图时也会动 —— 一枚在别的因由下也会动的读数供不出「这一手
+/// 扇到了」那一句（#271）。而「另一扇窗自己说它被搬走了」在本轮没有只在批量移动时开口的证人
+/// （位置那一路没有 `selRing` 那种「亮/灭」两态可跟），所以那一问逐名记在门档的 blocked 里，
+/// 不拿一枚弱尺冒充（#261/#440：证人不在就不猜，替代尺也得能红）。
+///
+/// 位移算得对不对（含「撞墙那一枚不停下其余」）由 `state.rs` 的 selftest 四臂与 `pin.rs` 的
+/// clamp 单测判：那里能现读 `desk.keep_visible` 算每一枚该落在哪儿，桌面的界没有送到 QML 一侧。
+fn mov_rows(lines: &[String], id: PinId) -> Vec<(Check, &'static str, String)> {
+    let num = |k: &str| said(lines, k).and_then(|v| v.parse::<i64>().ok());
+    let text = |k: &str| said(lines, k).map(|v| v.to_string());
+    let read = |k: &str| -> String {
+        said(lines, k)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+    // `mov-epoch-before` 是这一组的锚：它是段里第一句，没有它，后面每一枚差值都是在拿一枚
+    // 没读过的数当起点（#271 不许向读数要它没供的东西，反过来也不许把没供的读成 0）。
+    let Some(e0) = num("mov-epoch-before") else {
+        let why = "runGauge 那一腿没报上 `mov-epoch-before`，§5.10.2 的五问都没被问过";
+        return MOV_ROWS
+            .iter()
+            .map(|n| (Check::Blocked, *n, format!("这一格没有问：{why}")))
+            .collect();
+    };
+
+    let el = num("mov-epoch-lone");
+    out.push((
+        Check::from(num("mov-lone") == Some(1) && el == Some(e0 + 1)),
+        MOV_ROWS[0],
+        format!(
+            "场上只有本窗一枚在名单里时拖它：`dragPin` 自报 {} 枚、号从 {e0} 走到 {}；判据＝§5.9.1 那一手在名单只有一枚时仍是搬一枚，而真搬动必须发号——不发，本窗之外的那些扇窗就没人叫它们重读自己该画在哪儿（`main.qml` 的 `moveTick` 借的就是这声 notify）",
+            read("mov-lone"),
+            read("mov-epoch-lone"),
+        ),
+    ));
+
+    let target = num("mov-batch-target");
+    let eb = num("mov-batch-epoch");
+    // 第二问要的两枚数全在 `mov-batch-target` 之后说；它们不齐就是这一问没被问过，不是产品答错
+    // （#453）。场上只有一枚贴图时 `sel-add-target` 交 -1，本窗也就没有第二枚可以一起点名。
+    match target {
+        Some(other) if other >= 0 && other != id as i64 => out.push((
+            Check::from(num("mov-batch") == Some(2) && eb == Some(e0 + 2)),
+            MOV_ROWS[1],
+            format!(
+                "本窗点名了 {other}（本窗是 {id}），名单两枚时拖**本窗**：`dragPin` 自报 {} 枚、号从 {e0} 走到 {}；判据＝搬几枚由**名单**决定而不是由被按住的那扇窗决定（这一拖交回 1 就是那只手把批量降成了单枚，交回 0 就是它压根没搬），且第二手真搬动也发一次号",
+                read("mov-batch"),
+                read("mov-batch-epoch"),
+            ),
+        )),
+        _ => out.push((
+            Check::Blocked,
+            MOV_ROWS[1],
+            format!(
+                "这一格没有问：场上除本窗以外没有别的贴图可以一起点名（`mov-batch-target`={}）",
+                read("mov-batch-target")
+            ),
+        )),
+    }
+
+    let eg = num("mov-epoch-ghost");
+    out.push((
+        Check::from(num("mov-ghost") == Some(0) && eg == el),
+        MOV_ROWS[2],
+        format!(
+            "拖一枚场上没有的 id（场上最大那枚 id 加一）：`dragPin` 自报 {} 枚、号={} 而上一手之后是 {}；判据＝0 只有一枚贴图能给出（那一枚不在集里，是一扇已关掉的窗剩下的鼠标事件），把它扮成一次悄悄的成功就会让用户以为自己的拖动搬走了并不存在的一扇窗，而**空手不许发号**——发了就是全场为一件没发生的事重读一遍像素",
+            read("mov-ghost"),
+            read("mov-epoch-ghost"),
+            read("mov-epoch-lone"),
+        ),
+    ));
+
+    // 第四问读的是本窗自己那枚纹理号，与前三问同一趟、夹在 `mov-lone` 两侧。两枚读数缺一只就是
+    // 「这一问没被问过」而不是「纹理没重画」（#453）：判据要的是**相等**，一枚都不在时它相等
+    // 于两枚 `<没有读数>`，那就是一枚读空的尺（#440）。
+    let (rev0, rev1) = (num("mov-rev-before"), num("mov-rev-lone"));
+    out.push((
+        match (rev0, rev1) {
+            (Some(before), Some(after)) => Check::from(before == after),
+            _ => Check::Blocked,
+        },
+        MOV_ROWS[3],
+        format!(
+            "搬动之前本窗自报纹理号 {}、之后 {}；判据＝一次纯搬动**不许**换走一张纹理——位置不在 `content_key` 里，动了就是把位置算进了内容的指纹，于是拖动一路上每一次鼠标移动都编一张 PNG（八枚贴图一起拖时这就是那一句「一起移动」的代价）。这一格只读**本窗**自己那枚号，别的窗的号没有在这里被问（#271）。{}",
+            read("mov-rev-before"),
+            read("mov-rev-lone"),
+            if rev0.is_some() && rev1.is_some() {
+                "两枚都在场，判的是相等".to_string()
+            } else {
+                "两枚不齐，这一格没有问".to_string()
+            },
+        ),
+    ));
+
+    // 第 5 问要的四枚读数全在 `sel-cleared-self` 之后说；不齐就是这一问没被问过，不是产品答错
+    // （#453）。场上只有一枚贴图时反手没有第二枚要抹，那四枚键一句也不说。
+    let miss: Vec<&str> = [
+        "mov-undo-self",
+        "mov-undo-other",
+        "mov-epoch-undo",
+        "mov-pos-after",
+    ]
+    .iter()
+    .filter(|k| said(lines, k).is_none())
+    .copied()
+    .collect();
+    let asked = match target {
+        Some(other) if other >= 0 && other != id as i64 => miss.is_empty(),
+        _ => false,
+    };
+    let (p0, p1) = (text("mov-pos-before"), text("mov-pos-after"));
+    // 落点两枚不齐同样是「没有问」而不是「没还回去」：这一问比的是**两串字**相等，只剩一串时
+    // 它既不能说还了也不能说没还（#444/#453 缺席读成没问，不读成红，也不读成 0）。
+    let gradable = asked && p0.is_some() && p1.is_some();
+    out.push((
+        if !gradable {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("mov-undo-self") == Some(1)
+                    && num("mov-undo-other") == Some(1)
+                    && num("mov-epoch-undo") == Some(e0 + 4)
+                    && p0 == p1,
+            )
+        },
+        MOV_ROWS[4],
+        format!(
+            "反手两拖各交回 {} / {} 枚、号从 {e0} 走到 {}；本窗在这一段开头自报落点 {}、结尾 {}；判据＝量规的腿跑完要把自己挪走的落点**一枚一枚**还回去，还回去靠的是名单已空时那一拖一次只搬被拖的那一扇（交回 1 而不是 2），而两拖之和必须正好抹平前面那两拖；上一趟真机没有这一问，本族的拖动把 `pin window` 从 608,380 拖到 648,400、把 `pin pile *` 两枚拖成「没有窗」。**另一枚**贴图的落点本窗读不到（QML 里没有别的窗的 pos），那一半的证人是 `pin window` 与 `pin pile *` 三枚行，两枚证人各答各的（#271/#281）。{}",
+            read("mov-undo-self"),
+            read("mov-undo-other"),
+            read("mov-epoch-undo"),
+            read("mov-pos-before"),
+            read("mov-pos-after"),
+            if asked && p0.is_some() && p1.is_some() {
+                "反手四枚与落点两枚齐，判的是开头与结尾同一串字".to_string()
+            } else if !miss.is_empty() {
+                format!("反手读数不齐（缺 {miss:?}），这一格没有问")
+            } else if !asked {
+                "场上除本窗以外没有别的贴图可以反手，这一格没有问".to_string()
+            } else {
+                "落点两枚不齐，这一格没有问".to_string()
+            },
+        ),
+    ));
+    out
+}
+
+/// §5.10.3 的六问各占一枚名字：名单里只有本窗一枚时那一手改**一枚**、名单两枚时那一手改**两枚**、
+/// 阶梯的两步各改两枚且反手回到同一级、一枚场上没有的 id 交回 0 且不發号、调透明度有没有顺手
+/// 换走一张纹理，以及这一族的腿跑完之后本窗有没有回到它开头站的那一级。
+const OP_ROWS: [&str; 6] = [
+    "pin opacity one",
+    "pin opacity batch",
+    "pin opacity step",
+    "pin opacity ghost",
+    "pin opacity repaint",
+    "pin opacity undo",
+];
+
+/// §5.10.3「批量透明度」里能被真机问出来的那六问，从量规的二十四枚 `op-*` 行里读。
+///
+/// 六枚判据问的是六件不同的事，一枚也不并（承 [`mov_rows`] 那一族）：**交回几枚**由名单决定
+/// （第 2 问的红就是那只手偷偷把批量降成了单枚）、那一枚号只在真改动时走（第 3 问的红就是空手
+/// 也发号）、一枚不在集里的贴图交回的是 0 而不是把 0 扮成一次成功（#455）、调透明度**不许**重画
+/// 纹理（`opacity` 不在 `content_key` 里，动了就是每按一次「更透明」编一张 PNG）、以及本窗自己
+/// 有没有在**没有 reload** 的前提下重读到那一级——最后这一枚才是 `main.qml` 那一声明
+/// （`onOpacityTickChanged: app.redrawPins()`）的证人。
+///
+/// 为什么这里判的是**枚数、号与本窗自己那一级**而不是**另一枚那一级**：Session 没有按 id 问
+/// opacity 的那只手，QML 里也没有别的窗的 opacity，所以「另一扇窗自己说它被调了」在本轮是一问
+/// **没有证人**的，逐名记在门档的 blocked；同理，段末那一手把**名单**一起钉回本窗的原级，另一枚
+/// 原本那一级本窗读不到、还得回去的那一半也由门档逐名（#261/#440：证人不在就不猜）。
+///
+/// 两枚起点各迈一步（30% 与 80% 一起「更透明」得 20% 与 70%）那一半由 `pin.rs` 的
+/// `a_batch_opacity_step_keeps_each_pin_on_its_own_rung` 与 `state.rs` selftest 那一只手的四臂判：
+/// 本窗只能报自己那一级，场上另一枚的起点它摆不开，也读不回。
+fn op_rows(lines: &[String], id: PinId) -> Vec<(Check, &'static str, String)> {
+    let num = |k: &str| said(lines, k).and_then(|v| v.parse::<i64>().ok());
+    let read = |k: &str| -> String {
+        said(lines, k)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+    let miss = |keys: &[&'static str]| -> Vec<&'static str> {
+        keys.iter()
+            .filter(|k| said(lines, k).is_none())
+            .copied()
+            .collect()
+    };
+
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+    // `op-lone-epoch-before` 是这一组的锚：它是本族第一句，没有它，后面每一枚差值都是在拿一枚
+    // 没读过的数当起点（#271 不许向读数要它没供的东西，反过来也不许把没供的读成 0）。
+    let Some(l0) = num("op-lone-epoch-before") else {
+        let why = "runGauge 那一腿没报上 `op-lone-epoch-before`，§5.10.3 的六问都没被问过";
+        return OP_ROWS
+            .iter()
+            .map(|n| (Check::Blocked, *n, format!("这一格没有问：{why}")))
+            .collect();
+    };
+
+    out.push((
+        Check::from(
+            num("op-lone-set") == Some(1)
+                && num("op-lone-restore") == Some(1)
+                && num("op-lone-epoch-end") == Some(l0 + 2),
+        ),
+        OP_ROWS[0],
+        format!(
+            "名单里只有本窗一枚时调它：`setPinOpacity` 自报 {} 枚、归位那一手自报 {} 枚、号从 {l0} 走到 {}；判据＝§5.9.4 那一手在名单只有一枚时仍是改一枚（Ctrl+滚轮 与菜单那三枚入口在用户只选了一枚时走的就是这一路），而两次真改动各发一次号——不发，本窗之外的那些扇窗就没人叫它们重读自己该多透（`main.qml` 的 `opacityTick` 借的就是这声 notify）",
+            read("op-lone-set"),
+            read("op-lone-restore"),
+            read("op-lone-epoch-end"),
+        ),
+    ));
+
+    // 批量那几问的读数全在 `other >= 0` 那一格里说；不齐就是这一问没被问过，不是产品答错
+    // （#453）。场上只有一枚贴图时 `mov-batch-target` 交 -1，本族那十四枚也就一句也不说。
+    let batch = [
+        "op-start",
+        "op-epoch-before",
+        "op-set-batch",
+        "op-opacity-set",
+        "op-epoch-set",
+    ];
+    let lost = miss(&batch);
+    let e0 = num("op-epoch-before");
+    out.push((
+        if !lost.is_empty() {
+            Check::Blocked
+        } else {
+            // 本窗原级恰好就是这一腿要钉的那一级时，「重读到」天然成立，那一格量不出扇出（#440
+            // 一枚读空的尺不许冒充绿）：交 Blocked 并说明环境没给它拉开的余地。
+            if num("op-start") == Some(50) {
+                Check::Blocked
+            } else {
+                Check::from(
+                    num("op-set-batch") == Some(2)
+                        && num("op-epoch-set") == e0.map(|v| v + 1)
+                        && num("op-opacity-set") != num("op-start"),
+                )
+            }
+        },
+        OP_ROWS[1],
+        format!(
+            "本窗点名了 {}（本窗是 {id}），名单两枚时调**本窗**：`setPinOpacity` 自报 {} 枚、号从 {} 走到 {}；本窗在这一手之前自报 {}、之后 {}（它自己没有 reload 过）；判据＝改几枚由**名单**决定而不是由按住滚轮的那扇窗决定（这一手交回 1 就是那只手把批量降成了单枚），且本窗重读到的那一级**不是**它原来那一级才说明那一声扇到了、`redrawPins()` 替它问回来了。{}",
+            read("mov-batch-target"),
+            read("op-set-batch"),
+            read("op-epoch-before"),
+            read("op-epoch-set"),
+            read("op-start"),
+            read("op-opacity-set"),
+            if !lost.is_empty() {
+                format!("批量那几枚不齐（缺 {lost:?}），这一格没有问")
+            } else if num("op-start") == Some(50) {
+                "本窗原本就在这一腿要钉的那一级上，重读那一半天然相等 ⇒ 这一格没有问".to_string()
+            } else {
+                "五枚齐，判的是枚数、号与重读到".to_string()
+            },
+        ),
+    ));
+
+    let step_keys = [
+        "op-opacity-set",
+        "op-step-down",
+        "op-opacity-down",
+        "op-step-up",
+        "op-opacity-up",
+        "op-epoch-end",
+    ];
+    let lost_step = miss(&step_keys);
+    let e1 = num("op-epoch-before");
+    out.push((
+        if !lost_step.is_empty() || e1.is_none() {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("op-step-down") == Some(2)
+                    && num("op-step-up") == Some(2)
+                    && num("op-opacity-down") != num("op-opacity-set")
+                    && num("op-opacity-up") == num("op-opacity-set")
+                    && num("op-epoch-end") == e1.map(|v| v + 4),
+            )
+        },
+        OP_ROWS[2],
+        format!(
+            "名单两枚时阶梯两步各自报 {} / {} 枚、号从 {} 走到 {}；本窗自报钉好的那一级 {}、下一步 {}、反手 {}；判据＝§5.10.3 那一句「所有选中贴图同步更新透明度」落在阶梯上是**每一枚各自迈一级**（本窗这一枚下一步必须换一个读数、反手必须回到同一级；两枚里起点不同各自迈步那一半本窗报不出，由 `pin.rs` 的单测与 selftest 四臂判），而四手各发一次号。{}",
+            read("op-step-down"),
+            read("op-step-up"),
+            read("op-epoch-before"),
+            read("op-epoch-end"),
+            read("op-opacity-set"),
+            read("op-opacity-down"),
+            read("op-opacity-up"),
+            if !lost_step.is_empty() {
+                format!("阶梯那几枚不齐（缺 {lost_step:?}），这一格没有问")
+            } else {
+                "六枚齐，判的是两步各两枚、反手同级与四手四次号".to_string()
+            },
+        ),
+    ));
+
+    let lost_ghost = miss(&["op-epoch-ghost-before", "op-ghost", "op-epoch-ghost"]);
+    let eg = num("op-epoch-ghost-before");
+    out.push((
+        if !lost_ghost.is_empty() || eg.is_none() {
+            Check::Blocked
+        } else {
+            Check::from(num("op-ghost") == Some(0) && num("op-epoch-ghost") == eg)
+        },
+        OP_ROWS[3],
+        format!(
+            "调一枚场上没有的 id（场上最大那枚 id 加一）：`stepPinOpacity` 自报 {} 枚、号={} 而这一手之前是 {}；判据＝0 只有一枚贴图能给出（那一枚不在集里，是一扇已关掉的窗剩下的那一次滚轮），把它扮成一次悄悄的成功就会让用户以为自己的滚轮调亮了并不存在的一扇窗，而**空手不许发号**——发了就是全场为一件没发生的事重读一遍。{}",
+            read("op-ghost"),
+            read("op-epoch-ghost"),
+            read("op-epoch-ghost-before"),
+            if lost_ghost.is_empty() {
+                "三枚齐，判的是交回 0 且号不动".to_string()
+            } else {
+                format!("ghost 那三枚不齐（缺 {lost_ghost:?}），这一格没有问")
+            },
+        ),
+    ));
+
+    let lost_rev = miss(&["op-rev-before", "op-rev-set"]);
+    let (rv0, rv1) = (num("op-rev-before"), num("op-rev-set"));
+    out.push((
+        match (rv0, rv1) {
+            (Some(before), Some(after)) => Check::from(before == after),
+            _ => Check::Blocked,
+        },
+        OP_ROWS[4],
+        format!(
+            "调透明度之前本窗自报纹理号 {}、之后 {}；判据＝一次纯透明度调整**不许**换走一张纹理——`opacity` 不在 `content_key` 里，动了就是把它算了进去，于是「更透明」按八次就编八张 PNG（八枚贴图一起调时这就是那一句「同步更新」的代价）。这一格只读**本窗**自己那枚号，别的窗的号没有在这里被问（#271）。{}",
+            read("op-rev-before"),
+            read("op-rev-set"),
+            if rv0.is_some() && rv1.is_some() {
+                "两枚都在场，判的是相等".to_string()
+            } else {
+                format!("纹理号那两枚不齐（缺 {lost_rev:?}），这一格没有问")
+            },
+        ),
+    ));
+
+    let lost_back = miss(&["op-lone-start", "op-lone-restored", "op-opacity-end"]);
+    out.push((
+        if !lost_back.is_empty() || !lost.is_empty() {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("op-lone-restored") == num("op-lone-start")
+                    && num("op-opacity-end") == num("op-start")
+                    && num("op-set-back") == Some(2),
+            )
+        },
+        OP_ROWS[5],
+        format!(
+            "本族那几手跑完之后：单枚那一格自报 {} 而开头是 {}，批量那一格自报 {} 而开头是 {}、归位那一手交回 {} 枚；判据＝量规的腿不许把被量的东西弄走——本窗必须回到它开头那一级，靠的是归位读的是**现读到**的那一级而不是写死 100（默认不透明度是配置里的一格，写死就是拿本档的假设去改用户的环境，#261）。**名单里另一枚**原本那一级本窗读不到（Session 没有按 id 问 opacity 的那只手），段末那一手把它一起钉在本窗的原级上，那一半的得失由门档逐名（#271/#281）。{}",
+            read("op-lone-restored"),
+            read("op-lone-start"),
+            read("op-opacity-end"),
+            read("op-start"),
+            read("op-set-back"),
+            if !lost_back.is_empty() {
+                format!("归位那几枚不齐（缺 {lost_back:?}），这一格没有问")
+            } else if !lost.is_empty() {
+                "场上除本窗以外没有别的贴图可以一起点名，这一格没有问".to_string()
+            } else {
+                "五枚齐，判的是两格各回到自己开头那一级".to_string()
+            },
+        ),
+    ));
+    out
+}
+
+/// §5.10.4「重置」的四问各占一枚名字：名单里只有本窗一枚时那一手改**一枚**并把手势改过的
+/// 那一档还回去、名单两枚时那一手改**两枚**且一次批量只发一声、一枚场上没有的 id 交回 0 且
+/// 不发号，以及重置有没有顺手换走一张纹理。
+const RST_ROWS: [&str; 4] = [
+    "pin reset one",
+    "pin reset batch",
+    "pin reset ghost",
+    "pin reset repaint",
+];
+
+/// §5.10.4「重置」里能被真机问出来的那四问，从量规的十五枚 `rst-*` 行里读。
+///
+/// 这一族与 [`op_rows`] 同一形状，因为它是同一只手族（§5.10.2 搬动 / §5.10.3 透明度 / §5.10.4
+/// 重置）里最后一只有读者的手：判据 `state::batch_hand` 全仓只写那一次，所以这里判的是**那一次
+/// 判据在第三只手上还成不成立**，而不是再数一遍名单。
+///
+/// 几何那一只证人为什么是 `zoom` 而不是 `rotation`：`rotation` 没有送到 QML 这一侧
+/// （`PinView` 那一列里没有它），而 `zoom` 与 `pos` 都不进 `content_key` —— 于是「重置把视图
+/// 还回默认」与「重置不许重编像素」这两问才各自量得动，不互相冒充（#281）。
+///
+/// 第一问读的是 `rst-lone-zoom == rst-lone-base`，成立的前提是**这一格之前场上没有任何一只手
+/// 改过缩放**：本档在 QML 里逐名核过，`runGauge` 这一段只有 `rst-lone-turned` 那一行叫
+/// `zoomStep`，菜单里那三项本腿不点。这个前提写在这里而不是埋在代码里，是因为将来谁在这一格
+/// 上面添一枚缩放腿，这一枚就会红成一句真话（默认档 ≠ 进门那一级），而红的是尺的前提，不是产品。
+fn rst_rows(lines: &[String]) -> Vec<(Check, &'static str, String)> {
+    let num = |k: &str| said(lines, k).and_then(|v| v.parse::<i64>().ok());
+    let read = |k: &str| -> String {
+        said(lines, k)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+    let miss = |keys: &[&'static str]| -> Vec<&'static str> {
+        keys.iter()
+            .filter(|k| said(lines, k).is_none())
+            .copied()
+            .collect()
+    };
+
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+
+    let lost_lone = miss(&[
+        "rst-lone-base",
+        "rst-lone-turned",
+        "rst-lone-epoch-before",
+        "rst-lone",
+        "rst-lone-zoom",
+        "rst-lone-epoch-end",
+    ]);
+    // 迈不动就是环境没给这一格拉开的余地（缩放已经贴在下限），不是产品答错：拿一个没动过的
+    // 缩放判「还回来了」，那一枚尺读的是空气（#433/#440）。
+    let turned = num("rst-lone-turned") != num("rst-lone-base");
+    out.push((
+        if !lost_lone.is_empty() || !turned {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("rst-lone") == Some(1)
+                    && num("rst-lone-zoom") == num("rst-lone-base")
+                    && num("rst-lone-epoch-end") == num("rst-lone-epoch-before").map(|v| v + 1),
+            )
+        },
+        RST_ROWS[0],
+        format!(
+            "名单里只有本窗一枚时：本窗进门那一级 {}、往下迈一档之后 {}、那一手自报 {} 枚、还回来是 {}、号从 {} 走到 {}；判据＝§5.10.4 那一枚「重置视图」在用户只选了一枚时改的就是那一枚（交 2 就是它偷偷把单枚升成了一批），迈得动的那一档必须被还回进门那一级，而一次真改动发一次号——不发，`main.qml` 里 `resetTick` 那一声明就没有读者，别的窗不会重读自己该被转成什么样子（#316：绑的是**值**，号是**读者**在数的那件事）。{}",
+            read("rst-lone-base"),
+            read("rst-lone-turned"),
+            read("rst-lone"),
+            read("rst-lone-zoom"),
+            read("rst-lone-epoch-before"),
+            read("rst-lone-epoch-end"),
+            if !lost_lone.is_empty() {
+                format!("单枚那六枚不齐（缺 {lost_lone:?}），这一格没有问")
+            } else if !turned {
+                "本窗进门时缩放就贴着阶梯的端，这一档迈不动，这一格没有问".to_string()
+            } else {
+                "六枚齐，判的是枚数、归位与那一号各一步".to_string()
+            },
+        ),
+    ));
+
+    let lost_batch = miss(&[
+        "rst-batch-target",
+        "rst-batch-epoch-before",
+        "rst-batch",
+        "rst-batch-epoch",
+    ]);
+    out.push((
+        if !lost_batch.is_empty() {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("rst-batch") == Some(2) && num("rst-batch-epoch") == num("rst-batch-epoch-before").map(|v| v + 1),
+            )
+        },
+        RST_ROWS[1],
+        format!(
+            "本窗点名了 {}（本窗之外的第一枚），名单两枚时重置**本窗**：`resetPin` 自报 {} 枚、号从 {} 走到 {}；判据＝带走几枚由**名单**决定而不是由被点的那扇窗决定（这一手交回 1 就是那只手偷偷把批量降成了单枚，而 P134 之前菜单那一枚叫的是窗自己那一格手势，交回的永远是 1），且两枚各 sync 一遍而号只走一步——一手一声，不是枚枚一声（与 `op-epoch-set` 同一形状）。{}",
+            read("rst-batch-target"),
+            read("rst-batch"),
+            read("rst-batch-epoch-before"),
+            read("rst-batch-epoch"),
+            if lost_batch.is_empty() {
+                "四枚齐，判的是枚数二与号一步".to_string()
+            } else {
+                format!("场上除本窗以外没有别的贴图可以一起点名（缺 {lost_batch:?}），这一格没有问")
+            },
+        ),
+    ));
+
+    let lost_ghost = miss(&["rst-epoch-ghost-before", "rst-ghost", "rst-epoch-ghost"]);
+    out.push((
+        if !lost_ghost.is_empty() {
+            Check::Blocked
+        } else {
+            Check::from(num("rst-ghost") == Some(0) && num("rst-epoch-ghost") == num("rst-epoch-ghost-before"))
+        },
+        RST_ROWS[2],
+        format!(
+            "重置一枚场上没有的 id（场上最大那枚 id 加一）：`resetPin` 自报 {} 枚、号={} 而这一手之前是 {}；判据＝0 只有一枚贴图能给出（那一枚不在集里，是一扇已经关掉的窗剩下的那一次菜单点击），把它扮成一次悄悄的成功就会让用户以为自己的「重置」转亮了并不存在的一扇窗，而**空手不许发号**——发了就是全场为一件没发生的事重读一遍（承 [`op_rows`] 的第四问同一形状，换一只手再问一遍不是重复：判据在 `state::reset_pin` 那一格是新写的）。{}",
+            read("rst-ghost"),
+            read("rst-epoch-ghost"),
+            read("rst-epoch-ghost-before"),
+            if lost_ghost.is_empty() {
+                "三枚齐，判的是交回 0 且号不动".to_string()
+            } else {
+                format!("ghost 那三枚不齐（缺 {lost_ghost:?}），这一格没有问")
+            },
+        ),
+    ));
+
+    let lost_rev = miss(&["rst-lone-rev-before", "rst-lone-rev"]);
+    let (rv0, rv1) = (num("rst-lone-rev-before"), num("rst-lone-rev"));
+    out.push((
+        match (rv0, rv1) {
+            (Some(before), Some(after)) => Check::from(before == after),
+            _ => Check::Blocked,
+        },
+        RST_ROWS[3],
+        format!(
+            "重置之前本窗自报纹理号 {}、之后 {}；判据＝一次纯视图重置**不许**换走一张纹理——`zoom` 与 `pos` 都不在 `content_key` 里，把它们算进去就是每按一次「重置视图」重编一张 PNG（八枚贴图一起重置时这就是那一句「批量」的代价）。两枚读数之间隔着的那一档缩放是**故意**的：`rst-lone-turned` 那一手先把缩放挪开，这一格才判得动（读在挪开之后、重置之前）。这一格只读**本窗**自己那枚号，别的窗的号没有在这里被问（#271）。{}",
+            read("rst-lone-rev-before"),
+            read("rst-lone-rev"),
+            if rv0.is_some() && rv1.is_some() {
+                "两枚都在场，判的是相等".to_string()
+            } else {
+                format!("纹理号那两枚不齐（缺 {lost_rev:?}），这一格没有问")
+            },
+        ),
+    ));
+    out
+}
+
+/// §5.9.18 / §5.10.4「销毁」那一族的五问各占一枚名字：影响数量那张表的两臂、菜单字面上印没印、
+/// 按下去真带走几枚、一枚场上没有的点击不许清掉撤销的账，以及回头路。
+const DES_ROWS: [&str; 5] = [
+    "pin destroy reach",
+    "pin destroy label",
+    "pin destroy take",
+    "pin destroy ghost",
+    "pin destroy undo",
+];
+
+/// §5.9.18 的「销毁 / 撤销 / 影响数量」三格与 §5.10.4 那两只手，从量规的十八枚 `des-*` 行里读。
+///
+/// 这五问一枚也不并，因为 PRD 第 1148/1149 行的两句话（「应显示确认或支持撤销」「批量销毁时
+/// 应提示影响数量」）与「按下去带走几枚」是三件不同的事：第一格里那一句撤销由菜单那一行**出现
+/// 与否**答（`des-undo-shown` / `des-undo-absent`），第二格由**字面上那个数**答
+/// （`des-menu-label`），第三格由那只手自己的答复答（`des-batch`）。三处读的都是同一格
+/// `state::destroy_answer` → 同一张 `hand_targets`，所以它们不可能各说一套（#281：两处各数一遍
+/// 就是那一族，而那一处的错用户看得见——印着的数与真被带走的那些不一致）。
+///
+/// 为什么 `des-menu-label` 那一问判得动而不是一枚天然的绿：菜单那一格 `destroyReach` 的进门值是
+/// 1，而读回那一行时名单是 {本窗, 另一枚} 两枚 —— 字面要印 2 只有 `onAboutToShow` 真跑过那一行
+/// 才做得到。写在这一格的最初值就是 #433 那一族（一枚读不出差别的尺不许冒充绿）。
+///
+/// 本窗不能被带走，也不能是名单里唯一的那一枚：说这十八行的正是它（第 55 项那一封同一枚理由）。
+/// 所以这一腿点的是**别的**两枚，而 `victim` 的取法里排除的那一枚 `gauge[10]` 是量规自己的排期
+/// 约束（那扇会动的贴图长着一段腿），不是产品的规则——逐名记在门档。
+fn des_rows(lines: &[String], id: PinId) -> Vec<(Check, &'static str, String)> {
+    let num = |k: &str| said(lines, k).and_then(|v| v.parse::<i64>().ok());
+    let read = |k: &str| -> String {
+        said(lines, k)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+    let miss = |keys: &[&'static str]| -> Vec<&'static str> {
+        keys.iter()
+            .filter(|k| said(lines, k).is_none())
+            .copied()
+            .collect()
+    };
+
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+
+    let lost_reach = miss(&[
+        "des-target-a",
+        "des-target-b",
+        "des-pile-before",
+        "des-reach-self",
+    ]);
+    // 证人必须是**别的那些枚**：点中本窗自己就是让说话的那一扇窗把自己带走，那一趟之后没有腿了。
+    let victims_ok = match (num("des-target-a"), num("des-target-b")) {
+        (Some(a), Some(b)) => a != b && a != id as i64 && b != id as i64,
+        _ => false,
+    };
+    out.push((
+        if !lost_reach.is_empty() || !victims_ok {
+            Check::Blocked
+        } else {
+            Check::from(num("des-reach-self") == Some(1))
+        },
+        DES_ROWS[0],
+        format!(
+            "场上 {} 枚，点中的是 {} 与 {}（本窗是 {id}），名单两枚而本窗不在名单里时「销毁本窗这一枚」答 {}：判据＝影响数量按 id 问而不是全局报一个数——同一张表在两臂上给两个答（另一臂那一个读在 `pin destroy label` 那一格），而窗自己一个也不数（那是 `batch_hand` 的第二份）。{}",
+            read("des-pile-before"),
+            read("des-target-a"),
+            read("des-target-b"),
+            read("des-reach-self"),
+            if !lost_reach.is_empty() {
+                format!("场上凑不出两枚非本窗的证人（缺 {lost_reach:?}），这一格没有问")
+            } else if !victims_ok {
+                "两枚证人不齐（重复或点中了本窗自己），这一格没有问".to_string()
+            } else {
+                "四枚齐，判的是本窗那一臂答 1".to_string()
+            },
+        ),
+    ));
+
+    let lost_label = miss(&["des-reach-batch", "des-menu-label", "des-menu-shape"]);
+    let want = num("des-reach-batch").map(|n| format!("销毁（影响 {n} 枚）"));
+    out.push((
+        if !lost_label.is_empty() || want.is_none() {
+            Check::Blocked
+        } else {
+            Check::from(said(lines, "des-menu-label") == want.as_deref())
+        },
+        DES_ROWS[1],
+        format!(
+            "名单换成 {{本窗, {}}}(两枚)之后开菜单：桥侧那一格答 {}，菜单那一行字面读回的是「{}」，而这一格进门时缓存里存的是 1；判据＝PRD 第 1149 行要的那个数**印在用户点下去之前看得见的那一行上**，且它与那只手的答复同源——字面从 1 走到 2 只有 `onAboutToShow` 真叫过一次 `destroyCountFor` 才做得到（一枚读不出差别的初值量不到扇出，#433）。机制那三枚是 {}。{}",
+            read("des-target-a"),
+            read("des-reach-batch"),
+            read("des-menu-label"),
+            read("des-menu-shape"),
+            if lost_label.is_empty() {
+                "三枚齐，判的是字面与那张表给同一个数".to_string()
+            } else {
+                format!("字面那三枚不齐（缺 {lost_label:?}），这一格没有问")
+            },
+        ),
+    ));
+
+    let lost_take = miss(&[
+        "des-pile-before",
+        "des-batch",
+        "des-pile-gone",
+        "des-trashed",
+        "des-undo-shown",
+    ]);
+    let gone_n = num("des-reach-batch");
+    out.push((
+        if !lost_take.is_empty() || gone_n.is_none() {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("des-batch") == gone_n
+                    && num("des-pile-gone") == num("des-pile-before").zip(gone_n).map(|(v, n)| v - n)
+                    && num("des-trashed") == gone_n
+                    && said(lines, "des-undo-shown") == Some("true"),
+            )
+        },
+        DES_ROWS[2],
+        format!(
+            "名单换回 {{ {}, {} }}（本窗不在里面）再按「销毁」那一级：那只手自报带走 {} 枚、场上从 {} 枚变成 {} 枚、账上欠 {} 枚、菜单里「撤销刚才销毁的」那一行出现={}；判据＝带走几枚由名单决定（交 1 就是那只手把批量降成单枚），堆少的那些枚必须**正好**是那几只手答应的枚数（`count` 与 `trashed` 是两格账，各错一半就看不出来），而 PRD 第 1148 行那句「显示确认或支持撤销」在这里走的是撤销那一行：它只在账上欠着东西时出现，一枚也不欠时那一枚死行不出现（#433）。**这些枚的窗真被退役了吗**——本窗读不到别的窗，那一半的证人是 `pin pile before close` / `pin pile after close` 两枚行与 `state.rs` selftest（#271/#453）。",
+            read("des-target-a"),
+            read("des-target-b"),
+            read("des-batch"),
+            read("des-pile-before"),
+            read("des-pile-gone"),
+            read("des-trashed"),
+            read("des-undo-shown"),
+        ),
+    ));
+
+    let lost_ghost = miss(&["des-ghost", "des-trashed", "des-trashed-kept"]);
+    out.push((
+        if !lost_ghost.is_empty() {
+            Check::Blocked
+        } else {
+            Check::from(num("des-ghost") == Some(0) && num("des-trashed-kept") == num("des-trashed"))
+        },
+        DES_ROWS[3],
+        format!(
+            "账上欠 {} 枚时销毁一枚场上没有的 id（计划的第五格）：那只手自报 {} 枚，账上还剩 {} 枚；判据＝0 只有一枚贴图能给出（不在集里），而**一次落空的点击不许把撤销的账清掉**——清了就是对用户说「你刚才那批没了」，那一手是点击不存在的一枚贴图点出来的，不是用户撤销了自己的回头路（#455 那一族：0 不许扮成一次悄悄的成功，也不许顺手扮成一次失败）。{}",
+            read("des-trashed"),
+            read("des-ghost"),
+            read("des-trashed-kept"),
+            if lost_ghost.is_empty() {
+                "三枚齐，判的是交回 0 且账不动".to_string()
+            } else {
+                format!("ghost 那三枚不齐（缺 {lost_ghost:?}），这一格没有问")
+            },
+        ),
+    ));
+
+    let lost_undo = miss(&[
+        "des-pile-before",
+        "des-undo-absent",
+        "des-undo",
+        "des-pile-back",
+        "des-trashed-after",
+        "des-undo-again",
+    ]);
+    out.push((
+        if !lost_undo.is_empty() || gone_n.is_none() {
+            Check::Blocked
+        } else {
+            Check::from(
+                said(lines, "des-undo-absent") == Some("false")
+                    && num("des-undo") == gone_n
+                    && num("des-pile-back") == num("des-pile-before")
+                    && num("des-trashed-after") == Some(0)
+                    && num("des-undo-again") == Some(0),
+            )
+        },
+        DES_ROWS[4],
+        format!(
+            "销毁之前菜单里那一行出现={}(账是空的)、之后按一次撤销：那只手自报还回 {} 枚、场上从 {} 枚回到 {} 枚、账归零={}、再按一次交回 {} 枚；判据＝第 1148 行那句「支持撤销」在这一格里是真的——还回来的是**成员**所以 `count` 跟着走、core 那一格 `PinSlot.index` 记的是它们各自离开的那一格（撤销回来还是原来那堆而不是全摞在最上面），账只认**最近一手**所以第二按交回 0 而不是把上一批还第二次。{} 后面这两枚读数是这一趟的堆没被本族弄走的证人：`pin window` 与 `pin pile *` 那几枚在本腿之后还要按每一枚各自的落点数一遍。{}",
+            read("des-undo-absent"),
+            read("des-undo"),
+            read("des-pile-gone"),
+            read("des-pile-back"),
+            read("des-trashed-after"),
+            read("des-undo-again"),
+            read("des-pile-before"),
+            if lost_undo.is_empty() {
+                "六枚齐，判的是还回的枚数、堆、账归零与空账上那一次".to_string()
+            } else {
+                format!("撤销那六枚不齐（缺 {lost_undo:?}），这一格没有问")
+            },
+        ),
+    ));
+    out
+}
+
+/// §5.11 独显的七问各占一枚名字：带走的那一把与它的账、屏幕上那一句话、菜单上那一行字面、同一枚
+/// 手势的第二下、本窗自己被带走时的一进一出、空名单上的一记热键，以及一枚场上没有的 id。
+const SOLO_ROWS: [&str; 7] = [
+    "pin solo enter",
+    "pin solo hint",
+    "pin solo label",
+    "pin solo exit",
+    "pin solo restore",
+    "pin solo refuse",
+    "pin solo ghost",
+];
+
+/// §5.11 里能被真机问出来的那七问，从量规的三十四枚 `solo-*` 行里读。
+///
+/// `dim` 是从 [`crate::settings::pin_cfg`] 现读的那一枚 `solo_dim_opacity`。「压暗还是藏起来」这一问
+/// 的源档就是那个键，本档不许假设它等于默认值 35（#261）；也不许只拿 QML 递上来的 `solo-dims` 当尺——
+/// 那一枚是**被问的人自己**的答案，用它当尺就是让它替尺作答（#274 的反面），所以两枚在此各读一处、
+/// 又在同一格里对得上（对不上就是桥侧那一只读错了配置）。
+///
+/// 七问一枚也不并，因为它们各是 §5.11 自己的一句话：步骤 3「隐藏未选中的贴图」（第一问）、
+/// 规则③「屏幕提示中显示当前处于 Solo 状态」（第二问）、那一行菜单的字面（第三问）、步骤 4
+/// 「再次执行 Solo 或退出命令」（第四问）、规则① 与 ②「记录进入前的显示状态 / 恢复原状态而不是
+/// 无条件显示全部」（第五问，本窗的一进一出）、步骤 1「必须先选中至少一枚贴图」（第六问），以及
+/// 「0 不许扮成一次悄悄的成功」那一族的第五格（第七问）。
+///
+/// 别的窗各自被压暗 / 藏成什么样，本窗读不到（QML 里没有第二扇窗的 `view`），那一半的证人是
+/// `state.rs` 的 selftest 与 `pin pile *` 那几枚从产品外侧数桌面上还剩几扇窗的行（#271）——所以
+/// 第五问只判**说话的那一扇窗自己**被带走的那一场往返，不冒充判过了全体。
+fn solo_rows(lines: &[String], id: PinId, dim: u32) -> Vec<(Check, &'static str, String)> {
+    let num = |k: &str| said(lines, k).and_then(|v| v.parse::<i64>().ok());
+    let read = |k: &str| -> String {
+        said(lines, k)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+    let miss = |keys: &[&'static str]| -> Vec<&'static str> {
+        keys.iter()
+            .filter(|k| said(lines, k).is_none())
+            .copied()
+            .collect()
+    };
+    // `solo-menu-shape` 那一句是窗把三格缓存一次交回来的（`open=` / `reach=` / `way=`），逐名拆读
+    // 而不是整串相等：那一串里「way」的取值由配置决定，写死任何一枚都是本档替环境作答（#261）。
+    let shape = |field: &str| -> Option<String> {
+        said(lines, "solo-menu-shape").and_then(|v| {
+            v.split(';')
+                .find_map(|part| part.split_once('=').filter(|(name, _)| *name == field))
+                .map(|(_, val)| val.to_string())
+        })
+    };
+    let dims = dim > 0;
+    let verb = if dims { "压暗" } else { "隐藏" };
+
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+
+    let lost_enter = miss(&[
+        "solo-pile",
+        "solo-reach-self",
+        "solo-epoch-before",
+        "solo-enter",
+        "solo-epoch-enter",
+        "solo-kept",
+        "solo-hidden-self",
+        "solo-live-self",
+    ]);
+    // 场上得真的有别枚可以被带走：只剩本窗一枚时那一手交 0 是**这件事本身**，不是产品答错
+    // （那一格的判据会读成「带走的加留下的 = 场上的」，而 1 = 1 + 0 也成——一枚天然绿的尺，#433）。
+    let field_ok = lost_enter.is_empty() && num("solo-pile").is_some_and(|n| n >= 2);
+
+    out.push((
+        if !field_ok {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("solo-enter")
+                    == num("solo-pile").zip(num("solo-kept")).map(|(p, k)| p - k)
+                    && num("solo-kept").is_some_and(|k| k >= 1)
+                    && num("solo-reach-self") == num("solo-enter")
+                    && num("solo-epoch-enter") == num("solo-epoch-before").map(|v| v + 1)
+                    && said(lines, "solo-hidden-self") == Some("false")
+                    && said(lines, "solo-live-self") == Some("true"),
+            )
+        },
+        SOLO_ROWS[0],
+        format!(
+            "名单空着、点的是本窗（{id}）这一枚的菜单：场上 {} 枚，那一手自报带走 {} 枚、留着 {} 枚，开菜单之前桥侧对「这一手会带走几枚」答 {}，号从 {} 走到 {}，本窗自己 solo_hidden={} live={}；判据＝§5.11 步骤 3「系统隐藏未选中的贴图」在这里是把**名单以外**的那些枚带走，于是带走的加留下的必须正好等于场上的（少了就是有一枚没人管，多了就是本窗自己也被带走，而它恰恰是用户点中的那一枚），菜单上印着的那个数与按下去真带走的那些枚必须同源——两处读的都是同一张 `solo_kept_table`，窗自己一枚也不数（#281）；一次真改动发一次号，不发则 `main.qml` 里 `soloTick` 那一声明没有读者、别的窗不会重读自己该被压到多暗（#316）；留着的那一枚不许不知道自己被留着（`solo_hidden` 为假、`live` 为真，两档配置下都该如此）。{}",
+            read("solo-pile"),
+            read("solo-enter"),
+            read("solo-kept"),
+            read("solo-reach-self"),
+            read("solo-epoch-before"),
+            read("solo-epoch-enter"),
+            read("solo-hidden-self"),
+            read("solo-live-self"),
+            if !lost_enter.is_empty() {
+                format!("八枚不齐（缺 {lost_enter:?}），这一格没有问")
+            } else if !field_ok {
+                "场上只有本窗一枚，没有别枚可被带走，这一格没有问".to_string()
+            } else {
+                "八枚齐，判的是那本账平不平、字面与手同不同源、号走没走、本窗在不在留着那一侧".to_string()
+            },
+        ),
+    ));
+
+    let lost_said = miss(&["solo-said", "solo-enter", "solo-dims", "solo-pile"]);
+    let said_ok = said(lines, "solo-said").is_some_and(|s| {
+        let n = num("solo-enter").unwrap_or_default();
+        s.contains("独显") && s.contains(verb) && s.contains(&format!("{n} 枚"))
+    });
+    out.push((
+        if !lost_said.is_empty() || !num("solo-pile").is_some_and(|n| n >= 2) {
+            Check::Blocked
+        } else {
+            Check::from(said_ok && said(lines, "solo-dims") == Some(if dims { "true" } else { "false" }))
+        },
+        SOLO_ROWS[1],
+        format!(
+            "进入之后屏幕上那一格活话（`session.status`，`HintWindow.qml` 绑的就是这一格）读回 {:?}，同一次那一只手自报带走 {} 枚，窗自己那一侧读到的机制是 {:?} 而配置键 `pin.solo_dim_opacity`={}；判据＝§5.11 规则③「应在屏幕提示中显示当前处于 Solo 状态」由**产品自己写的那一句**答，本腿不替它编一句——所以那一句话里必须有「独显」两个字、必须有它自己报出的那个枚数（印着的数与真的数各走各的，就是菜单那一行同一枚病，#281），而句里的动词必须跟着配置键：>0 是「压暗」、=0 是「隐藏」。托盘那一臂本轮没做，逐名记在台账的欠账里。{}",
+            read("solo-said"),
+            read("solo-enter"),
+            read("solo-dims"),
+            dim,
+            if !lost_said.is_empty() {
+                format!("提示那四枚不齐（缺 {lost_said:?}），这一格没有问")
+            } else if !num("solo-pile").is_some_and(|n| n >= 2) {
+                "场上只有本窗一枚，这一格没有问".to_string()
+            } else {
+                "四枚齐，判的是那句话里有没有独显、有没有它自己报的数、动词对不对得上配置".to_string()
+            },
+        ),
+    ));
+
+    let lost_label = miss(&["solo-menu-shape", "solo-menu-label", "solo-dims"]);
+    let (open, reach) = (shape("open"), shape("reach"));
+    let way = shape("way");
+    out.push((
+        if !lost_label.is_empty() || open.is_none() || reach.is_none() || way.is_none() {
+            Check::Blocked
+        } else {
+            Check::from(
+                open.as_deref() == Some("true")
+                    && reach.as_deref() == Some("0")
+                    && said(lines, "solo-menu-label") == Some("退出独显")
+                    && way.as_deref() == Some(verb),
+            )
+        },
+        SOLO_ROWS[2],
+        format!(
+            "独显开着时把本窗的菜单打开，三格缓存一次读回：{}（门出现={}、这一手会带走几枚={}、机制={:?}），菜单那一行的字面是「{}」；判据＝退出那一支**不许**印一个数——独显开着时「这一手会带走几枚」问的其实是「会放回去几枚」，而那个数只活在 core 的 `Solo::saved` 那张表里，桥侧不许留第二份副本，于是 `solo_answer` 在场外答数、在场内答 0，菜单那一行随之改口成「退出独显」：这一格判的就是它真的改口了（没改口就是给用户印一枚它自己答不出的数，而那一句「影响 N 枚」按下去带走的却是另一枚数——#281 说的那件看得见的事）。字面里那个动词也得与配置键对得上（{:?} 而 `solo_dim_opacity`={}），否则「隐藏」与「压暗」这两档在菜单上是同一句话。{}",
+            read("solo-menu-shape"),
+            open.clone().unwrap_or_default(),
+            reach.clone().unwrap_or_default(),
+            way.clone().unwrap_or_default(),
+            read("solo-menu-label"),
+            read("solo-dims"),
+            dim,
+            if !lost_label.is_empty() {
+                format!("字面那三枚不齐（缺 {lost_label:?}），这一格没有问")
+            } else if open.is_none() || reach.is_none() || way.is_none() {
+                "那一格交回来的串拆不出 open/reach/way 三名，这一格没有问".to_string()
+            } else {
+                "三枚齐，判的是门真开了、那一格真的答 0、字面真的改了口".to_string()
+            },
+        ),
+    ));
+
+    let lost_exit = miss(&[
+        "solo-pile",
+        "solo-enter",
+        "solo-exit",
+        "solo-epoch-enter",
+        "solo-epoch-exit",
+        "solo-kept-after",
+    ]);
+    out.push((
+        if !lost_exit.is_empty() || !num("solo-pile").is_some_and(|n| n >= 2) {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("solo-exit") == num("solo-enter")
+                    && num("solo-exit") == num("solo-pile").zip(num("solo-kept")).map(|(p, k)| p - k)
+                    && num("solo-kept-after") == Some(0)
+                    && num("solo-epoch-exit") == num("solo-epoch-enter").map(|v| v + 1),
+            )
+        },
+        SOLO_ROWS[3],
+        format!(
+            "同一枚入口的第二下（§5.11 步骤 4「用户再次执行 Solo 或退出命令」）：那一手自报放回 {} 枚、第一下带走的是 {} 枚、场上 {} 枚、`solo_kept` 归零={}、号从 {} 走到 {}；判据＝同一枚手势两走，而第二下交回的必须是**被带走的那些枚**而不是场上的全部——这一格就是规则②那句「而不是无条件显示全部」落在数上的形状（{} 枚而场上有 {} 枚，差的那一枚是本来就没被带走的本窗自己，`exit_solo` 不该去摸它一下），账上也不留副本所以 `solo_kept` 必须归零（不归零就是退出之后屏幕上那一行还写着「退出独显」，用户再按一下就走进第二次）。{}",
+            read("solo-exit"),
+            read("solo-enter"),
+            read("solo-pile"),
+            read("solo-kept-after"),
+            read("solo-epoch-enter"),
+            read("solo-epoch-exit"),
+            read("solo-exit"),
+            read("solo-pile"),
+            if !lost_exit.is_empty() {
+                format!("第二下那六枚不齐（缺 {lost_exit:?}），这一格没有问")
+            } else if !num("solo-pile").is_some_and(|n| n >= 2) {
+                "场上只有本窗一枚，这一格没有问".to_string()
+            } else {
+                "六枚齐，判的是放回的枚数、它与第一下相不相等、账归没归零、号再走一步".to_string()
+            },
+        ),
+    ));
+
+    let lost_restore = miss(&[
+        "solo-target-other",
+        "solo-op-start",
+        "solo-enter-other",
+        "solo-hidden",
+        "solo-live",
+        "solo-opacity",
+        "solo-epoch-exit",
+        "solo-epoch-other",
+        "solo-exit-other",
+        "solo-op-end",
+        "solo-hidden-end",
+        "solo-live-end",
+    ]);
+    let want = dim.min(100) as i64;
+    let (op0, op1) = (num("solo-op-start"), num("solo-opacity"));
+    let other_ok = num("solo-target-other").is_some_and(|v| v != id as i64);
+    // 压暗那一级与这一枚进门那一级**相同**时，这一格读不出「被压暗了」与「什么都没动」的差别：
+    // 交回 Blocked 而不是拿一个没动过的读数冒充绿（#433/#440，与 `rst_rows` 那一档缩放同一枚形状）。
+    // 只在这一格相等时才放弃——读数一动不动而压暗那一级是**另一个数**，那是没压，不是问不出。
+    let flat = dims && op0 == Some(want) && op1 == op0;
+    let crossed = if dims {
+        said(lines, "solo-hidden") == Some("false")
+            && said(lines, "solo-live") == Some("true")
+            && op1 == Some(want)
+    } else {
+        said(lines, "solo-hidden") == Some("true")
+            && said(lines, "solo-live") == Some("false")
+            && op1 == op0
+    };
+    out.push((
+        if !lost_restore.is_empty() || !other_ok || flat {
+            Check::Blocked
+        } else {
+            Check::from(
+                crossed
+                    && num("solo-epoch-other") == num("solo-epoch-exit").map(|v| v + 1)
+                    && num("solo-exit-other") == num("solo-enter-other")
+                    && num("solo-op-end") == op0
+                    && said(lines, "solo-hidden-end") == Some("false")
+                    && said(lines, "solo-live-end") == Some("true"),
+            )
+        },
+        SOLO_ROWS[4],
+        format!(
+            "留着的是**别的**那一枚 {}（本窗是 {id}），于是被带走的是说话的这一扇窗自己：进门时自己的不透明度 {}，那一手自报带走 {} 枚、本窗 solo_hidden={} live={} 不透明度={}、号从 {} 走到 {}；再按第二下自报放回 {} 枚、自己的不透明度回到 {}、solo_hidden={} live={}；判据＝规则①「应记录进入 Solo 前各贴图的显示状态」与规则②「退出后应恢复原状态」在这一格里是同一枚窗的一进一出——这一场是压暗（配置键 {}>0）时本窗必须被压到那一格上（读到 {}，要求 {}）而不是被藏掉（`live` 仍为真），这一场是隐藏时反过来（`solo_excluded` 为真、`live` 为假、自己的不透明度一动不动：两档各判各的，判错档就是桥侧读错了那枚键）；两场的**出**都要等于**进**（不透明度回到进门那一级而不是 100——无条件显示全部就是拿默认值盖掉用户自己调过的那一级）。本窗一次也没 `reload` 过自己，这几格只可能是扇出替它问的，那一条腿的证人是 `main.qml` 里 `soloTick` 那一声明（#316）。{}",
+            read("solo-target-other"),
+            read("solo-op-start"),
+            read("solo-enter-other"),
+            read("solo-hidden"),
+            read("solo-live"),
+            read("solo-opacity"),
+            read("solo-epoch-exit"),
+            read("solo-epoch-other"),
+            read("solo-exit-other"),
+            read("solo-op-end"),
+            read("solo-hidden-end"),
+            read("solo-live-end"),
+            dim,
+            read("solo-opacity"),
+            want,
+            if !lost_restore.is_empty() {
+                format!("往返那十二枚不齐（缺 {lost_restore:?}），这一格没有问")
+            } else if !other_ok {
+                "点名的证人就是本窗自己，这一格没有问".to_string()
+            } else if flat {
+                "这一枚进门那一级已经就等于压暗那一级，压没压读不出差别，这一格没有问".to_string()
+            } else {
+                "十二枚齐，判的是这一档该动的那几格真动了、该不动的那一格没动、出等于进".to_string()
+            },
+        ),
+    ));
+
+    let lost_refuse = miss(&[
+        "solo-refuse-before",
+        "solo-refuse",
+        "solo-refuse-epoch",
+        "solo-refuse-kept",
+        "solo-refuse-said",
+    ]);
+    out.push((
+        if !lost_refuse.is_empty() {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("solo-refuse") == Some(0)
+                    && num("solo-refuse-epoch") == num("solo-refuse-before")
+                    && num("solo-refuse-kept") == Some(0)
+                    && said(lines, "solo-refuse-said")
+                        .is_some_and(|s| s.contains("独显") && s.contains("没做成") && s.contains("选中")),
+            )
+        },
+        SOLO_ROWS[5],
+        format!(
+            "名单空着按 `ctrl+shift+s` 那一路（`toggleSoloSelection`，本轮第一次有读者）：那一手自报 {} 枚、号从 {} 到 {}、`solo_kept`={}、屏幕上那句读回 {:?}；判据＝§5.11 步骤 1「必须先选中至少一枚贴图」在被满足之前不许动手——交 0 且**不发号**（发了就是全场为一件没发生的事重读一遍，#455），屏幕上出现的那一句必须是拒绝而不是「已进入独显」。这一格挡的正是 core 那一枚 `toggle_solo` 的 `bool` 装不下的那一件事：`false` 同时容纳「刚退出 Solo」与「没选中所以被拒绝」，只看它就无法知道有没有暗掉一片屏（[bool-loss] 那一格记的就是这条缝），所以桥侧那一手数的是枚数、拒绝的那一支另写一句话。{}",
+            read("solo-refuse"),
+            read("solo-refuse-before"),
+            read("solo-refuse-epoch"),
+            read("solo-refuse-kept"),
+            read("solo-refuse-said"),
+            if lost_refuse.is_empty() {
+                "五枚齐，判的是交 0、号不动、账为空、那句是拒绝".to_string()
+            } else {
+                format!("拒绝那五枚不齐（缺 {lost_refuse:?}），这一格没有问")
+            },
+        ),
+    ));
+
+    let lost_ghost = miss(&[
+        "solo-ghost",
+        "solo-epoch-ghost",
+        "solo-ghost-kept",
+        "solo-refuse-epoch",
+    ]);
+    out.push((
+        if !lost_ghost.is_empty() {
+            Check::Blocked
+        } else {
+            Check::from(
+                num("solo-ghost") == Some(0)
+                    && num("solo-epoch-ghost") == num("solo-refuse-epoch")
+                    && num("solo-ghost-kept") == Some(0),
+            )
+        },
+        SOLO_ROWS[6],
+        format!(
+            "独显那一只手上按一枚还没被发出去的 id（`win.gauge[5]`，与 `des-ghost` 同一枚证人）：那一手自报 {} 枚、号={} 而上一手之后是 {}、`solo_kept`={}；判据＝0 只有一枚贴图能给出——`hand_targets` 对不在集里的那一枚交回空表，于是桥侧在 core 之前就把这一手挡下（不是 core 拒绝的：那一格拒绝的是空名单，两件事各有其名，见上一格）；空手不许发号，也不许把任何一枚记成「留着的一枚」（记了就成「独显开着却无人知晓」，下一次按下去交回的是一批没人同意过的窗）。**别人的窗没被碰**这一半本窗读不到，证人是 `pin pile *` 那几枚与 `state.rs` selftest（#271）。{}",
+            read("solo-ghost"),
+            read("solo-epoch-ghost"),
+            read("solo-refuse-epoch"),
+            read("solo-ghost-kept"),
+            if lost_ghost.is_empty() {
+                "四枚齐，判的是交 0、号不动、没人被记成留着".to_string()
+            } else {
+                format!("ghost 那四枚不齐（缺 {lost_ghost:?}），这一格没有问")
+            },
+        ),
+    ));
+    out
+}
+
+/// §5.9.16 的复制本身、§5.9.17 的那一路文件，各占一枚名字。
+const COPY_ROWS: [&str; 2] = ["pin copy", "pin copy file"];
+/// The one sentence `copy-drawn` handed back, graded twice: whether the copy of a real,
+/// drawn pin was accepted at all, and whether the file leg came along *exactly* when the
+/// switch said it should.
+///
+/// `on` 是这一趟产品自己加载的那枚 `output.copy_as_file`——调用点读它用的就是 `copy_pin` 走的
+/// 同一条路（[`crate::settings::output_cfg`]），所以判的是「写这句话时生效的那枚开关」而不是本
+/// 档对配置的记忆；两种答法因此都能在一只没有窗、没有配置的测试里被驱动（§10 第 69 项 ⑫ 那一族）。
+///
+/// The path is read out of the product's own sentence rather than recomputed here, and the
+/// two claims made about it are the two §5.9.17 spells out: it sits under the directory the
+/// product names as its own ([`state::PinState::clip_dir`]), and it is on disk *now* — the
+/// promise of this copy is a file the paste target can open, so a sentence naming a path
+/// that is not there is this row's own red, not a note.
+///
+/// 反证是关掉那一侧（#274/#461）：开关关着时这句里**不许**出现「文件引用」，于是这一格有两种答法。
+/// 命名规则只读不判（文件名原样印在 detail 里）：§5.9.17 那句「应遵守预设命名规则」的判据属于
+/// `naming` 那一族已经拿起的尺，这一轮不另立一枚会读空的尺（#274 的「尺要展示会读空的一面」）。
+fn copy_rows(lines: &[String], on: bool) -> Vec<(Check, &'static str, String)> {
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+    let Some(said) = said(lines, "copy-drawn") else {
+        let why =
+            "runGauge 那一腿没报上 `copy-drawn`，§5.9.16 的复制与 §5.9.17 的那一路文件都没被问过";
+        return COPY_ROWS
+            .iter()
+            .map(|n| (Check::Blocked, *n, format!("这一格没有问：{why}")))
+            .collect();
+    };
+
+    let copied = said.starts_with("已复制贴图");
+    out.push((
+        Check::from(copied),
+        COPY_ROWS[0],
+        format!(
+            "{:?}；判据＝这一枚真贴图（`copyAction.trigger()` 点的那枚 `win.pinId`）的复制被接受，话的开头是那一句用户会看见的确认",
+            said
+        ),
+    ));
+
+    let named: Option<std::path::PathBuf> = said
+        .split_once("文件引用 ")
+        .map(|(_, rest)| std::path::PathBuf::from(rest.trim()));
+    let ours = named
+        .as_ref()
+        .is_some_and(|p| p.starts_with(state::PinState::clip_dir()));
+    let there = named.as_ref().is_some_and(|p| p.is_file());
+    let (grade, ask) = if on {
+        (
+            copied && named.is_some() && ours && there,
+            "开着那一侧要：这句点名一路文件、文件在产品自己那枚临时目录之下、此刻真在盘上",
+        )
+    } else {
+        (
+            copied && named.is_none(),
+            "关着那一侧要：这句里不出现「文件引用」——开关是这条路唯一的门，反证就是它关上的那一面",
+        )
+    };
+    out.push((
+        Check::from(grade),
+        COPY_ROWS[1],
+        format!(
+            "开关={}；点名文件={}；在那枚目录下={ours}；此刻在盘上={there}；判据＝{ask}（§5.9.17 step 3，文件名只读不判）",
+            on,
+            named
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<这句没点名文件>".to_string())
+        ),
+    ));
+    out
 }
 
 /// The three rows 存完再钉图 registers (§10 第 43 项 ①), in the order the flow reaches
@@ -1586,6 +3661,8 @@ pub fn measure() -> (Check, String) {
     // Read in its own call rather than lengthening the one above: that one is already at
     // the arity a Rust tuple can be.
     let (xid, xrect) = with(|p| (p.xid, p.xrect));
+    let (gid, grect, from_gif, gif_said) =
+        with(|p| (p.gid, p.grect, p.from_gif.clone(), p.gif_said.clone()));
 
     // Every other row reads a value, so this one reads whether there is a value to
     // read: a document that failed to build, a delegate that never matched the plan,
@@ -1649,6 +3726,54 @@ pub fn measure() -> (Check, String) {
         }
     }
     for (verdict, label, detail) in file_pin_rows(frect, fid, &from_file, &file_said) {
+        rep.row(label, verdict, detail);
+    }
+    for (verdict, label, detail) in gif_rows(&lines, grect, gid, &gif_said, &from_gif) {
+        rep.row(label, verdict, detail);
+    }
+    for (verdict, label, detail) in alpha_rows(&lines, id) {
+        rep.row(label, verdict, detail);
+    }
+    // §5.10.1 的三问，读的是同一条腿的十三枚 `sel-*`；三枚判据各答各的，一枚结论也不并。
+    for (verdict, label, detail) in sel_rows(&lines, id) {
+        rep.row(label, verdict, detail);
+    }
+    // §5.10.2 的五问读的是**同一趟**的十五枚 `mov-*`：前十一枚长在多选那三腿中间（落点那一枚在
+    // 整段最前），因为问的名单长度就是上面那两手跑出来的状态；后四枚走在 `sel-cleared-self` 之后，
+    // 是反手把这一族自己挪走的落点一枚一枚还回去。五枚判据同样一枚也不并。
+    for (verdict, label, detail) in mov_rows(&lines, id) {
+        rep.row(label, verdict, detail);
+    }
+    // §5.10.3 的六问读的是**同一趟**的二十四枚 `op-*`：七枚单枚那格长在 `mov-rev-lone` 之后（那时
+    // 名单里只有本窗一枚），三枚 ghost 长在 `mov-epoch-ghost` 之后，十四枚批量那格长在
+    // `mov-batch-epoch` 之后（那时名单两枚）。六枚判据一枚也不并，理由与上面那封信同一枚。
+    for (verdict, label, detail) in op_rows(&lines, id) {
+        rep.row(label, verdict, detail);
+    }
+    // §5.10.4「重置」的四问读的是**同一趟**的十五枚 `rst-*`：八枚单枚那格长在 `op-lone-epoch-end`
+    // 之后（那时名单里只有本窗一枚），三枚 ghost 长在 `op-epoch-ghost` 之后（同一枚还没被发出去
+    // 的 id），四枚批量那格长在 `op-epoch-end` 之后（那时名单两枚）。四枚判据一枚也不并，理由与
+    // 上面那两封信同一枚。
+    for (verdict, label, detail) in rst_rows(&lines) {
+        rep.row(label, verdict, detail);
+    }
+    // §5.9.18 / §5.10.4「销毁 + 撤销 + 影响数量」的五问读的是长在 `mov-pos-after` 之后、`menu`
+    // 之前的十八枚 `des-*`：这一腿点的是**别的那些枚**，所以本窗能一路说到 `done`（第 55 项那一封
+    // 同一枚理由：说话者与受害者必须是两扇窗）。五枚判据同样一枚也不并。
+    for (verdict, label, detail) in des_rows(&lines, id) {
+        rep.row(label, verdict, detail);
+    }
+    // §5.11 独显的七问读的是长在 `des-undo-again` 之后、`menu` 之前的三十四枚 `solo-*`：四臂各走
+    // 一遍（留着本窗、留着别人、空名单上的一记热键、一枚场上没有的 id），起点正是销毁那一族收回来
+    // 的那个状态——名单空、场上满。七枚判据一枚也不并，因为它们各是 §5.11 自己的一句话；`dim` 从
+    // 配置现读而不是从 QML 那枚 `solo-dims` 取，理由写在 [`solo_rows`] 上面那封信里。
+    for (verdict, label, detail) in
+        solo_rows(&lines, id, crate::settings::pin_cfg().solo_dim_opacity)
+    {
+        rep.row(label, verdict, detail);
+    }
+    // 这一格的开关读的是产品这一趟加载的那一枚，和 `copy_pin` 走的是同一条路。
+    for (verdict, label, detail) in copy_rows(&lines, crate::settings::output_cfg().copy_as_file) {
         rep.row(label, verdict, detail);
     }
 
@@ -2075,7 +4200,7 @@ pub fn measure() -> (Check, String) {
         format!("{} 存在={}", never.display(), never.exists()),
     );
 
-    for (verdict, label, detail) in close_rows(&lines, rect, xrect, frect) {
+    for (verdict, label, detail) in close_rows(&lines, rect, xrect, frect, grect) {
         rep.row(label, verdict, detail);
     }
 
@@ -2095,17 +4220,20 @@ pub fn measure() -> (Check, String) {
     // plan that should have produced them is the rest of the context.
     (
         verdict,
-        format!("{text}\npin plan: id={id} bad={bad} rect={want} close={xid}"),
+        format!("{text}\npin plan: id={id} bad={bad} rect={want} close={xid} gif={gid}"),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        ask, ask_check, ask_said, census_blames_earlier_phase, close_rows, dialog_hygiene,
-        file_pin_rows, leg_order, probe_field, probe_ids, probe_rect, qml_leg_keys, real_click,
-        said, same_file, unasked_rows, Ask, Check, PhysRect, CLOSE_ROWS, FILE_PIN_ROWS,
-        PIN_SCHEDULE,
+        alpha_num, alpha_rows, alpha_turn, alpha_yes, ask, ask_check, ask_said,
+        census_blames_earlier_phase, close_rows, copy_rows, des_rows, dialog_hygiene,
+        file_pin_rows, gif_rows, leg_order, mov_rows, op_rows, probe_field, probe_ids, probe_rect,
+        qml_leg_keys, real_click, rst_rows, said, same_file, sel_rows, solo_rows, state,
+        unasked_rows, Ask, Check, PhysRect, PinId, ALPHA_MENU_ITEMS, ALPHA_ROWS, CLOSE_ROWS,
+        COPY_ROWS, DES_ROWS, FILE_PIN_ROWS, GIF_ARM_MS, GIF_MENU_ITEMS, GIF_PIN_ROWS, GIF_STILL_MS,
+        LEG_DELAY_MS, MOV_ROWS, OP_ROWS, PIN_SCHEDULE, RST_ROWS, SEL_ROWS, SOLO_ROWS,
     };
     use std::path::Path;
 
@@ -2269,6 +4397,68 @@ mod tests {
         assert_eq!(leg_order(&p41, PIN_SCHEDULE), None, "{p41:?}");
     }
 
+    /// A key given two places in the schedule is invisible to every reader of it, and this
+    /// round met one: `"gif-items-still"` had been left next to the entry it was renamed from,
+    /// so the array held it twice. Nothing reddened. `leg_order` asks for a *non-decreasing*
+    /// index, so a repeat can only ever be satisfied; the two set-comparisons that check the
+    /// schedule against the QML are membership tests, so both halves stay empty; and
+    /// `position()`, which is what the ordering assertions below use to name a leg's place,
+    /// answers the first index and keeps quiet about the second. The claim a duplicate breaks
+    /// is not "did this run follow a plan" - it is *which* plan, and the row that grades the
+    /// run reads its schedule from here.
+    #[test]
+    fn no_leg_key_is_given_two_places_in_the_schedule() {
+        let dups_of = |keys: &[&str]| -> Vec<String> {
+            let mut out: Vec<String> = Vec::new();
+            for (i, key) in keys.iter().enumerate() {
+                if keys[..i].contains(key) {
+                    out.push((*key).to_string());
+                }
+            }
+            out
+        };
+        // The counter-example, in the same breath as the claim: a yard that can only answer
+        // empty is not grading anything, so the shape it is meant to catch is run through it.
+        assert_eq!(
+            dups_of(&["a", "b", "a"]).join(","),
+            "a",
+            "尺抓不住一枚重名，就谈不上放行"
+        );
+        let found = dups_of(PIN_SCHEDULE);
+        assert!(
+            found.is_empty(),
+            "PIN_SCHEDULE 里 {found:?} 被给了两枚落点：`leg_order` 只认非降、`position()` 只报第一枚，所以两枚落点没有一位读者会发现"
+        );
+    }
+
+    /// C 档那两枚开着的计数只在其毫秒数成立时才是日程：同一事件循环步里到期的两枚定时器，
+    /// 谁先跑没人能从源码读出来，所以 [`PIN_SCHEDULE`] 声称的每一个先后都要由算术供。下面这三
+    /// 条不等式就是那个「由」，读的是常数而不是一趟运行——运行只能说出发生了什么，说不出保证。
+    #[test]
+    fn the_two_menu_legs_never_share_an_event_loop_step() {
+        // 三枚先后一起交回，而不是三枚 `assert!`：clippy 认得常数的比较
+        // （`assertions_on_constants`，p128c 那一代第 2 格就是红在这一枚上），而这一格要的读数
+        // 是「三条各成不成立」，数组自己把那三枚都印得出来。
+        let holds = [
+            GIF_ARM_MS < GIF_STILL_MS,
+            GIF_STILL_MS + GIF_STILL_MS < LEG_DELAY_MS,
+            GIF_ARM_MS + LEG_DELAY_MS > 2 * GIF_STILL_MS,
+        ];
+        assert!(
+            holds.iter().all(|h| *h),
+            "臂 {} / 静置 {} / 一整 delay {}：三条先后 = {:?}（臂要早于静置、静置那两枚要早于它自己的 `menu`、会动那一扇的尾读要晚于静置那两枚）",
+            GIF_ARM_MS,
+            GIF_STILL_MS,
+            LEG_DELAY_MS,
+            holds
+        );
+        let at = |k: &str| PIN_SCHEDULE.iter().position(|s| *s == k).unwrap();
+        assert!(at("gif-items-closed") < at("gif-items-still-closed"));
+        assert!(at("gif-items-still-closed") < at("gif-items-still"));
+        assert!(at("gif-items-still") < at("menu"));
+        assert!(at("gif-items-still") < at("gif-items"));
+    }
+
     /// Two things the grade must not do: fail a run for the two legs that are confessions
     /// rather than phases, and let a leg through that nobody gave a place to.
     #[test]
@@ -2287,6 +4477,28 @@ mod tests {
         // A key the same leg writes twice is one leg answering twice, not a reorder.
         let twice = ["accept-was", "accept", "accept"];
         assert_eq!(leg_order(&twice, PIN_SCHEDULE), None);
+
+        // P134：两枚 `sel-observe-*` 是**别的窗**说的话，同一趟里销毁那一族换三次名单就说三遍，
+        // 而它们在日程里只占一格——按那一格的先后要求它们必然假红（门档 A 那 5 句「自己说亮了」
+        // 而场上只有 4 枚就是这么来的）。豁免只给这两枚名字，日程里照旧得有它们。
+        let mut echo = PIN_SCHEDULE.to_vec();
+        echo.push("sel-observe-on");
+        echo.push("sel-observe-off");
+        echo.push("sel-observe-on");
+        assert_eq!(leg_order(&echo, PIN_SCHEDULE), None, "{echo:?}");
+
+        // 反证（#274）：真腿前后挪一格照样红；证人换了个名字照样「日程里没有这条腿」。
+        let mut moved = PIN_SCHEDULE.to_vec();
+        let at = moved.iter().position(|k| *k == "des-trashed-kept").unwrap();
+        let key = moved.remove(at);
+        moved.insert(at - 3, key);
+        let problems = leg_order(&moved, PIN_SCHEDULE).unwrap_or_default();
+        assert!(problems.contains("相对顺序和日程不符"), "{problems}");
+        let problems = leg_order(&["des-batch", "sel-observed"], PIN_SCHEDULE).unwrap_or_default();
+        assert!(
+            problems.contains("日程里没有这条腿：sel-observed"),
+            "{problems}"
+        );
     }
 
     /// The other half of ②(b), and the half that reaches the file that actually runs the
@@ -2313,6 +4525,269 @@ mod tests {
             missing.is_empty() && extra.is_empty(),
             "日程与 PinWindow.qml 的腿对不上：日程有而 QML 不写 {missing:?}；QML 写而日程没有 {extra:?}"
         );
+    }
+
+    /// §5.9.14's number of menu items, checked against the file that draws them rather than
+    /// against this round's memory of them. The graded row compares a *live window's* count
+    /// against [`GIF_MENU_ITEMS`], so the constant needs a reader that notices when the menu
+    /// changes: without this one, adding an eighth item reddens a passing run from the
+    /// desktop, and deleting one turns a red row into a green one - both are the row grading
+    /// a number that no longer describes anything.
+    ///
+    /// The count is taken off the section's own visibility condition, which is the one thing
+    /// every item in it shares, so this test cannot pass by counting something else.
+    #[test]
+    fn the_clip_section_of_the_menu_is_the_size_the_row_expects() {
+        let src = include_str!("../qml/PinWindow.qml");
+        let seen = src.matches("visible: win.view.gif_frames > 1").count();
+        assert_eq!(
+            seen, GIF_MENU_ITEMS,
+            "PinWindow.qml 里 §5.9.14 那一节有 {seen} 项，而 GIF_MENU_ITEMS 写的是 {GIF_MENU_ITEMS}"
+        );
+    }
+
+    /// The same guard for §5.9.15's four rows, taken off the handler every one of them
+    /// shares rather than off the section's `visible:` condition — because that condition is
+    /// the *separator's*, and a count that swept the separator in would say five. A gauge leg
+    /// calls `win.view.setAlphaBg(` too, and does not `onTriggered:` it, so this pattern is
+    /// the menu and nothing else.
+    #[test]
+    fn the_background_section_of_the_menu_is_the_size_the_row_expects() {
+        let src = include_str!("../qml/PinWindow.qml");
+        let seen = src.matches("onTriggered: win.view.setAlphaBg(").count();
+        assert_eq!(
+            seen, ALPHA_MENU_ITEMS,
+            "PinWindow.qml 里 §5.9.15 那一节有 {seen} 项，而 ALPHA_MENU_ITEMS 写的是 {ALPHA_MENU_ITEMS}"
+        );
+    }
+
+    /// §5.9.16 step 2 names two doors to one thing, and the sentence is only worth
+    /// printing because the file says it in exactly one place each: one `copyPin` call
+    /// site (inside the `Action`) and one `Shortcut` bound to that same action. A
+    /// duplicated `onTriggered` would make "两条腿走的是同一条路" false while every other
+    /// row still passed, so this row reads the QML rather than this round's memory of it.
+    ///
+    /// 反证同一把尺的另一面（#274/#461）：needle 是从本轮真的写进 QML 的那三行取的，若其中
+    /// 任一行被改名或删掉，这一格读回的是 0 而不是"没这一问"。
+    /// 四枚 needle 各数一枚不同的东西，而且每一枚都是**整行**而不是前缀：`never-copy` 那一腿
+    /// 早就写着 `win.session.copyPin(Number(win.gauge[5]))`，只数 `win.session.copyPin(` 会把它
+    /// 也算成一条路，于是 p130a 那一代读回 2 并报红——红得对，但红的是尺而不是门（#274 的
+    /// 另一面：一把会读多的尺和一把会读空的尺都得先证明自己能读准）。
+    #[test]
+    fn the_copy_has_one_route_and_two_doors_in_the_qml() {
+        let src = include_str!("../qml/PinWindow.qml");
+        let routes = src.matches("win.session.copyPin(win.pinId)").count();
+        let shortcuts = src.matches("sequences: [StandardKey.Copy]").count();
+        let fired = src.matches("onActivated: copyAction.trigger()").count();
+        let bound = src.matches("MenuItem { action: copyAction }").count();
+        assert_eq!(
+            routes, 1,
+            "复制的落点在 PinWindow.qml 里只该有一处（菜单与 Ctrl+C 共走一条路），读到 {routes} 处"
+        );
+        assert_eq!(
+            shortcuts, 1,
+            "Ctrl+C 那一支路只该出现一次，读到 {shortcuts} 处"
+        );
+        assert_eq!(
+            fired, 1,
+            "快捷键点的必须就是菜单那枚 Action，读到 {fired} 处"
+        );
+        assert_eq!(
+            bound, 1,
+            "菜单那一项必须 `action:` 到同一枚 Action（自己再写一遍 onTriggered 就成了第二条路），读到 {bound} 处"
+        );
+    }
+
+    /// 同一把尺的四面（#274/#461）：开关开着那一侧「点了文件、文件在自家目录下、此刻在盘上」
+    /// 才绿，关着那一侧「不许点文件」才绿——**同一句话在两侧得到两个不同的答案**，这就是这枚行
+    /// 真的在读那枚开关而不是读它自己。三枚红各自只有一个理由（目录外、不在盘上、开了却没点），
+    /// 所以红了以后能一眼看出是哪一枚谓词没成立。
+    ///
+    /// 两枚 witness 文件写进 `PinState::clip_dir()` 与系统临时目录根，各自 `remove_file` 之后
+    /// 才断言——判完就收，绝不让测试在产品的目录下留一枚没有读者的文件（那一枚目录归本轮门档
+    /// `[clip]` 那一腿数，测试不该替它添数）。
+    #[test]
+    fn the_copy_row_answers_differently_for_each_side_of_the_switch() {
+        let legs = |s: &str| vec![format!("copy-drawn|{s}")];
+        let at = |rows: &[(Check, &'static str, String)], i: usize| rows[i].0;
+
+        let dir = state::PinState::clip_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let ours = dir.join("p130-copy-row-witness.png");
+        let outside = std::env::temp_dir().join("p130-copy-row-outside.png");
+        let wrote = std::fs::write(&ours, b"witness").is_ok()
+            && std::fs::write(&outside, b"witness").is_ok();
+        let named = format!("已复制贴图（16 像素），文件引用 {}", ours.display());
+        let elsewhere = format!("已复制贴图（16 像素），文件引用 {}", outside.display());
+        let gone = format!(
+            "已复制贴图（16 像素），文件引用 {}",
+            dir.join("p130-copy-row-never-written.png").display()
+        );
+        let plain = "已复制贴图（16 像素）".to_string();
+        let refused = "复制失败：贴图 4294967295 还没有画过".to_string();
+
+        let on = copy_rows(&legs(&named), true);
+        let off = copy_rows(&legs(&plain), false);
+        let on_named_elsewhere = copy_rows(&legs(&elsewhere), true);
+        let on_gone = copy_rows(&legs(&gone), true);
+        let on_without_file = copy_rows(&legs(&plain), true);
+        let off_with_file = copy_rows(&legs(&named), false);
+        let refused_on = copy_rows(&legs(&refused), true);
+        let silent = copy_rows(&[], true);
+
+        let _ = std::fs::remove_file(&ours);
+        let _ = std::fs::remove_file(&outside);
+
+        assert!(wrote, "两枚 witness 写不下去，这一格的四面都无从判起");
+        for rows in [&on, &off, &on_named_elsewhere, &silent] {
+            let names: Vec<&str> = rows.iter().map(|(_, n, _)| *n).collect();
+            assert_eq!(names, COPY_ROWS.to_vec(), "{names:?}");
+        }
+        assert_eq!(at(&on, 0), Check::Pass, "确认句那一行");
+        assert_eq!(
+            at(&on, 1),
+            Check::Pass,
+            "开着且点了自家的文件：{:#?}",
+            on[1].2
+        );
+        assert_eq!(at(&off, 0), Check::Pass, "关掉那一侧的确认句");
+        assert_eq!(
+            at(&off, 1),
+            Check::Pass,
+            "开着没点文件是红，关着没点文件才是绿：{:#?}",
+            off[1].2
+        );
+        assert_eq!(
+            at(&on_named_elsewhere, 1),
+            Check::Fail,
+            "目录外那枚必须红，且只因为目录"
+        );
+        assert!(on_named_elsewhere[1].2.contains("在那枚目录下=false"));
+        assert!(on_named_elsewhere[1].2.contains("此刻在盘上=true"));
+        assert_eq!(at(&on_gone, 1), Check::Fail, "点了却没在盘上必须红");
+        assert_eq!(
+            at(&on_without_file, 1),
+            Check::Fail,
+            "开关开着而这句话没点文件：红"
+        );
+        assert_eq!(
+            at(&off_with_file, 1),
+            Check::Fail,
+            "开关关着却点了文件：红，同一句话在两侧的答案相反"
+        );
+        assert_eq!(at(&refused_on, 0), Check::Fail, "拒绝句不是确认句");
+        assert_eq!(
+            at(&refused_on, 1),
+            Check::Fail,
+            "复制没成功时那一枚文件行也不许绿"
+        );
+        for (grade, name, detail) in &silent {
+            assert_eq!(*grade, Check::Blocked, "{name} 没被问过，不该算红");
+            assert!(!detail.is_empty(), "{name} 那一格连为什么都没说");
+        }
+    }
+
+    /// 第 42 项 ② for §5.9.15's two rows: the tail leg that never fired asks *both*
+    /// questions, and both are printed as their own `Blocked` line. The two readings are one
+    /// function on one turn, so a run missing one is a run missing the other, and the row
+    /// that says which leg stayed shut is the row that keeps a stopped run from being read as
+    /// a product that has no background modes.
+    #[test]
+    fn a_run_that_never_opened_the_menu_still_names_both_alpha_rows() {
+        let rows = alpha_rows(&[], 0);
+        let names: Vec<&str> = rows.iter().map(|(_, name, _)| *name).collect();
+        assert_eq!(names, ALPHA_ROWS.to_vec(), "{names:?}");
+        for (grade, name, detail) in &rows {
+            assert_eq!(*grade, Check::Blocked, "{name} 没被问过，不该算红");
+            assert!(!detail.is_empty(), "{name} 那一格连为什么都没说");
+        }
+    }
+
+    /// `alpha-turn` is three readings inside one line, cut on their own labels, so the
+    /// parser is the one place in this row that can mis-read a leg that ran. A line missing a
+    /// segment, or with the segments in another order, answers `None` — which the row prints
+    /// as its own broken-instrument red rather than as a pin whose mode did not move.
+    #[test]
+    fn the_turned_reading_is_cut_by_its_own_labels() {
+        let good = "found=0;took=true;\
+            board=holes=true;items=4;marked=1;mode=2;rev=7;hole=true;body=true;\
+            cleared=true;\
+            transparent=holes=true;items=4;marked=1;mode=0;rev=8;hole=false;body=true;\
+            restored=true;after=holes=true;items=4;marked=1;mode=0;rev=8;hole=false;body=true";
+        let (took, cleared, restored, board, transparent, after) =
+            alpha_turn(Some(good)).expect("这一行是那一腿现下写的形状");
+        assert!(took && cleared && restored);
+        assert_eq!(alpha_num(&board, "mode"), Some(2), "{board:?}");
+        assert_eq!(alpha_yes(&board, "hole"), Some(true));
+        assert_eq!(alpha_num(&board, "rev"), Some(7));
+        assert_eq!(alpha_yes(&transparent, "hole"), Some(false));
+        assert_eq!(alpha_num(&transparent, "rev"), Some(8));
+        assert_eq!(alpha_num(&after, "mode"), Some(0));
+        assert_eq!(alpha_yes(&after, "holes"), Some(true));
+
+        assert_eq!(alpha_turn(None), None);
+        // 少一枚 `cleared=`：后面的读法全都串了位，而不是各自读成零。
+        assert_eq!(
+            alpha_turn(Some("took=true;board=holes=true;mode=2;after=holes=true")),
+            None
+        );
+        // 段落顺序被改，同样读不出。
+        assert_eq!(
+            alpha_turn(Some(
+                "found=0;took=true;cleared=true;board=holes=true;transparent=holes=true;restored=true;after=holes=true"
+            )),
+            None
+        );
+    }
+
+    /// The three §5.9.15 readings run where [`PIN_SCHEDULE`] says they run: the shut reading
+    /// before the still window's open count, the open reading before the turn, and the whole
+    /// set before the subject's own `menu`. A swap of the pair the row grades *relative* to
+    /// is caught here rather than read off a desktop.
+    #[test]
+    fn the_alpha_legs_are_ordered_by_the_schedule_that_orders_the_menu() {
+        assert_eq!(
+            leg_order(
+                &[
+                    "alpha-closed",
+                    "gif-items-still",
+                    "alpha-open",
+                    "alpha-turn",
+                    "menu"
+                ],
+                PIN_SCHEDULE
+            ),
+            None
+        );
+        let swap = leg_order(&["alpha-open", "alpha-closed"], PIN_SCHEDULE).unwrap_or_default();
+        assert!(swap.contains("日程不符"), "{swap}");
+        let late = leg_order(&["menu", "alpha-open"], PIN_SCHEDULE).unwrap_or_default();
+        assert!(late.contains("日程不符"), "{late}");
+    }
+
+    /// 第 42 项 ②'s rule again, for §5.9.14's four rows: a run with no clip pin must still
+    /// print all four names, the first one red and the other three asking nothing. The shape
+    /// is not hypothetical - a fixture that cannot be written (`{}` on a full temp dir) or a
+    /// clip the decoder refuses leaves the delegate with nothing to arm, and P43's
+    /// 行数不是护栏 is why the three below say *why* they were not asked rather than sitting
+    /// out the run.
+    #[test]
+    fn a_run_with_no_clip_still_names_the_three_rows_below_it() {
+        let nowhere = Path::new("falconshot-gauge-this-file-was-never-written.gif");
+        let lines: Vec<String> = Vec::new();
+        let rows = gif_rows(&lines, None, 0, "这不是一个能读的图", nowhere);
+        let names: Vec<&str> = rows.iter().map(|(_, name, _)| *name).collect();
+        assert_eq!(names, GIF_PIN_ROWS.to_vec(), "{names:?}");
+        assert_eq!(
+            rows[0].0,
+            Check::Fail,
+            "停住的那一格本身要红：{:?}",
+            rows[0]
+        );
+        for (grade, name, detail) in &rows[1..] {
+            assert_eq!(*grade, Check::Blocked, "{name} 没被问过，不该算红");
+            assert!(!detail.is_empty(), "{name} 那一格连为什么都没说");
+        }
     }
 
     /// §10 第 42 项 ② read against this file rather than against the desktop: a leg that
@@ -2363,24 +4838,27 @@ mod tests {
     /// in, told apart by *which* rects survive and by *which windows* they are.
     ///
     /// The dumps are written in `pinTopLevels`'s own field spelling because that string is all
-    /// the leg hands over - `close_rows` reads a census, not a fact about Qt. Three runs of
-    /// this mode on this desktop put the pile at these three rects, and both shapes below have
-    /// exactly two windows left, which is the reason a count is not the row: the fixed one has
-    /// the two live pins' rects, the broken one has one live rect and the dead pin's. The
-    /// third has the two right rects too and answers for them with two different handles, which
-    /// is the fourth row's question rather than the second's.
+    /// the leg hands over - `close_rows` reads a census, not a fact about Qt. Runs of this
+    /// mode on this desktop put the pile at these rects (and since §5.9.14 the clip's own
+    /// 40x30 window is the fourth of them), and both shapes below leave exactly three windows,
+    /// which is the reason a count is not the row: the fixed one has the live pins' rects, the
+    /// broken one has one live rect and the dead pin's. The third has the right rects too and
+    /// answers for them with different handles, which is the fifth row's question rather than
+    /// the third's.
     #[test]
     fn a_middle_close_is_graded_by_which_rects_survive_not_how_many() {
         let rect = PhysRect::new(608, 380, 320, 200);
         let xrect = PhysRect::new(608, 596, 320, 200);
         let frect = PhysRect::new(944, 596, 320, 200);
+        let grect = PhysRect::new(944, 380, 40, 30);
         let win = |hwnd: u64, r: PhysRect| {
             format!(
                 "hwnd=0x{hwnd:x} class=[PinWindow_QMLTYPE_17] phys={},{},{},{} visible=1 title=[]",
                 r.x, r.y, r.w, r.h
             )
         };
-        let before = [win(1, rect), win(2, xrect), win(3, frect)].join("\n");
+        let before = [win(1, rect), win(2, xrect), win(3, frect), win(4, grect)].join("\n");
+        let alive = [win(1, rect), win(3, frect), win(4, grect)].join("\n");
         let legs = |after: &str| {
             vec![
                 format!("close-before|{before}"),
@@ -2390,10 +4868,11 @@ mod tests {
         };
 
         let fixed = close_rows(
-            &legs(&[win(1, rect), win(3, frect)].join("\n")),
+            &legs(&alive),
             Some(rect),
             Some(xrect),
             Some(frect),
+            Some(grect),
         );
         let names: Vec<&str> = fixed.iter().map(|(_, n, _)| *n).collect();
         assert_eq!(names, CLOSE_ROWS.to_vec(), "{names:?}");
@@ -2401,29 +4880,34 @@ mod tests {
             assert_eq!(*grade, Check::Pass, "{name} 修好之后该绿：{detail}");
         }
 
+        // The close took the clip's window instead of the doomed one: the count is still the
+        // three this row expects, which is why row 3 reads *which* rects are covered and not
+        // how many windows came back.
         let broken = close_rows(
-            &legs(&[win(1, rect), win(2, xrect)].join("\n")),
+            &legs(&[win(1, rect), win(2, xrect), win(3, frect)].join("\n")),
             Some(rect),
             Some(xrect),
             Some(frect),
+            Some(grect),
         );
         assert_eq!(broken[0].0, Check::Pass, "点名那格两种跑法都该绿");
         assert_eq!(broken[1].0, Check::Pass, "关掉的枚数两种跑法都一样");
-        assert_eq!(broken[2].0, Check::Fail, "最上面那枚没有窗了，该红");
+        assert_eq!(broken[2].0, Check::Fail, "会动的那枚没有窗了，该红");
         assert_eq!(broken[3].0, Check::Fail, "关掉那枚还留着窗，该红");
 
         // The third shape the same binary can come back in, and the one the two rect rows are
-        // blind to: the close leaves two windows, on the two right rects, and they are not the
-        // two windows that were there - which is what an `int` model did to this pile, rebuilding
+        // blind to: the close leaves the right windows on the right rects, and they are not the
+        // windows that were there - which is what an `int` model did to this pile, rebuilding
         // every object under a close that removed one (§10 第 55 项, P55). Row 4 is the only one
         // that reads handles, so row 4 is the only one that goes red.
         let rebuilt = close_rows(
-            &legs(&[win(7, rect), win(8, frect)].join("\n")),
+            &legs(&[win(7, rect), win(8, frect), win(9, grect)].join("\n")),
             Some(rect),
             Some(xrect),
             Some(frect),
+            Some(grect),
         );
-        assert_eq!(rebuilt[2].0, Check::Pass, "两格都还有窗，点名那格看不出差");
+        assert_eq!(rebuilt[2].0, Check::Pass, "三格都还有窗，点名那格看不出差");
         assert_eq!(
             rebuilt[3].0,
             Check::Pass,
@@ -2437,13 +4921,14 @@ mod tests {
         );
         assert!(rebuilt[4].2.contains("同一扇=false"), "{:?}", rebuilt[4]);
 
-        // The leg stopped after the close: the two rows under it keep their names and say
+        // The leg stopped after the close: the rows under it keep their names and say
         // they were never asked, which is 第 42 项 ②'s rule read against this leg too.
         let stopped = close_rows(
             &["close|1".to_string()],
             Some(rect),
             Some(xrect),
             Some(frect),
+            Some(grect),
         );
         assert_eq!(stopped[0].0, Check::Blocked, "{:?}", stopped[0]);
         assert_eq!(stopped[2].0, Check::Blocked, "{:?}", stopped[2]);
@@ -2451,8 +4936,8 @@ mod tests {
         assert_eq!(stopped[4].0, Check::Blocked, "{:?}", stopped[4]);
         assert!(stopped[2].2.contains("close(\"1\")"), "{:?}", stopped[2]);
         // …and a census the leg did report but that was empty is a *reading*, not a stop:
-        // the two windows the close should have left are absent, so both rows go red.
-        let none_left = close_rows(&legs(""), Some(rect), Some(xrect), Some(frect));
+        // the three windows the close should have left are absent, so both rows go red.
+        let none_left = close_rows(&legs(""), Some(rect), Some(xrect), Some(frect), Some(grect));
         assert_eq!(none_left[2].0, Check::Fail, "{:?}", none_left[2]);
         assert_eq!(none_left[3].0, Check::Pass, "{:?}", none_left[3]);
         // The signed shape is what `report` now writes: the delegate's own id sits before the
@@ -2463,11 +4948,12 @@ mod tests {
             &[
                 format!("close-before|1#{before}"),
                 "close|1".to_string(),
-                format!("close-after|1#{}", [win(1, rect), win(3, frect)].join("\n")),
+                format!("close-after|1#{alive}"),
             ],
             Some(rect),
             Some(xrect),
             Some(frect),
+            Some(grect),
         );
         for (grade, name, detail) in &signed {
             assert_eq!(*grade, Check::Pass, "{name} 署了名不该改判：{detail}");
@@ -2666,5 +5152,1646 @@ mod tests {
         // 产品 `join(",")` 的名单里若混进空段，它不算一枚 id；一枚也没有也不算空。
         assert_eq!(probe_ids(Some("7,")), vec!["7".to_string()]);
         assert!(probe_ids(Some(",")).is_empty());
+    }
+
+    /// §5.10.1 的那一份名单是**全局**的（core 里只有一枚 `BTreeSet<PinId>`），而 cargo 把同档
+    /// 的 test 分到多线程跑。两枚 test 同时改它就会读到对方的手势 —— 那不是判据，是竞态。
+    /// 这里不引外部设备，一枚 `Mutex` 就够；取不到锁（别的 test  panic 过）也照走，因为
+    /// 这一族的失败信息要由断言自己说，不由锁说。
+    static SELECTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// §5.10.1 步骤 1/2/3/4 一次跑完，判的是**每一手各自的行为**：单击只留一枚、Ctrl+单击
+    /// 加、再按同一枚 Ctrl+单击是**减**、点不存在的贴图交 Err 且不动名单、清场之后一枚也不留。
+    /// 而每一手之后，窗侧那一格 `view_data(id).selected` 必须与 core 的名单同集合 ——
+    /// 「这格没崩」不算答案（#274 那一族）。
+    #[test]
+    fn a_selection_is_one_list_the_bridge_can_read() {
+        let _guard = SELECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let flags = |id: u64| state::with(|s| s.view_data(id).selected);
+        let drawn = || {
+            state::with(|s| {
+                let mut v: Vec<u64> = s
+                    .ids()
+                    .into_iter()
+                    .filter(|id| s.view_data(*id).selected)
+                    .collect();
+                v.sort_unstable();
+                v
+            })
+        };
+        let a = state::add_demo(8, 8).expect("第一枚贴图开不出来");
+        let b = state::add_demo(8, 8).expect("第二枚贴图开不出来");
+        let c = state::add_demo(8, 8).expect("第三枚贴图开不出来");
+        let _ = state::with(|s| s.clear_selection());
+        assert_eq!(state::with(|s| s.selection_count()), 0, "起手就得是空名单");
+
+        // 步骤 2：单击只留这一枚，前一枚自动落选。
+        assert_eq!(state::with(|s| s.select_pin(a, false)), Ok(1));
+        assert!(flags(a) && !flags(b) && !flags(c));
+        // 步骤 1：按住 Ctrl 再单击第二枚 —— 加，而不是把第一枚顶掉。
+        assert_eq!(state::with(|s| s.select_pin(b, true)), Ok(2));
+        assert!(flags(a) && flags(b) && !flags(c));
+        // 同一手势按在同一枚上是**减**：这一手最容易写成"永远加"，那样 Ctrl+单击就
+        // 只能往上叠、取不下来，步骤 4 之外的第二条退出路就没有了。
+        assert_eq!(state::with(|s| s.select_pin(b, true)), Ok(1));
+        assert!(flags(a) && !flags(b));
+        // 点一枚不在集里的贴图（菜单陈旧、窗已关）：交 Err，且名单一枚也不动。
+        // 悄悄清场或悄悄失败都是把调用方的 bug 扮成用户的成功。
+        assert!(
+            state::with(|s| s.select_pin(4_000_003, false)).is_err(),
+            "不存在的贴图必须交 Err"
+        );
+        assert_eq!(
+            state::with(|s| s.selection_count()),
+            1,
+            "失败的那一手不许动名单"
+        );
+        // 步骤 3：统一选中状态只有一份数据 —— 窗侧读到的那些枚，必须与名单同集合。
+        let mut ids = state::with(|s| s.selected_ids());
+        ids.sort_unstable();
+        assert_eq!(ids, vec![a], "名单本身就是 a；读到 {ids:?}");
+        assert_eq!(drawn(), vec![a], "窗侧那一格与名单读成同一批");
+        // 步骤 4：清场。
+        assert_eq!(state::with(|s| s.clear_selection()), 1);
+        assert_eq!(state::with(|s| s.selection_count()), 0);
+        assert!(
+            !flags(a) && !flags(b) && !flags(c),
+            "清场之后不许留下一枚带边的窗"
+        );
+        let closed = state::with(|s| s.close(&[a, b, c]));
+        assert_eq!(closed, 3, "三枚都得关回去，别把桌面留给下一枚 test");
+    }
+
+    /// 「退出多选」那句要能报数量。所以清场那一手交的是**清掉了多少枚**，不是清完再数：
+    /// 后者永远是 0，拿它当答案就是把一句实话换成一枚恒真的读数（#455 那一族）。
+    /// `0` 与「没有这一手」在这一格也是两枚不同的读数（#453）——这里只能交数，不交 Option。
+    #[test]
+    fn the_clear_hand_reports_how_many_it_took_out() {
+        let _guard = SELECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let a = state::add_demo(8, 8).expect("贴图开不出来");
+        let b = state::add_demo(8, 8).expect("贴图开不出来");
+        let _ = state::with(|s| s.clear_selection());
+        assert_eq!(state::with(|s| s.clear_selection()), 0, "本来就没枚，交 0");
+        let _ = state::with(|s| s.select_pin(a, false));
+        let _ = state::with(|s| s.select_pin(b, true));
+        assert_eq!(
+            state::with(|s| s.clear_selection()),
+            2,
+            "交的是「清掉两枚」"
+        );
+        assert_eq!(
+            state::with(|s| s.selection_count()),
+            0,
+            "清完再数才是这一问"
+        );
+        // 关掉一枚被选中的贴图：名单里那一枚跟着走，不许留下指名不存在的窗。
+        let _ = state::with(|s| s.select_pin(a, false));
+        let _ = state::with(|s| s.select_pin(b, true));
+        let _ = state::with(|s| s.close(&[a]));
+        assert_eq!(
+            state::with(|s| s.selected_ids()),
+            vec![b],
+            "关掉 a 之后名单该只剩 b"
+        );
+        let _ = state::with(|s| s.clear_selection());
+        let closed = state::with(|s| s.close(&[b]));
+        assert_eq!(closed, 1);
+    }
+
+    /// §5.10.1 那三枚行各自的四面（#274/#461）。三枚判据各答各的事，所以「扇出没跑」那一趟
+    /// 只能红中间那一枚：第一枚读的是本窗自己的名单与本窗自己的边，第三枚读的是清完以后的
+    /// 两边——它们都对，中间那一枚单独把这一趟和绿的那一趟分开。
+    ///
+    /// 五面：全好、别人一次也没开口、亮的是没被点名的那一扇、场上只有一枚贴图、腿根本没跑。
+    /// 前两面在真的窗口里才会碰上，本档由 `--pin` 的量规读；这里三面都是**造出来的行**——
+    /// 判据的形状不能只在它成立的那一趟里被看见。
+    #[test]
+    fn the_three_selection_rows_answer_apart_for_each_way_the_fan_out_can_fail() {
+        let subject: PinId = 7;
+        let legs = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}|{v}")).collect()
+        };
+        let at = |rows: &[(Check, &'static str, String)], i: usize| rows[i].0;
+
+        let good: [(&str, &str); 13] = [
+            ("sel-before-count", "0"),
+            ("sel-before-self", "false"),
+            ("sel-plain", "1"),
+            ("sel-plain-count", "1"),
+            ("sel-plain-self", "true"),
+            ("sel-add-target", "9"),
+            ("sel-observe-on", "9=true"),
+            ("sel-add", "2"),
+            ("sel-add-count", "2"),
+            ("sel-add-self", "true"),
+            ("sel-observe-off", "9=false"),
+            ("sel-cleared-count", "0"),
+            ("sel-cleared-self", "false"),
+        ];
+        let quiet: Vec<(&str, &str)> = good
+            .iter()
+            .filter(|(k, _)| *k != "sel-observe-on" && *k != "sel-observe-off")
+            .copied()
+            .collect();
+        let mut wrong: Vec<(&str, &str)> = good.to_vec();
+        wrong[6] = ("sel-observe-on", "11=true");
+        wrong[10] = ("sel-observe-off", "11=false");
+        let mut doubled: Vec<(&str, &str)> = good.to_vec();
+        doubled.insert(7, ("sel-observe-on", "11=true"));
+        // 同一枚键在**这一段之后**又说了一次：P134 的 `des-*` 那一族按名单换三次点名，每次都扇
+        // 一遍别的窗。这一枚是正控制（不是反证）——它证明段界不是白画的：那一趟属于销毁那一问，
+        // 不该挪动 §5.10.1 这两枚的颜色。
+        let mut later: Vec<(&str, &str)> = good.to_vec();
+        later.push(("sel-observe-on", "12=true"));
+        later.push(("sel-observe-off", "12=false"));
+        let only_one: Vec<(&str, &str)> = good
+            .iter()
+            .filter(|(k, _)| {
+                !matches!(
+                    *k,
+                    "sel-add-target"
+                        | "sel-observe-on"
+                        | "sel-add"
+                        | "sel-add-count"
+                        | "sel-add-self"
+                        | "sel-observe-off"
+                )
+            })
+            .copied()
+            .collect();
+
+        let all = sel_rows(&legs(&good), subject);
+        let no_fanout = sel_rows(&legs(&quiet), subject);
+        let other_window = sel_rows(&legs(&wrong), subject);
+        let two_lit = sel_rows(&legs(&doubled), subject);
+        let out_of_slice = sel_rows(&legs(&later), subject);
+        let names: Vec<&str> = all.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, SEL_ROWS.to_vec(), "{names:?}");
+        for row in &all {
+            assert_eq!(row.0, Check::Pass, "好的一趟该三枚全绿：{:#?}", row.2);
+        }
+
+        // 扇出没跑：另一扇窗一次也没说自己亮了。第一枚照旧绿——它读不到别人，本就该读不到。
+        assert_eq!(at(&no_fanout, 0), Check::Pass, "第一枚管的是本窗");
+        assert_eq!(
+            at(&no_fanout, 1),
+            Check::Fail,
+            "点名了别人而别人没开口，这一枚必须红：{:#?}",
+            no_fanout[1].2
+        );
+        assert_eq!(
+            at(&no_fanout, 2),
+            Check::Fail,
+            "退出也没扇到别人：{:#?}",
+            no_fanout[2].2
+        );
+
+        // 亮的是没被点名的那一扇：名单数字全对，这一枚照样红——§5.10.1 第 3 步要的是「被选中的」亮。
+        assert_eq!(at(&other_window, 0), Check::Pass, "本窗那圈边确实亮了");
+        assert_eq!(
+            at(&other_window, 1),
+            Check::Fail,
+            "{:#?}",
+            other_window[1].2
+        );
+        assert_eq!(
+            at(&other_window, 2),
+            Check::Fail,
+            "{:#?}",
+            other_window[2].2
+        );
+
+        // 两扇窗同时说自己亮了：场上只点名了两枚，第三枚亮就是名单外的窗跟着动了。
+        assert_eq!(at(&two_lit, 1), Check::Fail, "{:#?}", two_lit[1].2);
+
+        // 段界正控制：那一段里还是恰好一句，段外那两句是销毁那一族点名单时扇出来的，
+        // 不该挪动 §5.10.1 这两枚的颜色（P134 门档那 12 枚红就是这么来的）。
+        for row in &out_of_slice {
+            assert_eq!(row.0, Check::Pass, "{:#?}", row.2);
+        }
+
+        // 场上只有一枚贴图：第二枚是「没有问」，第三枚不因问不到的那一半而红。
+        let one_pin = {
+            let mut pairs = only_one.clone();
+            pairs.insert(5, ("sel-add-target", "-1"));
+            sel_rows(&legs(&pairs), subject)
+        };
+        assert_eq!(at(&one_pin, 0), Check::Pass, "第一枚与场上几枚贴图无关");
+        assert_eq!(
+            at(&one_pin, 1),
+            Check::Blocked,
+            "没有别的窗可点名，这一格没被问过：{:#?}",
+            one_pin[1].2
+        );
+        assert_eq!(at(&one_pin, 2), Check::Pass, "{:#?}", one_pin[2].2);
+
+        // 腿没跑：三枚全是「没有问」，一枚也不红（红是给产品的话，不是给门的）。
+        let silent = sel_rows(&[], subject);
+        for row in &silent {
+            assert_eq!(row.0, Check::Blocked, "{:#?}", row.2);
+        }
+    }
+
+    /// 扇出的证人必须来自**别的窗**自己那张嘴，而且只有别的窗说话：主体那一腿已经在读
+    /// `sel-*-self` 两格，再让它的 ring 报一次就是同一件事两枚数（#281）。所以这一枚判三件事：
+    /// 两枚键各一处、gate 认的是「不是主体」那一面。
+    #[test]
+    fn the_other_window_reports_its_own_ring_and_the_subject_does_not() {
+        let src = include_str!("../qml/PinWindow.qml");
+        let on = src.matches("gaugeSay(\"sel-observe-on\"").count();
+        let off = src.matches("gaugeSay(\"sel-observe-off\"").count();
+        let gated = src
+            .matches("String(win.gauge[4]) !== String(win.pinId)")
+            .count();
+        let ring = src.matches("visible: win.view.selected").count();
+        assert_eq!(on, 1, "亮那一句只该有一处，读到 {on} 处");
+        assert_eq!(off, 1, "灭那一句只该有一处，读到 {off} 处");
+        assert_eq!(
+            gated, 1,
+            "这一族只许有一枚 gate，且必须是「不是主体」那一面，读到 {gated} 处"
+        );
+        assert_eq!(ring, 1, "选中状态只该有一处绑定，读到 {ring} 处");
+        // 反证（#274）：裸 `sel-observe` 在本档有 4 枚——两枚键各一枚 emitter、外加日程表里
+        // 两枚名字，而 gate 那一句一次也没提到它们。若判据收的是裸串，handler 被删空它照样绿。
+        assert!(
+            src.matches("sel-observe").count() > on + off,
+            "裸 `sel-observe` 的枚数本就该大于两枚 emitter，这把尺才分得开键名与代码：{} vs {}",
+            src.matches("sel-observe").count(),
+            on + off
+        );
+    }
+
+    /// §5.10.1 落进 QML 的那几只手势与落点，逐串现读 `PinWindow.qml`（引语要回盘上档案对
+    /// #271/#341）。四枚判据各有各的失败形状：
+    /// ① `selectPin` 只许一处落点（两处就是两套路，迟早一路是装饰）—— 量规那一段因此也走这
+    /// 同一处（`win.selectSelf`），量的与按的是同一条语句；② Ctrl+单击这一支
+    /// 必须读 `event.modifiers & Qt.ControlModifier`，滚轮那一路的 `wheel.modifiers` 不算证人
+    /// （本轮之前 `Ctrl` 只在滚轮上被读过，那正是开工戳记下的那一枚陷阱）；③「点空白」与
+    /// 「按 Esc」两扇门共用一只手，所以 `session.clearSelection(` 只出现一次；
+    /// `clearSelectionAction.trigger()` 在场上有**六枚读者** —— 两扇门各一枚，量规那四腿各一枚
+    /// （`sel` 腿收名单为 P128 那一族服务，`des` 腿收名单为 P134 那一族服务，`solo` 段前那一次为
+    /// §5.11 的「空名单上按热键」那一臂把名单清空、段末那一次把本族点过的名收回 —— 四枚量规读者
+    /// 都是「同一只手多出来的一个测量读者」，不是第三扇门）。第七枚才是多出来的一套路，而 Esc
+    /// 那一门的 handler 单独点名（一枚 Shortcut 一枚 handler）；
+    /// ④ 统一选中状态绑的是
+    /// `win.view.selected` 那一枚值，窗侧不另存名单。
+    #[test]
+    fn the_qml_gives_selection_one_landing_and_two_doors_out() {
+        let src = include_str!("../qml/PinWindow.qml");
+        let routes = src.matches("win.session.selectPin(").count();
+        let ctrl = src.matches("event.modifiers & Qt.ControlModifier").count();
+        let wheel_ctrl = src.matches("wheel.modifiers & Qt.ControlModifier").count();
+        let clear = src.matches("win.session.clearSelection(").count();
+        let doors = src.matches("clearSelectionAction.trigger()").count();
+        let esc_door = src
+            .matches("onActivated: clearSelectionAction.trigger()")
+            .count();
+        let bound = src.matches("visible: win.view.selected").count();
+        let esc = src.matches("StandardKey.Cancel").count();
+        // 本轮踩过一次：`des` 那一腿的**注释**里抄了一遍那枚字面串，于是 `doors` 从四枚读成五枚。
+        // 判据数的是读者，注释不是读者，所以这枚尺必须分得开两件事——加一枚反证，把「注释里被抄
+        // 出来」这一种坏法钉死（#274/#433：只加一面，不放宽任何一枚既有数字）。
+        let echoed = src
+            .lines()
+            .filter(|l| l.contains("clearSelectionAction.trigger()"))
+            .filter(|l| l.trim_start().starts_with("//"))
+            .count();
+        assert_eq!(
+            routes, 1,
+            "选中的落点在 PinWindow.qml 里只该有一处，读到 {routes} 处"
+        );
+        assert_eq!(
+            ctrl, 1,
+            "Ctrl+单击这一支只该读一次 event.modifiers，读到 {ctrl} 处"
+        );
+        assert_eq!(
+            wheel_ctrl, 1,
+            "滚轮那一路是既有码，本轮不许动它，读到 {wheel_ctrl} 处"
+        );
+        assert_eq!(clear, 1, "退出多选只该有一只手，读到 {clear} 处");
+        assert_eq!(
+            doors, 6,
+            "那一只手在场上的读者该是枚数分得清的六枚（空白门 / Esc 门 / sel 量规腿 / des 量规腿 / solo 段前那一次清名 / solo 段末那一次收回），读到 {doors} 处"
+        );
+        assert_eq!(
+            echoed, 0,
+            "那枚字面串在注释里每抄一次，这枚尺就多读出一枚假读者，读到 {echoed} 行"
+        );
+        assert_eq!(
+            esc_door, 1,
+            "Esc 那一门的 handler 只该有一枚，读到 {esc_door} 处"
+        );
+        assert_eq!(bound, 1, "选中状态只该有一处绑定，读到 {bound} 处");
+        assert_eq!(esc, 1, "Esc 那一支只该写一遍，读到 {esc} 处");
+        // 反证（#274）：这一族的尺必须读得出"没有"。裸 `selected` 在本档有 14 枚，全部属于
+        // 截图遮罩的选区 —— 若判据收的是裸串，它会在桥上一枚新码都没加的时候先绿。
+        assert!(
+            src.matches("selected").count() > bound,
+            "裸 `selected` 的枚数本就该大于一枚绑定，这把尺才分得开两族：{} vs {bound}",
+            src.matches("selected").count()
+        );
+    }
+
+    /// 选中变了要让**所有**贴图窗重读，这一手借的是既有那条 `redrawPins`，形状照
+    /// `dialogTick` 那一族（main.qml:28-35 记下过：cxx-qt 不给 qproperty 驼峰化，
+    /// `onSelectionEpochChanged` 场上没有那一枚信号，名字写错是**静默**的 #316）。
+    /// 所以本枚判三件事：别名一处、handler 一处、而那个不存在的驼峰名一枚也不许在场。
+    #[test]
+    fn the_selection_epoch_fans_out_through_a_binding_not_a_misnamed_signal() {
+        let main = include_str!("../qml/main.qml");
+        let session = include_str!("session.rs");
+        let alias = main
+            .matches("readonly property int selectionTick: app.session.selection_epoch")
+            .count();
+        let handler = main
+            .matches("onSelectionTickChanged: app.redrawPins()")
+            .count();
+        let wrong = main.matches("onSelectionEpochChanged").count();
+        let prop = session
+            .matches("#[qproperty(i32, selection_epoch)]")
+            .count();
+        assert_eq!(alias, 1, "扇出的别名只该有一处，读到 {alias} 处");
+        assert_eq!(
+            handler, 1,
+            "handler 只该长在声明它的那个对象根上，读到 {handler} 处"
+        );
+        assert_eq!(
+            wrong, 0,
+            "那枚驼峰 notify 场上不存在，写进产品码就是静默失灵，读到 {wrong} 处"
+        );
+        assert_eq!(prop, 1, "qproperty 声明只该有一处，读到 {prop} 处");
+        // 反证：绑的是**值**而不是一次调用 —— 写成 invokable 就是一次读死（P119 那两封信）。
+        assert!(
+            !main.contains("selectionTick()"),
+            "别名若被当成函数调用，绑定就不会随 notify 重新求值"
+        );
+    }
+
+    /// §5.10.2 那五枚行各自的十三面（#274/#440/#461）：判据一枚也不并，所以坏法一枚也只红一枚。
+    ///
+    /// 十三面：全好、批量被那只手偷偷降成单枚、空手也发号、搬动顺手换走一张纹理、反手四枚各自
+    /// 坏一次（多搬一枚 ×2、落点没还、号少发一次）、反手四枚根本没跑、场上只有一枚贴图、纹理那
+    /// 两枚不齐、段首落点缺席，以及腿根本没跑。前几面在真的产品里才会碰上，本档由 `--pin` 的量规
+    /// 读；后几面是**造出来的行** —— 判据的形状不能只在它成立的那一趟里被看见，而「没有问」与
+    /// 「答错」必须由两枚不同的结论分开（#453/#444）。
+    ///
+    /// 「降成单枚」那一面只改 `mov-batch` 一枚读数、号照旧走：这一格量的就是**报几枚**这一件事，
+    /// 若把号也一起改，五枚会一起红，那一趟就分不出坏掉的是哪一件（#224 逐名不并成「若干」）。
+    #[test]
+    fn the_five_drag_rows_answer_apart_for_each_way_the_batch_can_fail() {
+        let subject: PinId = 7;
+        let legs = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}|{v}")).collect()
+        };
+        let at = |rows: &[(Check, &'static str, String)], i: usize| rows[i].0;
+        // 换一枚读数而不背它的下标：这一族自 P132 起有十五枚键，写死下标的反证会在别人插腿时
+        // 悄悄改量另一枚行（#316 名字写错是静默的，下标写错也是）。
+        let flip = |pairs: &[(&'static str, &'static str)],
+                    key: &'static str,
+                    value: &'static str|
+         -> Vec<(&'static str, &'static str)> {
+            pairs
+                .iter()
+                .map(|(k, v)| if *k == key { (*k, value) } else { (*k, *v) })
+                .collect()
+        };
+
+        let good: [(&str, &str); 15] = [
+            ("mov-pos-before", "100,80"),
+            ("mov-epoch-before", "5"),
+            ("mov-rev-before", "1"),
+            ("mov-lone", "1"),
+            ("mov-epoch-lone", "6"),
+            ("mov-rev-lone", "1"),
+            ("mov-ghost", "0"),
+            ("mov-epoch-ghost", "6"),
+            ("mov-batch-target", "9"),
+            ("mov-batch", "2"),
+            ("mov-batch-epoch", "7"),
+            ("mov-undo-self", "1"),
+            ("mov-undo-other", "1"),
+            ("mov-epoch-undo", "9"),
+            ("mov-pos-after", "100,80"),
+        ];
+        let downgraded = flip(&good, "mov-batch", "1");
+        let ghost_spoke = flip(&good, "mov-epoch-ghost", "7");
+        let repainted = flip(&good, "mov-rev-lone", "2");
+
+        let only_one: Vec<(&str, &str)> = good
+            .iter()
+            .filter(|(k, _)| {
+                !matches!(
+                    *k,
+                    "mov-batch-target"
+                        | "mov-batch"
+                        | "mov-batch-epoch"
+                        | "mov-undo-self"
+                        | "mov-undo-other"
+                        | "mov-epoch-undo"
+                        | "mov-pos-after"
+                )
+            })
+            .copied()
+            .collect();
+        let mut no_batch = only_one.clone();
+        no_batch.push(("mov-batch-target", "-1"));
+
+        let all = mov_rows(&legs(&good), subject);
+        let names: Vec<&str> = all.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, MOV_ROWS.to_vec(), "{names:?}");
+        for row in &all {
+            assert_eq!(row.0, Check::Pass, "好的一趟该五枚全绿：{:#?}", row.2);
+        }
+
+        // 名单两枚、拖其中一枚却只搬走一枚：§5.10.2 那一句「所有选中的贴图一起移动」就是这一枚红。
+        let one = mov_rows(&legs(&downgraded), subject);
+        assert_eq!(at(&one, 0), Check::Pass, "第一枚读的是自己那一拖");
+        assert_eq!(at(&one, 1), Check::Fail, "{:#?}", one[1].2);
+        assert_eq!(at(&one, 2), Check::Pass, "号那一路没坏，就不该跟着红");
+        assert_eq!(at(&one, 3), Check::Pass, "纹理那一路也没坏");
+        assert_eq!(at(&one, 4), Check::Pass, "反手那一问读的是自己那两拖");
+
+        // 一次什么也没搬的手势也发号：全场为它重读一遍像素，这一枚红，其余照旧绿。
+        let echo = mov_rows(&legs(&ghost_spoke), subject);
+        assert_eq!(at(&echo, 0), Check::Pass);
+        assert_eq!(at(&echo, 1), Check::Pass);
+        assert_eq!(at(&echo, 2), Check::Fail, "{:#?}", echo[2].2);
+        assert_eq!(at(&echo, 3), Check::Pass);
+        assert_eq!(at(&echo, 4), Check::Pass);
+
+        // 搬动顺手换走了一张纹理：位置被算进了内容的指纹，代价那一枚红，枚数与号都不跟着红。
+        let redraw = mov_rows(&legs(&repainted), subject);
+        assert_eq!(at(&redraw, 0), Check::Pass, "枚数与号都还对");
+        assert_eq!(at(&redraw, 3), Check::Fail, "{:#?}", redraw[3].2);
+        assert_eq!(at(&redraw, 4), Check::Pass, "落点那一问不读纹理号");
+
+        // 反手多搬了一枚 / 落点没还回去 / 号少发一次：三面各红在第 5 问，前四问一枚也不跟着红。
+        // 反手走在名单空了之后靠的就是「一次只搬被拖的那一扇」，交回 2 就是那一拖又按名单搬了两枚。
+        for (key, value, face_name) in [
+            ("mov-undo-self", "2", "本窗那一反手按名单搬了两枚"),
+            ("mov-undo-other", "2", "另一枚那一反手也按名单搬了两枚"),
+            ("mov-pos-after", "140,100", "落点没还回去"),
+            ("mov-epoch-undo", "8", "反手少发一次号"),
+        ] {
+            let face = flip(&good, key, value);
+            let rows = mov_rows(&legs(&face), subject);
+            assert_eq!(at(&rows, 4), Check::Fail, "{face_name}：{:#?}", rows[4].2);
+            for i in 0..4 {
+                assert_eq!(
+                    at(&rows, i),
+                    Check::Pass,
+                    "{face_name}：第 {i} 问不该跟着红"
+                );
+            }
+        }
+
+        // 反手四枚没跑：是「没有问」而不是「落点相等」——第 5 问的锚不全，读空的尺不许冒充绿。
+        let mut no_undo: Vec<(&str, &str)> = good.to_vec();
+        no_undo.retain(|(k, _)| {
+            !matches!(
+                *k,
+                "mov-undo-self" | "mov-undo-other" | "mov-epoch-undo" | "mov-pos-after"
+            )
+        });
+        let unasked_undo = mov_rows(&legs(&no_undo), subject);
+        assert_eq!(
+            at(&unasked_undo, 4),
+            Check::Blocked,
+            "反手不齐，这一格没被问过：{:#?}",
+            unasked_undo[4].2
+        );
+        for i in 0..4 {
+            assert_eq!(at(&unasked_undo, i), Check::Pass, "前四问读数齐，该照旧绿");
+        }
+
+        // 场上只有一枚贴图：第 2 与第 5 枚是「没有问」，不是红（#453）。
+        let lone_only = mov_rows(&legs(&no_batch), subject);
+        assert_eq!(at(&lone_only, 0), Check::Pass, "第一枚与场上几枚贴图无关");
+        assert_eq!(
+            at(&lone_only, 1),
+            Check::Blocked,
+            "没有别的窗可一起点名，这一格没被问过：{:#?}",
+            lone_only[1].2
+        );
+        assert_eq!(at(&lone_only, 2), Check::Pass, "{:#?}", lone_only[2].2);
+        assert_eq!(
+            at(&lone_only, 3),
+            Check::Pass,
+            "纹理那一问不依赖场上几枚贴图"
+        );
+        assert_eq!(
+            at(&lone_only, 4),
+            Check::Blocked,
+            "没有第二枚要抹，反手这一格没被问过：{:#?}",
+            lone_only[4].2
+        );
+
+        // 纹理那两枚不齐：是「没有问」而不是「相等」（#440 一枚读空的尺不许冒充绿）。
+        let mut half: Vec<(&str, &str)> = good.to_vec();
+        half.retain(|(k, _)| *k != "mov-rev-before");
+        let unasked = mov_rows(&legs(&half), subject);
+        assert_eq!(
+            at(&unasked, 3),
+            Check::Blocked,
+            "两枚号不齐，这一格没被问过：{:#?}",
+            unasked[3].2
+        );
+
+        // 段首那枚落点缺席：这一问比的是「开头与结尾同一串字」，只剩一串时既不能说还了、也不能
+        // 说没还，所以它是「没有问」而不是红（#444/#453）。
+        let mut no_p0: Vec<(&str, &str)> = good.to_vec();
+        no_p0.retain(|(k, _)| *k != "mov-pos-before");
+        let unasked_pos = mov_rows(&legs(&no_p0), subject);
+        assert_eq!(
+            at(&unasked_pos, 4),
+            Check::Blocked,
+            "落点只剩结尾一串，这一格没被问过：{:#?}",
+            unasked_pos[4].2
+        );
+        for i in 0..4 {
+            assert_eq!(
+                at(&unasked_pos, i),
+                Check::Pass,
+                "第 {i} 问不读落点，该照旧绿"
+            );
+        }
+
+        // 腿没跑：五枚全是「没有问」，一枚也不红（红是给产品的话，不是给门的）。
+        let silent = mov_rows(&[], subject);
+        assert_eq!(silent.len(), 5, "{silent:?}");
+        for row in &silent {
+            assert_eq!(row.0, Check::Blocked, "{:#?}", row.2);
+        }
+    }
+
+    /// §5.10.2 落进 QML 的那一手，逐串现读 `PinWindow.qml`（引语要回盘上档案对 #271/#341）。
+    /// 四枚判据各有各的失败形状：① `dragPin` 只许一处落点（两处就是两套路，迟早一路是装饰）；
+    /// ② 那一处落点的**六个读者**逐名点得出 —— 鼠标那一腿、量规那三腿，以及反手抹回落点那两腿，
+    /// 各是一条具体的语句，而不是「大约几处」；③ 旧那一路 `view.dragMove` 必须一枚也不在场上
+    /// （留着它就是第二套路，而第二套路不会有人读它）；④ 窗侧不许自己分「拖一枚」和「拖一批」。
+    #[test]
+    fn the_qml_gives_the_drag_one_landing_and_six_named_readers() {
+        let src = include_str!("../qml/PinWindow.qml");
+        let view = include_str!("pin_view.rs");
+        let routes = src.matches("win.session.dragPin(").count();
+        let def = src.matches("function dragTarget(").count();
+        let mouse = src.matches("win.dragTarget(win.pinId, dx, dy)").count();
+        let lone = src.matches("win.dragTarget(win.pinId, 17, 9)").count();
+        let ghost = src.matches("win.dragTarget(top + 1, 5, 5)").count();
+        let batch = src.matches("win.dragTarget(win.pinId, 23, 11)").count();
+        let undo_self = src.matches("win.dragTarget(win.pinId, -40, -20)").count();
+        let undo_other = src.matches("win.dragTarget(other, -23, -11)").count();
+        let gone = src.matches("dragMove").count() + view.matches("dragMove").count();
+        let second = src.matches("if (win.view.selected)").count();
+        assert_eq!(
+            routes, 1,
+            "拖动的落点在 PinWindow.qml 里只该有一处，读到 {routes} 处"
+        );
+        assert_eq!(def, 1, "那一处落点只该被声明一次，读到 {def} 处");
+        assert_eq!(
+            (mouse, lone, ghost, batch, undo_self, undo_other),
+            (1, 1, 1, 1, 1, 1),
+            "六个读者各自都该点得出名字：鼠标 {mouse} / 一枚 {lone} / 没有的 {ghost} / 两枚 {batch} / 反手本窗 {undo_self} / 反手另一枚 {undo_other}"
+        );
+        assert_eq!(
+            gone, 0,
+            "旧那一路 `dragMove`（桥上的 invokable 与 QML 的调用）该一枚也不在，读到 {gone} 处"
+        );
+        assert_eq!(
+            second, 0,
+            "窗侧不许自己分批量与单枚——那一问只有 `state::drag_pin` 一处答案，读到 {second} 处"
+        );
+        // 反证（#274）：`dragPin` 这个词在本档比一枚落点多——注释里也叫它。若判据收的是裸串，
+        // 落点被复制成两处它照样绿。
+        assert!(
+            src.matches("dragPin").count() > routes,
+            "裸 `dragPin` 的枚数本就该大于一处落点，这把尺才分得开词名与代码：{} vs {routes}",
+            src.matches("dragPin").count()
+        );
+    }
+
+    /// 搬动了要让**所有**贴图窗重读自己该画在哪儿，借的还是 `dialogTick` / `selectionTick` 那条
+    /// 已经跑通的腿（cxx-qt 不给 qproperty 驼峰化，`onMoveEpochChanged` 场上没有那一枚信号，
+    /// 名字写错是**静默**的 #316）。三枚判据之外还有一枚尺读的是"只有一处做批量算术"：
+    /// core 那手 `translate_selection` 在桥上的读者必须恰好一枚，且在 `state.rs` —— 它若被抬到
+    /// `pin_view.rs`，就又是一扇窗自己决定搬几枚（而窗的章程说它不决定这件事）。
+    #[test]
+    fn the_drag_fans_out_through_a_binding_and_the_batch_is_counted_once() {
+        let main = include_str!("../qml/main.qml");
+        let session = include_str!("session.rs");
+        let state = include_str!("state.rs");
+        let view = include_str!("pin_view.rs");
+        let alias = main
+            .matches("readonly property int moveTick: app.session.move_epoch")
+            .count();
+        let handler = main.matches("onMoveTickChanged: app.redrawPins()").count();
+        let wrong = main.matches("onMoveEpochChanged").count();
+        let prop = session.matches("#[qproperty(i32, move_epoch)]").count();
+        let hands = state.matches("self.set.translate_selection").count();
+        let bare = state.matches("translate_selection").count();
+        let orphan = view.matches("translate_selection").count()
+            + view.matches(".move_by(").count()
+            + view.matches("move_by").count();
+        assert_eq!(alias, 1, "扇出的别名只该有一处，读到 {alias} 处");
+        assert_eq!(
+            handler, 1,
+            "handler 只该长在声明它的那个对象根上，读到 {handler} 处"
+        );
+        assert_eq!(
+            wrong, 0,
+            "那枚驼峰 notify 场上不存在，写进产品码就是静默失灵，读到 {wrong} 处"
+        );
+        assert_eq!(prop, 1, "qproperty 声明只该有一处，读到 {prop} 处");
+        assert_eq!(
+            hands, 1,
+            "core 那手 `translate_selection` 在桥上的产品读者只该有一处（`drag_pin`），读到 {hands} 处"
+        );
+        assert_eq!(
+            orphan, 0,
+            "`pin_view.rs` 不该再自己做批量算术，也不该留着没人读的 `move_by`，读到 {orphan} 处"
+        );
+        // 反证（#274）：裸词 `translate_selection` 在 `state.rs` 里比一枚调用多——注释也引它。
+        // 若判据收的是裸串，第二处产品读者被加进来时这一枚照样绿。
+        assert!(
+            bare > hands,
+            "裸词的枚数本就该大于一处调用，这把尺才分得开注释与代码：{bare} vs {hands}"
+        );
+        // 反证：绑的是**值**而不是一次调用 —— 写成 invokable 就是一次读死。
+        assert!(
+            !main.contains("moveTick()"),
+            "别名若被当成函数调用，绑定就不会随 notify 重新求值"
+        );
+    }
+
+    /// §5.10.3 的六枚判据各有各的失败形状：把批量降成单枚、空手也发号、阶梯那一步压根没动、
+    /// 顺手重画一张纹理、归位没还回去、单枚那一格少发一次号——每一面只红自己那一枚，其余照旧绿。
+    /// 好的一趟该六枚全绿。这是 `the_five_drag_rows_answer_apart_for_each_way_the_batch_can_fail`
+    /// 那一族的另一员，一枚也不并（#281）。
+    #[test]
+    fn the_six_opacity_rows_answer_apart_for_each_way_the_batch_can_fail() {
+        let subject: PinId = 7;
+        let legs = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}|{v}")).collect()
+        };
+        let at = |rows: &[(Check, &'static str, String)], i: usize| rows[i].0;
+        let flip = |pairs: &[(&'static str, &'static str)],
+                    key: &'static str,
+                    value: &'static str|
+         -> Vec<(&'static str, &'static str)> {
+            pairs
+                .iter()
+                .map(|(k, v)| if *k == key { (*k, value) } else { (*k, *v) })
+                .collect()
+        };
+
+        // 一趟「产品全对」的读数：单枚那一格从 100 钉到 50 再还回 100（号 3→5），ghost 交 0 且
+        // 号不动，批量那一格从 100 钉到 50（号 5→6）、下一步 40、反手 50、归位 100（号 →9）。
+        let good: [(&str, &str); 25] = [
+            ("op-lone-start", "100"),
+            ("op-lone-epoch-before", "3"),
+            ("op-lone-set", "1"),
+            ("op-lone-opacity", "50"),
+            ("op-lone-restore", "1"),
+            ("op-lone-restored", "100"),
+            ("op-lone-epoch-end", "5"),
+            ("op-epoch-ghost-before", "5"),
+            ("op-ghost", "0"),
+            ("op-epoch-ghost", "5"),
+            ("mov-batch-target", "9"),
+            ("op-start", "100"),
+            ("op-epoch-before", "5"),
+            ("op-rev-before", "2"),
+            ("op-set-batch", "2"),
+            ("op-opacity-set", "50"),
+            ("op-epoch-set", "6"),
+            ("op-rev-set", "2"),
+            ("op-step-down", "2"),
+            ("op-opacity-down", "40"),
+            ("op-step-up", "2"),
+            ("op-opacity-up", "50"),
+            ("op-set-back", "2"),
+            ("op-opacity-end", "100"),
+            ("op-epoch-end", "9"),
+        ];
+        let downgraded = flip(&good, "op-set-batch", "1");
+        let echo = flip(&good, "op-epoch-ghost", "6");
+        let repainted = flip(&good, "op-rev-set", "3");
+        let flat = flip(&good, "op-opacity-down", "50");
+        let unreturned = flip(&good, "op-opacity-end", "50");
+        let lone_echo = flip(&good, "op-lone-epoch-end", "4");
+
+        let all = op_rows(&legs(&good), subject);
+        let names: Vec<&str> = all.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, OP_ROWS.to_vec(), "{names:?}");
+        for row in &all {
+            assert_eq!(row.0, Check::Pass, "好的一趟该六枚全绿：{:#?}", row.2);
+        }
+
+        // 名单两枚、调其中一枚却只改一枚：§5.10.3 那一句「所有选中贴图同步更新透明度」就是这一枚红。
+        let one = op_rows(&legs(&downgraded), subject);
+        assert_eq!(at(&one, 0), Check::Pass, "第一枚读的是自己那一手");
+        assert_eq!(at(&one, 1), Check::Fail, "{:#?}", one[1].2);
+        for i in [2, 3, 4, 5] {
+            assert_eq!(
+                at(&one, i),
+                Check::Pass,
+                "第 {i} 问不该跟着红：{:#?}",
+                one[i].2
+            );
+        }
+
+        // 一次什么也没改的手势也发号：全场为它重读一遍，这一枚红，其余照旧绿。
+        let noise = op_rows(&legs(&echo), subject);
+        assert_eq!(at(&noise, 3), Check::Fail, "{:#?}", noise[3].2);
+        for i in [0, 1, 2, 4, 5] {
+            assert_eq!(at(&noise, i), Check::Pass, "第 {i} 问不读 ghost 那枚号");
+        }
+
+        // 调透明度顺手换走一张纹理：`opacity` 被算进了内容的指纹，代价那一枚红，枚数与号都不跟着红。
+        let redraw = op_rows(&legs(&repainted), subject);
+        assert_eq!(at(&redraw, 4), Check::Fail, "{:#?}", redraw[4].2);
+        for i in [0, 1, 2, 3, 5] {
+            assert_eq!(at(&redraw, i), Check::Pass, "第 {i} 问不读纹理号");
+        }
+
+        // 阶梯那一步没动：本窗重读到的还是同一级——那只手要么没迈步、要么那一声扇出没跑。
+        let stuck = op_rows(&legs(&flat), subject);
+        assert_eq!(at(&stuck, 2), Check::Fail, "{:#?}", stuck[2].2);
+        for i in [0, 1, 3, 4, 5] {
+            assert_eq!(at(&stuck, i), Check::Pass, "第 {i} 问不读阶梯那两枚");
+        }
+
+        // 归位没还回去：量规的腿把自己量的东西弄走了，第 6 问红而前五问照旧绿。
+        let left = op_rows(&legs(&unreturned), subject);
+        assert_eq!(at(&left, 5), Check::Fail, "{:#?}", left[5].2);
+        for i in [0, 1, 2, 3, 4] {
+            assert_eq!(at(&left, i), Check::Pass, "第 {i} 问不读段末那枚归位");
+        }
+
+        // 单枚那一格少发一次号：那一手改了本窗却没叫别的窗重读。
+        let short = op_rows(&legs(&lone_echo), subject);
+        assert_eq!(at(&short, 0), Check::Fail, "{:#?}", short[0].2);
+        for i in [1, 2, 3, 4, 5] {
+            assert_eq!(at(&short, i), Check::Pass, "第 {i} 问读的是批量那一族的号");
+        }
+
+        // 本窗原本就在这一腿要钉的那一级上：重读那一半天然相等，第 2 问是「没有问」而不是绿
+        // （#440 一枚读空的尺不许冒充绿）。第 6 问读的是归位前后两串，仍判得。
+        let pinned = flip(&good, "op-start", "50");
+        let pinned = flip(&pinned, "op-opacity-end", "50");
+        let vacuous = op_rows(&legs(&pinned), subject);
+        assert_eq!(
+            at(&vacuous, 1),
+            Check::Blocked,
+            "环境没给这一格拉开的余地：{:#?}",
+            vacuous[1].2
+        );
+        assert_eq!(at(&vacuous, 5), Check::Pass, "归位那一问读的是自己那两串");
+
+        // 场上只有一枚贴图：批量那十四枚一句也不说，四枚是「没有问」而不是红（#453）。
+        let no_batch: Vec<(&str, &str)> = good
+            .iter()
+            .filter(|(k, _)| {
+                !matches!(
+                    *k,
+                    "mov-batch-target"
+                        | "op-start"
+                        | "op-epoch-before"
+                        | "op-rev-before"
+                        | "op-set-batch"
+                        | "op-opacity-set"
+                        | "op-epoch-set"
+                        | "op-rev-set"
+                        | "op-step-down"
+                        | "op-opacity-down"
+                        | "op-step-up"
+                        | "op-opacity-up"
+                        | "op-set-back"
+                        | "op-opacity-end"
+                        | "op-epoch-end"
+                )
+            })
+            .copied()
+            .collect();
+        let lone_only = op_rows(&legs(&no_batch), subject);
+        assert_eq!(at(&lone_only, 0), Check::Pass, "第一问与场上几枚贴图无关");
+        assert_eq!(at(&lone_only, 3), Check::Pass, "ghost 那一问也不依赖第二枚");
+        for i in [1, 2, 4, 5] {
+            assert_eq!(
+                at(&lone_only, i),
+                Check::Blocked,
+                "第 {i} 问的读数没被说出来：{:#?}",
+                lone_only[i].2
+            );
+        }
+
+        // 锚没读出来：六枚全是「没有问」，一枚也不红（红是给产品的话，不是给门的）。
+        let mut no_anchor: Vec<(&str, &str)> = good.to_vec();
+        no_anchor.retain(|(k, _)| *k != "op-lone-epoch-before");
+        let blind = op_rows(&legs(&no_anchor), subject);
+        assert_eq!(blind.len(), 6, "{blind:?}");
+        for row in &blind {
+            assert_eq!(row.0, Check::Blocked, "{:#?}", row.2);
+        }
+
+        let silent = op_rows(&[], subject);
+        assert_eq!(silent.len(), 6, "{silent:?}");
+        for row in &silent {
+            assert_eq!(row.0, Check::Blocked, "{:#?}", row.2);
+        }
+    }
+
+    /// §5.10.3 落进 QML 的那两只手，逐串现读 `PinWindow.qml`（引语要回盘上档案对 #271/#341）。
+    /// 四件事各判各的：① 两只落点各只一句（多一处就是两套路）；② 那两处落点的**十一枚读者**
+    /// 逐名点得出——滚轮一枚、菜单三枚、量规七枚；③ 旧那一路 `view.opacityStep` / `view.applyOpacity`
+    /// 与桥上的 `PinView` 那两手必须一枚也不在场上（留着就是第二条透明度路）；④ 窗侧不许自己
+    /// 分「调一枚」与「调一批」。
+    #[test]
+    fn the_qml_gives_the_opacity_two_landings_and_eleven_named_readers() {
+        let src = include_str!("../qml/PinWindow.qml");
+        let view = include_str!("pin_view.rs");
+        let set_landing = src.matches("win.session.setPinOpacity(").count();
+        let step_landing = src.matches("win.session.stepPinOpacity(").count();
+        let set_def = src.matches("function opacitySetTarget(").count();
+        let step_def = src.matches("function opacityStepTarget(").count();
+        let wheel = src
+            .matches("win.opacityStepTarget(win.pinId, wheel.angleDelta.y > 0)")
+            .count();
+        let menu_down = src
+            .matches("onTriggered: win.opacityStepTarget(win.pinId, false) }")
+            .count();
+        let menu_up = src
+            .matches("onTriggered: win.opacityStepTarget(win.pinId, true) }")
+            .count();
+        let menu_reset = src
+            .matches("onTriggered: win.opacitySetTarget(win.pinId, 100) }")
+            .count();
+        let g_set = src
+            .matches("gaugeSay(\"op-lone-set\", String(win.opacitySetTarget(win.pinId, 50)))")
+            .count();
+        let g_restore = src
+            .matches(
+                "gaugeSay(\"op-lone-restore\", String(win.opacitySetTarget(win.pinId, opLoneStart)))",
+            )
+            .count();
+        let g_ghost = src
+            .matches("gaugeSay(\"op-ghost\", String(win.opacityStepTarget(top + 1, false)))")
+            .count();
+        let g_batch = src
+            .matches("gaugeSay(\"op-set-batch\", String(win.opacitySetTarget(win.pinId, 50)))")
+            .count();
+        let g_down = src
+            .matches("gaugeSay(\"op-step-down\", String(win.opacityStepTarget(win.pinId, false)))")
+            .count();
+        let g_up = src
+            .matches("gaugeSay(\"op-step-up\", String(win.opacityStepTarget(win.pinId, true)))")
+            .count();
+        let g_back = src
+            .matches("gaugeSay(\"op-set-back\", String(win.opacitySetTarget(win.pinId, opStart)))")
+            .count();
+        let gone = src.matches("view.opacityStep").count()
+            + src.matches("view.applyOpacity").count()
+            + view.matches("applyOpacity").count()
+            + view.matches("apply_opacity").count()
+            + view.matches("opacityStep").count()
+            + view.matches("opacity_step").count();
+        let second = src.matches("selection_count > 1").count();
+        assert_eq!(
+            set_landing, 1,
+            "绝对值那一手在 PinWindow.qml 里只该有一处落点，读到 {set_landing} 处"
+        );
+        assert_eq!(
+            step_landing, 1,
+            "阶梯那一手只该有一处落点，读到 {step_landing} 处"
+        );
+        assert_eq!(
+            (set_def, step_def),
+            (1, 1),
+            "两处落点各只该被声明一次：绝对值 {set_def} / 阶梯 {step_def}"
+        );
+        assert_eq!(
+            (
+                wheel, menu_down, menu_up, menu_reset, g_set, g_restore, g_ghost, g_batch, g_down,
+                g_up, g_back
+            ),
+            (1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1),
+            "十一枚读者各该点得出名字：滚轮 {wheel} / 菜单更透明 {menu_down} / 菜单更实 {menu_up} / 菜单 100% {menu_reset} / 量规单枚 {g_set} / 单枚归位 {g_restore} / ghost {g_ghost} / 批量 {g_batch} / 阶梯下 {g_down} / 阶梯上 {g_up} / 批量归位 {g_back}"
+        );
+        assert_eq!(
+            gone, 0,
+            "旧那一路（QML 的 `view.opacityStep` / `view.applyOpacity` 与 `PinView` 那两手）该一枚也不在，读到 {gone} 处"
+        );
+        assert_eq!(
+            second, 0,
+            "窗侧不许自己分批量与单枚——那一问只有 `state::batch_hand` 一处答案，读到 {second} 处"
+        );
+        // 反证（#274）：`opacity` 这个词在本档比两枚落点多得多——注释、绑定、读数键都叫它。
+        // 若判据收的是裸串，落点被复制成两处它照样绿。
+        assert!(
+            src.matches("opacity").count() > set_landing + step_landing,
+            "裸 `opacity` 的枚数本就该大于两枚落点，这把尺才分得开词名与代码：{} vs {}",
+            src.matches("opacity").count(),
+            set_landing + step_landing
+        );
+    }
+
+    /// 调透明度要让**所有**贴图窗重读自己该多透，借的还是 `moveTick` / `selectionTick` 那条已经
+    /// 跑通的腿（cxx-qt 不给 qproperty 驼峰化，`onOpacityEpochChanged` 场上没有那一枚信号，名字
+    /// 写错是**静默**的 #316）。三枚扇出的判据之外还有两枚尺读的是「只有一处做批量算术」：
+    /// `state.rs` 里那一句判据只许长在 [`crate::state::PinState::batch_hand`] 一格，而它在桥上的
+    /// 读者枚数分得清——P128 那一族是三枚（拖 / 绝对值 / 阶梯），P134 把 §5.10.4 剩下那几只手抬过
+    /// 桥之后是六枚（外加 重置 / `hand_targets` 那张名单表 / `destroy_answer` 那一格「影响数量」）。
+    /// 读者变多是**这一族该多的事**，判据本身仍只有一处：它们若被抬到 `pin_view.rs`，就又是一扇
+    /// 窗自己决定改几枚。
+    #[test]
+    fn the_opacity_change_fans_out_and_the_batch_is_counted_once() {
+        let main = include_str!("../qml/main.qml");
+        let session = include_str!("session.rs");
+        let state = include_str!("state.rs");
+        let view = include_str!("pin_view.rs");
+        let alias = main
+            .matches("readonly property int opacityTick: app.session.opacity_epoch")
+            .count();
+        let handler = main
+            .matches("onOpacityTickChanged: app.redrawPins()")
+            .count();
+        let wrong = main.matches("onOpacityEpochChanged").count();
+        let prop = session.matches("#[qproperty(i32, opacity_epoch)]").count();
+        let bumps = session.matches("set_opacity_epoch(next)").count();
+        let asked = state.matches("self.batch_hand(").count();
+        let judge = state
+            .matches("self.set.is_selected(id) && self.set.selection_count() > 1")
+            .count();
+        let abs_readers = state.matches("self.set.set_selection_opacity(").count();
+        let step_readers = state.matches("self.set.step_selection_opacity(").count();
+        let orphan = view.matches("selection_opacity").count();
+        let bare = session.matches("opacity_epoch").count();
+        assert_eq!(alias, 1, "扇出的别名只该有一处，读到 {alias} 处");
+        assert_eq!(
+            handler, 1,
+            "handler 只该长在声明它的那个对象根上，读到 {handler} 处"
+        );
+        assert_eq!(
+            wrong, 0,
+            "那枚驼峰 notify 场上不存在，写进产品码就是静默失灵，读到 {wrong} 处"
+        );
+        assert_eq!(prop, 1, "qproperty 声明只该有一处，读到 {prop} 处");
+        assert_eq!(
+            bumps, 2,
+            "两只手各发一次号（改了几枚 >0 才发），读到 {bumps} 处"
+        );
+        assert_eq!(
+            asked, 6,
+            "§5.10.1/2 那三只手（拖 / 绝对值 / 阶梯）加上 §5.10.4 这一族抬过桥的三只（重置 / \
+             `hand_targets` / `destroy_answer`）共问同一枚判据，读到 {asked} 处"
+        );
+        assert_eq!(
+            judge, 1,
+            "「这一手算几枚」全仓只许写一次（#281），读到 {judge} 处"
+        );
+        assert_eq!(
+            (abs_readers, step_readers),
+            (1, 1),
+            "core 那两只批量手在桥上的产品读者各一枚：绝对值 {abs_readers} / 阶梯 {step_readers}"
+        );
+        assert_eq!(
+            orphan, 0,
+            "`pin_view.rs` 不该留着批量那两手的读者，读到 {orphan} 处"
+        );
+        // 反证（#274）：`batch_hand` 这个**词名**在 `state.rs` 里比六枚读者多（定义一枚，散文若干），
+        // 所以这枚尺收的是调用形状而不是词名——读者被复制成第七枚时它读得出。
+        let bare_hand = state.matches("batch_hand").count();
+        assert!(
+            bare_hand > asked,
+            "裸词 `batch_hand` 的枚数本就该大于读者枚数，这把尺才分得开词名与代码：{bare_hand} vs {asked}"
+        );
+        // 反证（#274）：裸词 `opacity_epoch` 在 `session.rs` 里比一枚声明多——注释与 impl 都引它。
+        assert!(
+            bare > prop,
+            "裸词的枚数本就该大于一处声明，这把尺才分得开注释与代码：{bare} vs {prop}"
+        );
+        // 反证：绑的是**值**而不是一次调用 —— 写成 invokable 就是一次读死。
+        assert!(
+            !main.contains("opacityTick()"),
+            "别名若被当成函数调用，绑定就不会随 notify 重新求值"
+        );
+    }
+
+    /// §5.10.4「重置」的四问逐枚拆开判（#274）：一趟产品全对的读数为底，每一枚红都只由**它自己
+    /// 那一问**的读数翻转，别的答案不动。八枚 `rst-lone-*`、三枚 ghost、四枚批量。
+    #[test]
+    fn the_four_reset_rows_answer_apart_for_each_way_the_hand_can_fail() {
+        let legs = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}|{v}")).collect()
+        };
+        let at = |rows: &[(Check, &'static str, String)], i: usize| rows[i].0;
+        let flip = |pairs: &[(&'static str, &'static str)],
+                    key: &'static str,
+                    value: &'static str|
+         -> Vec<(&'static str, &'static str)> {
+            pairs
+                .iter()
+                .map(|(k, v)| if *k == key { (*k, value) } else { (*k, *v) })
+                .collect()
+        };
+
+        // 一趟全对：单枚那一格从 100 往下迈到 90（号 3→4）、ghost 交 0 且号不动、批量那一格交 2
+        // 且号只走一步（4→5）。
+        let good: [(&str, &str); 15] = [
+            ("rst-lone-base", "100"),
+            ("rst-lone-turned", "90"),
+            ("rst-lone-epoch-before", "3"),
+            ("rst-lone-rev-before", "2"),
+            ("rst-lone", "1"),
+            ("rst-lone-zoom", "100"),
+            ("rst-lone-rev", "2"),
+            ("rst-lone-epoch-end", "4"),
+            ("rst-epoch-ghost-before", "4"),
+            ("rst-ghost", "0"),
+            ("rst-epoch-ghost", "4"),
+            ("rst-batch-target", "9"),
+            ("rst-batch-epoch-before", "4"),
+            ("rst-batch", "2"),
+            ("rst-batch-epoch", "5"),
+        ];
+
+        let all = rst_rows(&legs(&good));
+        let names: Vec<&str> = all.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, RST_ROWS.to_vec(), "{names:?}");
+        for row in &all {
+            assert_eq!(row.0, Check::Pass, "好的一趟该四枚全绿：{:#?}", row.2);
+        }
+
+        // 名单两枚、重置本窗却只改一枚：§5.10.4 那一句「批量」就是这一枚红，单枚那一格不动。
+        let downgraded = flip(&good, "rst-batch", "1");
+        let one = rst_rows(&legs(&downgraded));
+        assert_eq!(at(&one, 0), Check::Pass, "第一问读的是自己那一手");
+        assert_eq!(at(&one, 1), Check::Fail, "{:#?}", one[1].2);
+        for i in [2, 3] {
+            assert_eq!(
+                at(&one, i),
+                Check::Pass,
+                "第 {i} 问不该跟着红：{:#?}",
+                one[i].2
+            );
+        }
+
+        // 一次批量发了两声（枚枚一声）：号那一问红，枚数那一问不动。
+        let twice = flip(&good, "rst-batch-epoch", "6");
+        let echo = rst_rows(&legs(&twice));
+        assert_eq!(at(&echo, 1), Check::Fail, "{:#?}", echo[1].2);
+        assert_eq!(at(&echo, 2), Check::Pass, "ghost 那一格的号不读批量段");
+
+        // 那一手没把手势改过的那一档还回来：第一枚红，纹理号那一枚照旧绿（两问是两件事）。
+        let kept = flip(&good, "rst-lone-zoom", "90");
+        let stuck = rst_rows(&legs(&kept));
+        assert_eq!(at(&stuck, 0), Check::Fail, "{:#?}", stuck[0].2);
+        assert_eq!(at(&stuck, 3), Check::Pass, "归位与否不读纹理号那一问");
+
+        // 真改动没发号：`main.qml` 的 `resetTick` 就没读者，别的窗不会重读自己。
+        let silent_epoch = flip(&good, "rst-lone-epoch-end", "3");
+        let nofan = rst_rows(&legs(&silent_epoch));
+        assert_eq!(at(&nofan, 0), Check::Fail, "{:#?}", nofan[0].2);
+
+        // 空手也发号（ghost 那一格）：第三枚红，其余不动。
+        let ghost_spoke = flip(&good, "rst-epoch-ghost", "5");
+        let noise = rst_rows(&legs(&ghost_spoke));
+        assert_eq!(at(&noise, 2), Check::Fail, "{:#?}", noise[2].2);
+        for i in [0, 1, 3] {
+            assert_eq!(at(&noise, i), Check::Pass, "第 {i} 问不读 ghost 那枚号");
+        }
+
+        // 重置顺手换走一张纹理：`zoom` 被算进了内容的指纹，代价那一枚红，枚数与号都不跟着红。
+        let repainted = flip(&good, "rst-lone-rev", "3");
+        let cost = rst_rows(&legs(&repainted));
+        assert_eq!(at(&cost, 3), Check::Fail, "{:#?}", cost[3].2);
+        for i in [0, 1, 2] {
+            assert_eq!(at(&cost, i), Check::Pass, "第 {i} 问不读纹理号那一问");
+        }
+
+        // 缩放贴在下限、那一档迈不动：环境没给拉开的余地，第一枚读 Blocked 而不是红（#433）。
+        let flat = flip(&good, "rst-lone-turned", "100");
+        let floor = rst_rows(&legs(&flat));
+        assert_eq!(at(&floor, 0), Check::Blocked, "{:#?}", floor[0].2);
+        for i in [1, 2, 3] {
+            assert_eq!(
+                at(&floor, i),
+                Check::Pass,
+                "第 {i} 问不受那一档迈不迈得动影响"
+            );
+        }
+
+        // 场上只有一枚贴图：批量那四枚一句也不说，第二枚读 Blocked，另外三枚照旧绿（#453）。
+        let no_batch: Vec<(&str, &str)> = good
+            .iter()
+            .filter(|(k, _)| !k.starts_with("rst-batch"))
+            .copied()
+            .collect();
+        let lone_only = rst_rows(&legs(&no_batch));
+        assert_eq!(at(&lone_only, 1), Check::Blocked, "{:#?}", lone_only[1].2);
+        for i in [0, 2, 3] {
+            assert_eq!(at(&lone_only, i), Check::Pass, "第 {i} 问读的是自己那几枚");
+        }
+
+        // 一趟谁也没问：四枚各占一行 Blocked，且每一行都说得清为什么。
+        let silent = rst_rows(&[]);
+        let names: Vec<&str> = silent.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, RST_ROWS.to_vec(), "{names:?}");
+        for (grade, name, detail) in &silent {
+            assert_eq!(*grade, Check::Blocked, "{name} 没被问过，不该算红");
+            assert!(!detail.is_empty(), "{name} 那一格连为什么都没说");
+        }
+    }
+
+    /// §5.9.18「销毁 / 撤销 / 影响数量」的五问逐枚拆开判（#274）：好读数为底，每一枚红只由自己
+    /// 那一问翻转。这五问分别是**表**、**字面**、**按下去**、**空账不许清**、**回头路**。
+    #[test]
+    fn the_five_destroy_rows_answer_apart_for_each_way_the_ledger_can_fail() {
+        let subject: PinId = 7;
+        let legs = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}|{v}")).collect()
+        };
+        let at = |rows: &[(Check, &'static str, String)], i: usize| rows[i].0;
+        let flip = |pairs: &[(&'static str, &'static str)],
+                    key: &'static str,
+                    value: &'static str|
+         -> Vec<(&'static str, &'static str)> {
+            pairs
+                .iter()
+                .map(|(k, v)| if *k == key { (*k, value) } else { (*k, *v) })
+                .collect()
+        };
+
+        let good: [(&str, &str); 18] = [
+            ("des-target-a", "8"),
+            ("des-target-b", "9"),
+            ("des-pile-before", "4"),
+            ("des-reach-self", "1"),
+            ("des-reach-batch", "2"),
+            ("des-menu-shape", "open=true;reach=2;undo=false"),
+            ("des-menu-label", "销毁（影响 2 枚）"),
+            ("des-undo-absent", "false"),
+            ("des-batch", "2"),
+            ("des-pile-gone", "2"),
+            ("des-trashed", "2"),
+            ("des-undo-shown", "true"),
+            ("des-ghost", "0"),
+            ("des-trashed-kept", "2"),
+            ("des-undo", "2"),
+            ("des-pile-back", "4"),
+            ("des-trashed-after", "0"),
+            ("des-undo-again", "0"),
+        ];
+
+        let all = des_rows(&legs(&good), subject);
+        let names: Vec<&str> = all.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, DES_ROWS.to_vec(), "{names:?}");
+        for row in &all {
+            assert_eq!(row.0, Check::Pass, "好的一趟该五枚全绿：{:#?}", row.2);
+        }
+
+        // 字面停在进门那个初值上：`onAboutToShow` 没跑过，那一枚数没印出来。表与手都照旧绿——
+        // 这一枚红说的是菜单那一行，不是那只手。
+        let unprinted = flip(&good, "des-menu-label", "销毁（影响 1 枚）");
+        let stale = des_rows(&legs(&unprinted), subject);
+        assert_eq!(at(&stale, 0), Check::Pass, "表那一问不读字面");
+        assert_eq!(at(&stale, 1), Check::Fail, "{:#?}", stale[1].2);
+        for i in [2, 3, 4] {
+            assert_eq!(at(&stale, i), Check::Pass, "第 {i} 问不读字面那一问");
+        }
+
+        // 名单两枚、按下去只带走一枚：第三枚红。
+        let downgraded = flip(&good, "des-batch", "1");
+        let one = des_rows(&legs(&downgraded), subject);
+        assert_eq!(at(&one, 2), Check::Fail, "{:#?}", one[2].2);
+        for i in [0, 1, 3, 4] {
+            assert_eq!(at(&one, i), Check::Pass, "第 {i} 问不读带走的枚数");
+        }
+
+        // 堆没跟着少：那只手报的数与场上真的少了的那些不一致，第三枚红。
+        let notgone = flip(&good, "des-pile-gone", "4");
+        let lying = des_rows(&legs(&notgone), subject);
+        assert_eq!(at(&lying, 2), Check::Fail, "{:#?}", lying[2].2);
+
+        // 一次落空的点击把撤销的账清掉了：用户点了一枚不存在的贴图，回头路没了。第四枚红，
+        // 第五枚跟着红是**应该**的——它的判据读的就是账上欠着的那些枚。
+        let wiped = flip(&good, "des-trashed-kept", "0");
+        let lost = des_rows(&legs(&wiped), subject);
+        assert_eq!(at(&lost, 3), Check::Fail, "{:#?}", lost[3].2);
+
+        // 撤销回来少了一枚：第五枚红，第四枚不动。
+        let partial = flip(&good, "des-undo", "1");
+        let short = des_rows(&legs(&partial), subject);
+        assert_eq!(at(&short, 4), Check::Fail, "{:#?}", short[4].2);
+        assert_eq!(at(&short, 3), Check::Pass, "第三问与第五问读的是不同的手");
+
+        // 账空了还能再撤销一次（把同一批还第二遍）：第五枚红。
+        let twice = flip(&good, "des-undo-again", "2");
+        let greedy = des_rows(&legs(&twice), subject);
+        assert_eq!(at(&greedy, 4), Check::Fail, "{:#?}", greedy[4].2);
+
+        // 账上一枚也不欠时那一行还是出现了：那是菜单里的一枚死行（#433 那一族）。
+        let shown = flip(&good, "des-undo-absent", "true");
+        let dead = des_rows(&legs(&shown), subject);
+        assert_eq!(at(&dead, 4), Check::Fail, "{:#?}", dead[4].2);
+        assert_eq!(
+            at(&dead, 3),
+            Check::Pass,
+            "那一行出不出与 ghost 那一手是两件事"
+        );
+
+        // 证人点中了本窗自己：说这些话的窗不能正是被带走的那一扇，第一枚读 Blocked 而不是红。
+        let speaker = flip(&good, "des-target-a", "7");
+        let self_taken = des_rows(&legs(&speaker), subject);
+        assert_eq!(at(&self_taken, 0), Check::Blocked, "{:#?}", self_taken[0].2);
+
+        // 场上凑不出两枚非本窗的证人：整段一句也没说，五枚各占一行 Blocked（#453）。
+        let silent = des_rows(&[], subject);
+        let names: Vec<&str> = silent.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, DES_ROWS.to_vec(), "{names:?}");
+        for (grade, name, detail) in &silent {
+            assert_eq!(*grade, Check::Blocked, "{name} 没被问过，不该算红");
+            assert!(!detail.is_empty(), "{name} 那一格连为什么都没说");
+        }
+    }
+
+    /// §5.11 独显的七问逐枚拆开判（#274）：好读数为底，每一枚的红只由自己那一问翻转。这七问分别是
+    /// **那本账**、**屏幕上那一句话**、**菜单上那一行字面**、**同一枚手势的第二下**、**本窗的一进
+    /// 一出**、**空名单上的一记热键**、**一枚场上没有的 id**。
+    ///
+    /// 同一批读数配两档 `dim` 各判一遍，因为「压暗还是隐藏」是配置键 `pin.solo_dim_opacity` 答的：
+    /// 尺若只读窗递上来的 `solo-dims`，产品读错配置就没人说（#274 的反面）。两档的好趟各绿七枚，
+    /// 而把隐藏那一档的读数交给压暗那一把尺，红的必须正是读配置的那三枚。
+    #[test]
+    fn the_seven_solo_rows_answer_apart_for_each_way_the_ledger_can_fail() {
+        let subject: PinId = 7;
+        let legs = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}|{v}")).collect()
+        };
+        let at = |rows: &[(Check, &'static str, String)], i: usize| rows[i].0;
+        let flip = |pairs: &[(&'static str, &'static str)],
+                    key: &'static str,
+                    value: &'static str|
+         -> Vec<(&'static str, &'static str)> {
+            pairs
+                .iter()
+                .map(|(k, v)| if *k == key { (*k, value) } else { (*k, *v) })
+                .collect()
+        };
+
+        // 压暗那一档：`pin.solo_dim_opacity` = 35，场上四枚、名单空着点本窗。
+        let dimmed: [(&str, &str); 34] = [
+            ("solo-dims", "true"),
+            ("solo-pile", "4"),
+            ("solo-reach-self", "3"),
+            ("solo-epoch-before", "2"),
+            ("solo-enter", "3"),
+            ("solo-epoch-enter", "3"),
+            ("solo-kept", "1"),
+            ("solo-hidden-self", "false"),
+            ("solo-live-self", "true"),
+            ("solo-said", "已进入独显：其余 3 枚压暗"),
+            ("solo-menu-shape", "open=true;reach=0;way=压暗"),
+            ("solo-menu-label", "退出独显"),
+            ("solo-exit", "3"),
+            ("solo-epoch-exit", "4"),
+            ("solo-kept-after", "0"),
+            ("solo-target-other", "8"),
+            ("solo-op-start", "100"),
+            ("solo-enter-other", "3"),
+            ("solo-hidden", "false"),
+            ("solo-live", "true"),
+            ("solo-opacity", "35"),
+            ("solo-epoch-other", "5"),
+            ("solo-exit-other", "3"),
+            ("solo-op-end", "100"),
+            ("solo-hidden-end", "false"),
+            ("solo-live-end", "true"),
+            ("solo-refuse-before", "6"),
+            ("solo-refuse", "0"),
+            ("solo-refuse-epoch", "6"),
+            ("solo-refuse-kept", "0"),
+            ("solo-refuse-said", "独显没做成：先选中至少一枚贴图"),
+            ("solo-ghost", "0"),
+            ("solo-epoch-ghost", "6"),
+            ("solo-ghost-kept", "0"),
+        ];
+
+        let all = solo_rows(&legs(&dimmed), subject, 35);
+        let names: Vec<&str> = all.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, SOLO_ROWS.to_vec(), "{names:?}");
+        for row in &all {
+            assert_eq!(
+                row.0,
+                Check::Pass,
+                "压暗那一档好的一趟该七枚全绿：{:#?}",
+                row.2
+            );
+        }
+
+        // 同一批读数交给隐藏那一把尺：只有不读配置的四枚还绿，读配置的三枚必须红。
+        let wrong_mode = solo_rows(&legs(&dimmed), subject, 0);
+        for i in [0, 3, 5, 6] {
+            assert_eq!(at(&wrong_mode, i), Check::Pass, "第 {i} 问不读配置键");
+        }
+        for i in [1, 2, 4] {
+            assert_eq!(at(&wrong_mode, i), Check::Fail, "{:#?}", wrong_mode[i].2);
+        }
+
+        // 账不平：留着两枚而带走的还是三枚，场上就多出来一枚没人管的窗。第一枚红，第二枚不读账。
+        let unbalanced = flip(&dimmed, "solo-kept", "2");
+        let off = solo_rows(&legs(&unbalanced), subject, 35);
+        assert_eq!(at(&off, 0), Check::Fail, "{:#?}", off[0].2);
+        assert_eq!(at(&off, 1), Check::Pass, "屏幕上那句话不读留着的枚数");
+
+        // 菜单上印的数与那只手答的数各走一枚：窗自己数了一遍（#281 那一族）。第一枚红。
+        let stale_reach = flip(&dimmed, "solo-reach-self", "1");
+        let apart = solo_rows(&legs(&stale_reach), subject, 35);
+        assert_eq!(at(&apart, 0), Check::Fail, "{:#?}", apart[0].2);
+        for i in [1, 2, 3, 4, 5, 6] {
+            assert_eq!(at(&apart, i), Check::Pass, "第 {i} 问不读那一臂的答案");
+        }
+
+        // 留着的那一枚被告知自己被带走了：桥侧扇出的那一把伸进了 `kept` 里。第一枚红。
+        let self_taken = flip(&dimmed, "solo-hidden-self", "true");
+        let lied = solo_rows(&legs(&self_taken), subject, 35);
+        assert_eq!(at(&lied, 0), Check::Fail, "{:#?}", lied[0].2);
+
+        // 屏幕上那句话里没有它自己报出的那个数：托盘与提示那一臂与那只手脱了钩。第二枚红。
+        let mute = flip(&dimmed, "solo-said", "已进入独显");
+        let unsaid = solo_rows(&legs(&mute), subject, 35);
+        assert_eq!(at(&unsaid, 1), Check::Fail, "{:#?}", unsaid[1].2);
+        for i in [0, 2, 3, 4, 5, 6] {
+            assert_eq!(at(&unsaid, i), Check::Pass, "第 {i} 问不读屏幕上那句话");
+        }
+
+        // 独显开着而菜单那一行还写着「独显（压暗 3 枚）」：退出那一支印了一枚桥侧答不出的数。
+        let not_renamed = flip(&dimmed, "solo-menu-label", "独显（压暗 3 枚）");
+        let still = solo_rows(&legs(&not_renamed), subject, 35);
+        assert_eq!(at(&still, 2), Check::Fail, "{:#?}", still[2].2);
+
+        // 菜单缓存里那一格在独显开着时没答 0：与上面那一枚是同一句病，长在桥侧而不是窗侧。
+        let counted = flip(&dimmed, "solo-menu-shape", "open=true;reach=3;way=压暗");
+        let doubled = solo_rows(&legs(&counted), subject, 35);
+        assert_eq!(at(&doubled, 2), Check::Fail, "{:#?}", doubled[2].2);
+
+        // 第二下放回四枚而不是三枚：`exit_solo` 去摸了本来就没被带走的那一扇（规则②那句
+        // 「而不是无条件显示全部」在这一格里第一次有了数上的形状）。第四枚红。
+        let showed_all = flip(&dimmed, "solo-exit", "4");
+        let allback = solo_rows(&legs(&showed_all), subject, 35);
+        assert_eq!(at(&allback, 3), Check::Fail, "{:#?}", allback[3].2);
+        assert_eq!(at(&allback, 0), Check::Pass, "第一问读的是第一下");
+
+        // 退出之后账上还写着留着一枚：屏幕上那一行会接着说「退出独显」，用户再按一次就走进
+        // 第二次没被同意的独显。第四枚红。
+        let leftover = flip(&dimmed, "solo-kept-after", "1");
+        let uncleared = solo_rows(&legs(&leftover), subject, 35);
+        assert_eq!(at(&uncleared, 3), Check::Fail, "{:#?}", uncleared[3].2);
+
+        // 本窗被压到 60 而不是配置里那一格：那一档压暗读的是空气。第五枚红。
+        let off_key = flip(&dimmed, "solo-opacity", "60");
+        let misdimmed = solo_rows(&legs(&off_key), subject, 35);
+        assert_eq!(at(&misdimmed, 4), Check::Fail, "{:#?}", misdimmed[4].2);
+
+        // 出等于进那一格被打破：退出之后本窗停在 80，用户自己调过的那一级被默认那一档盖掉了。
+        let not_back = flip(&dimmed, "solo-op-end", "80");
+        let uncovered = solo_rows(&legs(&not_back), subject, 35);
+        assert_eq!(at(&uncovered, 4), Check::Fail, "{:#?}", uncovered[4].2);
+        assert_eq!(
+            at(&uncovered, 3),
+            Check::Pass,
+            "第四问读的是枚数与账，不读这一级"
+        );
+
+        // 证人就是本窗自己：说这些话的窗不能正是被带走的那一扇，第五枚读 Blocked 而不是红。
+        let speaker = flip(&dimmed, "solo-target-other", "7");
+        let self_witness = solo_rows(&legs(&speaker), subject, 35);
+        assert_eq!(
+            at(&self_witness, 4),
+            Check::Blocked,
+            "{:#?}",
+            self_witness[4].2
+        );
+
+        // 进门那一级已经就等于压暗那一格：压没压读不出差别，第五枚 Blocked（拿没动过的读数
+        // 冒充绿是 #433 那一族）。
+        let flat_start = flip(&dimmed, "solo-op-start", "35");
+        let flat = flip(&flat_start, "solo-op-end", "35");
+        let indistinguishable = solo_rows(&legs(&flat), subject, 35);
+        assert_eq!(
+            at(&indistinguishable, 4),
+            Check::Blocked,
+            "{:#?}",
+            indistinguishable[4].2
+        );
+
+        // 空名单上那记热键带走三枚：步骤 1 那句「必须先选中至少一枚贴图」没被守住。第六枚红。
+        let acted = flip(&dimmed, "solo-refuse", "3");
+        let refused = solo_rows(&legs(&acted), subject, 35);
+        assert_eq!(at(&refused, 5), Check::Fail, "{:#?}", refused[5].2);
+
+        // 拒绝的那一次屏幕上说的却是成功：一枚 bool 装不下的那一件事在这一格里可见。
+        let wrong_said = flip(&dimmed, "solo-refuse-said", "已进入独显：其余 3 枚压暗");
+        let lying_refusal = solo_rows(&legs(&wrong_said), subject, 35);
+        assert_eq!(
+            at(&lying_refusal, 5),
+            Check::Fail,
+            "{:#?}",
+            lying_refusal[5].2
+        );
+
+        // 场上没有的那一枚被答成带走一枚：`hand_targets` 那面挡空的墙塌了。第七枚红。
+        let ghost_took = flip(&dimmed, "solo-ghost", "1");
+        let invented = solo_rows(&legs(&ghost_took), subject, 35);
+        assert_eq!(at(&invented, 6), Check::Fail, "{:#?}", invented[6].2);
+
+        // 落空的那一次把某枚记成了「留着的一枚」：独显开着却无人知晓。第七枚红。
+        let ghost_kept = flip(&dimmed, "solo-ghost-kept", "1");
+        let remembered = solo_rows(&legs(&ghost_kept), subject, 35);
+        assert_eq!(at(&remembered, 6), Check::Fail, "{:#?}", remembered[6].2);
+
+        // 场上只剩本窗一枚：没有别枚可被带走，读账、读那句话、读第二下的三枚 Blocked 而不是红
+        // （#453——没问出口的行不算赢，也不算输）。
+        let alone = flip(&dimmed, "solo-pile", "1");
+        let lone = solo_rows(&legs(&alone), subject, 35);
+        for i in [0, 1, 3] {
+            assert_eq!(
+                at(&lone, i),
+                Check::Blocked,
+                "{i}：场上只一枚时这一格没有问"
+            );
+            assert!(!lone[i].2.is_empty(), "{i} 那一格连为什么都没说");
+        }
+
+        // 隐藏那一档的好趟：`solo_dim_opacity` = 0，被带走的窗是藏起来而不是压暗，而它自己的
+        // 不透明度一动不动。七枚同样全绿。
+        let hid_dims = flip(&dimmed, "solo-dims", "false");
+        let hid_said = flip(&hid_dims, "solo-said", "已进入独显：其余 3 枚隐藏");
+        let hid_shape = flip(&hid_said, "solo-menu-shape", "open=true;reach=0;way=隐藏");
+        let hid_hidden = flip(&hid_shape, "solo-hidden", "true");
+        let hid_live = flip(&hid_hidden, "solo-live", "false");
+        let hid_opacity = flip(&hid_live, "solo-opacity", "100");
+        let hidden = solo_rows(&legs(&hid_opacity), subject, 0);
+        let hid_names: Vec<&str> = hidden.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(hid_names, SOLO_ROWS.to_vec(), "{hid_names:?}");
+        for row in &hidden {
+            assert_eq!(
+                row.0,
+                Check::Pass,
+                "隐藏那一档好的一趟该七枚全绿：{:#?}",
+                row.2
+            );
+        }
+        // 反证（#274）：这一批读数的不透明度一动不动，于是把尺换成压暗那一档就必须红第五枚——
+        // 「没动」在隐藏那一档是对的答案，在压暗那一档不是。
+        let hidden_on_dim = solo_rows(&legs(&hid_opacity), subject, 35);
+        assert_eq!(
+            at(&hidden_on_dim, 4),
+            Check::Fail,
+            "{:#?}",
+            hidden_on_dim[4].2
+        );
+
+        // 四臂一句也没说（`victim` 凑不齐两枚 ⇒ 整段不跑）：七枚各占一行 Blocked。
+        let silent = solo_rows(&[], subject, 35);
+        let silent_names: Vec<&str> = silent.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(silent_names, SOLO_ROWS.to_vec(), "{silent_names:?}");
+        for (grade, name, detail) in &silent {
+            assert_eq!(*grade, Check::Blocked, "{name} 没被问过，不该算红");
+            assert!(!detail.is_empty(), "{name} 那一格连为什么都没说");
+        }
+    }
+
+    /// §5.10.4 那四只手在源码里的形状：一只落点、若干枚具名读者、一枚判据、零第二份。
+    ///
+    /// 这一格量的是**结构**而不是行为（行为由上面两枚真机判据与 `state.rs` selftest 量），它挡的
+    /// 是这一族最容易复发的那一件：窗自己再数一遍名单（`selection_count > 1` 的第二处）、或那只
+    /// 视图列里遗留的第二只「重置」手。P134 之前「重置视图」叫的正是后者
+    /// （`win.view.resetView()` —— 名单对它没有分量），所以 `pin_view.rs` 里那两枚必须读 0：
+    /// 删干净了才算抬过桥，留一枚「以后可能用得上」的 invokable 就是留第二份答案。
+    #[test]
+    fn the_four_view_hands_have_one_landing_each_and_no_second_judgement() {
+        let src = include_str!("../qml/PinWindow.qml");
+        let main = include_str!("../qml/main.qml");
+        let view = include_str!("pin_view.rs");
+        let state = include_str!("state.rs");
+        let session = include_str!("session.rs");
+
+        // 四只手的落点：每只在 QML 里只许出现一次（多一处就是第二条路绕过了那张表）。
+        let reset_landing = src.matches("win.session.resetPin(").count();
+        let destroy_landing = src.matches("win.session.destroyPin(").count();
+        let undo_landing = src.matches("win.session.undoDestroy(").count();
+        let close_landing = src.matches("win.session.closePin(").count();
+        // 菜单那一枚入口（产品对用户的那扇门）与量规的读者要分得开：门各一枚，读者各若干。
+        let reset_door = src
+            .matches("onTriggered: win.resetTarget(win.pinId) }")
+            .count();
+        let destroy_door = src
+            .matches("onTriggered: win.destroyTarget(win.pinId) }")
+            .count();
+        let undo_door = src
+            .matches("onTriggered: win.undoDestroyTarget() }")
+            .count();
+        let close_door = src
+            .matches("onTriggered: win.session.closePin(win.pinId) }")
+            .count();
+        let reset_readers = src.matches("win.resetTarget(").count();
+        let destroy_readers = src.matches("win.destroyTarget(").count();
+        let undo_readers = src.matches("win.undoDestroyTarget(").count();
+        // 「影响数量」那一问：门是 `onAboutToShow` 那一行，量规另问两枚。
+        let reach_asks = src.matches("win.session.destroyCountFor(").count();
+
+        assert_eq!(
+            reset_landing, 1,
+            "重置那一手只该有一处落点，读到 {reset_landing} 处"
+        );
+        assert_eq!(
+            destroy_landing, 1,
+            "销毁那一手只该有一处落点，读到 {destroy_landing} 处"
+        );
+        assert_eq!(
+            undo_landing, 1,
+            "撤销那一手只该有一处落点，读到 {undo_landing} 处"
+        );
+        assert_eq!(
+            close_landing, 2,
+            "关闭那一手是一枚门加一段腿，读到 {close_landing} 处"
+        );
+        for (name, door) in [
+            ("重置视图", reset_door),
+            ("销毁", destroy_door),
+            ("撤销", undo_door),
+            ("关闭", close_door),
+        ] {
+            assert_eq!(door, 1, "菜单里「{name}」那一项只该点一次，读到 {door} 次");
+        }
+        // 反证（#274）：读者必须**多过**门，否则这一格只是在重复「门存在」那一枚尺的答案；
+        // 而门也必须在 —— 少了门就是量规自己发明了那一只手。
+        assert!(
+            reset_readers > reset_door,
+            "量规那一族没替重置多问一遍：{reset_readers} vs {reset_door}"
+        );
+        assert!(
+            destroy_readers > destroy_door,
+            "量规那一族没替销毁多问一遍：{destroy_readers} vs {destroy_door}"
+        );
+        assert!(
+            undo_readers > undo_door,
+            "量规那一族没替撤销多问一遍：{undo_readers} vs {undo_door}"
+        );
+        assert!(
+            reach_asks > close_door,
+            "字面上那个数只被门问过、没被量规问过，那一枚就是自证：{reach_asks}"
+        );
+
+        // 视图那一列把「重置」交回去了：桥侧那一手是唯一的重置，`pin_view.rs` 里一个也不留。
+        let orphan = view.matches("resetView").count() + view.matches("reset_view").count();
+        assert_eq!(
+            orphan, 0,
+            "重置视图已抬到 `state::reset_pin`，视图列里不该留第二只手：{orphan}"
+        );
+        // 窗不数名单：第二份判据一旦出现，`batch_hand` 那句话就有了两个答法。
+        let second = src.matches("selection_count > 1").count();
+        assert_eq!(second, 0, "窗里不许有第二份「算不算批量」：{second}");
+
+        // 判据与那张表各写一次：`batch_hand` 一处声明六处调用（搬动、迈一档、绝对值、重置、
+        // `hand_targets`、影响数量），`hand_targets` 一处声明三处调用（关闭、影响数量、销毁）。
+        assert_eq!(
+            state.matches("batch_hand(").count(),
+            7,
+            "判据那一枚在 `state.rs` 里是「一处声明 + 六处读者」，读到不同"
+        );
+        assert_eq!(
+            state.matches("hand_targets(").count(),
+            5,
+            "「带走哪几枚」那张表在 `state.rs` 里是「一处声明 + 四处读者」（关闭、影响数量、销毁、独显），读到不同"
+        );
+        // 号各归各的手：`reset_epoch` 只有重置那一格发，`trashed` 只有 `refresh` 那一格写。
+        assert_eq!(
+            session.matches("set_reset_epoch").count(),
+            1,
+            "销毁与撤销不发重置的号（成员走的是 `count`）"
+        );
+        assert_eq!(
+            session.matches("set_trashed").count(),
+            1,
+            "欠着几枚撤销只有一处写：`refresh` 从状态里读回来"
+        );
+        // #316：cxx-qt 不给驼峰 qproperty 的 notify，绑的是**值**，一次也不许当函数调用。
+        assert_eq!(
+            main.matches("readonly property int resetTick: app.session.reset_epoch")
+                .count(),
+            1,
+            "重置那一号在 `main.qml` 里是一枚绑值的别名"
+        );
+        assert_eq!(
+            main.matches("onResetTickChanged: app.redrawPins()").count(),
+            1,
+            "那一声明的读者只有 `redrawPins()` 一处"
+        );
+        assert!(
+            !main.contains("resetTick()"),
+            "别名若被当成函数调用，绑定就不会随 notify 重新求值"
+        );
     }
 }

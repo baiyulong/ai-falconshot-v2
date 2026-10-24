@@ -299,6 +299,24 @@ pub fn read() -> Result<Contents, ClipError> {
     Ok(out)
 }
 
+/// Only the `CF_HDROP` leg, for the caller that needs the held paths and nothing else.
+///
+/// [`read`] decodes every bitmap that is on the clipboard to reach the same answer, and
+/// the sweep that asks "which of my temp files is still referenced" runs on the copy
+/// gesture itself - paying for a decode to read a file list would make copying the
+/// picture slower than copying the picture. An empty list is the honest answer to "no
+/// file is on the clipboard", which is what a clipboard carrying only a bitmap means; a
+/// clipboard that will not open is an `Err`, and the caller deletes nothing on that.
+pub fn read_files() -> Result<Vec<PathBuf>, ClipError> {
+    open()?;
+    let files = unsafe {
+        let found = handle_of(CF_HDROP.0 as u32).map_or(Vec::new(), |h| files_in_hdrop(HDROP(h.0)));
+        let _ = CloseClipboard();
+        found
+    };
+    Ok(files)
+}
+
 /// `CF_HDROP` is a `DROPFILES` block followed by a double-NUL-separated list of
 /// wide paths; `DragQueryFileW` reads both, given the handle.
 ///
@@ -320,6 +338,80 @@ unsafe fn files_in_hdrop(drop: HDROP) -> Vec<PathBuf> {
     files
 }
 
+/// A `DROPFILES` header is `pFiles` (4), a `POINT` (8), `fNC` (4) and `fWide` (4).
+const HDROP_HEADER: usize = 20;
+
+/// The `CF_HDROP` payload: that header, then every path as UTF-16 with its own
+/// terminating NUL, then one more NUL to close the list.
+///
+/// Written as bytes rather than as a struct because the layout *is* the contract:
+/// `pFiles` is an offset, not a size, and a block that gets it wrong does not
+/// fail - it pastes as an empty drop. `fWide` says 1, so the list is wide;
+/// `DragQueryFileW` keeps that promise on the system side, and [`hdrop_paths`] is
+/// this file's own reader, which is the only reason the layout is testable without
+/// a clipboard. Both are public for that reason: the bridge's `--selftest` row has
+/// to read the bytes back on a locked machine, where no clipboard can be opened.
+pub fn hdrop_payload(paths: &[PathBuf]) -> Vec<u8> {
+    use std::os::windows::ffi::OsStrExt;
+    let mut out = Vec::new();
+    out.extend_from_slice(&(HDROP_HEADER as u32).to_le_bytes());
+    out.extend_from_slice(&[0u8; 8]); // pt: a clipboard drop has no drop point
+    out.extend_from_slice(&0i32.to_le_bytes()); // fNC
+    out.extend_from_slice(&1i32.to_le_bytes()); // fWide
+    for path in paths {
+        for unit in path.as_os_str().encode_wide() {
+            out.extend_from_slice(&unit.to_le_bytes());
+        }
+        out.extend_from_slice(&[0, 0]);
+    }
+    out.extend_from_slice(&[0, 0]);
+    out
+}
+
+/// Reads back what [`hdrop_payload`] wrote, in the shape a paste target sees.
+///
+/// A header that lies about where the list starts, an `fWide` that is not 1, and a
+/// list that never closes are all errors here rather than an empty `Vec`: "no
+/// files" is exactly what a mis-built block reports to a real target, so a reader
+/// that returns it quietly would hide the one bug worth catching.
+pub fn hdrop_paths(bytes: &[u8]) -> Result<Vec<PathBuf>, ClipError> {
+    use std::os::windows::ffi::OsStringExt;
+    if bytes.len() < HDROP_HEADER + 2 {
+        return Err(ClipError::Win(format!(
+            "CF_HDROP 只有 {} 字节，连一整个文件列表都装不下",
+            bytes.len()
+        )));
+    }
+    let start = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+    if start < HDROP_HEADER || !start.is_multiple_of(2) || start + 2 > bytes.len() {
+        return Err(ClipError::Win(format!(
+            "CF_HDROP 的文件列表声称从第 {} 字节起，而那块里没有可放位置",
+            start
+        )));
+    }
+    if i32::from_le_bytes(bytes[16..20].try_into().unwrap()) != 1 {
+        return Err(ClipError::Win("CF_HDROP 的 fWide 不是 1".into()));
+    }
+    let mut files = Vec::new();
+    let mut cur: Vec<u16> = Vec::new();
+    let mut at = start;
+    while at + 1 < bytes.len() {
+        let unit = u16::from_le_bytes([bytes[at], bytes[at + 1]]);
+        at += 2;
+        if unit != 0 {
+            cur.push(unit);
+        } else if cur.is_empty() {
+            return Ok(files); // the double NUL that closes the list
+        } else {
+            files.push(PathBuf::from(std::ffi::OsString::from_wide(&cur)));
+            cur.clear();
+        }
+    }
+    Err(ClipError::Win(
+        "CF_HDROP 的文件列表没有以双 NUL 收尾".into(),
+    ))
+}
+
 /// Puts a bitmap on the clipboard as `CF_DIB` and as a registered `PNG`.
 ///
 /// Both, because readers split two ways and neither set is empty: the classic
@@ -329,6 +421,30 @@ unsafe fn files_in_hdrop(drop: HDROP) -> Vec<PathBuf> {
 /// be lossless (our own paste-back, and anything that reads PNG) travels on the
 /// PNG leg.
 pub fn write_image(frame: &Frame) -> Result<(), ClipError> {
+    publish(frame, None)
+}
+
+/// §5.9.17 step 3: the picture **and** a file reference, on the clipboard at the
+/// same time - which is to say, in one and the same `EmptyClipboard` transaction.
+///
+/// Two transactions would not be "at the same time": the second one empties what
+/// the first one put there, and a paste target that reads in between gets a
+/// half-populated clipboard. So the DIB, the PNG and the `CF_HDROP` all go through
+/// [`publish`] together, and an empty `files` list is refused rather than silently
+/// degrading into §5.9.16's plain image copy - the caller chose this function, and
+/// a caller that asked for a file and got none needs to be told, not placated.
+pub fn write_image_with_files(frame: &Frame, files: &[PathBuf]) -> Result<(), ClipError> {
+    if files.is_empty() {
+        return Err(ClipError::Win(
+            "要同时提供文件，却没有一枚文件路径：这一笔复制没有可交的文件引用".into(),
+        ));
+    }
+    publish(frame, Some(files))
+}
+
+/// The one clipboard transaction both copy paths share. `files` is the §5.9.17
+/// leg; `None` is §5.9.16 as it has always been.
+fn publish(frame: &Frame, files: Option<&[PathBuf]>) -> Result<(), ClipError> {
     let dib = dib_from_rgba(&frame.pixels, frame.width, frame.height);
     let png = encode::encode(
         frame,
@@ -338,9 +454,13 @@ pub fn write_image(frame: &Frame) -> Result<(), ClipError> {
         },
     )
     .map_err(|e| ClipError::Win(e.to_string()))?;
+    let hdrop = files.map(hdrop_payload);
     let mut items: Vec<(u32, &[u8])> = vec![(CF_DIB.0 as u32, &dib)];
     if let Some(png_format) = registered("PNG") {
         items.push((png_format, &png));
+    }
+    if let Some(bytes) = hdrop.as_deref() {
+        items.push((CF_HDROP.0 as u32, bytes));
     }
     write_formats(&items)
 }
@@ -473,6 +593,68 @@ mod tests {
         // BGRA, and the alpha that arrived is the alpha that leaves.
         assert_eq!(&dib[40..44], &[0, 0, 255, 255]);
         assert_eq!(&dib[44..48], &[0, 255, 0, 128]);
+    }
+
+    #[test]
+    fn an_hdrop_block_this_file_writes_is_the_block_a_target_reads() {
+        // Two paths, one of them with the characters a Chinese user's desktop
+        // actually has - the wide leg is the whole point of `fWide = 1`.
+        let files = vec![
+            PathBuf::from("C:\\Users\\me\\AppData\\Local\\Temp\\falconshot-clip\\falcon_2026-10-20_141000.png"),
+            PathBuf::from("D:\\贴图\\第二 张.png"),
+        ];
+        let bytes = hdrop_payload(&files);
+        assert_eq!(&bytes[0..4], &(HDROP_HEADER as u32).to_le_bytes());
+        assert_eq!(&bytes[16..20], &1i32.to_le_bytes(), "fWide must say wide");
+        assert_eq!(
+            &bytes[bytes.len() - 4..bytes.len() - 2],
+            &[0, 0],
+            "list terminator"
+        );
+        assert_eq!(
+            &bytes[bytes.len() - 2..],
+            &[0, 0],
+            "double NUL closes the block"
+        );
+        assert_eq!(hdrop_paths(&bytes).expect("reads back"), files);
+        // The offset a real target starts reading at, checked against the bytes
+        // themselves rather than against the constant this file also wrote.
+        let start = u32::from_le_bytes(bytes[0..4].try_into().unwrap()) as usize;
+        assert_eq!(start, HDROP_HEADER);
+        assert_eq!(bytes.len() % 2, 0, "a wide block has no odd byte count");
+    }
+
+    #[test]
+    fn a_misbuilt_hdrop_block_is_an_error_and_never_an_empty_drop() {
+        let bytes = hdrop_payload(&[PathBuf::from("C:\\a.png")]);
+        // (a) a header that points inside itself, (b) an `fWide` that is not 1,
+        // (c) a list whose closing NUL is missing. Each of these is what a target
+        // would report as "the drop had no files"; here they are errors, because
+        // the block was built wrong, not because the copy was empty.
+        let mut a = bytes.clone();
+        a[0..4].copy_from_slice(&8u32.to_le_bytes());
+        assert!(hdrop_paths(&a).is_err());
+        let mut b = bytes.clone();
+        b[16..20].copy_from_slice(&0i32.to_le_bytes());
+        assert!(hdrop_paths(&b).is_err());
+        let c = bytes[..bytes.len() - 2].to_vec();
+        assert!(hdrop_paths(&c).is_err());
+        assert!(hdrop_paths(&bytes[..12]).is_err(), "a header cut short");
+        // The counter-proof for the counter-proof: the untouched block still reads.
+        assert_eq!(hdrop_paths(&bytes).expect("the good one reads").len(), 1);
+    }
+
+    #[test]
+    fn a_copy_that_promised_a_file_and_has_none_is_refused_first() {
+        // §5.9.17 asked for a file. Falling back to the image-only copy here would
+        // be the caller's bug dressed up as the user's success, and it would be
+        // dressed up *after* an EmptyClipboard that already destroyed the previous
+        // contents - so the refusal happens before any clipboard call.
+        let err = write_image_with_files(&frame_2x1(), &[]).expect_err("empty list refused");
+        assert!(
+            err.to_string().contains("文件"),
+            "the message names what is missing: {err}"
+        );
     }
 
     #[test]

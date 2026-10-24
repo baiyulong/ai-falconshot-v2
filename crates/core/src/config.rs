@@ -37,6 +37,14 @@ pub const RESTART_KEYS: &[&str] = &[
     "advanced.cli_enabled",
 ];
 
+/// §5.20.2's 「需要重启的设置应明确标记」 answered for one key. The list above is the
+/// whole of the judgement, and this is the only function that reads it: the import
+/// preview and the settings page have to mark the same key the same way, and a second
+/// copy of the list could only ever disagree with the first.
+pub fn needs_restart(key: &str) -> bool {
+    RESTART_KEYS.contains(&key)
+}
+
 /// §5.16.1 bindable action ids. Hot corners and per-app exclusions name these.
 pub const ACTIONS: &[&str] = &[
     "capture",
@@ -126,6 +134,58 @@ pub enum AlphaBg {
     Pseudo,
     CheckerDark,
     CheckerLight,
+}
+
+/// §5.9.15's four modes as the text that stores them. The settings widget spells
+/// a mode, the menu labels one, and the file carries one — so the id domain
+/// lives beside the enum rather than inside whichever widget asked last.
+pub const ALPHA_BG_IDS: &[&str] = &["transparent", "pseudo", "checker_dark", "checker_light"];
+
+impl AlphaBg {
+    /// The text this mode is stored as. Written next to the enum so a
+    /// `snake_case` rename has to be made here too, where
+    /// [`ALPHA_BG_IDS`]'s own test can catch it.
+    pub fn id(self) -> &'static str {
+        match self {
+            AlphaBg::Transparent => "transparent",
+            AlphaBg::Pseudo => "pseudo",
+            AlphaBg::CheckerDark => "checker_dark",
+            AlphaBg::CheckerLight => "checker_light",
+        }
+    }
+
+    pub fn from_id(text: &str) -> Option<AlphaBg> {
+        ALPHA_BG_IDS
+            .iter()
+            .position(|id| *id == text)
+            .map(|at| match at {
+                0 => AlphaBg::Transparent,
+                1 => AlphaBg::Pseudo,
+                2 => AlphaBg::CheckerDark,
+                _ => AlphaBg::CheckerLight,
+            })
+    }
+
+    /// The mode a menu item carries: a QML list index reaches the enum through
+    /// here, so the item order on screen and [`ALPHA_BG_IDS`] are the same order.
+    pub fn from_index(index: u32) -> Option<AlphaBg> {
+        let at = index as usize;
+        if at < ALPHA_BG_IDS.len() {
+            Some(AlphaBg::from_id(ALPHA_BG_IDS[at]).expect("ALPHA_BG_IDS maps to itself"))
+        } else {
+            None
+        }
+    }
+
+    /// [`Self::from_index`]'s other half, and the number a qproperty carries.
+    pub fn index(self) -> u32 {
+        match self {
+            AlphaBg::Transparent => 0,
+            AlphaBg::Pseudo => 1,
+            AlphaBg::CheckerDark => 2,
+            AlphaBg::CheckerLight => 3,
+        }
+    }
 }
 
 /// §5.2.2: the tool the annotation stage opens with. The config has to reject a
@@ -344,6 +404,36 @@ impl Default for Pin {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
+pub struct Card {
+    /// §5.8.5 step 4 宽度, in physical pixels. The one key that decides where a long
+    /// line breaks, so [`crate::annotation::raster::wrap`] is asked with it.
+    pub width: u32,
+    /// §5.8.5 step 4 字号. Shares its unit and its default with
+    /// [`Annotation::font_size`], because a second font-size story is a second number
+    /// nothing checks against the first.
+    pub font_size: u32,
+    /// §5.8.5 step 4 字体 — a system family name, never shipped inside the package
+    /// (see [`crate::annotation::raster::Glyphs`]).
+    pub font_family: String,
+    /// §5.8.5 step 4 背景颜色. The ink is not a key: §5.8.5 asks for four settings and
+    /// this is the fourth, and §7.4's contrast promise is answered by deriving the ink
+    /// from this value rather than by asking the user for a fifth that can disagree.
+    pub background: String,
+}
+
+impl Default for Card {
+    fn default() -> Self {
+        Self {
+            width: 480,
+            font_size: 18,
+            font_family: "Microsoft YaHei UI".into(),
+            background: "#FFFFFF".into(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Output {
     /// §5.5.1 always put the result on the clipboard.
     pub auto_copy: bool,
@@ -403,6 +493,19 @@ pub struct Output {
     pub send_to_apps: Vec<String>,
     /// §5.5.10 refresh the last output instead of making a new one.
     pub reuse_last_file: bool,
+    /// PRD §5.9.17 步骤 1 的那一格开关：「复制图片时同时提供文件」。
+    ///
+    /// 关着 ⇒ 复制只交 CF_DIB + PNG（§5.9.16 那一问，一直是那样）；开着 ⇒ 同一次
+    /// `OpenClipboard`/`EmptyClipboard` 交易里多出第三路 `CF_HDROP`，指向一张按
+    /// [`crate::naming`] 那族既有规则命名的临时 PNG。写成两枚键的样子而不是让它默认发生，
+    /// 是因为 PRD 把那一句写在"用户在设置中开启"下面：`Default` 是 `false`。
+    ///
+    /// 它与一枚闲着的键 [`Advanced::privacy_no_temp_files`] **不是**同一问：那枚标的是 §7.5，
+    /// 而 §7.5 那四条（域名提示、响应大小、参数注入、路径校验）里没有一句说"不许落盘"，
+    /// 本轮不替它编读者。这一枚管的是 §6.2 第 1600-1601 行：「临时文件应按策略自动清理」+
+    /// 「应避免在退出时删除仍被剪贴板引用的文件」—— 持有与清理的规则在
+    /// `qt_bridge::state::PinState::clip_pending_files` 那一侧，不在这里。
+    pub copy_as_file: bool,
 }
 
 impl Default for Output {
@@ -427,6 +530,7 @@ impl Default for Output {
             share_targets: Vec::new(),
             send_to_apps: Vec::new(),
             reuse_last_file: false,
+            copy_as_file: false,
         }
     }
 }
@@ -483,6 +587,10 @@ pub struct HotCorner {
     /// §5.15 规则: ignore a repeat trigger inside this window, so one sweep
     /// across the top of the screen is one action.
     pub repeat_guard_ms: u32,
+    /// §5.15 规则: while a fullscreen app or game owns the desktop, the corners
+    /// wait. Opt-in in the sense that the user decides whether a corner may
+    /// interrupt one; the corner machine itself is the caller of `set_paused`.
+    pub pause_on_fullscreen: bool,
 }
 
 impl Default for HotCorner {
@@ -500,6 +608,7 @@ impl Default for HotCorner {
             require_ctrl: false,
             require_shift: false,
             repeat_guard_ms: 800,
+            pause_on_fullscreen: true,
         }
     }
 }
@@ -635,6 +744,7 @@ pub struct Config {
     pub capture: Capture,
     pub annotation: Annotation,
     pub pin: Pin,
+    pub card: Card,
     pub output: Output,
     pub hotkey: Hotkey,
     pub hot_corner: HotCorner,
@@ -763,7 +873,14 @@ impl Config {
     /// Write a dotted setting from the string a settings widget produced. The
     /// stored type decides how the text is parsed, so a bool never becomes the
     /// string `"true"`.
-    pub fn set_str(&mut self, key: &str, raw: &str) -> Result<(), ConfigError> {
+    ///
+    /// The value then passes the same gate a file passes when it is read
+    /// ([`Config::validate`]), and whatever that gate corrected comes back as the
+    /// error-free part of the report: §5.20.2 wants the settings page to say「这条
+    /// 被改成了 96」out loud instead of quietly disagreeing with what was typed, and
+    /// a widget that could store 500 for a key the file can only carry as 96 would
+    /// show one number until the next launch.
+    pub fn set_str(&mut self, key: &str, raw: &str) -> Result<Vec<String>, ConfigError> {
         let parts: Vec<&str> = key.split('.').collect();
         if parts.len() < 2 || parts.iter().any(|p| p.is_empty()) {
             return Err(ConfigError::UnknownKey(key.to_string()));
@@ -798,6 +915,24 @@ impl Config {
                 });
             }
         }
+        if parts.len() == 2 && parts[0] == "pin" && parts[1] == "alpha_bg" {
+            // The stored type is an enum, so there is no correction the gate can
+            // make here — but without this rung the typo surfaces at
+            // `from_document` as a complaint about the whole document ("bad toml:
+            // unknown variant …"), which is a message about a file the settings
+            // page never touched rather than about the one box that was typed into
+            // (§5.8.3 wants the second one).
+            let text = raw.trim();
+            if AlphaBg::from_id(text).is_none() {
+                return Err(ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    reason: format!(
+                        "{text} is not a background mode ({})",
+                        ALPHA_BG_IDS.join(", ")
+                    ),
+                });
+            }
+        }
         let next = coerce(&old, parts[parts.len() - 1], raw)?;
         let slot = find_value_mut(&mut doc, &parts)
             .ok_or_else(|| ConfigError::UnknownKey(key.to_string()))?;
@@ -806,7 +941,7 @@ impl Config {
         slot.decor_mut().clone_from(&decor);
         *self = toml_edit::de::from_document::<Config>(doc)
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
-        Ok(())
+        Ok(self.validate())
     }
 
     /// §5.20.3 step 4: what the incoming file would overwrite, item by item.
@@ -826,7 +961,7 @@ impl Config {
                     key: key.clone(),
                     from: from.clone(),
                     to: to.clone(),
-                    restart_required: RESTART_KEYS.contains(&key.as_str()),
+                    restart_required: needs_restart(key),
                 });
             }
         }
@@ -834,15 +969,25 @@ impl Config {
     }
 
     /// §5.20.3 step 5.
+    ///
+    /// The corrections are collected across the whole apply, in order, without
+    /// repeats: one write can make the gate say something about a pair of keys
+    /// (`hotkey.actions.capture, toggle_pins: f13 is bound twice`), and every
+    /// later write would otherwise repeat that line.
     pub fn apply_import(
         &mut self,
         incoming: &Config,
         scope: ImportScope,
-    ) -> Result<(), ConfigError> {
+    ) -> Result<Vec<String>, ConfigError> {
+        let mut corrections: Vec<String> = Vec::new();
         for change in self.preview_import(incoming, scope) {
-            self.set_str(&change.key, &change.to)?;
+            for warning in self.set_str(&change.key, &change.to)? {
+                if !corrections.contains(&warning) {
+                    corrections.push(warning);
+                }
+            }
         }
-        Ok(())
+        Ok(corrections)
     }
 
     /// Clamp and correct unusable values, reporting each change so the settings
@@ -989,6 +1134,17 @@ impl Config {
             FONT_MIN,
             FONT_MAX,
         );
+        // The card's font size is clamped with the text tool's own two constants, so the
+        // file keeps one font-size range rather than two that can disagree. The width's
+        // floor is the padding's: below 160 physical pixels nothing is left to wrap into.
+        clamp(
+            &mut w,
+            "card.font_size",
+            &mut self.card.font_size,
+            FONT_MIN,
+            FONT_MAX,
+        );
+        clamp(&mut w, "card.width", &mut self.card.width, 160, 4096);
         clamp(
             &mut w,
             "annotation.blur_radius",
@@ -1073,6 +1229,7 @@ impl Config {
                 &mut self.output.border_color,
                 "#000000",
             ),
+            ("card.background", &mut self.card.background, "#FFFFFF"),
         ] {
             if crate::colors::parse(value).is_none() {
                 w.push(format!("{key}: {value} is not a colour, using {fallback}"));
@@ -1329,8 +1486,13 @@ pub struct ImportChange {
 /// §5.20.3 suggests a limited import range; `All` is the opt-in escape hatch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ImportScope {
-    /// Hotkeys, annotation styles, palette, theme, output directory and naming,
-    /// group configuration.
+    /// Hotkeys, annotation styles, palette, theme, output directory and naming.
+    ///
+    /// §5.20.3's list also names 分组配置 (group configuration), and this range
+    /// does **not** carry it: groups live in the pin store
+    /// (`falcon_core::pin::PinStore::groups`), not in `config.toml`, so there is
+    /// no key here for them to travel through. Export/import moves the settings
+    /// file; a group travels only if the whole store travels.
     Suggested,
     All,
 }
@@ -1642,6 +1804,7 @@ mod tests {
             "[annotation]",
             "[annotation.tool_style]",
             "[pin]",
+            "[card]",
             "[output]",
             "[hotkey]",
             "[hotkey.actions]",
@@ -1670,6 +1833,7 @@ mod tests {
             "capture.",
             "annotation.",
             "pin.",
+            "card.",
             "output.",
             "hotkey.",
             "hot_corner.",
@@ -1702,6 +1866,9 @@ mod tests {
             c.get_str("annotation.palette").as_deref(),
             Some("#E81123, #F38B00, #FFB900, #7A7A7A, #FFFFFF, #000000, #0078D7, #16C60C, #B4009E, #00B7C3")
         );
+        assert_eq!(c.get_str("card.width").as_deref(), Some("480"));
+        assert_eq!(c.get_str("card.font_size").as_deref(), Some("18"));
+        assert_eq!(c.get_str("card.background").as_deref(), Some("#FFFFFF"));
         assert!(c.has_key("history.max_items"));
         assert!(!c.has_key("history.nope"));
         assert!(!c.has_key("history"));
@@ -1862,6 +2029,204 @@ magnifier_zoom = 12
         assert_eq!(c.capture.magnifier_zoom, 16);
     }
 
+    /// §5.9.15 的四枚模式是设置件唯一能拼出的写法，而拼错时交回的那句话必须点名
+    /// 它被写进的那一枚键：这一格的存储类型是一枚枚举，所以在 coerce 之后整份文档
+    /// 停止解析 —— 设置页会看见一句关于**整个文件**的抱怨，而不是关于它自己那一个
+    /// 输入框的（§5.8.3「应显示错误信息」要的是后者）。
+    #[test]
+    fn a_background_mode_is_written_by_its_own_name_or_answered_by_that_key() {
+        let mut c = Config::default();
+        c.set_str("pin.alpha_bg", "checker_dark").unwrap();
+        assert_eq!(c.pin.alpha_bg, AlphaBg::CheckerDark);
+        assert_eq!(c.get_str("pin.alpha_bg").as_deref(), Some("checker_dark"));
+
+        let err = c.set_str("pin.alpha_bg", "plaid").unwrap_err();
+        match err {
+            ConfigError::InvalidValue { key, reason } => {
+                assert_eq!(key, "pin.alpha_bg", "{key} / {reason}");
+                assert!(reason.contains("plaid"), "{reason}");
+                assert!(reason.contains("checker_light"), "{reason}");
+            }
+            other => panic!("一枚写错的背景模式被答成 {other:?}"),
+        }
+        // 被拒的那一次写没动过任何值。
+        assert_eq!(c.pin.alpha_bg, AlphaBg::CheckerDark);
+        assert!(c.set_str("pin.alpha_bg", "").is_err());
+        assert_eq!(c.pin.alpha_bg, AlphaBg::CheckerDark);
+    }
+
+    /// 一张表、四枚模式：枚举里加一行而名单没跟上、或 `snake_case` 改了拼法，都在
+    /// 这一格被抓住，而不是在一份再也读不进来的文件上被抓。
+    #[test]
+    fn the_four_background_modes_are_spelled_from_one_list() {
+        let all = [
+            AlphaBg::Transparent,
+            AlphaBg::Pseudo,
+            AlphaBg::CheckerDark,
+            AlphaBg::CheckerLight,
+        ];
+        let spelled: Vec<&str> = all.iter().map(|m| m.id()).collect();
+        assert_eq!(spelled, ALPHA_BG_IDS.to_vec());
+        for m in all {
+            assert_eq!(AlphaBg::from_id(m.id()), Some(m), "{}", m.id());
+        }
+        // 反证（#274）：一把只会照名单点头的尺，读一枚真不在名单上的名字必须交 None。
+        assert_eq!(AlphaBg::from_id("Transparent"), None);
+        assert_eq!(AlphaBg::from_id(" checker_dark"), None);
+        assert_eq!(AlphaBg::from_id("checker_darkk"), None);
+        assert_eq!(AlphaBg::default(), AlphaBg::Transparent);
+    }
+
+    /// A menu carries an index, a file carries a name, and the pin holds the
+    /// enum: all three have to agree on one order, or the third row of the menu
+    /// paints the second board (§5.9.15 lists four modes in a fixed order).
+    #[test]
+    fn a_background_mode_answers_its_menu_index() {
+        let all = [
+            AlphaBg::Transparent,
+            AlphaBg::Pseudo,
+            AlphaBg::CheckerDark,
+            AlphaBg::CheckerLight,
+        ];
+        for (at, m) in all.iter().enumerate() {
+            let i = at as u32;
+            assert_eq!(AlphaBg::from_index(i), Some(*m), "第 {i} 行");
+            assert_eq!(m.index(), i, "{}", m.id());
+            assert_eq!(
+                AlphaBg::from_index(m.index()),
+                Some(*m),
+                "{} 的序号回不来",
+                m.id()
+            );
+            assert_eq!(
+                AlphaBg::from_id(ALPHA_BG_IDS[at]),
+                Some(*m),
+                "第 {i} 行与名单不符"
+            );
+        }
+        // 反证（#274）：越界的序号不是「最后那一种」，是不认。
+        assert_eq!(AlphaBg::from_index(4), None);
+        assert_eq!(AlphaBg::from_index(u32::MAX), None);
+    }
+
+    /// #170: the load path ran [`Config::validate`] and the write path ran
+    /// nothing, so a widget could store a value the same file can never carry on
+    /// the next launch. Writing and reading have to agree on one value.
+    #[test]
+    fn a_write_is_gated_like_a_read() {
+        // Out of range: the file is clamped on load, so a write must not keep it.
+        let mut big = Config::default();
+        let corrections = big.set_str("card.font_size", "500").unwrap();
+        assert_eq!(
+            big.card.font_size, FONT_MAX,
+            "the write path stored 500 while the file can only carry 96"
+        );
+        // And it has to say which one it changed: a silent 96 is a settings page
+        // that disagrees with what the user typed (§5.20.2).
+        assert_eq!(corrections.len(), 1, "{corrections:?}");
+        assert!(corrections[0].contains("card.font_size"), "{corrections:?}");
+        assert!(
+            corrections[0].contains("out of range, using 96"),
+            "{corrections:?}"
+        );
+        assert_eq!(
+            big.get_str("card.font_size").as_deref(),
+            Some("96"),
+            "a value this config just wrote does not read back the same"
+        );
+
+        // An unreadable colour: load repairs it to the default, so write does too.
+        let mut bg = Config::default();
+        bg.set_str("card.background", "papercolor").unwrap();
+        assert_eq!(
+            bg.card.background, "#FFFFFF",
+            "the write path kept a colour the load path repairs"
+        );
+
+        // A relative directory: load ignores it, so a write may not keep it.
+        let mut dir = Config::default();
+        dir.output.save_dir = "C:/shots".into();
+        dir.set_str("output.save_dir", "shots").unwrap();
+        assert_eq!(
+            dir.output.save_dir, "",
+            "the write path kept a relative dir the load path clears"
+        );
+
+        // And the gate changes nothing that was already legal.
+        let mut ok = Config::default();
+        assert!(ok.set_str("card.font_size", "24").unwrap().is_empty());
+        assert_eq!(ok.card.font_size, 24);
+
+        // A key the file does not have is still a refusal, not a clamp.
+        let mut miss = Config::default();
+        assert!(matches!(
+            miss.set_str("card.nope", "1"),
+            Err(ConfigError::UnknownKey(_))
+        ));
+    }
+
+    /// §5.20.3 step 5 applies key by key through [`Config::set_str`], so the
+    /// gate a file passes on parse has to pass on apply too — otherwise an
+    /// imported 500 becomes the stored 500 and the restart gets a different card.
+    #[test]
+    fn applying_an_import_is_gated_too() {
+        let mut incoming = Config::default();
+        incoming.card.font_size = 500;
+        incoming.card.width = 1_000_000;
+        let mut target = Config::default();
+        target.apply_import(&incoming, ImportScope::All).unwrap();
+        assert_eq!(
+            target.card.font_size, FONT_MAX,
+            "the import path went around the gate"
+        );
+        assert_eq!(
+            target.card.width, 4096,
+            "the import path went around the gate"
+        );
+
+        // Two files that collide only together: `capture` already holds f13 on this
+        // machine, and the incoming file teaches `toggle_pins` the same key. Each
+        // side is legal, and `parse_import` — which reads the incoming file alone —
+        // cannot see it. The apply is the only place that can say it out loud.
+        // §8.4 reports a clash and never picks a winner, so both keys stay as
+        // written and the report is all the user gets.
+        let mut target = Config::default();
+        target.hotkey.actions.insert("capture".into(), "f13".into());
+        let mut incoming = Config::default();
+        incoming
+            .hotkey
+            .actions
+            .insert("capture".into(), "f13".into());
+        incoming
+            .hotkey
+            .actions
+            .insert("toggle_pins".into(), "f13".into());
+        let changes = target.preview_import(&incoming, ImportScope::All);
+        assert!(
+            !changes.iter().any(|c| c.key == "hotkey.actions.capture"),
+            "both sides hold f13, so this must not be an overwrite: {changes:?}"
+        );
+        let corrections = target.apply_import(&incoming, ImportScope::All).unwrap();
+        assert!(
+            corrections.iter().any(|c| c.contains("is bound twice")
+                && c.contains("capture")
+                && c.contains("toggle_pins")),
+            "{corrections:?}"
+        );
+        assert_eq!(target.hotkey.actions["capture"], "f13");
+        assert_eq!(target.hotkey.actions["toggle_pins"], "f13");
+        // The same clash is reported once, not once per write: anyone counting the
+        // line count off the report would otherwise read N clashes out of one.
+        assert_eq!(
+            corrections
+                .iter()
+                .filter(|c| c.contains("is bound twice"))
+                .count(),
+            1,
+            "{corrections:?}"
+        );
+    }
+
     /// A hand-edited file with two actions on one combination is reported, not
     /// silently re-resolved (§8.4: nothing is overwritten for the user).
     /// A hand-edited or foreign file with two actions on one combination is
@@ -2001,6 +2366,45 @@ actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
         assert!(keep.validate().is_empty(), "{:?}", keep.validate());
         assert_eq!(keep.output.corner_fill, "#FFFFFF80");
         assert_eq!(keep.output.border_color, "#112233FF");
+    }
+
+    /// §5.8.5 step 4 names four 卡片设置 and all four are read here rather than
+    /// argued with at paint time: a card asked for at 500 px font or a 12 px column
+    /// is a card that renders nothing, and "nothing" is not an answer the user can
+    /// read off the screen.
+    #[test]
+    fn card_keys_are_clamped_and_its_background_repaired() {
+        let mut shipped = Config::default();
+        assert!(
+            shipped.validate().is_empty(),
+            "the shipped card needs no repair: {:?}",
+            shipped.validate()
+        );
+
+        let mut c = Config::default();
+        c.card.font_size = 500;
+        c.card.width = 1_000_000;
+        c.card.background = "papercolor".into();
+        let warnings = c.validate();
+        assert_eq!(c.card.font_size, FONT_MAX);
+        assert_eq!(c.card.width, 4096);
+        assert_eq!(c.card.background, "#FFFFFF");
+        for needle in ["card.font_size", "card.width", "card.background"] {
+            assert!(
+                warnings.iter().any(|w| w.contains(needle)),
+                "no warning for {needle}: {warnings:?}"
+            );
+        }
+
+        // The floor matters more than the ceiling here: a zero font size would leave
+        // the breaker with a column it can never fill, and a zero width with a card
+        // no frame can be built from.
+        let mut low = Config::default();
+        low.card.font_size = 0;
+        low.card.width = 0;
+        low.validate();
+        assert_eq!(low.card.font_size, FONT_MIN);
+        assert_eq!(low.card.width, 160);
     }
 
     #[test]

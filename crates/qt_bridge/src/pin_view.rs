@@ -10,6 +10,11 @@
 //! Dragging and wheel-zooming write position and size only; [`crate::state`]
 //! pushes new pixels when the content key moves, which rotation and cropping do
 //! and zoom does not.
+//!
+//! The one exception is a GIF (§5.9.14): there the *content* is what moves, once
+//! per frame rather than once per pixel of motion. The timer in `PinWindow.qml`
+//! is what asks, and only while a clip is playing, so a window holding a still
+//! never reaches the encoder.
 
 #[cxx_qt::bridge]
 pub mod qobject {
@@ -37,18 +42,32 @@ pub mod qobject {
         #[qproperty(bool, click_through)]
         #[qproperty(i32, revision)]
         #[qproperty(QString, image_key)]
+        /// §5.9.14: the four numbers a clip needs. `gif_frames` is 0 for a pin
+        /// that is not a GIF, which is the one fact that lets the window's timer
+        /// and its menu go quiet without a second question.
+        #[qproperty(i32, gif_frames)]
+        #[qproperty(i32, gif_frame)]
+        #[qproperty(bool, gif_playing)]
+        #[qproperty(i32, gif_speed)]
+        /// §5.9.15: the row of the four the pin is on, and whether the picture has
+        /// a hole for any of them to be about.
+        #[qproperty(i32, alpha_bg)]
+        #[qproperty(bool, has_transparent_pixels)]
+        /// §5.10.1: the one list lives in the state machine; this is this pin's row
+        /// in it, read out on [`reload`]. QML binds its selection ring to nothing
+        /// else, so a click that changes the list has exactly one thing to follow.
+        #[qproperty(bool, selected)]
+        /// §5.11: this pin is out of the way *because of Solo*, not because a dialog
+        /// is sitting on it - `live` folds those two reasons into one boolean, and a
+        /// gauge row that asks "did 独显 put this window away, and did it bring it
+        /// back" cannot answer it from `live` alone. Read straight off core's field
+        /// in [`crate::state::PinState::view_data`], so the window never guesses.
+        #[qproperty(bool, solo_hidden)]
         type PinView = super::PinViewRust;
-
         /// Pull the state machine's current answer for `pin_id`. QML calls this
         /// when the id it was handed changes, and after every gesture below.
         #[qinvokable]
         fn reload(self: Pin<&mut Self>);
-
-        /// §5.9.1 - the drag delta in physical pixels; the floor keeps a pin from
-        /// being pushed off the screen.
-        #[qinvokable]
-        #[cxx_name = "dragMove"]
-        fn drag_move(self: Pin<&mut Self>, dx: i32, dy: i32);
 
         /// §5.9.2 - `wx`/`wy` are the cursor inside the window, physical pixels,
         /// and the pixel under it is the one that stays put.
@@ -68,11 +87,9 @@ pub mod qobject {
         #[cxx_name = "resetZoom"]
         fn reset_zoom(self: Pin<&mut Self>);
 
-        /// §5.10.4 "重置" - the way the pin is being looked at, back to the
-        /// defaults. The picture itself is untouched.
-        #[qinvokable]
-        #[cxx_name = "resetView"]
-        fn reset_view(self: Pin<&mut Self>);
+        // §5.10.4 的「重置视图」不在这一列里了（P134）：它改的是**名单**，落点是
+        // `Session.resetPin`，判据是 [`crate::state::PinState::batch_hand`] 那一枚。留着这一格
+        // 就是第二条重置路而它又没有读者 —— 与上面那段信里被删掉的透明度那两格同一封信。
 
         #[qinvokable]
         #[cxx_name = "rotateCw"]
@@ -97,14 +114,6 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "toggleInvert"]
         fn toggle_invert(self: Pin<&mut Self>);
-
-        #[qinvokable]
-        #[cxx_name = "applyOpacity"]
-        fn apply_opacity(self: Pin<&mut Self>, pct: i32);
-
-        #[qinvokable]
-        #[cxx_name = "opacityStep"]
-        fn opacity_step(self: Pin<&mut Self>, up: bool);
 
         #[qinvokable]
         #[cxx_name = "applyTopmost"]
@@ -148,6 +157,53 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "restoreOriginal"]
         fn restore_original(self: Pin<&mut Self>) -> bool;
+
+        /// §5.9.15 步骤 2/3 — the row of the menu the user picked, 0..3 in the order
+        /// the PRD lists them (透明、伪透明、深色棋盘格、浅色棋盘格). Answers whether
+        /// the pin took it. Named apart from the `alpha_bg` property's own setter,
+        /// which this calls and which takes the same `i32`.
+        #[qinvokable]
+        #[cxx_name = "setAlphaBg"]
+        fn pick_alpha_bg(self: Pin<&mut Self>, index: i32) -> bool;
+
+        /// §5.9.15's click rule — whether the point under the cursor is one the pin
+        /// answers to. `wx`/`wy` are the cursor inside the window in physical
+        /// pixels, the same two [`Self::wheel_zoom`] is handed.
+        #[qinvokable]
+        #[cxx_name = "hitAt"]
+        fn hit_at(self: Pin<&mut Self>, wx: i32, wy: i32) -> bool;
+
+        /// §5.9.14: one pass of the window's timer. `delta_ms` is what the timer
+        /// waited - the state machine decides whether that is a new frame, and
+        /// answers whether the picture it ships actually moved.
+        #[qinvokable]
+        #[cxx_name = "gifTick"]
+        fn gif_tick(self: Pin<&mut Self>, delta_ms: i32) -> bool;
+
+        /// §5.9.14 上一帧/下一帧. `dir` is -1 or 1; stepping pauses playback.
+        #[qinvokable]
+        #[cxx_name = "gifStep"]
+        fn gif_step(self: Pin<&mut Self>, dir: i32);
+
+        /// §5.9.14 暂停/继续. Answers the state playback is now in.
+        #[qinvokable]
+        #[cxx_name = "gifToggle"]
+        fn gif_toggle(self: Pin<&mut Self>) -> bool;
+
+        /// §5.9.14 回到第一帧.
+        #[qinvokable]
+        #[cxx_name = "gifFirst"]
+        fn gif_first(self: Pin<&mut Self>);
+
+        /// §5.9.14 "调整播放速度" between the rungs of the ladder in
+        /// [`falcon_core::pin::GIF_SPEED_STEPS`].
+        #[qinvokable]
+        #[cxx_name = "gifSpeedStep"]
+        fn gif_speed_step(self: Pin<&mut Self>, up: bool);
+
+        #[qinvokable]
+        #[cxx_name = "gifApplySpeed"]
+        fn gif_apply_speed(self: Pin<&mut Self>, pct: i32);
     }
 }
 
@@ -174,6 +230,14 @@ pub struct PinViewRust {
     click_through: bool,
     revision: i32,
     image_key: QString,
+    gif_frames: i32,
+    gif_frame: i32,
+    gif_playing: bool,
+    gif_speed: i32,
+    alpha_bg: i32,
+    has_transparent_pixels: bool,
+    selected: bool,
+    solo_hidden: bool,
 }
 
 /// `dpr` is the one field that must not start at zero: QML divides the physical
@@ -196,6 +260,14 @@ impl Default for PinViewRust {
             click_through: false,
             revision: 0,
             image_key: QString::default(),
+            gif_frames: 0,
+            gif_frame: 0,
+            gif_playing: false,
+            gif_speed: 0,
+            alpha_bg: 0,
+            has_transparent_pixels: false,
+            selected: false,
+            solo_hidden: false,
         }
     }
 }
@@ -220,21 +292,37 @@ impl qobject::PinView {
         self.as_mut().set_click_through(view.click_through);
         self.as_mut().set_revision(view.revision as i32);
         self.as_mut().set_image_key(QString::from(&*key));
+        self.as_mut().set_gif_frames(view.gif_frames);
+        self.as_mut().set_gif_frame(view.gif_frame);
+        self.as_mut().set_gif_playing(view.gif_playing);
+        self.as_mut().set_gif_speed(view.gif_speed);
+        self.as_mut().set_alpha_bg(view.alpha_bg);
+        self.as_mut()
+            .set_has_transparent_pixels(view.has_transparent_pixels);
+        self.as_mut().set_selected(view.selected);
+        self.as_mut().set_solo_hidden(view.solo_hidden);
     }
 
     /// One gesture done to the pin, then the properties brought back in line.
     /// Everything below is this one line, which is the point: the state machine
     /// decides, and this object only translates in and out.
+    ///
+    /// 拖动不在这一列里了（§5.10.2）：一次拖动搬的是**名单**，而 `edit` 是"一枚贴图上的
+    /// 一手势"那一格 —— 让它去数名单，就会有两处地方各自决定"这一拖算几枚"（#281）。所以
+    /// 落点在 `Session.dragPin`，判在 [`crate::state::PinState::drag_pin`]。删掉的那一格
+    /// `desk` 是这件事的读者：这一列里再没有第二手要用桌面的 clamp。
+    ///
+    /// 透明度也不在这一列里了（§5.10.3）：一次调整改的也是**名单**，而「这一手算几枚」全仓只判
+    /// 一次（[`crate::state::PinState::batch_hand`]）。两只落点是 `Session.setPinOpacity`（绝对值）
+    /// 与 `Session.stepPinOpacity`（阶梯，Ctrl+滚轮与菜单那两枚都走它）。§5.10.4 的「重置」自
+    /// P134 起同一枚判据走同一只落点（`Session.resetPin`），所以 `cfg` 在这一列里没有读者了 ——
+    /// 它是上一段那封信里「删掉的那一格」的第二位。这一列里剩下的每一手仍
+    /// 是"一枚贴图上的一个手势"，所以 `reload` 只重读自己那一扇；批量那三手重读的是名单里每一扇。
     fn gesture<R: Default>(mut self: Pin<&mut Self>, f: impl FnOnce(&mut dyn Gesture) -> R) -> R {
         let id = *self.pin_id() as PinId;
-        let done = state::with(|s| s.edit(id, |p, cfg, desk| f(&mut Ops { p, cfg, desk })))
-            .unwrap_or_default();
+        let done = state::with(|s| s.edit(id, |p, _, _| f(&mut Ops { p }))).unwrap_or_default();
         self.as_mut().reload();
         done
-    }
-
-    pub fn drag_move(self: Pin<&mut Self>, dx: i32, dy: i32) {
-        self.gesture(|o| o.move_by(dx, dy));
     }
 
     pub fn wheel_zoom(self: Pin<&mut Self>, up: bool, wx: i32, wy: i32) {
@@ -254,10 +342,6 @@ impl qobject::PinView {
 
     pub fn reset_zoom(self: Pin<&mut Self>) {
         self.gesture(|o| o.reset_zoom());
-    }
-
-    pub fn reset_view(self: Pin<&mut Self>) {
-        self.gesture(|o| o.reset_view());
     }
 
     pub fn rotate_cw(self: Pin<&mut Self>) {
@@ -282,14 +366,6 @@ impl qobject::PinView {
 
     pub fn toggle_invert(self: Pin<&mut Self>) {
         self.gesture(|o| o.invert());
-    }
-
-    pub fn apply_opacity(self: Pin<&mut Self>, pct: i32) {
-        self.gesture(move |o| o.apply_opacity(pct.max(0) as u32));
-    }
-
-    pub fn opacity_step(self: Pin<&mut Self>, up: bool) {
-        self.gesture(move |o| o.opacity_step(up));
     }
 
     pub fn apply_topmost(self: Pin<&mut Self>, on: bool) {
@@ -331,6 +407,59 @@ impl qobject::PinView {
     pub fn restore_original(self: Pin<&mut Self>) -> bool {
         self.gesture(|o| o.restore_original())
     }
+
+    /// §5.9.14: the timer's call, and deliberately not [`Self::gesture`] - a tick
+    /// that moved nothing must not re-read fourteen properties fifty times a
+    /// second. The reload is what a moved frame earns, never the tick itself.
+    pub fn gif_tick(mut self: Pin<&mut Self>, delta_ms: i32) -> bool {
+        let id = *self.pin_id() as PinId;
+        let moved = state::with(|s| s.tick_gif(id, delta_ms.max(0) as u32));
+        if moved {
+            self.as_mut().reload();
+        }
+        moved
+    }
+
+    pub fn gif_step(self: Pin<&mut Self>, dir: i32) {
+        self.gesture(move |o| o.gif_step(dir));
+    }
+
+    pub fn gif_toggle(self: Pin<&mut Self>) -> bool {
+        self.gesture(|o| o.gif_toggle())
+    }
+
+    pub fn gif_first(self: Pin<&mut Self>) {
+        self.gesture(|o| o.gif_first());
+    }
+
+    pub fn gif_speed_step(self: Pin<&mut Self>, up: bool) {
+        self.gesture(move |o| o.gif_speed_step(up));
+    }
+
+    pub fn gif_apply_speed(self: Pin<&mut Self>, pct: i32) {
+        self.gesture(move |o| o.gif_apply_speed(pct.max(0) as u32));
+    }
+
+    /// §5.9.15 步骤 3: the row the menu carries. Reloaded whether or not the pin
+    /// took it — a refused row still has to leave the checkmark on the mode the
+    /// pin is actually in, not on the row that was clicked.
+    pub fn pick_alpha_bg(mut self: Pin<&mut Self>, index: i32) -> bool {
+        let id = *self.pin_id() as PinId;
+        let took = state::with(|s| s.set_alpha_bg(id, index));
+        self.as_mut().reload();
+        took
+    }
+
+    /// §5.9.15's click rule, and deliberately not [`Self::gesture`]: a press the
+    /// pin refuses must not re-read fourteen properties, and nothing about the
+    /// picture changes by being asked. The cursor arrives in the window's own
+    /// physical pixels because that is all QML has; the window's position is the
+    /// state machine's, so the two are added here rather than in a binding.
+    pub fn hit_at(self: Pin<&mut Self>, wx: i32, wy: i32) -> bool {
+        let id = *self.pin_id() as PinId;
+        let at = PhysPoint::new(*self.pos_x() + wx, *self.pos_y() + wy);
+        state::with(|s| s.hit_at(id, at))
+    }
 }
 
 /// The subset of [`falcon_core::pin::PinItem`] a gesture needs, spelled without
@@ -338,18 +467,14 @@ impl qobject::PinView {
 /// rather than a bare closure because it lets a gesture answer with the value the
 /// state machine returned - `Result` in, `bool` out.
 trait Gesture {
-    fn move_by(&mut self, dx: i32, dy: i32);
     fn zoom_step(&mut self, up: bool, at: Option<PhysPoint>) -> u32;
     fn apply_zoom(&mut self, pct: u32);
     fn reset_zoom(&mut self);
-    fn reset_view(&mut self);
     fn rotate(&mut self, turns: i32);
     fn flip_h(&mut self);
     fn flip_v(&mut self);
     fn grayscale(&mut self);
     fn invert(&mut self);
-    fn apply_opacity(&mut self, pct: u32);
-    fn opacity_step(&mut self, up: bool);
     fn apply_topmost(&mut self, on: bool);
     fn apply_click_through(&mut self, on: bool);
     fn apply_smooth(&mut self, on: bool);
@@ -359,18 +484,18 @@ trait Gesture {
     fn free_thumbnail_window(&mut self, rect: &PhysRect) -> bool;
     fn undo_crop(&mut self) -> bool;
     fn restore_original(&mut self) -> bool;
+    fn gif_step(&mut self, dir: i32);
+    fn gif_toggle(&mut self) -> bool;
+    fn gif_first(&mut self);
+    fn gif_speed_step(&mut self, up: bool);
+    fn gif_apply_speed(&mut self, pct: u32);
 }
 
 struct Ops<'a> {
     p: &'a mut falcon_core::pin::PinItem,
-    cfg: &'a falcon_core::config::Pin,
-    desk: &'a falcon_core::pin::Desktop,
 }
 
 impl<'a> Gesture for Ops<'a> {
-    fn move_by(&mut self, dx: i32, dy: i32) {
-        self.p.move_by(dx, dy, self.desk);
-    }
     fn zoom_step(&mut self, up: bool, at: Option<PhysPoint>) -> u32 {
         self.p.zoom_step(up, at)
     }
@@ -379,9 +504,6 @@ impl<'a> Gesture for Ops<'a> {
     }
     fn reset_zoom(&mut self) {
         self.p.reset_zoom();
-    }
-    fn reset_view(&mut self) {
-        self.p.reset_view(self.cfg);
     }
     fn rotate(&mut self, turns: i32) {
         self.p.rotate(turns);
@@ -397,12 +519,6 @@ impl<'a> Gesture for Ops<'a> {
     }
     fn invert(&mut self) {
         self.p.toggle_invert();
-    }
-    fn apply_opacity(&mut self, pct: u32) {
-        self.p.set_opacity(pct);
-    }
-    fn opacity_step(&mut self, up: bool) {
-        self.p.opacity_step(up);
     }
     fn apply_topmost(&mut self, on: bool) {
         self.p.set_topmost(on);
@@ -430,5 +546,35 @@ impl<'a> Gesture for Ops<'a> {
     }
     fn restore_original(&mut self) -> bool {
         self.p.restore_original()
+    }
+    /// §5.9.14: the five hands of the player, each answering through the pin's
+    /// own `Option`. A pin with no clip has no player to act on, which is not an
+    /// error - it is the same nothing a still window reports for every one of
+    /// these menu items.
+    fn gif_step(&mut self, dir: i32) {
+        if let Some(play) = self.p.gif.as_mut() {
+            play.step(dir);
+        }
+    }
+    fn gif_toggle(&mut self) -> bool {
+        match self.p.gif.as_mut() {
+            Some(play) => play.toggle_play(),
+            None => false,
+        }
+    }
+    fn gif_first(&mut self) {
+        if let Some(play) = self.p.gif.as_mut() {
+            play.first_frame();
+        }
+    }
+    fn gif_speed_step(&mut self, up: bool) {
+        if let Some(play) = self.p.gif.as_mut() {
+            play.speed_step(up);
+        }
+    }
+    fn gif_apply_speed(&mut self, pct: u32) {
+        if let Some(play) = self.p.gif.as_mut() {
+            play.set_speed(pct);
+        }
     }
 }

@@ -449,6 +449,21 @@ pub fn general_cfg() -> falcon_core::config::General {
     with(|s| s.config.general.clone())
 }
 
+/// §5.15：整段 `[hot_corner]` 由这一枚 reader 取快照 —— P140 之前这一族十枚键（`enabled` /
+/// `corners.` 四角 / `trigger_dip` / `dwell_ms` / `require_ctrl` / `require_shift` /
+/// `repeat_guard_ms` / `pause_on_fullscreen`）在 `crates/core/src/config.rs` 里每枚都有键、
+/// 每枚都有 `Default`、`validate()` 也夹了那三枚数，可整个 crate 之外**一处调用点都没有** ——
+/// `falcon_core::hotcorner` 那台纯状态机写完之后从没被人喂过一个指针，用户写
+/// `[hot_corner] enabled = true` 与不写是同一件事。
+///
+/// 与 [`pin_cfg`] / [`capture_cfg`] / [`general_cfg`] 同一形状：一次 clone 整段快照。但这一枚
+/// **不是「进程启动那一次读」**，而是每次采样读一次 —— 角落几何要跟着显示器热插拔走，而
+/// [`crate::hot_corner::Runner::refresh`] 只在快照真的变了才重建那台机器，所以「每枚一秒问一次」
+/// 的成本是一次 clone，收益是 `--hotcorner` 门上「改了档、角落跟着改」这一腿能被观测。
+pub fn hot_corner_cfg() -> falcon_core::config::HotCorner {
+    with(|s| s.config.hot_corner.clone())
+}
+
 /// §5.14 与 §6.2：整段 `[history]` 由这一枚 reader 一次性取快照 —— P68 之前 7 枚键
 /// （`enabled` / `max_items` / `max_age_days` / `max_size_mb` / `keep_originals` /
 /// `thumb_px` / `exempt_locked`）全部停在"键在档里没人读"：`crates/core/src/history.rs`
@@ -767,7 +782,25 @@ pub fn output_cfg() -> falcon_core::config::Output {
     with(|s| s.config.output.clone())
 }
 
+/// §5.8.5 / §5.8.6：整段 `[card]` 由这一枚 reader 送进运行期 —— 那四枚键（`width` /
+/// `font_size` / `font_family` / `background`）在 P126 之前只有 `config.rs` 里的键与
+/// `Default`，一个读者也没有，于是 `crates/core/src/card.rs` 造出来也没人能给它一份设置。
+///
+/// 与 [`pin_cfg`] / [`output_cfg`] 同一形状（一次 clone 整段快照，调用点拿到的是一份借用
+/// 生命周期内不会变的设置），差别在**问的时机**：`pin_cfg` 在 `PinState::new()` 里问一次、
+/// 也就是进程一次，而这一枚在**每一张贴图成型的那一刻**问一次。理由是 §5.8.5 的四枚键决定的
+/// 是「这一张卡片长什么样」而不是「这个会话的窗口长什么样」—— 用户改完档再贴一张，贴出来的
+/// 就该是新档里那张；把快照缓存进 STATE 反而是这里不采用的做法。
+pub fn card_cfg() -> falcon_core::config::Card {
+    with(|s| s.config.card.clone())
+}
+
 /// P76：把整段 `[output]` 的 `share_targets` + `send_to_apps` 两枚 Vec<String> 回读成一行。
+///
+/// P130 起这一行多出第五格 `output.copy_as_file`：§5.9.17 步骤 1 的那枚开关在设置面板里
+/// 还没有对应的控件（面板是 §5.20 的那一批），而 `[output]` 里一枚没人读的键正是第 35 项 ⑨
+/// 那一族的形状，所以启动横幅先把它逐字印出来——真正的读者是 `crate::session` 里的
+/// `copy_pin`，这一格只是让"出厂到底是哪一支"在启动那一行上可读。
 ///
 /// **本轮的分岔本体**：`o.share_targets.is_empty()` 一侧显示 `(none)`、另一侧显示 `a,b,c`
 /// joined；`o.send_to_apps.is_empty()` 同一族。纯函数：输入是 cfg 的一份借用、输出是 String、
@@ -786,8 +819,8 @@ pub fn format_output_banner(o: &falcon_core::config::Output) -> String {
         o.send_to_apps.join(",")
     };
     format!(
-        "output.share_targets={} output.send_to_apps={} output.reuse_last_file={} output.hide_pins_on_dialog={}",
-        shares, apps, o.reuse_last_file, o.hide_pins_on_dialog
+        "output.share_targets={} output.send_to_apps={} output.reuse_last_file={} output.hide_pins_on_dialog={} output.copy_as_file={}",
+        shares, apps, o.reuse_last_file, o.hide_pins_on_dialog, o.copy_as_file
     )
 }
 
@@ -1626,6 +1659,29 @@ pub fn pin_writes(path: &Path) -> PathBuf {
 
 // --------------------------------------------------------------------- §5.20.3
 
+/// 一项一行的那一行,由 [`ImportChange`] 做成页上/档上的样子。
+///
+/// 它单独成手是因为 §5.20.3 步骤 4 现在有两个读者:CLI 那份文本与设置页那一列行。措辞写两遍
+/// 就会分岔(「需重启」那三个字在哪儿出现),所以两边都叫这一枚 —— 容器各拼各的分隔符:
+/// 档面用换行,桥那侧用 [`crate::settings_view::RECORD`]。
+pub fn import_row_text(c: &ImportChange) -> String {
+    let restart = if c.restart_required {
+        "（需重启）"
+    } else {
+        ""
+    };
+    format!("覆盖 {} : {} -> {}{}", c.key, c.from, c.to, restart)
+}
+
+/// 那一列行上面的一句总数。与 [`import_row_text`] 同一理由:页与档都得说同一句「将被覆盖几项」。
+pub fn import_note(changes: usize, warnings: usize, scope: ImportScope) -> String {
+    let scope_name = match scope {
+        ImportScope::All => "全部",
+        ImportScope::Suggested => "建议范围",
+    };
+    format!("[import] 范围={scope_name}；将被覆盖 {changes} 项；被校正 {warnings} 项")
+}
+
 /// §5.20.3 步骤 4 的那一句:一份档会盖掉哪些项,一项一行,带上 §5.20.2 要的「需重启」标记,
 /// 再带上 [`falcon_core::config::Config::parse_import`] 不得不做的校正。
 ///
@@ -1636,26 +1692,12 @@ pub fn render_import_preview(
     warnings: &[String],
     scope: ImportScope,
 ) -> String {
-    let scope_name = match scope {
-        ImportScope::All => "全部",
-        ImportScope::Suggested => "建议范围",
-    };
-    let mut out = format!(
-        "[import] 范围={scope_name}；将被覆盖 {} 项；被校正 {} 项\n",
-        changes.len(),
-        warnings.len()
-    );
+    let mut out = String::new();
+    out.push_str(&import_note(changes.len(), warnings.len(), scope));
+    out.push('\n');
     for c in changes {
         // 注释挂在行尾而不是单起一行:一行一项,读的人才能拿行数对上上面那个数。
-        let restart = if c.restart_required {
-            "（需重启）"
-        } else {
-            ""
-        };
-        out.push_str(&format!(
-            "  覆盖 {} : {} -> {}{restart}\n",
-            c.key, c.from, c.to
-        ));
+        out.push_str(&format!("  {}\n", import_row_text(c)));
     }
     for w in warnings {
         out.push_str(&format!("  校正 {w}\n"));
@@ -1667,6 +1709,31 @@ pub fn render_import_preview(
         out.push_str("  （没有被校正的项）\n");
     }
     out
+}
+
+/// 一份档读进来、校验、按范围算出会盖掉哪些项 —— §5.20.3 步骤 4 的全部算术,只在这里做一次。
+///
+/// 它存在的原因是这一节现在有两个入口:命令行(`--import-config <档>`)与设置页上那两枚钮
+/// (`config_import` 走前一个,[`crate::settings_view`] 走第二个)。预览那一半要是各数一遍,
+/// 「将被覆盖几项」就会有两种答案,而页上那一列行恰恰是要给用户看的数(同一个理由见
+/// [`import_row_text`])。
+///
+/// [`ImportRead::incoming`] 是校正过的那一份:步骤 5 写进本机的必须是同一份,而不是重新读一次原文。
+pub struct ImportRead {
+    pub incoming: Config,
+    pub changes: Vec<ImportChange>,
+    pub warnings: Vec<String>,
+}
+
+pub fn import_read(path: &Path, scope: ImportScope) -> Result<ImportRead, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (incoming, warnings) = Config::parse_import(&text).map_err(|e| e.to_string())?;
+    let changes = with(|s| s.config.preview_import(&incoming, scope));
+    Ok(ImportRead {
+        incoming,
+        changes,
+        warnings,
+    })
 }
 
 /// §5.20.3 步骤 2:把这一台机器正在跑的 settings 写成一份可带走的档,返回它写了几枚键。
@@ -1691,38 +1758,59 @@ pub fn config_export(path: &Path) -> Result<String, String> {
     Ok(format!("[export] 写出 {keys} 枚键到 {}\n", path.display()))
 }
 
+/// §5.20.3 步骤 5 的那一句:盘写完之后报一次。
+///
+/// 这里的「应用后又校正」与 [`render_import_preview`] 那句「被校正」不是同一份读数:
+/// 那一份是 parse 时对**来的那份档**做的,这一份是逐项写进**这一台机器**之后才发现的
+/// —— 两份档各自都合法、合起来撞一枚热键,只有这一份会说。写它成独立一手是为了能让测试
+/// 读到:步骤 5 本体走的是进程级 Settings,测试碰不到。
+///
+/// 与预览同一道理,有校正与没校正两半都写得出行 —— 「零枚」和「没去看」在日志里得长得不一样。
+pub fn render_import_applied(applied: usize, ms: u64, corrections: &[String]) -> String {
+    let mut out = format!("[import] 已应用 {applied} 项，写盘耗时 {ms} ms（§5.20.3 步骤 5）\n");
+    out.push_str(&format!(
+        "[import] 应用后又校正 {} 项（写进本机之后门才发现的）\n",
+        corrections.len()
+    ));
+    for c in corrections {
+        // 一项一行:读的人拿行数才能对上上面那个数。
+        out.push_str(&format!("  应用时校正 {c}\n"));
+    }
+    if corrections.is_empty() {
+        out.push_str("  （应用时没有再校正任何项）\n");
+    }
+    out
+}
+
 /// §5.20.3 步骤 4 与步骤 5:读一份档、校验它、报出会盖掉哪些项;只有 `confirm` 才真写。
 ///
 /// `confirm` 就是那一节里的「用户确认后应用」。没确认时除了预览那句,还专门补一行说
 /// 未应用 —— 退出码 0 在这一支是「档读得通」的意思,不是「已经改了」。
 pub fn config_import(path: &Path, scope: ImportScope, confirm: bool) -> Result<String, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (incoming, warnings) = Config::parse_import(&text).map_err(|e| e.to_string())?;
-    let changes = with(|s| s.config.preview_import(&incoming, scope));
-    let mut out = render_import_preview(&changes, &warnings, scope);
+    let read = import_read(path, scope)?;
+    let mut out = render_import_preview(&read.changes, &read.warnings, scope);
     if !confirm {
         out.push_str("[import] 未应用：加 --confirm 才会写入（§5.20.3 步骤 5）\n");
         return Ok(out);
     }
-    let applied = changes.len();
+    let applied = read.changes.len();
     // [`Settings::save`] 把写盘失败记进 `problems` 而自己只返回耗时:内存里的值照改。
     // 那一手对设置页是对的(§9.4),对 CLI 不行 —— PRD §5.17 要的是「文件写失败不得报告
     // 成功」。所以这里看的是 save 前后 `problems` 长没长,长了就当 Err 报出去。
-    let outcome = with(|s| -> Result<u64, String> {
-        s.config
-            .apply_import(&incoming, scope)
+    let (outcome_ms, corrections) = with(|s| -> Result<(u64, Vec<String>), String> {
+        let corrections = s
+            .config
+            .apply_import(&read.incoming, scope)
             .map_err(|e| e.to_string())?;
         let before = s.problems.len();
         let ms = s.save();
         if s.problems.len() > before {
             Err(s.problems[before].clone())
         } else {
-            Ok(ms)
+            Ok((ms, corrections))
         }
     })?;
-    out.push_str(&format!(
-        "[import] 已应用 {applied} 项，写盘耗时 {outcome} ms（§5.20.3 步骤 5）\n"
-    ));
+    out.push_str(&render_import_applied(applied, outcome_ms, &corrections));
     Ok(out)
 }
 
@@ -2247,6 +2335,27 @@ mod tests {
         assert!(
             shown.contains("output.hide_pins_on_dialog=true"),
             "开着那一侧要原样印 true，不能被上面两枚 (none) 分岔顶掉：{shown}"
+        );
+    }
+
+    /// P130：同一族写法给 §5.9.17 步骤 1 那枚开关走两臂。`Default` 侧显 `false` ——
+    /// 「同时提供文件」要在剪贴板旁边落一份盘，出厂不替用户开这一格；翻成 `true` 的那一侧
+    /// 原样印 `true`，不能被 `hide_pins_on_dialog` 那一臂顶掉。
+    #[test]
+    fn banner_prints_the_copy_as_file_switch_both_ways() {
+        let off = format_output_banner(&falcon_core::config::Output::default());
+        assert!(
+            off.contains("output.copy_as_file=false"),
+            "出厂默认就该显 false，复制不该顺手落盘：{off}"
+        );
+        let on = falcon_core::config::Output {
+            copy_as_file: true,
+            ..Default::default()
+        };
+        let shown = format_output_banner(&on);
+        assert!(
+            shown.contains("output.copy_as_file=true"),
+            "开着那一侧要原样印 true，且与 hide_pins_on_dialog 同屏共存：{shown}"
         );
     }
 
@@ -3255,6 +3364,50 @@ mod tests {
             "{s:?}"
         );
         assert!(!s.contains("（没有被校正的项）"), "{s:?}");
+    }
+
+    /// §5.20.3 步骤 5 写完盘那一报的两半:「门改了点什么」与「门没改任何东西」都得有自己
+    /// 那一行,而每一枚校正各占一行 —— 读的人拿行数才能对上上面那个数。
+    ///
+    /// 这一手与上面那份预览分开,是因为它答的是另一个问题:那份是**来的档**被 parse 校正
+    /// 了几枚,这一份是写进**这一台机器**之后门又发现了几枚(§10 第 170 项)。
+    #[test]
+    fn import_applied_report_prints_each_correction_it_had_to_make() {
+        let clash = "hotkey.actions.capture, toggle_pins: f13 is bound twice".to_string();
+        let s = render_import_applied(2, 7, std::slice::from_ref(&clash));
+        assert!(s.contains("[import] 已应用 2 项，写盘耗时 7 ms"), "{s:?}");
+        assert!(s.contains("[import] 应用后又校正 1 项"), "{s:?}");
+        assert_eq!(
+            s.lines().filter(|l| l.starts_with("  应用时校正 ")).count(),
+            1,
+            "{s:?}"
+        );
+        assert!(s.contains(&format!("  应用时校正 {clash}")), "{s:?}");
+        assert!(!s.contains("（应用时没有再校正任何项）"), "{s:?}");
+
+        let none = render_import_applied(0, 1, &[]);
+        assert!(none.contains("[import] 已应用 0 项"), "{none:?}");
+        assert!(none.contains("应用后又校正 0 项"), "{none:?}");
+        assert!(none.contains("（应用时没有再校正任何项）"), "{none:?}");
+        assert_eq!(
+            none.lines()
+                .filter(|l| l.starts_with("  应用时校正 "))
+                .count(),
+            0,
+            "{none:?}"
+        );
+
+        // 枚数与行数一道涨:三枚校正就是三行,不多不少。
+        let three = render_import_applied(3, 4, &["a".into(), "b".into(), "c".into()]);
+        assert_eq!(
+            three
+                .lines()
+                .filter(|l| l.starts_with("  应用时校正 "))
+                .count(),
+            3,
+            "{three:?}"
+        );
+        assert!(three.contains("应用后又校正 3 项"), "{three:?}");
     }
 
     /// §5.19.1 第 1 步那三分岔本体逐臂各问一次:跟随系统时机器答 light / dark / 不答,

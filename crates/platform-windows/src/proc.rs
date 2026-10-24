@@ -9,7 +9,7 @@
 //! user-mode handle fits in 32 bits on Win64, and `u64` is wide enough for the
 //! pointer-sized value the Win32 call actually wants.
 
-use falcon_core::geometry::PhysPoint;
+use falcon_core::geometry::{PhysPoint, PhysRect};
 
 /// The process owning `hwnd`, or `None` when the handle no longer names a window.
 pub fn pid_of_window(hwnd: u64) -> Option<u32> {
@@ -124,6 +124,63 @@ pub fn cursor_pos() -> Option<PhysPoint> {
     }
     #[cfg(not(windows))]
     None
+}
+
+/// Which modifier keys are held down *right now*, as the shell sees them.
+///
+/// `GetAsyncKeyState` answers for the whole desktop rather than for this process,
+/// which is the only reading §5.15's "require a modifier so maximising a window
+/// never fires one by accident" can be checked against: the corner is crossed by
+/// the pointer, and a pointer carries no key state of its own. The high-order bit
+/// is the "currently down" bit; the low-order bit ("went down since the last
+/// call") is deliberately ignored, because a polling loop must not turn one press
+/// into a changing answer.
+pub fn modifiers_down() -> falcon_core::hotkeys::Modifiers {
+    #[cfg(windows)]
+    {
+        use windows::Win32::UI::Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VIRTUAL_KEY, VK_CONTROL, VK_LWIN, VK_MENU, VK_SHIFT,
+        };
+        let down = |vk: VIRTUAL_KEY| {
+            // SAFETY: a virtual-key code is an input value; the return is read,
+            // never owned.
+            (unsafe { GetAsyncKeyState(vk.0 as i32) } as u16) & 0x8000 != 0
+        };
+        falcon_core::hotkeys::Modifiers {
+            ctrl: down(VK_CONTROL),
+            alt: down(VK_MENU),
+            shift: down(VK_SHIFT),
+            win: down(VK_LWIN),
+        }
+    }
+    #[cfg(not(windows))]
+    falcon_core::hotkeys::Modifiers::default()
+}
+
+/// The rectangle `hwnd` occupies on the virtual desktop, in physical pixels.
+///
+/// This is the window's own bounds, not what is visible of it: DWM will report a
+/// maximised window larger than the monitor it covers, which is exactly why
+/// "covers a monitor exactly" is a question about equality rather than about
+/// containment, and why the caller decides what a rectangle means.
+pub fn window_rect(hwnd: u64) -> Option<PhysRect> {
+    #[cfg(windows)]
+    {
+        use windows::Win32::Foundation::RECT;
+        let mut r = RECT::default();
+        // SAFETY: the out-parameter is a value this call owns; the handle is read.
+        unsafe {
+            windows::Win32::UI::WindowsAndMessaging::GetWindowRect(to_hwnd(hwnd), &mut r).ok()?
+        };
+        let w = r.right.saturating_sub(r.left).max(0) as u32;
+        let h = r.bottom.saturating_sub(r.top).max(0) as u32;
+        Some(PhysRect::new(r.left, r.top, w, h))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = hwnd;
+        None
+    }
 }
 
 /// The top-level window the desktop would actually *show* at `p`, as Win32
