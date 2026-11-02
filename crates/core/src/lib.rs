@@ -2,6 +2,7 @@
 //! whole model layer is unit-testable on a machine with no Qt installed.
 
 pub mod annotation;
+pub mod barcode;
 pub mod capture;
 pub mod card;
 pub mod clip;
@@ -9,6 +10,7 @@ pub mod colors;
 pub mod config;
 pub mod dialog_link;
 pub mod encode;
+pub mod feedback;
 pub mod frame;
 pub mod geometry;
 pub mod gif;
@@ -16,9 +18,14 @@ pub mod history;
 pub mod hotcorner;
 pub mod hotkeys;
 pub mod imageops;
+pub mod link;
 pub mod naming;
 pub mod pin;
+pub mod refresh;
+pub mod sendto;
 pub mod tasks;
+pub mod update;
+pub mod whiteboard;
 
 pub use capture::{CaptureError, CaptureService, FrameSource, MonitorInfo, WindowInfo};
 pub use frame::Frame;

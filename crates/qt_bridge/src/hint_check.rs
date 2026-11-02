@@ -736,6 +736,78 @@ fn bytes(v: &Option<Vec<u8>>) -> String {
         .unwrap_or_else(|| "没有文件".to_string())
 }
 
+/// 把 QML 档里的注释剥掉，只留代码。行注释 `//…` 到行尾，块注释 `/*…*/` 可嵌套，
+/// 字符串字面量之内的 `//` 不算注释（否则一条 `"http://…"` 会把整行代码吞掉）。
+/// 只认双引号这一枚界符：QML 没有字符字面量，单引号在代码里不是界符，把它当界符反而会让
+/// 一枚落在字符串外的 `'` 把后面半档读成字符串。换行原样保留，剥过的文本仍可按行号对回原档。
+///
+/// 这一枚从本档的测试模块提到档级，是因为 QML 源码扫描不止 `--hint` 一家在用（`--sendto` 那
+/// 一档扫 AnnotationToolbar.qml 的芯片接线）。两把剥注释的尺子必然漂移，而漂移的方向是让某一
+/// 档把一句散文判成代码——所以全档只有这一把。
+pub(crate) fn qml_code(text: &str) -> String {
+    #[derive(PartialEq)]
+    enum Mode {
+        Code,
+        Line,
+        Block,
+        Str,
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut mode = Mode::Code;
+    let mut depth = 0usize;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        match &mode {
+            Mode::Code => {
+                if c == '/' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    mode = Mode::Line;
+                } else if c == '/' && chars.peek() == Some(&'*') {
+                    chars.next();
+                    depth = 1;
+                    mode = Mode::Block;
+                } else {
+                    if c == '"' {
+                        mode = Mode::Str;
+                    }
+                    out.push(c);
+                }
+            }
+            Mode::Line => {
+                if c == '\n' {
+                    out.push(c);
+                    mode = Mode::Code;
+                }
+            }
+            Mode::Block => {
+                if c == '*' && chars.peek() == Some(&'/') {
+                    chars.next();
+                    depth -= 1;
+                    if depth == 0 {
+                        mode = Mode::Code;
+                    }
+                } else if c == '/' && chars.peek() == Some(&'*') {
+                    chars.next();
+                    depth += 1;
+                } else if c == '\n' {
+                    out.push(c);
+                }
+            }
+            Mode::Str => {
+                out.push(c);
+                if c == '\\' {
+                    if let Some(n) = chars.next() {
+                        out.push(n);
+                    }
+                } else if c == '"' {
+                    mode = Mode::Code;
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1170,74 +1242,6 @@ Window {
         // 散文里一枚不带括号的 `Connections` 不该开跨度：上面那一格正是靠这条把「词」与
         // 「块」分开的，否则一句 `// … Connections …` 之外的引用能吞掉半档。
         assert!(connections_spans("Window {\n property var a: 1\n}\n").is_empty());
-    }
-
-    /// 把 QML 档里的注释剥掉，只留代码。行注释 `//…` 到行尾，块注释 `/*…*/` 可嵌套，
-    /// 字符串字面量之内的 `//` 不算注释（否则一条 `"http://…"` 会把整行代码吞掉）。
-    /// 只认双引号这一枚界符：QML 没有字符字面量，单引号在代码里不是界符，把它当界符反而会让
-    /// 一枚落在字符串外的 `'` 把后面半档读成字符串。换行原样保留，剥过的文本仍可按行号对回原档。
-    fn qml_code(text: &str) -> String {
-        #[derive(PartialEq)]
-        enum Mode {
-            Code,
-            Line,
-            Block,
-            Str,
-        }
-        let mut out = String::with_capacity(text.len());
-        let mut mode = Mode::Code;
-        let mut depth = 0usize;
-        let mut chars = text.chars().peekable();
-        while let Some(c) = chars.next() {
-            match &mode {
-                Mode::Code => {
-                    if c == '/' && chars.peek() == Some(&'/') {
-                        chars.next();
-                        mode = Mode::Line;
-                    } else if c == '/' && chars.peek() == Some(&'*') {
-                        chars.next();
-                        depth = 1;
-                        mode = Mode::Block;
-                    } else {
-                        if c == '"' {
-                            mode = Mode::Str;
-                        }
-                        out.push(c);
-                    }
-                }
-                Mode::Line => {
-                    if c == '\n' {
-                        out.push(c);
-                        mode = Mode::Code;
-                    }
-                }
-                Mode::Block => {
-                    if c == '*' && chars.peek() == Some(&'/') {
-                        chars.next();
-                        depth -= 1;
-                        if depth == 0 {
-                            mode = Mode::Code;
-                        }
-                    } else if c == '/' && chars.peek() == Some(&'*') {
-                        chars.next();
-                        depth += 1;
-                    } else if c == '\n' {
-                        out.push(c);
-                    }
-                }
-                Mode::Str => {
-                    out.push(c);
-                    if c == '\\' {
-                        if let Some(n) = chars.next() {
-                            out.push(n);
-                        }
-                    } else if c == '"' {
-                        mode = Mode::Code;
-                    }
-                }
-            }
-        }
-        out
     }
 
     /// [`qml_code`] 自己那一腿的反证：上面那格判的是「代码里没有死名字」，而它整个建立在

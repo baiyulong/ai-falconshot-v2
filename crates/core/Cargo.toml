@@ -27,6 +27,7 @@ rusqlite.workspace = true
 directories.workspace = true
 atomic-write-file.workspace = true
 tracing.workspace = true
+rxing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true

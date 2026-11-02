@@ -202,6 +202,56 @@ pub struct Request {
 /// What the pump thread decided the user did. Every variant is a fact about a
 /// shell message; none of them knows what a screenshot tool should do about it,
 /// which is what keeps this module testable without a product.
+/// Which click on the tray icon the shell reported (§5.18.2 的四枚键)。
+///
+/// 这里只说"是哪一击"，不说"该做什么"。名单与 `crates_core::config::Tray` 的四枚字段同名，
+/// 而那份名字是这枚枚举的 `id()`，不是反过来：加第五种点击（侧键）时改的是这里，配置那一侧
+/// 照着名单加一枚键，判据仍然只有一处。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayClick {
+    /// `WM_LBUTTONUP`
+    Left,
+    /// `WM_LBUTTONDBLCLK`
+    Double,
+    /// `WM_MBUTTONUP`
+    Middle,
+    /// `WM_RBUTTONUP`
+    Right,
+}
+
+impl TrayClick {
+    /// 四枚键唯一的名单：认消息那一臂、替手投的那一发、以及门里逐枚对账的那个循环，读的都是
+    /// 它。加第五种点击（侧键）时改的还是这里 —— 与上面那句「改的是这里」是同一条 #281。
+    pub const ALL: [TrayClick; 4] = [
+        TrayClick::Left,
+        TrayClick::Double,
+        TrayClick::Middle,
+        TrayClick::Right,
+    ];
+
+    /// The `config.toml` field name for this click. `left` / `double` / `middle` /
+    /// `right` - one spelling, used by the reader of the config and by the door.
+    pub fn id(self) -> &'static str {
+        match self {
+            TrayClick::Left => "left",
+            TrayClick::Double => "double",
+            TrayClick::Middle => "middle",
+            TrayClick::Right => "right",
+        }
+    }
+
+    /// 证人上那一格的名字。与 [`Self::id`] 分开写：前者是档上的字段名，后者是给人读的那一句，
+    /// 把两者混成一枚的话，页面上显示的就会是 `config.toml` 的字。
+    pub fn label(self) -> &'static str {
+        match self {
+            TrayClick::Left => "左键",
+            TrayClick::Double => "双击",
+            TrayClick::Middle => "中键",
+            TrayClick::Right => "右键",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     /// A registered combination arrived; `id` is a [`Request::id`].
@@ -209,10 +259,17 @@ pub enum Event {
     /// A tray-menu command the user picked. `TrackPopupMenu` returned it, so this
     /// is a choice and not a click that landed somewhere.
     Menu(u32),
-    /// A click on the icon itself. PRD §5.2.2 asks for "点击托盘图标" then a menu
-    /// entry, and a left click that starts the one thing the tool is for satisfies
-    /// both halves; the menu is on the right button.
-    TrayLeft,
+    /// A click on the icon itself, named by **which click** it was and not by what
+    /// the process should do about it. PRD §5.18.2 asks that 左键 / 双击 / 中键 / 右键 be
+    /// configurable separately, which is only possible if the layer that sees the
+    /// shell's message reports the click and nothing else - the moment this layer
+    /// also decided the action, the action would be a constant of this module
+    /// rather than a line of `config.toml`.
+    ///
+    /// The old shape collapsed `WM_LBUTTONUP` and `WM_LBUTTONDBLCLK` into one
+    /// variant, so a double click and a single click were indistinguishable
+    /// downstream and §5.18.2 could not be met at all.
+    Tray(TrayClick),
     /// 机器自己播了一次设置变更（`WM_SETTINGCHANGE`）。载荷是那枚广播带来的**名字**，
     /// `NULL`（内核自己播的那一次没有名字）读成空串 —— 名字不是判据，只是「机器说了话」的证人。
     ///
@@ -383,6 +440,47 @@ impl Pump {
         win::post(self.hwnd, win::WM_APP_TIP)
     }
 
+    /// §5.18.2：把"这一次点击要开托盘菜单"投给泵线程。与 [`Self::set_tip`] 同一形 ——
+    /// 本进程所有的 `Shell_NotifyIconW` 与 `TrackPopupMenu` 都属于拥有那枚窗口的线程，从 GUI
+    /// 线程直接调是把窗口交给不是它的线程。
+    ///
+    /// `false` 只有一种含义：这一发没能投出去（窗口已经不在了）。它**不**回答"菜单开没开"，
+    /// 因为开菜单的是另一条线程上的一次消息处理，那一半的证人在门那一侧。
+    pub fn show_tray_menu(&self) -> bool {
+        win::post(self.hwnd, win::WM_APP_MENU)
+    }
+
+    /// §5.18.2 第四步的替手：把「外壳会替这一次点击投的那一发」投给本泵自己的消息窗口 ——
+    /// 同一个 [`win::TRAY_CALLBACK`]、同一个 `lparam` 低 16 位放同一个消息号，接它的 wndproc
+    /// 也是 shell 注册的那一个。哪一半是替的：手指。图标是真挂上去的那一枚（`NIM_ADD` 的答复
+    /// 已经写在 [`Started::tray`] 里），窗口是真向 shell 注册过的那一枚，所以这一发走的正是
+    /// 真人那一击走的那条尾巴，一步都不绕。
+    ///
+    /// 它**不**回答「那一次动作跑成了没有」：那一半的证人是监听线程那侧 `route` 自己写进历史
+    /// 的那一行，与 [`Self::press`] 对一次热键所做的一样。
+    pub fn notify_tray_click(&self, click: TrayClick) -> bool {
+        win::post_lparam(self.hwnd, win::TRAY_CALLBACK, win::msg_of(click))
+    }
+
+    /// 替真人选一项：把「这一项被挑中了」投给泵线程，它走的是真人那一次走的同一个尾巴
+    /// (`win` 里那枚 `deliver_pick`)。与 [`Self::press`] 同一形 —— **注册是真的，手指是替的**：
+    /// 菜单是真建的那一份（`TRAY.items`），消息真穿过两条线程，归宿真在那张路由表里查，
+    /// 缺的只有「一只手在 `TrackPopupMenu` 里点了一下」。
+    ///
+    /// 为什么不是真去开那枚菜单：`TrackPopupMenu` 对调用它的线程是模态的，一道门开了它
+    /// 就只能等一只手，而这一桌面自 P48 起的每一批读数都是 LockApp 在前的会话 —— 等着就是
+    /// 挂住。所以这一枚证的是「菜单里那一枚项被选中之后产品会做什么」，证的**不是**
+    /// 「真人点得到它」；那一句仍欠（§10 第 151 项）。
+    ///
+    /// 名单外的 id 一律 `false` 且不投递，与 `press` 对一枚 shell 没答应的键所做的一样：
+    /// 一门如果它能点名一枚从没上墙的项，它读回来的那句产品反应就成了这一枚函数的作品。
+    pub fn press_menu(&self, id: u32) -> bool {
+        if !win::has_menu_item(id) {
+            return false;
+        }
+        win::post_wparam(self.hwnd, win::WM_APP_MENU_PICK, id)
+    }
+
     /// 替系统播一次「设置改了」：把 `WM_SETTINGCHANGE` 投给本进程那枚收广播的顶层窗口，
     /// LPARAM 带的就是系统会带的那串宽字符名字。
     ///
@@ -435,6 +533,17 @@ impl Pump {
         false
     }
 
+    /// 没有托盘也就没有可点的菜单，这一臂与 `press` 同形：永远 `false`。它存在的理由只是让
+    /// 门侧的调用点不必再套一层 `#[cfg]`，而 `Pump::start` 在这一臂上本来就返 `Err`。
+    pub fn press_menu(&self, _id: u32) -> bool {
+        false
+    }
+
+    /// 没有托盘就没有可点的一击，这一臂与 [`Self::press_menu`] 同形：永远 `false`。
+    pub fn notify_tray_click(&self, _click: TrayClick) -> bool {
+        false
+    }
+
     pub fn set_tip(&self, _text: &str) -> bool {
         false
     }
@@ -451,7 +560,7 @@ impl Pump {
 /// The Win32 half: statics, the window procedure, and the thread that owns both.
 #[cfg(windows)]
 mod win {
-    use super::{Event, Refused, Request, Started, TraySpec};
+    use super::{Event, Refused, Request, Started, TrayClick, TraySpec};
     use std::sync::mpsc::Sender;
     use std::sync::Mutex;
     use windows::Win32::UI::Shell::NOTIFYICONDATAW;
@@ -481,7 +590,39 @@ mod win {
     /// The user messages this module defines. `WM_APP` is the first number the
     /// shell promises a normal application.
     pub const WM_APP_TIP: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 2;
-    const TRAY_CALLBACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+    /// §5.18.2 里"这一击跑 `menu`"的那一发：别的线程投进来，本线程去 `TrackPopupMenu`。
+    pub const WM_APP_MENU: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 3;
+    /// 替真人选好的那一项：`wparam` 就是 `TrackPopupMenu` 会返出来的那枚命令 id，本线程拿到
+    /// 它走的是与真人那一次**同一个尾巴**（[`deliver_pick`]）。它存在的理由不是方便 —— 是
+    /// `TrackPopupMenu` 对泵线程是模态的，一道门真去开那枚菜单就得等一只手，而这一桌面从 P48
+    /// 起的每一批读数都是 LockApp 在前的会话（§9.1 各格），等不来。
+    pub const WM_APP_MENU_PICK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 4;
+    /// shell 把托盘那四击投给本进程时用的那枚消息号。它现在是 `pub` 的，为的是替手能投的是
+    /// **同一枚**消息而不是抄来的一份（[`Pump::notify_tray_click`]）。
+    pub const TRAY_CALLBACK: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 1;
+
+    /// 一击 ↔ 外壳放在 `lparam` 低 16 位的那枚鼠标消息号。这一处是这一对号码唯一的作者：
+    /// 认消息那一臂（[`click_of`]）与替手投的那一发读的都是它，写两遍就会有一份漂掉。
+    pub const fn msg_of(click: TrayClick) -> u32 {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_MBUTTONUP, WM_RBUTTONUP,
+        };
+        match click {
+            TrayClick::Left => WM_LBUTTONUP,
+            TrayClick::Double => WM_LBUTTONDBLCLK,
+            TrayClick::Middle => WM_MBUTTONUP,
+            TrayClick::Right => WM_RBUTTONUP,
+        }
+    }
+
+    /// 与 [`msg_of`] 反着走的一次查表：认不出来的那一发不当成事件（与 P144 之前那一句「只有
+    /// 左键有归宿」是同一条纪律，只是现在它由名单说，而不是由四行 `if` 说）。
+    pub fn click_of(msg: u32) -> Option<TrayClick> {
+        TrayClick::ALL
+            .iter()
+            .copied()
+            .find(|click| msg_of(*click) == msg)
+    }
 
     /// This process has one icon, so it has one id. The shell keys an entry on the
     /// `(window, id)` pair, and every later call - modify, delete - has to name the
@@ -558,12 +699,42 @@ mod win {
         }
     }
 
+    /// 与 [`post_wparam`] 对称的那一手：数字在 `lparam` 里。shell 投托盘那一击时带的就是它
+    /// （低 16 位是那枚鼠标消息号），所以替手要像那一次，就得把同一个数放在同一个位置。
+    pub fn post_lparam(hwnd: u64, msg: u32, lparam: u32) -> bool {
+        use windows::Win32::Foundation::{LPARAM, WPARAM};
+        use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+
+        // SAFETY: 这一发不带指针，投给本模块建的那枚窗口，携带的值是一枚 `u32` 消息号而不是地址。
+        unsafe {
+            PostMessageW(Some(to_hwnd(hwnd)), msg, WPARAM(0), LPARAM(lparam as isize)).is_ok()
+        }
+    }
+
     /// Whether this id is one the shell accepted, read out of the record `start`
     /// wrote. Teardown clears it, so after a pump is stopped nothing presses.
     pub fn is_registered(id: u32) -> bool {
         REGISTERED
             .lock()
             .map(|held| held.iter().any(|(at, _)| *at == id))
+            .unwrap_or(false)
+    }
+
+    /// Whether this id is one the tray menu actually carries, read out of the same
+    /// `TRAY` the menu is built from — the record, not a copy of it.
+    ///
+    /// [`is_registered`] is that question for a key; this is it for a menu entry, and
+    /// it has to exist because a menu entry may have no key at all (`Work::Settings`
+    /// and `Work::Quit` both live only here). Without it a door could name an id that
+    /// was never appended and still read back a product reaction as if the user had
+    /// picked it — the exact failure `press` refuses for a key the shell rejected.
+    pub fn has_menu_item(id: u32) -> bool {
+        TRAY.lock()
+            .ok()
+            .and_then(|held| {
+                held.as_ref()
+                    .map(|tray| tray.items.iter().any(|(at, _)| *at == id))
+            })
             .unwrap_or(false)
     }
 
@@ -821,7 +992,7 @@ mod win {
         use windows::Win32::Foundation::LRESULT;
         use windows::Win32::UI::WindowsAndMessaging::{
             DefWindowProcW, DestroyWindow, PostQuitMessage, WM_CLOSE, WM_DESTROY, WM_HOTKEY,
-            WM_LBUTTONDBLCLK, WM_LBUTTONUP, WM_RBUTTONUP, WM_SETTINGCHANGE,
+            WM_SETTINGCHANGE,
         };
 
         match msg {
@@ -843,14 +1014,29 @@ mod win {
             }
             m if m == TRAY_CALLBACK => {
                 let clicked = (lparam.0 as u32) & 0xFFFF;
-                match clicked {
-                    WM_LBUTTONUP | WM_LBUTTONDBLCLK => {
-                        if let Some(tx) = sink() {
-                            let _ = tx.send(Event::TrayLeft);
-                        }
-                    }
-                    WM_RBUTTONUP => show_menu(hwnd),
-                    _ => {}
+                // §5.18.2：四种点击各交各的事件，一种都不在这里替用户决定该做什么。右键那一支
+                // 过去直接开菜单，等于把"右键跑什么"这行配置写死在消息泵里 —— 现在它和另外三种
+                // 一样只是一次点击，开不开菜单由读配置的那一层说。
+                let kind = click_of(clicked);
+                if let (Some(kind), Some(tx)) = (kind, sink()) {
+                    let _ = tx.send(Event::Tray(kind));
+                }
+                LRESULT(0)
+            }
+            m if m == WM_APP_MENU => {
+                // 从别的线程投进来的一发：菜单得由**拥有这枚窗口的线程**去 `TrackPopupMenu`，
+                // 与 `WM_APP_TIP` 走的是同一条路（见 [`Pump::set_tip`]）。
+                show_menu(hwnd);
+                LRESULT(0)
+            }
+            m if m == WM_APP_MENU_PICK => {
+                // [`Pump::press_menu`] 替真人那一次选投的一发。它在 wndproc 这一头再问一次
+                // `has_menu_item`，不是因为调用方没问（它问了），而是因为这一层的判据应该是
+                // 「这枚 id 在这份菜单上吗」，而不是「调用它的那只手记不记得名单」—— 消息可以
+                // 来自本进程任何一处，名单只有一个来源（#281）。
+                let picked = wparam.0 as u32;
+                if has_menu_item(picked) {
+                    deliver_pick(picked);
                 }
                 LRESULT(0)
             }
@@ -996,10 +1182,21 @@ mod win {
             let picked = TrackPopupMenu(menu, flags, at.x, at.y, None, hwnd, None).0;
             let _ = DestroyMenu(menu);
             if picked > 0 {
-                if let Some(tx) = sink() {
-                    let _ = tx.send(Event::Menu(picked as u32));
-                }
+                deliver_pick(picked as u32);
             }
+        }
+    }
+
+    /// The one tail a menu command has: turn it into an [`Event::Menu`] and hand it to
+    /// the listener.
+    ///
+    /// Both hands come through here — the shell's return value out of `TrackPopupMenu`,
+    /// and the id [`Pump::press_menu`] put in a message. Writing the
+    /// send twice would be two chains that can drift, and the whole claim this round
+    /// makes is that the injected one is the same chain, not a shorter one.
+    fn deliver_pick(cmd: u32) {
+        if let Some(tx) = sink() {
+            let _ = tx.send(Event::Menu(cmd));
         }
     }
 
@@ -1271,5 +1468,35 @@ mod tests {
         assert_eq!(win::setting_from_lparam(LPARAM(0)), "");
         // 低 64 KB 是保留页，`VirtualQuery` 在这里报回的是未提交，于是这一格必须是空串。
         assert_eq!(win::setting_from_lparam(LPARAM(0x0001_0000)), "");
+    }
+
+    /// 这一模块自己定义的四处私信，各有各的号。撞号不是笔误而是哑故障：替手投出去的一发
+    /// 会被别的分支接走，而wndproc 那一头返回的仍是 `LRESULT(0)`，读数上看一切正常。
+    #[cfg(windows)]
+    #[test]
+    fn the_user_messages_this_pump_invents_do_not_share_a_number() {
+        let base = windows::Win32::UI::WindowsAndMessaging::WM_APP;
+        assert_eq!(win::WM_APP_TIP, base + 2);
+        assert_eq!(win::WM_APP_MENU, base + 3);
+        assert_eq!(win::WM_APP_MENU_PICK, base + 4);
+        assert_ne!(win::WM_APP_MENU_PICK, win::WM_APP_MENU);
+    }
+
+    /// 替手那一道闸的最便宜的一格：本档不建窗口、不挂托盘，所以 `TRAY` 那一格里是空的，
+    /// 于是**任何** id 都不算「菜单上有这一项」。
+    ///
+    /// 这一格证的是那三种失败里的第一种（没挂上托盘的一趟里，一枚 id 也点不动），而不是
+    /// 「这一枚 id 不在那六项里」—— 后者要一份真的名单，而造一份假名单就是替菜单发明第二个
+    /// 供应商（#281）。真机上那一格由 `--hotkeys` 门读：菜单挂着，`has_menu_item` 只对
+    /// 名单内的号放行。
+    #[cfg(windows)]
+    #[test]
+    fn a_pick_for_a_menu_that_was_never_mounted_is_dropped() {
+        for id in [0, 1, 7, u32::MAX] {
+            assert!(
+                !win::has_menu_item(id),
+                "未挂托盘的一趟里 id={id} 不该有归宿"
+            );
+        }
     }
 }

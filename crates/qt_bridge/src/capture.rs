@@ -10,7 +10,9 @@
 //! so the mask path cannot afford to re-read the screen per gesture, and the
 //! magnifier would rebuild it on every mouse move.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
 use falcon_core::capture::{
@@ -194,11 +196,19 @@ fn working_frame() -> Result<ScreenSnapshot, String> {
 /// not. `leg` is kept because the sentence this action prints is about *what* is being
 /// repeated - the same three hundred pixels the user dragged out, or the same window
 /// bounds - and a bare rect cannot tell those two apart.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// `leg` became a `String` in P169 because the same value now crosses a process
+/// boundary: the word a *later* run reads back is one no `&'static str` in this binary
+/// wrote. A `String` costs this struct its `Copy`, and nothing reads it by copy.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LastRegion {
     pub rect: PhysRect,
-    pub leg: &'static str,
+    pub leg: String,
 }
+
+/// 「重复」这一腿的名字，唯一一处拼写。`pin_last_region` 用它改写本进程的记忆，而
+/// [`worth_persisting`] 用它拒绝改写盘上那一行 —— 理由见那枚函数。
+pub const REPEAT_LEG: &str = "重复";
 
 static LAST: OnceLock<Mutex<Option<LastRegion>>> = OnceLock::new();
 
@@ -215,54 +225,186 @@ fn worth_remembering(rect: PhysRect) -> bool {
     !rect.is_empty()
 }
 
-/// Take note of a region that just became a picture.
-pub fn remember(rect: PhysRect, leg: &'static str) {
+/// 盘上那一行值不值得写。它跟着 [`worth_remembering`] 的规矩，只多一条：**「重复」不写**。
+///
+/// 盘上那一行的职责是回答「用户上一次*截*的是什么」，而一次重复没有截新东西 —— 它读的就是
+/// 这一行。把 `重复` 抄回去，第三趟进程就会说出 «重复重复的上一次区域»，而那句话里第一个
+/// 「重复」已经不是在说用户的手势了。内存里那一格照旧被 `pin_last_region` 改成 `重复`
+/// （P167 起就是这么定的，为的是让紧接着的第二句承认自己是重复），只是不落到盘上。
+fn worth_persisting(last: &LastRegion) -> bool {
+    worth_remembering(last.rect) && last.leg != REPEAT_LEG
+}
+
+/// Take note of a region that just became a picture: in this process, and — if the
+/// §5.17 store is open ([`enable_region_store`]) — on disk for the process after it.
+pub fn remember(rect: PhysRect, leg: &str) {
     if !worth_remembering(rect) {
         return;
     }
-    *last_slot().lock().unwrap_or_else(PoisonError::into_inner) = Some(LastRegion { rect, leg });
+    let last = LastRegion {
+        rect,
+        leg: leg.to_string(),
+    };
+    *last_slot().lock().unwrap_or_else(PoisonError::into_inner) = Some(last.clone());
+    if store_enabled() && worth_persisting(&last) {
+        // A state write that the machine refused is *not* folded into the exit code:
+        // §5.17 rule 3 is about the picture the call named, and that one landed. The
+        // refused store shows up where it matters — the next `--last` reads no region
+        // and answers 「还没有截图过」, so the loss is witnessed by the next process
+        // rather than by a counter nobody outside this one can read.
+        let _ = save_at(&state_path(), &encode_line(&last));
+    }
 }
 
-/// What the last capture asked for, if this process has made one.
+/// What the last capture asked for, if **this process** has made one. Deliberately
+/// memory-only: §5.3.5's 自定义截图 dialog and the autosave gauge read the region the
+/// flow they belong to picked, and a file written by an unrelated earlier run would
+/// answer a question nobody asked them.
 pub fn last_region() -> Option<LastRegion> {
-    *last_slot().lock().unwrap_or_else(PoisonError::into_inner)
+    last_slot()
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone()
+}
+
+/// What §5.17's `--last` reads: this process's memory first, and only when it is empty
+/// the one line the previous process left on disk.
+fn last_region_across_processes() -> Option<LastRegion> {
+    if let Some(seen) = last_region() {
+        return Some(seen);
+    }
+    if DISK_MUTED.load(Ordering::SeqCst) {
+        return None;
+    }
+    read_at(&state_path()).and_then(|text| decode_line(&text))
 }
 
 /// The flow is over and the memory goes with it - used by the doors that have to
 /// start from "nothing has been captured yet".
+///
+/// Forgetting also mutes the disk for the rest of this process. A door that wipes the
+/// memory to measure 「还没有截图过」 must not get a region back out of a file it never
+/// wrote, or P169's fallback turns one of the oldest refusals into a silent success.
 pub fn forget_region() {
     *last_slot().lock().unwrap_or_else(PoisonError::into_inner) = None;
+    DISK_MUTED.store(true, Ordering::SeqCst);
 }
 
-/// §5.2.5: the last region again, on a frame taken **now**.
+// ─────────────────────────────────────── §5.17 的那一份跨进程状态（P169）
+
+/// 量具与命令行钉落点用的环境变量，与 `FALCONSHOT_GUIDE_DIR` / `FALCONSHOT_CONFIG`
+/// 同一族：给了就往那里读写，没给才问 `advanced.data_dir` 那一位主人。
+pub const ENV_DIR: &str = "FALCONSHOT_LASTREGION_DIR";
+
+/// 那份状态在盘上的名字。
+pub const STATE_FILE: &str = "last_region.txt";
+
+/// 这一趟进程许不许碰那份文件。关着的默认是**这一整轮的立足点**：遮罩、托盘、热键、
+/// `--snap` 那三枚量具档、`cargo test` 与 `--selftest` 全都一次也不动盘，它们眼里的
+/// 「上一次区域」自 P169 起仍是 P169 之前那一份进程内记忆。只有 `main` 在
+/// [`cli::Decision::Run`] 那一支上打开它 —— 也就是 PRD §5.17 说的「脚本、快捷方式和第三方
+/// 程序」真的点名了一枚截图动词的那一趟。
+static STORE_ON: AtomicBool = AtomicBool::new(false);
+
+/// [`forget_region`] 留下的那枚闸：本进程不再从盘上读上一次区域。
+static DISK_MUTED: AtomicBool = AtomicBool::new(false);
+
+pub fn enable_region_store() {
+    STORE_ON.store(true, Ordering::SeqCst);
+}
+
+pub fn store_enabled() -> bool {
+    STORE_ON.load(Ordering::SeqCst)
+}
+
+/// 那份文件住哪。落点的**那一条决定**在 [`dir_in`] 里，这里只负责去问两位主人 —— 单测碰得到
+/// 前者，碰不到 env（`cargo test` 是多线程的，改进程环境是另一码事）。
+pub fn state_path() -> PathBuf {
+    let data = crate::settings::with(|s| falcon_core::config::data_dir(&s.config));
+    dir_in(std::env::var_os(ENV_DIR).as_deref(), &data).join(STATE_FILE)
+}
+
+/// 环境变量给了非空就用它，否则用 `advanced.data_dir` 答的那枚目录。与 `guide.rs` 同一条规矩，
+/// 拆成纯函数是为了让「门把落点换到自己那一枚目录里」这一件 §9.1 第十五条要求的事，有一次
+/// 不带盘的证人。
+fn dir_in(env: Option<&OsStr>, data: &Path) -> PathBuf {
+    match env {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => data.to_path_buf(),
+    }
+}
+
+/// 盘上那一行的写法：`x,y,w,h|leg`。四个整数那半**就是** [`rect_arg`] 的语法，不是第二份
+/// 解析器 —— 于是 `w=0`、越界、少一个数这些写法天生读不回来，而多监视器上那个负数原点天生
+/// 读得回来（P168 第 5 腿守的就是这一件）。
+pub fn encode_line(last: &LastRegion) -> String {
+    format!(
+        "{},{},{},{}|{}",
+        last.rect.x, last.rect.y, last.rect.w, last.rect.h, last.leg
+    )
+}
+
+/// [`encode_line`] 的反向，只认**第一行**：一份被谁追加过点的文件读回的是当初那一行，
+/// 而不是最后那一行。认不出的写法交回 `None`，也就是「还没有截图过」—— 存档坏了不冒充
+/// 一次成功，也不许把一次真截图拖成崩溃。
+pub fn decode_line(text: &str) -> Option<LastRegion> {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
+    let (nums, leg) = line.split_once('|')?;
+    if leg.is_empty() {
+        return None;
+    }
+    let rect = rect_arg(STATE_FILE, nums).ok()?;
+    Some(LastRegion {
+        rect,
+        leg: leg.to_string(),
+    })
+}
+
+/// 盘上那一行现在写着什么；不存在 / 读不开 = `None`（新用户，或上一趟没留下东西）。
+fn read_at(path: &Path) -> Option<String> {
+    std::fs::read_to_string(path).ok()
+}
+
+/// 写那一行。先写同名 `.tmp` 再改名，与 `guide.rs` 的 `write_at` 同一条理由：一份读到一半
+/// 被截断的存档比不写更坏 —— 它会教下一趟进程去重复一个从未存在过的矩形。
+fn save_at(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let name = path
+        .file_name()
+        .ok_or_else(|| "这一枚路径连文件名都没有".to_string())?;
+    let tmp = path.with_file_name(format!("{}.tmp", name.to_string_lossy()));
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// One rectangle read again, on a frame taken **now**.
 ///
-/// `working_frame` is deliberately not used here. Every other read of the freeze
-/// exists to avoid re-photographing a desktop that has not changed; a repeat is the
-/// one flow whose whole point is that the desktop *has* changed under a region that
-/// has not. Reusing the cached frame would hand back the same pixels and call it a
-/// second capture.
+/// [`last_frame`]'s middle, with the rectangle handed in rather than remembered — the two
+/// flows that ask for a re-read (§5.2.5's 重复上次截图 and §5.5.8's 刷新截图) differ in which
+/// rectangle they name and in what they call the line, and they agree on everything else,
+/// down to the one reason neither of them may use [`working_frame`]:
 ///
-/// A region that no longer fits - a monitor unplugged, the resolution changed - is
-/// clipped by `ScreenSnapshot::capture` and the clipping is said out loud, which is
-/// what PRD §5.2.5 asks for ("自动裁剪到有效范围并提示").
+/// Every other read of the freeze exists to avoid re-photographing a desktop that has not
+/// changed; a re-read is the one flow whose whole point is that the desktop *has* changed
+/// under a region that has not. Reusing the cached frame would hand back the same pixels and
+/// call it a second look.
 ///
-/// The frame owner behind both §5.17's output arms: [`pin_last_region`] pins what this
-/// returns, and `-o clipboard` / `-o file` hand the same `(frame, rect, line)` to
-/// [`crate::platform_windows::clip`] or [`crate::save`] without opening a window. It
-/// does NOT `remember` — that stays in [`pin_last_region`], so a repeat that ends on the
-/// clipboard does not re-leg the memory as "重复" out from under a pin that has to keep
-/// the original geometry. The freeze here is deliberate and shared: one new photograph,
-/// three possible destinations.
-pub fn last_frame() -> Result<(Frame, PhysRect, String), String> {
-    let last = last_region().ok_or("还没有截图过：先把要重复的范围截出来")?;
+/// `what` is the phrase the line opens with, because «重复窗口的上一次区域» and «刷新贴图 3»
+/// are two sentences about two different things and neither is this function's to decide.
+/// A region that no longer fits is clipped here and the clipping is said in that line, which
+/// is what §5.2.5 asks for ("自动裁剪到有效范围并提示"); §5.5.8 refuses the same case before
+/// reaching here, and [`falcon_core::refresh`] says why the two must not share an answer.
+pub fn re_read(rect: &PhysRect, what: &str) -> Result<(Frame, PhysRect, String), String> {
     let f = freeze()?;
-    let cap = f.snap.capture(&last.rect).map_err(|e| e.to_string())?;
+    let cap = f.snap.capture(rect).map_err(|e| e.to_string())?;
     Ok((
         cap.frame,
         cap.rect,
         format!(
-            "重复{}的上一次区域 {:?}：{} 的 {} ms 新冻结{}",
-            last.leg,
+            "{} {:?}：{} 的 {} ms 新冻结{}",
+            what,
             cap.rect,
             f.snap.backend,
             f.ms,
@@ -275,11 +417,35 @@ pub fn last_frame() -> Result<(Frame, PhysRect, String), String> {
     ))
 }
 
+/// §5.2.5: the last region again, on a frame taken **now**.
+///
+/// `working_frame` is deliberately not used here — the reason is written on [`re_read`],
+/// and it is the reason this function exists apart from the mask's ordinary reads: a repeat
+/// that reused the cached freeze would return the picture the user already had.
+///
+/// The region it reads is [`last_region_across_processes`], i.e. this process's memory and,
+/// when that is empty, the line the previous §5.17 run left on disk. That fallback is the
+/// whole of P169: PRD §5.17 lists 截取上一次区域 among what a *script* may ask for, and a
+/// script's call is always a new process — while `last_region`'s memory used to die with
+/// each one, so `--last` could only ever answer 「还没有截图过」 from a terminal.
+///
+/// The frame owner behind both §5.17's output arms: [`pin_last_region`] pins what this
+/// returns, and `-o clipboard` / `-o file` hand the same `(frame, rect, line)` to
+/// [`crate::platform_windows::clip`] or [`crate::save`] without opening a window. It
+/// does NOT `remember` — that stays in [`pin_last_region`], so a repeat that ends on the
+/// clipboard does not re-leg the memory as "重复" out from under a pin that has to keep
+/// the original geometry. The freeze here is deliberate and shared: one new photograph,
+/// three possible destinations.
+pub fn last_frame() -> Result<(Frame, PhysRect, String), String> {
+    let last = last_region_across_processes().ok_or("还没有截图过：先把要重复的范围截出来")?;
+    re_read(&last.rect, &format!("重复{}的上一次区域", last.leg))
+}
+
 /// §5.2.5: the last region again, as a pin — [`last_frame`]'s picture presented.
 pub fn pin_last_region() -> Result<(PinId, String), String> {
     let (frame, rect, line) = last_frame()?;
-    let id = state::with(|s| s.add(frame, PhysPoint::new(rect.x, rect.y)))?;
-    remember(rect, "重复");
+    let id = state::with(|s| s.add_captured(frame, PhysPoint::new(rect.x, rect.y)))?;
+    remember(rect, REPEAT_LEG);
     Ok((id, line))
 }
 
@@ -353,7 +519,7 @@ pub fn active_frame() -> Result<(Frame, PhysRect, String), String> {
 pub fn pin_active_window() -> Result<(PinId, String), String> {
     let (frame, rect, line) = active_frame()?;
     remember(rect, "窗口");
-    let id = state::with(|s| s.add(frame, PhysPoint::new(rect.x, rect.y)))?;
+    let id = state::with(|s| s.add_captured(frame, PhysPoint::new(rect.x, rect.y)))?;
     Ok((id, line))
 }
 
@@ -368,11 +534,47 @@ pub fn pin_active_window() -> Result<(PinId, String), String> {
 /// The reuse of `working_frame` (a fresh freeze only if none is cached) is preserved
 /// unchanged from the pin path, so `--snap`/`--rect` timing is not this function's to
 /// alter.
-pub fn region_frame(want: &PhysRect) -> Result<(Frame, PhysRect), String> {
+///
+/// P165 adds the third slot: core already knew the request did not fit (`Captured::clipped`,
+/// `crates/core/src/capture.rs:140`) and this function used to drop that bool on the floor. It is the
+/// difference between 「自动修正」 and 「提示」 in PRD §5.3.5's 校验规则, and only the presenter can say
+/// which one the user got.
+pub fn region_frame(want: &PhysRect) -> Result<(Frame, PhysRect, bool), String> {
     let snap = working_frame()?;
     let cap = snap.capture(want).map_err(|e| e.to_string())?;
     remember(cap.rect, "矩形");
-    Ok((cap.frame, cap.rect))
+    Ok((cap.frame, cap.rect, cap.clipped))
+}
+
+/// PRD §5.3.5's 「坐标超出屏幕时应提示或自动修正」 in one sentence: the clipping is the 自动修正 and has
+/// always happened, and this is the 提示 half — the two rectangles named side by side, so a line that
+/// reads `区域 …296×400…` for a request of `…400×400…` is not something the user has to diff by eye.
+/// A request that fit keeps the old sentence exactly: a region that needed no correcting gets no
+/// second half, which is what makes the second half mean something when it appears.
+pub fn region_line(want: &PhysRect, got: &PhysRect, clipped: bool) -> String {
+    if clipped {
+        format!("区域 {got:?}（{}）", clip_note(want))
+    } else {
+        format!("区域 {got:?}")
+    }
+}
+
+/// The 提示 half's one and only wording, so no presenter can paraphrase the accusation away. Every
+/// caller that displays a clipped region reaches it, either inside [`region_line`]'s parentheses or,
+/// for the leg whose sentence belongs to `save`, as a whole sentence of its own.
+pub fn clip_note(want: &PhysRect) -> String {
+    format!("你要的是 {want:?}，出桌面的那几边已裁掉")
+}
+
+/// [`clip_note`] as the file leg can attach it: `save` owns 「已保存到 …（截图 W×H 像素）。」 and the
+/// correction has to arrive after that period, not inside it. Empty when nothing was clipped, so the
+/// region that fit stays a one-sentence line — the second sentence is what makes it a report.
+pub fn clip_tail(want: &PhysRect, clipped: bool) -> String {
+    if clipped {
+        format!("{}。", clip_note(want))
+    } else {
+        String::new()
+    }
 }
 
 /// One rectangle, pinned where it was on screen — [`region_frame`]'s pixels presented.
@@ -381,9 +583,31 @@ pub fn region_frame(want: &PhysRect) -> Result<(Frame, PhysRect), String> {
 /// remembered is `cap.rect`, the crop that actually became a picture, rather than
 /// `want`. A request that ran off the edge of the desktop has already been answered
 /// once by clipping it, and repeating the answer is what the user saw.
-pub fn pin_rect(want: &PhysRect) -> Result<PinId, String> {
-    let (frame, rect) = region_frame(want)?;
-    state::with(|s| s.add(frame, PhysPoint::new(rect.x, rect.y)))
+///
+/// It hands back the sentence too, for the same reason [`region_frame`] hands back the bool: every
+/// presenter that used to build its own line had a `want` in scope and printed that, so a clipped
+/// region reported a rectangle that never became a picture.
+pub fn pin_rect(want: &PhysRect) -> Result<(PinId, String), String> {
+    let (frame, rect, clipped) = region_frame(want)?;
+    let id = state::with(|s| s.add_captured(frame, PhysPoint::new(rect.x, rect.y)))?;
+    Ok((id, region_line(want, &rect, clipped)))
+}
+
+/// 一块抓出来的区域成为贴图时，说给它听的那一句的**唯一作者**。
+///
+/// P166 之前这一句长在 `main.rs` 的 `cli_capture_to_pin` 那一格里，连同它那半句「（关掉那扇窗
+/// 即退出）」—— 那半句说的是命令行那一路只钉一张、钉完就等人关窗，不属于这一句的本分。对话框
+/// （PRD 第 302 行那一枚「开始截图」）是这一句的第二位读者，而它要的正是前面那半句：谁钉的、
+/// 钉在哪一块。把前面那半句抽到这里、尾巴留给调用方，两位读者说的就是同一句话，而「贴图 {id}
+/// 已钉：」这几个字不会出现第二种写法。
+///
+/// P167 把这一句的读者从两位扩到五位：`cli_capture_to_pin` 的三臂（`--region` / `--last` /
+/// `--active`）自此都过这里，`--last` 与 `--active` 此前把 `id` 丢在 `|(_, line)|` 里、终端上因此
+/// 从来没说过刚钉的是哪一枚；`--snap` 那一档的打印行也从「自己另写一句 `snapped pin {id}`」改成
+/// 递到这里来。`--paste` 不在这五位里：它钉的是剪贴板里来的一张，手里没有区域可描述，硬套这一句
+/// 只会得到一枚冒号后面空着的句子。
+pub fn pinned_line(id: PinId, line: &str) -> String {
+    format!("贴图 {id} 已钉：{line}")
 }
 
 /// §5.3.2 - the window under a point, as the user sees it: topmost in z-order.
@@ -422,29 +646,56 @@ pub fn centre_rect(width: u32, height: u32) -> Result<PhysRect, String> {
 pub fn snap_centre(width: u32, height: u32) -> Result<(PinId, String), String> {
     let f = freeze()?;
     let want = centre_rect(width, height)?;
-    let id = pin_rect(&want)?;
+    // The line is dropped here and not because it does not matter: [`centre_rect`] builds its rect out
+    // of the primary monitor's own bounds, so this leg cannot arrive at `pin_rect` with a region that
+    // ran off the desktop. The two presenters that can take a typed rectangle print it.
+    let (id, _) = pin_rect(&want)?;
     Ok((
         id,
         format!("{} ms, {:?} from {}", f.ms, want, snapshot_line(&f.snap)),
     ))
 }
 
-/// A rectangle in the shape `--rect x,y,w,h` carries.
-pub fn rect_arg(raw: &str) -> Option<PhysRect> {
-    let n: Vec<i32> = raw
+/// PRD 第 307 行「宽度和高度必须大于 0」这一句的**唯一作者**。
+///
+/// P165 把它写在 [`rect_arg`] 里面，那是对的 —— 那时命令行是它唯一的读者。P166 的「自定义截图」
+/// 对话框（PRD 第 298-303 行）是第二位读者，而它手里已经是一拆开的四格整数、不是 `x,y,w,h` 那样
+/// 一串字符：让对话框照着这一句再写一遍，就是 #281 的形状 —— 同一枚拒绝在两处各有措辞，改一处
+/// 就留下另一处还在说旧话。所以这里收的是一枚**名字**（谁给的数）与那两个数，命令行进来的那串
+/// 字符仍旧由 [`rect_arg`] 切完之后交进来，两句字节与 P165 记下的逐字相同。
+pub fn size_guard(what: &str, w: i32, h: i32) -> Result<(), String> {
+    if w <= 0 || h <= 0 {
+        return Err(format!(
+            "{what} 的宽度和高度必须大于 0（给的是 w={w}, h={h}）：0 或负数不是一块可截取的区域"
+        ));
+    }
+    Ok(())
+}
+
+/// A rectangle in the shape `--rect x,y,w,h` / `--region x,y,w,h` carries.
+///
+/// PRD §5.3.5's 校验规则 asks 「宽度和高度必须大于 0」, and until P165 this function answered that by
+/// rewriting the number: `n[2].max(1)` turned `--region 5,6,0,-40` into a real 1×1 picture and an exit
+/// code of 0, so the typo produced a screenshot rather than an answer. A negative did worse than lie —
+/// `-40 as u32` is 4294967256, and only the saturating `right()` kept it from looking like a width.
+/// Refusing, and naming the flag that was typed and the pair that broke, is the reading the line asks
+/// for; the caller no longer has to guess which of its two verbs the sentence belongs to.
+pub fn rect_arg(flag: &str, raw: &str) -> Result<PhysRect, String> {
+    let parsed: Option<Vec<i32>> = raw
         .split(',')
         .filter(|v| !v.trim().is_empty())
         .map(|v| v.trim().parse::<i32>().ok())
-        .collect::<Option<Vec<_>>>()?;
-    if n.len() != 4 {
-        return None;
-    }
-    Some(PhysRect::new(
-        n[0],
-        n[1],
-        n[2].max(1) as u32,
-        n[3].max(1) as u32,
-    ))
+        .collect();
+    let n = match parsed {
+        Some(n) if n.len() == 4 => n,
+        _ => {
+            return Err(format!(
+                "{flag} 后面要跟四个整数 x,y,w,h（例如 `{flag} 10,20,300,400`）"
+            ));
+        }
+    };
+    size_guard(flag, n[2], n[3])?;
+    Ok(PhysRect::new(n[0], n[1], n[2] as u32, n[3] as u32))
 }
 
 /// A whole window as its own picture. This path does not use the freeze: a window
@@ -468,7 +719,7 @@ pub fn window_frame(hwnd: u32) -> Result<(Frame, PhysRect), String> {
 pub fn pin_window(hwnd: u32) -> Result<PinId, String> {
     let (frame, rect) = window_frame(hwnd)?;
     remember(rect, "窗口");
-    state::with(|s| s.add(frame, PhysPoint::new(rect.x, rect.y)))
+    state::with(|s| s.add_captured(frame, PhysPoint::new(rect.x, rect.y)))
 }
 
 /// `monitor id  WxH @x,y scale` per line, plus the union. Printed by `--capture`
@@ -629,26 +880,215 @@ mod tests {
     #[test]
     fn a_rect_argument_is_four_numbers_and_nothing_else() {
         assert_eq!(
-            rect_arg("10,20,300,400"),
-            Some(PhysRect::new(10, 20, 300, 400))
+            rect_arg("--rect", "10,20,300,400"),
+            Ok(PhysRect::new(10, 20, 300, 400))
         );
         // Spaces are typed by humans; three numbers is a typo, and a typo that
         // silently becomes a rect is worse than a rect that is refused.
         assert_eq!(
-            rect_arg(" 10 , 20 , 300 , 400 "),
-            Some(PhysRect::new(10, 20, 300, 400))
+            rect_arg("--region", " 10 , 20 , 300 , 400 "),
+            Ok(PhysRect::new(10, 20, 300, 400))
         );
-        assert_eq!(rect_arg("10,20,300"), None);
-        assert_eq!(rect_arg("10,20,300,abc"), None);
-        assert_eq!(rect_arg(""), None);
+        for bad in ["10,20,300", "10,20,300,abc", ""] {
+            let why = rect_arg("--region", bad).unwrap_err();
+            assert!(
+                why.contains("--region"),
+                "{why} does not name the flag typed"
+            );
+            assert!(why.contains("四个整数"), "{why}");
+            // The other verb must not be able to borrow this sentence.
+            assert!(!why.contains("--rect"), "{why}");
+        }
+        assert!(rect_arg("--rect", "1,2,3,4,5").is_err());
     }
 
+    /// §5.3.5 校验规则第一行「宽度和高度必须大于 0」，自 P165 起是一次拒绝而不是一次改写。
+    /// The old behaviour is the thing this test exists to keep away: `5,6,0,-40` used to answer with a
+    /// real 1×1 rectangle (and exit 0), which reads to the user as "that little square is what you
+    /// asked for". A refusal has to name the pair that broke, or the user is hunting through four
+    /// numbers they just typed.
     #[test]
-    fn a_zero_sized_rect_becomes_one_pixel_rather_than_nothing() {
-        // An empty rect is refused by `ScreenSnapshot::capture` with `Empty`, so a
-        // `--rect 0,0,0,0` would read as "the desktop is broken". Clamping to one
-        // pixel keeps the diagnostic about the region the user named.
-        assert_eq!(rect_arg("5,6,0,-40"), Some(PhysRect::new(5, 6, 1, 1)));
+    fn a_zero_or_negative_size_is_refused_by_the_name_that_was_typed() {
+        for (flag, raw, w, h) in [
+            ("--region", "5,6,0,-40", 0, -40),
+            ("--region", "5,6,0,40", 0, 40),
+            ("--rect", "5,6,3,0", 3, 0),
+            ("--region", "5,6,-1,-1", -1, -1),
+        ] {
+            let why = rect_arg(flag, raw).unwrap_err();
+            assert!(why.contains(flag), "{why} 没点名 {flag}");
+            assert!(why.contains("必须大于 0"), "{why}");
+            assert!(why.contains(&format!("w={w}")), "{why} 没念出 w={w}");
+            assert!(why.contains(&format!("h={h}")), "{why} 没念出 h={h}");
+        }
+        // One is the smallest legal region, and it stays legal: the refusal is about 0 and below, not
+        // about "suspiciously small", or a one-pixel pin would become impossible to ask for.
+        assert_eq!(
+            rect_arg("--region", "5,6,1,1"),
+            Ok(PhysRect::new(5, 6, 1, 1))
+        );
+        assert!(rect_arg("--region", "5,6,1,0").is_err());
+    }
+
+    /// P169：盘上那一行的写法。`cargo test` 不许改进程环境（多线程），所以这里问的是**写法
+    /// 本身** —— 谁写谁读、坏写法一律读不回东西；「这一趟落在哪枚目录」那一格归终端门。
+    #[test]
+    fn the_line_on_disk_is_the_same_grammar_as_a_region_argument() {
+        let last = LastRegion {
+            rect: PhysRect::new(10, 20, 300, 400),
+            leg: "矩形".to_string(),
+        };
+        assert_eq!(encode_line(&last), "10,20,300,400|矩形");
+        assert_eq!(decode_line("10,20,300,400|矩形"), Some(last.clone()));
+        assert_eq!(decode_line(&encode_line(&last)), Some(last.clone()));
+        // 尾随换行是新写的文件常带的那一枚,它不是第二行,也不改变第一行。
+        assert_eq!(decode_line("10,20,300,400|矩形\n"), Some(last));
+        // 多监视器上负数是合法的矩形（P168 第 5 腿守的就是这一件）,存档不许把它读丢。
+        let neg = decode_line("-100,-50,400,300|窗口").unwrap();
+        assert_eq!(neg.rect, PhysRect::new(-100, -50, 400, 300));
+        assert_eq!(neg.leg, "窗口");
+        for bad in [
+            "",
+            "   ",
+            "10,20,300,400",
+            "10,20,300|矩形",
+            "10,20,0,40|矩形",
+            "10,20,300,abc|矩形",
+            "10,20,300,400|",
+            "|矩形",
+            "1,2,3,4,5|矩形",
+            "x,y,w,h|矩形",
+        ] {
+            assert_eq!(decode_line(bad), None, "{bad} 被读成了一次上一次区域");
+        }
+        // 只认第一行：一份被谁追加过点的文件,读回的是当初那一行,不是最后那一行。
+        let two = decode_line("10,20,300,400|矩形\n7,8,9,10|窗口").unwrap();
+        assert_eq!(two.rect, PhysRect::new(10, 20, 300, 400));
+        assert_eq!(two.leg, "矩形");
+        // 名字里带 '|' 不改语法 —— 矩形那半不可能含竖线,所以竖线后面整段都是名字。
+        let odd = decode_line("1,2,3,4|重复|窗口").unwrap();
+        assert_eq!(odd.leg, "重复|窗口");
+    }
+
+    /// P169：哪一次 remember 值得让下一趟进程也看见。空矩形跟着内存那条老规矩走,而「重复」
+    /// 这一腿不写盘 —— 它读的就是这一行,把"重复"自己的名字抄回去,第三趟进程就会说出
+    /// «重复重复的上一次区域»,而那句里第一个「重复」已经不是在说用户的手势了。
+    #[test]
+    fn a_repeat_re_legs_the_memory_but_not_the_disk() {
+        let rect = PhysRect::new(10, 20, 300, 400);
+        for leg in ["矩形", "窗口", "遮罩选区"] {
+            assert!(
+                worth_persisting(&LastRegion {
+                    rect,
+                    leg: leg.to_string()
+                }),
+                "{leg} 那一腿截出来的区域该让下一趟进程也看得见"
+            );
+        }
+        assert!(!worth_persisting(&LastRegion {
+            rect,
+            leg: REPEAT_LEG.to_string()
+        }));
+        assert!(!worth_persisting(&LastRegion {
+            rect: PhysRect::new(10, 20, 0, 40),
+            leg: "矩形".to_string()
+        }));
+        // 「重复」这一枚名字只有一处拼写,而上面那条规则的全部依据就是它。
+        assert_eq!(REPEAT_LEG, "重复");
+        assert_eq!(
+            encode_line(&LastRegion {
+                rect,
+                leg: REPEAT_LEG.to_string()
+            }),
+            "10,20,300,400|重复"
+        );
+    }
+
+    /// 落点那一条决定是纯的：[`ENV_DIR`] 给了非空就用它,否则用 `advanced.data_dir` 答的那枚
+    /// 目录。这一格是 §9.1 第十五条的地基 —— 门换得了自己的落点,才谈得上一次也不碰用户那一份。
+    #[test]
+    fn a_door_can_point_the_state_somewhere_else() {
+        let data = Path::new("C:/users/me/AppData/Roaming/ai-falconshot");
+        assert_eq!(dir_in(None, data), data.to_path_buf());
+        assert_eq!(dir_in(Some(OsStr::new("")), data), data.to_path_buf());
+        assert_eq!(
+            dir_in(Some(OsStr::new("D:/tmp/p169state_A")), data),
+            PathBuf::from("D:/tmp/p169state_A")
+        );
+        // 换到哪一枚目录,那份文件的名字都不跟着换。
+        assert_eq!(
+            state_path().file_name().and_then(|n| n.to_str()),
+            Some(STATE_FILE)
+        );
+    }
+
+    /// 那份文件真的写得出去、读得回来,而半行存档不会冒充一次成功。写的是 `%TEMP%` 下本档自己
+    /// 那一枚名字 —— 用户 `%APPDATA%\\ai-falconshot` 里那一份不是 `cargo test` 的草稿纸。
+    #[test]
+    fn a_saved_line_survives_a_second_reading() {
+        let dir = std::env::temp_dir().join(format!("p169state_{}", std::process::id()));
+        let file = dir.join(STATE_FILE);
+        let last = LastRegion {
+            rect: PhysRect::new(100, 120, 320, 240),
+            leg: "矩形".to_string(),
+        };
+        save_at(&file, &encode_line(&last)).unwrap();
+        assert_eq!(
+            read_at(&file).and_then(|text| decode_line(&text)),
+            Some(last.clone())
+        );
+        // 截断的存档读不回一枚矩形,而不是读回一枚"看起来对"的。
+        std::fs::write(&file, "100,120,32").unwrap();
+        assert_eq!(read_at(&file).and_then(|text| decode_line(&text)), None);
+        // 没有文件 = 新用户,不是坏。
+        std::fs::remove_file(&file).unwrap();
+        assert_eq!(read_at(&file), None);
+        assert!(std::fs::remove_dir(&dir).is_ok());
+    }
+
+    /// §5.3.5 校验规则第二行「坐标超出屏幕时应提示或自动修正」的两半，在这里各自有一句话可问：
+    /// 裁没裁是 `clipped` 那一格，说了没有是这一格。`region_line` is a pure function precisely so the
+    /// sentence can be graded without a desktop — the real-machine door then asks whether the clipped
+    /// case ever reaches a user's terminal at all.
+    #[test]
+    fn a_clipped_region_says_what_was_asked_and_a_whole_one_says_nothing_more() {
+        let want = PhysRect::new(1500, 900, 400, 400);
+        let got = PhysRect::new(1500, 900, 36, 60);
+        let clipped = region_line(&want, &got, true);
+        assert!(clipped.starts_with("区域 "), "{clipped}");
+        assert!(
+            clipped.contains(&format!("{got:?}")),
+            "{clipped} 没先说落下的那一格"
+        );
+        assert!(
+            clipped.contains(&format!("{want:?}")),
+            "{clipped} 没说你要的那一格"
+        );
+        assert!(clipped.contains("裁"), "{clipped} 没说这一格是被裁过的");
+        // The order is not cosmetic: the picture the user got is what the line opens with.
+        assert!(
+            clipped.find(&format!("{got:?}")).unwrap()
+                < clipped.find(&format!("{want:?}")).unwrap(),
+            "{clipped}"
+        );
+        // A region that fit is not given a second half to read past.
+        let same = PhysRect::new(10, 20, 300, 400);
+        assert_eq!(region_line(&same, &same, false), format!("区域 {same:?}"));
+        assert!(!region_line(&same, &same, false).contains("你要的是"));
+        // The file leg's tail is the same wording with a period on it, and the same emptiness: one
+        // phrase, two places that may say it. A tail that added something to a region that fit would
+        // make 「已保存到 …」 ambiguous about whether anything moved.
+        let tail = clip_tail(&want, true);
+        assert!(
+            tail.ends_with('。') && tail.starts_with("你要的是"),
+            "{tail}"
+        );
+        assert_eq!(tail, format!("{}。", clip_note(&want)));
+        assert!(
+            tail.contains(&format!("{want:?}")),
+            "{tail} 没点名要的那一格"
+        );
+        assert_eq!(clip_tail(&same, false), "");
     }
 
     /// §5.2.5's memory keeps the region of a capture that happened, not of a flow

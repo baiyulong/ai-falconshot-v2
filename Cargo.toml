@@ -31,6 +31,23 @@ atomic-write-file = "0.3"
 tracing = "0.1"
 proptest = "1"
 tempfile = "3"
+# PRD §5.6.2 / §5.6.3, pinned by plan §2.1 (`rxing` 0.9, QR + 一维, 吃内存亮度缓冲) -
+# chosen over `zedbar` so no LGPL-3.0 term enters the package.
+#
+# Default features are off for one reason: they pull `image = "=0.25.8"`, and this workspace
+# pins `image ^0.25.10` - the resolver dies on `failed to select a version for image` before
+# anything compiles. We only ever hand rxing a plain luminance buffer, so the features here
+# are exactly: QR (§5.6.2), one-dimensional codes (§5.6.3), the multi-code reader, the
+# writers (the round-trip tests encode their own code), and `encoding_rs` for the non-UTF-8
+# character sets a real-world QR can carry.
+rxing = { version = "0.9", default-features = false, features = [
+    "decoders",
+    "encoders",
+    "multi_barcode_readers",
+    "qrcode",
+    "oned",
+    "encoding_rs",
+] }
 
 [profile.release]
 lto = "thin"

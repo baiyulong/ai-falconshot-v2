@@ -494,6 +494,25 @@ pub struct PinItem {
     pub gif: Option<PlayState>,
     /// §5.9.9 "支持撤销裁剪": the crops still waiting to be undone, newest last.
     pub crop_undo: Vec<PhysRect>,
+    /// §5.5.8 步骤 3「系统按原截图坐标重新读取屏幕内容」里的那一枚**原截图坐标**: the point
+    /// of the desktop this pin's source bitmap was read off.
+    ///
+    /// Only the legs whose pixels *are* a screen read set it — in this build that is the
+    /// four presenters in `qt_bridge::capture` (`--rect`, `--window`, 活动窗口, 重复上次区域),
+    /// all of which go through the bridge's `add_captured`. It stays the
+    /// top-left of the rectangle that was read even after the window has been dragged
+    /// somewhere else, because "where this picture came from" is a fact about the picture
+    /// and not about where the window happens to sit — a refresh that followed
+    /// [`PinItem::pos_phys`] would re-read whatever is under the pin now, which is a
+    /// different requirement's answer. `None` is every other origin: a file, the clipboard,
+    /// a text card, a restored session. Those pins have no coordinates to re-read, and
+    /// saying so is [`crate::refresh::plan`]'s first arm rather than a silent no-op.
+    ///
+    /// The size is deliberately not stored here: [`PinItem::source_size`] is the shape of
+    /// the same bitmap and nothing shrinks or grows it afterwards (§5.9.9 crops *inside*
+    /// it), so a second copy would be two authorities on one fact — see
+    /// [`PinItem::captured_rect`].
+    pub captured_at: Option<PhysPoint>,
 }
 
 impl PinItem {
@@ -533,6 +552,10 @@ impl PinItem {
             thumbnail: None,
             gif: None,
             crop_undo: Vec::new(),
+            // A pin is not assumed to have come off the screen. The one writer is
+            // `qt_bridge::state::PinState::add_captured`, and it writes it only for the
+            // pixels a `capture` leg just handed over.
+            captured_at: None,
         };
         p.sync_size();
         Ok(p)
@@ -602,6 +625,18 @@ impl PinItem {
 
     pub fn window_rect(&self) -> PhysRect {
         self.size_phys.at(self.pos_phys)
+    }
+
+    /// §5.5.8: the piece of the desktop [`PinItem::source_size`] was read off, or `None`
+    /// when these pixels never came off a screen. Derived rather than stored because the
+    /// rectangle is two facts the pin already keeps — where it was captured
+    /// ([`PinItem::captured_at`]) and how big those pixels are — and a stored copy of the
+    /// second one is a thing that can disagree with the bitmap it describes.
+    ///
+    /// It ignores [`PinItem::pos_phys`] by design: a dragged pin still came from the
+    /// rectangle it was made in.
+    pub fn captured_rect(&self) -> Option<PhysRect> {
+        self.captured_at.map(|at| self.source_size.at(at))
     }
 
     pub fn visible(&self) -> bool {
@@ -1782,6 +1817,10 @@ impl PersistedPin {
             thumbnail: self.thumbnail,
             gif: self.gif,
             crop_undo: self.crop_undo.clone(),
+            // `PersistedPin` has no `captured_at` row on purpose: §5.5.8's coordinates are
+            // a claim about *this* desktop, and a pin read back off a file in a later
+            // process has no screen read behind it to point at.
+            captured_at: None,
         }
     }
 }

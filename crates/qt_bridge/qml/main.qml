@@ -117,6 +117,39 @@ Item {
     /// 那一扇窗，同一趟最多一扇：`settings_open` 是一枚布尔的现在时，不是一个计数。
     property var settingsWindow: null
 
+    /// §5.3.5 那一扇「自定义截图」对话框的那一声，形状与上面那一枚相同：别名绑**值**、handler
+    /// 长在声明它的那个对象的根上（#316）。它与 `settingsTick` 是**两枚**读数而不是同一枚数换了
+    /// 名字：两扇窗各有各的存在理由，托盘里点「首选项」不该把对话框一起开出来，反之亦然。
+    readonly property int customTick: app.session.custom_open
+    onCustomTickChanged: customSync.restart()
+
+    /// 同一趟最多一扇对话框。
+    property var customWindow: null
+
+    /// §5.14.4 第 1309 行那一扇「历史记录管理」窗的那一声，形状与上面两枚相同：别名绑**值**、
+    /// handler 长在声明它的那个对象的根上（#316）。它是**第三枚**读数而不是前两枚中某一枚的别名：
+    /// 托盘里点「历史记录」不该带出设置窗、也不该带出自定义截图对话框，反之亦然 —— 三扇窗各有各的
+    /// 存在理由，`syncHistory` 因此只看这一格。
+    readonly property int historyTick: app.session.history_window_open
+    onHistoryTickChanged: historySync.restart()
+
+    /// 同一趟最多一扇历史记录窗。
+    property var historyWindow: null
+
+    /// §5.12.3 / §5.12.4 第 1218 行那一扇「图片分组管理」窗的那一声，形状与上面三枚相同：别名绑
+    /// **值**、handler 长在声明它的那个对象的根上（#316）。它是**第四枚**读数：托盘里点「图片分组」
+    /// 不该带出设置窗、对话框或历史记录窗，反之亦然 —— 四扇窗各有各的存在理由，`syncGroup` 因此
+    /// 只看这一格。
+    ///
+    /// 名字里带着 `Window` 是因为 `groupTick` 这一枚**已经长在上面**（第 94 行，读的是
+    /// `group_epoch` —— 「有一批窗的可见性被分组这一手改过了」）。窗在不在与窗里的贴图显不显是
+    /// 两件事，借同一个名字就是让两格互相顶掉，而 Qt 在第一遍编译就把这一处报成重名。
+    readonly property int groupWindowTick: app.session.group_window_open
+    onGroupWindowTickChanged: groupSync.restart()
+
+    /// 同一趟最多一扇分组管理窗。
+    property var groupWindow: null
+
     Component.onCompleted: {
         // First, because it is the one thing here that another thread is waiting for:
         // the hot key pump can only reach this object through the handle cxx-qt gives
@@ -146,6 +179,16 @@ Item {
         // 之前：造窗走的是 `settingsSync` 那一枚 0 毫秒的 Timer，所以这一句只是把 `settings_open`
         // 抬起来，真正建窗在下一环 —— 而那一环一定要在事件环跑起来之后才到。
         app.session.refreshSettings()
+        // §5.3.5：同一副骨架问第二扇窗。它紧贴在上一句之后、`watchScreens` 之前，两句话走的都是
+        // 「把 Rust 那一格搬进 qproperty，真正建窗在下一环那枚 `interval: 0` 的 Timer 里」。
+        app.session.refreshCustom()
+        // §5.14.4：同一副骨架问第三扇窗。紧贴上一句、`watchScreens` 之前，走的还是「把 Rust
+        // 那一格搬进 qproperty，真正建窗在下一环那枚 `interval: 0` 的 Timer 里」。
+        app.session.refreshHistoryWindow()
+        // §5.12.3：同一副骨架问第四扇窗。紧贴上一句、`watchScreens` 之前 —— 而它比前三句多依
+        // 一件事：`refreshTheme` 与 `refresh` 都已经跑过，页上那一列读的是 `session.groups`
+        // 那一串字，而它由 `refresh` 写。次序倒了不会红，只会让窗的第一帧列的是空的那一份。
+        app.session.refreshGroupWindow()
         // §8.5's watch, last: the screen set and the geometry of every screen in it
         // are only worth listening to once there is a session to answer and windows
         // to reload. What it connected to is counted in C++ and printed by `--probe`,
@@ -230,6 +273,39 @@ Item {
         id: settingsWindowComponent
 
         SettingsWindow {
+            session: app.session
+        }
+    }
+
+    // §5.3.5 那一扇「自定义截图」对话框。与上面那一枚同一形状（`Component` 而不是第二枚
+    // `Instantiator`：一扇窗要么在场要么不在场，没有「按模型逐枚建」那层），也同一个理由不常驻：
+    // 没有真人要它的时候它压根不存在，`pin_check` 那一档问「谁盖得住贴图」才不会挑到一扇没人要的窗。
+    Component {
+        id: customWindowComponent
+
+        CustomCaptureWindow {
+            session: app.session
+        }
+    }
+
+    // §5.14.4 第 1309 行那一扇「历史记录管理」窗。同一形状、同一枚理由不常驻：一扇窗要么在场要么
+    // 不在场，没有「按模型逐枚建」那层，所以是 `Component` 而不是第三枚 `Instantiator`；而没人要
+    // 它的时候它压根不存在，`pin_check` 那一档问「谁盖得住贴图」才不会挑到一扇没人要的窗。
+    Component {
+        id: historyWindowComponent
+
+        HistoryWindow {
+            session: app.session
+        }
+    }
+
+    // §5.12.3 / §5.12.4 第 1218 行那一扇「图片分组管理」窗。同一形状、同一枚理由不常驻，也同一枚
+    // `Component` 而不是第五枚 `Instantiator`：这一扇窗的模型是**用户自己那几组**，它由页上那六枚
+    // 钮改，改完由 `session.groups` 那一串字重读 —— 那不是「按模型逐枚建窗」，那是一扇窗里的一列。
+    Component {
+        id: groupWindowComponent
+
+        GroupWindow {
             session: app.session
         }
     }
@@ -394,13 +470,96 @@ Item {
     /// 先摘掉手里那一枚、再 close/destroy，是为了这一趟里 notify 若连着来两次也不会第二次拿着
     /// 同一枚已毁的对象再毁一遍。造出来的窗父对象是 `shim`，理由与 `syncPins` 那一段完全相同：
     /// 一扇 `Window` 不是场景内容，它要的只是一个能一起死的 lifetime。
+    ///
+    /// 每一趟都递回一行 `sync|<哪一支>|<那一格>|<手里有没有>|<组件状态>|<窗可见>|<窗title>`。
+    /// 这一行不是判据、也不是窗自己那几行（`born` / `tick` / `open`）的第二份：那三行只有窗真
+    /// 被造出来才可能存在，而 `--hotkeys` 那一格要问的是**这一支腿有没有跑到**、`createObject`
+    /// 交回来的是对象还是 null —— 「Rust 写了 `settings_open`」与「这一支腿动了」是两个瞬间，
+    /// 中间隔着一枚 `interval: 0` 的 Timer 和一场跑没跑的事件环。`born` 缺席只能说明后者。
     function syncSettings() {
         if (app.settingsTick > 0) {
             if (!app.settingsWindow)
                 app.settingsWindow = settingsWindowComponent.createObject(app.shim)
+            const w = app.settingsWindow
+            app.session.settingsGaugeReport("sync|want|" + app.settingsTick + "|"
+                + (w ? 1 : 0) + "|" + settingsWindowComponent.status + "|"
+                + (w ? (w.visible ? 1 : 0) : "-") + "|"
+                + (w ? String(w.title) : "-"))
         } else if (app.settingsWindow) {
             const w = app.settingsWindow
             app.settingsWindow = null
+            w.close()
+            w.destroy()
+            // 毁完再递：这一支要留下的是「手里那枚已经不在了」，而 `w` 已经不能碰。
+            app.session.settingsGaugeReport("sync|gone|" + app.settingsTick + "|0|-|-|-")
+        }
+    }
+
+    // §5.3.5 那一扇对话框的造与毁，与上面那一枚同一形状、同一枚 `interval: 0`：写
+    // `custom_open = 0` 的那一只手常常就在窗里（关掉那枚钮、或量具最后一条腿），销毁不能压在
+    // 那一句还在跑的时候。
+    Timer {
+        id: customSync
+        interval: 0
+        repeat: false
+        onTriggered: app.syncCustom()
+    }
+
+    /// 把「有没有一扇自定义截图窗」对齐 `custom_open`。它**不**看 `settings_open`：两扇窗各自的
+    /// 存在理由不同，一方开着不该把另一方带出来。
+    function syncCustom() {
+        if (app.customTick > 0) {
+            if (!app.customWindow)
+                app.customWindow = customWindowComponent.createObject(app.shim)
+        } else if (app.customWindow) {
+            const w = app.customWindow
+            app.customWindow = null
+            w.close()
+            w.destroy()
+        }
+    }
+
+    // §5.14.4 那一扇窗的造与毁，同一枚 `interval: 0`、同一枚理由：写 `history_window_open = 0`
+    // 的那一只手常常就在窗里（「关闭」那一枚钮），销毁不能压在那一句还在跑的时候。
+    Timer {
+        id: historySync
+        interval: 0
+        repeat: false
+        onTriggered: app.syncHistory()
+    }
+
+    /// 把「有没有一扇历史记录管理窗」对齐 `history_window_open`。它只看那一格：设置窗与对话框
+    /// 各自的存在理由都不涉及历史，一方开着不该把这一扇带出来。
+    function syncHistory() {
+        if (app.historyTick > 0) {
+            if (!app.historyWindow)
+                app.historyWindow = historyWindowComponent.createObject(app.shim)
+        } else if (app.historyWindow) {
+            const w = app.historyWindow
+            app.historyWindow = null
+            w.close()
+            w.destroy()
+        }
+    }
+
+    // §5.12.3 那一扇窗的造与毁，同一枚 `interval: 0`、同一枚理由：写 `group_window_open = 0` 的
+    // 那一只手常常就在窗里（「关闭」那一枚钮），销毁不能压在那一句还在跑的时候。
+    Timer {
+        id: groupSync
+        interval: 0
+        repeat: false
+        onTriggered: app.syncGroup()
+    }
+
+    /// 把「有没有一扇图片分组管理窗」对齐 `group_window_open`。它只看那一格：另外三扇窗各自的
+    /// 存在理由都不涉及分组，一方开着不该把这一扇带出来。
+    function syncGroup() {
+        if (app.groupWindowTick > 0) {
+            if (!app.groupWindow)
+                app.groupWindow = groupWindowComponent.createObject(app.shim)
+        } else if (app.groupWindow) {
+            const w = app.groupWindow
+            app.groupWindow = null
             w.close()
             w.destroy()
         }

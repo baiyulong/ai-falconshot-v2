@@ -1,4 +1,5 @@
 import QtQuick
+import QtQuick.Controls
 import QtQuick.Dialogs
 import dev.falconshot 1.0
 
@@ -25,12 +26,21 @@ Rectangle {
     /// screen's window and still know how big that window is.
     readonly property Item host: parent
 
-    /// §5.7.21's 快速切换 row. Six, because that is how many fit beside the pens
-    /// without the panel outgrowing a small screen; the full custom palette is
-    /// §5.7.22 and lives behind a later round.
-    readonly property var palette: [
-        0xff3b30, 0xff9500, 0x34c759, 0x0a84ff, 0xaf52de, 0x1c1c1e
-    ]
+    /// §5.7.21 的 快速切换 那一排 —— 颜色不再长在这一页上。档里 `[annotation] palette`
+    /// 写了几枚、按什么顺序写，屏幕上就造几枚、按那个顺序造（`bandColors()`，其主人是
+    /// `crate::settings::band_colors_joined` 与 `crate::config` 的那台解析器）。本轮之前
+    /// 这一行是六枚本仓自己挑的字面量，而用户档里那十枚从来没有读者：改档不动屏幕。
+    ///
+    /// 递过来的是 `RRGGBB`（大写、无 `#`）：`colors::parse` 认的六族拼法里 `rgb()` / `hsl()`
+    /// 两族 QML 不认，所以归一那一步在 Rust —— 同一件事不许有两个主人。alpha 在这一格落地为
+    /// 丢弃，因为递下去的门把手本来就只交 RGB（`mask_view.rs` 的 `setColor` 硬编码 255），
+    /// §5.7.21 第三步「滚动调整透明度」是那一枚门把手之后的账。
+    ///
+    /// 与 `send_to_menu` 同一件要求：`"".split("|")` 在 JS 里数出**一段空串**而不是零段，
+    /// 所以先滤零长段。两枚都随本面板的创建求值一次，与遮罩同生同灭。
+    readonly property var band_said: bar.view.bandColors().split("|")
+                                                   .filter(function (s) { return s.length > 0 })
+    readonly property var palette: bar.band_said.map(function (s) { return Number.parseInt(s, 16) })
 
     /// The three named widths (§5.7.20 step 1), in device pixels. The wheel over them
     /// is step 3's fine-tune, so this row is a shortcut and not the only way.
@@ -412,10 +422,28 @@ Rectangle {
         return to > from ? text.substring(from, to) : ""
     }
 
+    // §5.7.21 / §5.7.22 的第一位读者在屏幕上留下的一格。三段各有一枚主人：`handed` 是桥递到
+    // 页上的那一份的段数（`bandColors()` 滤掉零长段之后），`drew` 是 Repeater 真的造出几枚
+    // （`band.count`，不是名单长度），第三段是页手里那份名单本身，一枚一个 `RRGGBB`、逗号相连。
+    // Rust 那侧拿档里的 `palette` 走**同一台**解析器算出期待值再逐段比，所以这一格不是拿页上的
+    // 读数和自己比，是拿场景里的读数和档比 —— 旧页上那六个字面量在这一格会当场发红。
+    //
+    // 补零走 `slice(-6)` 而不是别的写法：少一位就是一枚读不出来的颜色（`0a84ff` 会掉成
+    // `a84ff`），而档里那一枚的期待值由 `format!("{r:02X}…")` 补着零。
+    function bandSaid() {
+        const hexes = bar.palette.map(function (v) {
+            return ("000000" + v.toString(16).toUpperCase()).slice(-6)
+        }).join(",")
+        return String(bar.band_said.length) + "|" + String(band.count) + "|" + hexes
+    }
+
     // Phase 1: name the file, then open the door the way the cell does. The name is the
     // gauge's and the extension is the shell's, which is the point - the file
     // `mask save via real click` reads back is the one this run could only predict.
     function openDialogLeg() {
+        // 日程的第一句，问的是这一页**已经**造出来的东西：面板随遮罩窗创建，比这一枚 Timer
+        // 早，而下面每一步都要往 `message` 那一格里写字，所以它只能站在这一步之前。
+        bar.gaugeSay("band", bar.bandSaid())
         const stem = String(bar.gauge[0]) + "/" + String(bar.gauge[1])
         saveAs.currentFolder = bar.dlgUrl(String(bar.gauge[0]) + "/")
         saveAs.currentFile = bar.dlgUrl(stem)
@@ -618,6 +646,11 @@ Rectangle {
         property string label: ""
         property bool active: false
         property bool usable: true
+        // §5.21.2 第一枚的入口。`required` 而不是 `property string hint: ""`：空串是一枚
+        // 钮可以悄悄欠着的形状，而 required 让「漏了一枚」在构造期就发红，不在悬停那一刻。
+        // 句子的内容不在这档 —— 工具那一排的 15 句在 Rust 的 `TOOL_TEXTS` 里（#281 同一口径：
+        // 一份清单只长一处），QML 只负责按 index 递给它自己那一枚。
+        required property string hint
         signal tapped()
 
         width: cap.implicitWidth + 14
@@ -649,6 +682,14 @@ Rectangle {
             // pointer that wanted to draw on the picture under the panel.
             onReleased: if (containsMouse) cell.tapped()
         }
+
+        // §5.21.2 第一枚的落点：一只气泡长在钮本体上，而不是每一枚实例各开一只。可见性
+        // 绑的是这枚钮自己的 hover，所以 `enabled: cell.usable` 那枚灰掉的钮没有气泡——
+        // 与它自己的底色（`containsMouse && usable` 才亮）同一个口径：按不动的钮不假装
+        // 正在被指着。
+        ToolTip.text: cell.hint
+        ToolTip.visible: area.containsMouse
+        ToolTip.delay: 300
     }
 
     // A row's own name, so a row of 小/中/大 cells does not have to guess which ladder it
@@ -672,6 +713,9 @@ Rectangle {
 
         property int rgb: 0
         property bool active: false
+        // 与 `Cell` 同一件要求：这枚也是一枚钮，§5.21.2 那句「工具栏按钮应提供提示文本」
+        // 不问它画的是颜色还是字。
+        required property string hint
         signal tapped()
 
         width: 18
@@ -693,6 +737,10 @@ Rectangle {
             cursorShape: Qt.PointingHandCursor
             onReleased: if (containsMouse) swatch.tapped()
         }
+
+        ToolTip.text: swatch.hint
+        ToolTip.visible: area2.containsMouse
+        ToolTip.delay: 300
     }
 
     Column {
@@ -714,6 +762,7 @@ Rectangle {
                     required property var modelData
 
                     label: modelData
+                    hint: bar.view.toolHints().split("|")[index]
                     active: bar.view.tool === index
                     onTapped: bar.view.selectTool(index)
                 }
@@ -726,12 +775,16 @@ Rectangle {
             spacing: 6
 
             Repeater {
+                // 这一枚 id 长在 Repeater 上而不是长在 Row 上：`count` 是「页上真的造出几枚」
+                // 的读数，不是名单长度（与 `HistoryWindow.qml` 的 `buttonRows` 同一枚读数）。
+                id: band
                 model: bar.palette
 
                 delegate: Swatch {
                     required property var modelData
 
                     rgb: modelData
+                    hint: "颜色：点一下，下一笔的笔色就是这一块"
                     active: bar.view.pen_rgb === modelData
                     onTapped: bar.view.setColor((modelData >> 16) & 255,
                                              (modelData >> 8) & 255,
@@ -763,6 +816,7 @@ Rectangle {
 
                         // 细 / 中 / 粗, indexed against the same list the click sends.
                         label: ["细", "中", "粗"][index]
+                        hint: ["细：下一笔最窄", "中：下一笔中等宽", "粗：下一笔最宽"][index]
                         active: bar.view.pen_width === modelData
                         onTapped: bar.view.setWidth(modelData)
                     }
@@ -787,6 +841,7 @@ Rectangle {
 
             Cell {
                 label: "虚线"
+                hint: "虚线：把接下来画的线改成虚线"
                 active: bar.view.dashed
                 onTapped: {
                     bar.view.applyDashed(!bar.view.dashed)
@@ -796,6 +851,7 @@ Rectangle {
 
             Cell {
                 label: "填充"
+                hint: "填充：闭形标注里灌上笔色"
                 active: bar.view.filled
                 onTapped: {
                     bar.view.applyFilled(!bar.view.filled)
@@ -823,6 +879,7 @@ Rectangle {
                     required property var modelData
 
                     label: modelData + "%"
+                    hint: "放大到 " + modelData + "%：把手里那张放大图按这个倍数重画"
                     active: bar.view.zoom_percent === modelData
                     onTapped: {
                         bar.view.applyZoomPercent(modelData)
@@ -857,6 +914,7 @@ Rectangle {
 
             Cell {
                 label: "边框"
+                hint: "边框：给放大图描一圈边"
                 active: bar.view.zoom_border
                 onTapped: {
                     bar.view.applyZoomBorder(!bar.view.zoom_border)
@@ -866,6 +924,7 @@ Rectangle {
 
             Cell {
                 label: "连接线"
+                hint: "连接线：从源区到放大图之间牵一条线"
                 active: bar.view.connection_line
                 onTapped: {
                     bar.view.applyConnectionLine(!bar.view.connection_line)
@@ -907,6 +966,7 @@ Rectangle {
                         // 小 / 中 / 大 against the same list the click sends, the shape
                         // `pens` gives 细 / 中 / 粗.
                         label: ["小", "中", "大"][index]
+                        hint: ["小：框里的字最小", "中：框里的字中等大", "大：框里的字最大"][index]
                         active: bar.view.pen_font === modelData
                         onTapped: {
                             bar.view.setFontSize(modelData)
@@ -957,6 +1017,7 @@ Rectangle {
 
                     // `index` is the code Rust's ladder answers to: 0 左, 1 中, 2 右.
                     label: modelData
+                    hint: "对齐：这段文字" + modelData
                     active: bar.view.text_align === index
                     onTapped: {
                         bar.view.setAlign(index)
@@ -969,6 +1030,7 @@ Rectangle {
 
             Cell {
                 label: "背景"
+                hint: "背景：给文字垫一块底板"
                 active: bar.view.text_bg
                 onTapped: {
                     bar.view.applyTextBg(!bar.view.text_bg)
@@ -978,6 +1040,7 @@ Rectangle {
 
             Cell {
                 label: "描边"
+                hint: "描边：给文字勾一圈边"
                 active: bar.view.text_outline
                 onTapped: {
                     bar.view.applyTextOutline(!bar.view.text_outline)
@@ -1005,6 +1068,7 @@ Rectangle {
 
             Cell {
                 label: "擦除到透明"
+                hint: "擦除到透明：橡皮擦过的地方连原始像素一起擦掉"
                 active: bar.view.erase_transparent
                 onTapped: {
                     bar.view.applyEraseTransparent(!bar.view.erase_transparent)
@@ -1032,14 +1096,23 @@ Rectangle {
         // 库里那份解析结果，不是此刻这一行）。模型是 `[output] send_to_apps` / `share_targets`
         // 校验过的那一段，第 i 枚芯片只能是第 i 个目标。
         //
-        // 芯片是 Text 而不是 Cell：派发那一腿还欠着（`main.rs` 的那句注释钉的就是这一件事），而本档
-        // 的 Caption 注释钉着「一枚点不动的按钮就是在邀请人点它」。所以这一行只让「有哪些目标」先在
-        // 屏幕上有出处，点击要等 Session/MaskView 上真长出 dispatch 的 invokable。
+        // P154 起 send-to 那一半是**能按的** Cell：派发那一条腿（`sendToTarget(index)` →
+        // [`crate::mask::MaskState::send_to_target`] → `falcon_core::sendto::plan` →
+        // `platform_windows::open::dispatch`）已经长在 Rust 上，而 §5.5.10 步骤 2 要的正是
+        // 「完成截图后点击"发送到应用"」——一枚点不动的按钮就是在邀请人点它，那一格如今反过来钉
+        // 的是"按得动而没处可去"。share 那一半仍是 `Text`：§5.5.9 的原生分享与 provider 派发
+        // 都还没有 owner，所以它只是把"有哪些目标"摆在屏幕上，不假装能按。
         //
-        // 两枚名单都空时整行不占高度（与橡皮、字号那两行同一口径：visible 与 height 成对写）。
+        // 话（`sendToLast`）写在同一行的末尾而不是那条通知行里：通知那一行整块被
+        // `MouseArea` 盖着（§5.5.4 步骤 4 的"点击打开所在目录"），把派发那句放进去会让人
+        // 按一次发送却揭示一张别的文件。
+        //
+        // 两枚名单都空、且这一次派发也没说话时整行不占高度（与橡皮、字号那两行同一口径：
+        // visible 与 height 成对写）。
         Row {
             spacing: 6
             visible: bar.send_to_menu.length > 0 || bar.share_menu.length > 0
+                         || bar.view.send_to_last.length > 0
             height: visible ? implicitHeight : 0
 
             Caption {
@@ -1049,13 +1122,13 @@ Rectangle {
             Repeater {
                 model: bar.send_to_menu
 
-                delegate: Text {
+                delegate: Cell {
+                    required property int index
                     required property var modelData
 
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: modelData
-                    font.pixelSize: 12
-                    color: "#f2f2f2"
+                    label: modelData
+                    hint: "发送到" + modelData + "：把这张图交给它"
+                    onTapped: bar.view.sendToTarget(index)
                 }
             }
 
@@ -1077,6 +1150,20 @@ Rectangle {
                     color: "#f2f2f2"
                 }
             }
+
+            Item { width: 8; height: 1 }
+
+            // §5.5.10 的那一句话写在**这一排**的末尾：递出去了的那一句，与"目标不在这台机器
+            // 上，请重新设置路径"等三种拒绝，说的都是刚才按的那一枚芯片。它不进下面那条通知行，
+            // 因为那一整块归"点击打开所在目录"那枚 MouseArea 盖着 —— 把派发那句放进去，按一次
+            // 发送就会揭示一张别的文件。
+            Text {
+                visible: bar.view.send_to_last.length > 0
+                anchors.verticalCenter: parent.verticalCenter
+                text: bar.view.send_to_last
+                font.pixelSize: 12
+                color: "#8e8e96"
+            }
         }
 
         // Edits, then the ways out. 确认选区 is the same thing Enter already
@@ -1095,6 +1182,7 @@ Rectangle {
 
             Cell {
                 label: "撤销"
+                hint: "撤销：收回最后一步改动"
                 usable: bar.view.can_undo
                 onTapped: {
                     if (bar.view.undoStep()) {
@@ -1105,6 +1193,7 @@ Rectangle {
 
             Cell {
                 label: "重做"
+                hint: "重做：把刚收回的那一步放回去"
                 usable: bar.view.can_redo
                 onTapped: {
                     if (bar.view.redoStep()) {
@@ -1115,6 +1204,7 @@ Rectangle {
 
             Cell {
                 label: "全清"
+                hint: "全清：一次抹掉这一层所有标注"
                 usable: bar.view.objects > 0
                 onTapped: {
                     if (bar.view.clearInk()) {
@@ -1127,8 +1217,46 @@ Rectangle {
 
             Cell {
                 label: "复制"
+                hint: "复制：把选区里的图送进剪贴板"
                 usable: bar.view.selected
                 onTapped: bar.copy()
+            }
+
+            // §5.6.1 步骤 2：「文字提取」挨着「复制」放 —— 两枚都对同一块选区做事，一枚交字到
+            // 剪贴板、一枚交图，用户找的时候是在同一排里找「把这块选区变成能用的东西」。
+            //
+            // `asked` 是**递进去**而不是绑出来的（`ocrPanel.asked = true`）：绑成一串就会和面板
+            // 自己那颗「收起」打架 —— 收起把 `asked` 写成假的同时把绑定踩掉，此后再按「文字提取」
+            // 只是把 `bar` 上那一格重新写成它本来就是的那个值，谁也不重新求值，面板再也开不了。
+            Cell {
+                label: "文字提取"
+                hint: "文字提取：读出选区里的字，交进剪贴板"
+                usable: bar.view.selected
+                onTapped: {
+                    ocrPanel.asked = true
+                    bar.session.extractMaskText()
+                }
+            }
+
+            // §5.6.2 步骤 1/2 与 §5.6.3 步骤 1/2 在这一条栏上是**同一枚**钮。PRD 把它写成两节
+            // （一节二维码、一节条形码），而读的那一只手交回的是「这一张图里所有的码」，每行自己
+            // 宣布它是 QR_CODE 还是 CODE_128：两枚钮各叫一次同一只手，就是两套「读到没读到」的判据
+            // 挤在同一块选区上（#281）。
+            //
+            // 名字取「扫码」而不是「识别二维码」：按下去读到一枚 Code 128 时，那一格标签就说了
+            // 一句假话。两节的名字都在面板与菜单那一行里写全（`PinWindow.qml` 那一条是
+            // 「扫码（二维码 / 条形码）」，那里有宽度）。
+            //
+            // `asked` 的写法与上面「文字提取」那一封同一封信：递进去而不是绑出来，绑成一串就会
+            // 被面板自己那颗「收起」踩掉。
+            Cell {
+                label: "扫码"
+                hint: "扫码：读出选区里的二维码与条形码"
+                usable: bar.view.selected
+                onTapped: {
+                    codesPanel.asked = true
+                    bar.session.readMaskCodes()
+                }
             }
 
             // §5.5.5: the same stitched picture, to a file. Greyed with the selection
@@ -1136,6 +1264,7 @@ Rectangle {
             // user has to be handed a sentence for, not a dialog.
             Cell {
                 label: "保存"
+                hint: "保存：把选区里这张图写进一个文件"
                 usable: bar.view.selected
                 onTapped: bar.save()
             }
@@ -1147,6 +1276,7 @@ Rectangle {
             Cell {
                 id: quickCell
                 label: "快速保存"
+                hint: "快速保存：不问名字，按设置里的路径直接落盘"
                 usable: bar.view.selected
                 onTapped: bar.quickSave()
             }
@@ -1157,18 +1287,21 @@ Rectangle {
             // the same reason 保存 is.
             Cell {
                 label: "存完再钉图"
+                hint: "存完再钉图：先落成文件，再把这个文件贴成浮图"
                 usable: bar.view.selected
                 onTapped: bar.saveAndPin()
             }
 
             Cell {
                 label: "确认选区"
+                hint: "确认选区：收下这块选区，走完成后的那一步"
                 usable: bar.view.selected
                 onTapped: bar.commit()
             }
 
             Cell {
                 label: "取消"
+                hint: "取消：什么都不留下，关掉这一层"
                 onTapped: bar.cancel()
             }
 
@@ -1257,6 +1390,27 @@ Rectangle {
                     onClicked: bar.revealLanded()
                 }
             }
+        }
+
+        // §5.6.1 步骤 4 的那一面板体，长在**这一条 Column 里**而不是浮在窗上：面板的宽与高都
+        // 经 `body` 进 `bar` 的 `implicitWidth`/`implicitHeight`，于是头顶那两条 `x`/`y` 绑定
+        // 会自动把它一起clamp 回屏内 —— 自己锚一次位置就是自己再数一遍屏幕（#281）。
+        //
+        // 「重新识别」在这一臂取的是**遮罩**那张：选区可能已经被改过，而桥每次都重新读
+        // `delivered()`，所以这一声按下去拿的就是此刻那一张，不是上一次那一张的副本。
+        OcrPanel {
+            id: ocrPanel
+            session: bar.session
+            onReRecognized: bar.session.extractMaskText()
+        }
+
+        // §5.6.2 与 §5.6.3 共用的一面板体，理由与上面那一条一模一样：宽高等 `body` 一样经
+        // 面板进 `bar` 的 `implicitWidth`/`implicitHeight`，位置由那两条绑定 clamp，不在这里
+        // 自己数屏幕。这一臂的「重新扫码」重读的还是**遮罩**此刻那一张。
+        CodesPanel {
+            id: codesPanel
+            session: bar.session
+            onReRecognized: bar.session.readMaskCodes()
         }
     }
 

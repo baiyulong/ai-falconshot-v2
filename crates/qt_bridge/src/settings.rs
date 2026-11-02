@@ -356,12 +356,13 @@ pub fn reuse_last_file() -> bool {
     with(|s| s.config.output.reuse_last_file)
 }
 
-// §5.5.11 `hide_pins_on_dialog` 这枚键本轮**没有**单独的一行读者（上面那四枚各有一枚的族），
-// 理由是这一枚的调用点尚不存在：读它的那一手是"对话框出现 ⇒ 藏贴图"，而那一路要等
-// `falcon_core::dialog_link::Hidden` 接到真的对话框事件上（第 176 项剩下的那一半）。
+// §5.5.11 `hide_pins_on_dialog` 这枚键**没有**单独的一行读者，而这一次的理由与建它那一轮不同：
+// 调用点自 P123/P124 起是真的了（[`crate::session`] 里 `dialog_opened` 每一扇对话框现问一次），
+// 而它问的是 `output_cfg()` 那一次整段 clone —— 与启动横幅 `[output cfg]` 同一枚读者。为这一枚
+// 键再补一行 `fn hide_pins_on_dialog() -> bool` 就是把同一件事交给两处（#281）：屏幕上藏没藏
+// 由桥那一侧读的那一枚说了算，界面不再递一枚布尔进来。
 // 一枚没有调用点的一行读者在 bin crate 里就是 dead_code warning，而本档不留 `#[allow]`
-// （P75-A 撤掉最后那一枚）。键本身自此有读者：[`output_cfg`] 一次 clone 整段、
-// [`format_output_banner`] 把它逐字印进 `[output cfg]` 那一行。
+// （P75-A 撤掉最后那一枚）—— 这一条自此用不上，留着是因为它就是上面那句的同一枚理由。
 
 /// §5.5.8 **跨 mask 会话**那半的落点（第 63 项 ⑦）：上一次会话 `quick_out` 落盘成功之后，
 /// 那一份的路径由 [`record_landed`] 存在这一格里；下一次会话的 `open()` 通过 [`last_landed`]
@@ -464,6 +465,23 @@ pub fn hot_corner_cfg() -> falcon_core::config::HotCorner {
     with(|s| s.config.hot_corner.clone())
 }
 
+/// §5.18.2：整段 `[tray]` 由这一枚 reader 取快照，四位读者 = 托盘那四枚键。
+///
+/// **每一次点击现问一次**，而不是进程启动那一次读：四枚键全不在 [`RESTART_KEYS`] 里，
+/// 「改了档、下一次点击就跟着变」是 §5.18.2 第四步的字面要求，而这一族的成本与
+/// [`hot_corner_cfg`] 同形 —— 一次 clone，点击不是每秒一百次。
+pub fn tray_cfg() -> falcon_core::config::Tray {
+    with(|s| s.config.tray.clone())
+}
+
+/// §5.4.4 / §5.4.5：整段 `[whiteboard]` 由这一枚 reader 取快照，唯一的读者 = 开白板那一步。
+///
+/// **每一趟现问一次**，与 [`tray_cfg`] 同一理由：两枚键都不在 [`RESTART_KEYS`] 里，而白板是
+/// 一次"点一下才有的东西"，不是每秒一百次的采样 —— 改了底色，下一次点「白板」就该是新那一身。
+pub fn whiteboard_cfg() -> falcon_core::config::Whiteboard {
+    with(|s| s.config.whiteboard.clone())
+}
+
 /// §5.14 与 §6.2：整段 `[history]` 由这一枚 reader 一次性取快照 —— P68 之前 7 枚键
 /// （`enabled` / `max_items` / `max_age_days` / `max_size_mb` / `keep_originals` /
 /// `thumb_px` / `exempt_locked`）全部停在"键在档里没人读"：`crates/core/src/history.rs`
@@ -557,10 +575,10 @@ pub fn appearance_cfg() -> falcon_core::config::Appearance {
 /// 本轮的证人是梯 rc 0 + exe sha 换，而不是 §9.1 第十条 headless。
 ///
 /// `#[allow(dead_code)]` 挂在函数头上、P72 起由 [`startup_banner`] 一次读 `log_level` 与
-/// `data_dir` 两格 ⇒ `#[allow(dead_code)]` 撤。剩下四格（`cli_enabled` / `recognize_text`
-/// / `crash_recovery` / `privacy_no_temp_files`）仍待 P73+ 接进各自的调用点（`cli_enabled`
-/// 那一格要 UI 面：Settings 里的 CLI 注册按钮；`recognize_text` 要 §5.6 OCR dispatch；
-/// `crash_recovery` 要 §7.2 recovery snapshot；`privacy_no_temp_files` 要 temp-file policy）。
+/// `data_dir` 两格 ⇒ `#[allow(dead_code)]` 撤。剩下三格（`cli_enabled` / `crash_recovery`
+/// / `privacy_no_temp_files`）仍待各自的调用点（`cli_enabled` 那一格要 UI 面：Settings 里的 CLI
+/// 注册按钮；`crash_recovery` 要 §7.2 recovery snapshot；`privacy_no_temp_files` 要 temp-file
+/// policy）。`recognize_text` 已由 P148 接进 `MaskState::record_history` 的确认臂。
 /// 但**整段读者**自此有非 test 调用点、不再算死码。
 pub fn advanced_cfg() -> falcon_core::config::Advanced {
     with(|s| s.config.advanced.clone())
@@ -777,7 +795,8 @@ pub fn startup_about_banner() -> String {
 ///
 /// §5.5.11 的 `hide_pins_on_dialog`（第 176 项、P123 新建）自此与这两枚同一族：整段读者 +
 /// [`format_output_banner`] 的逐字回读，**没有**独立的一行读者 —— 理由写在 [`reuse_last_file`]
-/// 下面那段注释里（它的调用点还没到）。
+/// 下面那段注释里，而那一封自 P155 起说的是「调用点到了，所以更要只留一处读者」而不是「调用点
+/// 还没到」：`crate::session::dialog_opened` 每一扇对话框现问的就是这一枚函数交出去的那一份。
 pub fn output_cfg() -> falcon_core::config::Output {
     with(|s| s.config.output.clone())
 }
@@ -793,6 +812,45 @@ pub fn output_cfg() -> falcon_core::config::Output {
 /// 就该是新档里那张；把快照缓存进 STATE 反而是这里不采用的做法。
 pub fn card_cfg() -> falcon_core::config::Card {
     with(|s| s.config.card.clone())
+}
+
+/// §5.7.21 / §5.7.22 的第一位读者：整段 `[annotation]` 由这一枚 reader 送进运行期。
+///
+/// 形状与 [`output_cfg`] / [`card_cfg`] 同族（一次 clone 整段快照），而**问的时机**与
+/// [`card_cfg`] 同族而不是与 [`pin_cfg`] 同族：色带在每一扇遮罩窗创建的那一刻读一次，
+/// 用户改完档再截一张，屏幕上就该是新档里那一排。
+///
+/// `Annotation::palette` 自 §5.20.3 起就能被档带着走（`Config::flat` 里有它自己那一行、
+/// `ImportScope::Suggested` 覆盖它、`validate` 丢读不出来的并回填 `default_palette`），
+/// 而本轮之前产品路径上没有一个人读它 —— 第 35 项 ⑨ 那一族的形状。工具栏那六枚色是
+/// `AnnotationToolbar.qml` 自己写的字面量，与档里那十枚之间没有一条通路。
+pub fn annotation_cfg() -> falcon_core::config::Annotation {
+    with(|s| s.config.annotation.clone())
+}
+
+/// 色带走桥的那一份：档里的每一枚颜色经 [`falcon_core::colors::parse`] 归一成
+/// `RRGGBB`（大写、无 `#`），`|` 联起来。**枚数与顺序由档决定**，这一枚函数只换写法。
+///
+/// 为什么不让页上自己解析：`colors::parse` 认 `#RGB` / `#RGBA` / `#RRGGBB` / `#RRGGBBAA` /
+/// `rgb()` / `hsl()` 六族，而 QML 那一侧只认 `#` 那一族 —— 在页上再写一台解析器就是让
+/// 同一件事有两个主人（P180 那一路由的口径）。alpha 在这一格落地为丢弃，因为递下去的门把手
+/// 本来就是 `setColor(r, g, b)`（`mask_view.rs` 里那枚硬编码的 255），§5.7.21 第三步的
+/// 「在主颜色按钮上滚动调整透明度」是那一枚门把手之后的账。
+///
+/// 读不出来的一枚不留，与 [`crate::annotate::Layer::apply_annotation_defaults`] 同一条理由：
+/// [`crate::config`] 的 `validate` 载入时用的就是这台解析器，读不出来的已经丢档并回填了
+/// `default_palette`，所以走到这一枚函数跟手里的颜色值颜色读得出来。
+///
+/// 空表 ⇒ 空串，而 `"".split("|")` 在 JS 里数出**一段空串**而不是零段（P92 / P93 钉过的
+/// 那一格），所以页上先滤零长段。纯函数：输入是一份借用、输出是一枚串，没有档、没有窗柄、
+/// 没有会话 ⇒ 分岔不走产品路径也要走单测。
+pub fn band_colors_joined(colors: &[String]) -> String {
+    colors
+        .iter()
+        .filter_map(|c| falcon_core::colors::parse(c))
+        .map(|[r, g, b, _]| format!("{r:02X}{g:02X}{b:02X}"))
+        .collect::<Vec<String>>()
+        .join("|")
 }
 
 /// P76：把整段 `[output]` 的 `share_targets` + `send_to_apps` 两枚 Vec<String> 回读成一行。
@@ -1403,6 +1461,19 @@ pub fn history_rows_joined(records: &[falcon_core::history::Record], offset_min:
             if rec.locked {
                 label.push_str(" · 已锁定");
             }
+            // §5.16 那枚 `[advanced] recognize_text` 落进 `ocr_text` 的那一格的**第一位读者**
+            // （P148）：库里那三种形状在清单里说三句话，一句也不并成一句 ——
+            // 「没识别过」是 NULL、「识别过而一个字也没有」是空串、「有字」才数长度。
+            // 数长度而不是判 `is_some()`，因为「那一行有文字」与「那一行跑过识别」是两件事，
+            // 前者才是用户在清单里要挑出第 N 行时所指的「有字」。
+            match rec.ocr_text.as_deref() {
+                None => {}
+                Some("") => label.push_str(" · 本机识别过，没有字"),
+                Some(text) => {
+                    // 字数按字符（`chars`）而不是按字节：中文一帧识别回来的字节数是字数的三倍。
+                    label.push_str(&format!(" · 有识别文字 {} 字", text.chars().count()));
+                }
+            }
             label
         })
         .collect::<Vec<String>>()
@@ -1811,6 +1882,201 @@ pub fn config_import(path: &Path, scope: ImportScope, confirm: bool) -> Result<S
         }
     })?;
     out.push_str(&render_import_applied(applied, outcome_ms, &corrections));
+    Ok(out)
+}
+
+/// §5.7.22 步骤 4 与步骤 5 之间的那一份读数：模型留下的那些枚，加上**这份文件自己**的账面。
+///
+/// 「谁是合法的一行、重复的留哪一枚」全部由 [`falcon_core::colors::Palette::from_text`] 判,
+/// 这里不另写一套规矩;记下来的是它没说的三笔账 —— 几行、几行是空行、几行读不出来。一份档
+/// 被丢下两行而报告里一个字也没有,与安静地不同意是同一种坏(§8.3)。
+pub struct PaletteRead {
+    pub palette: falcon_core::colors::Palette,
+    pub lines: usize,
+    pub blank: usize,
+    pub dropped: Vec<String>,
+}
+
+impl PaletteRead {
+    /// 读得出、却没留下一枚的那些行 —— [`falcon_core::colors::Palette::add`] 那条
+    /// 「已经在就不再加」(§5.7.22 步骤 2「调色板不该每点一次就长一枚」)在这一份档上的账面。
+    ///
+    /// 每一枚加数都是量出来的:一行必定属于空行 / 读不出 / 读得出三者之一,而读得出的那些行
+    /// 恰由「留下的」与「重复的」两堆组成。所以这一式不会算出负数,除非有人往这个结构里
+    /// 塞了一份不是 `palette_read_text` 读出来的读数。
+    pub fn repeats(&self) -> usize {
+        self.lines - self.blank - self.dropped.len() - self.palette.colors.len()
+    }
+}
+
+/// 拿产品那一只手读一份调色板档的文本。纯函数:进一份借用、出一份读数,没有档、没有窗柄。
+pub fn palette_read_text(text: &str) -> PaletteRead {
+    PaletteRead {
+        palette: falcon_core::colors::Palette::from_text(text),
+        lines: text.lines().count(),
+        blank: text.lines().filter(|l| l.trim().is_empty()).count(),
+        dropped: text
+            .lines()
+            .filter(|l| !l.trim().is_empty() && falcon_core::colors::parse(l).is_none())
+            .map(|l| l.to_string())
+            .collect(),
+    }
+}
+
+/// 档里那一排原文走成一份 `Palette`:读不出的那一枚不占位、重复的只留头一枚。
+///
+/// 载入时 [`crate::config`] 那道闸已经丢过一遍读不出的,所以这一手通常只是「原样 + 去重」;
+/// 留在桥这一侧而不是省掉,是因为**写出的那一份文件必须是模型自己的拼法**(`#RRGGBB` 一行一枚)
+/// —— 直接落 `annotation.palette` 的原文会把 `rgb(232, 17, 35)` 那种拼法带进一份「一枚一行」的档。
+pub(crate) fn palette_from_stored(colors: &[String]) -> falcon_core::colors::Palette {
+    let mut p = falcon_core::colors::Palette { colors: Vec::new() };
+    for c in colors.iter().filter_map(|c| falcon_core::colors::parse(c)) {
+        p.add(c);
+    }
+    p
+}
+
+/// 名单那一行的写法:一枚一行是**档**的形状,一行报完是**报告**的形状。
+fn palette_roster(palette: &falcon_core::colors::Palette) -> String {
+    palette.to_text().lines().collect::<Vec<_>>().join(", ")
+}
+
+/// §5.7.22 步骤 5 的前半:读到什么、本机是什么、两份一样不一样。
+///
+/// 三份数各自独立成行,是因为「零枚」与「没去看」在日志里得长得不一样 —— 与
+/// [`render_import_applied`] 同一枚理由。丢掉的那些行逐行印,一行一枚,读的人拿行数才能对上
+/// 头部那句里的 `读不出 K 行`。
+pub fn render_palette_preview(file: &Path, read: &PaletteRead, current: &[String]) -> String {
+    let mut out = format!(
+        "[palette] 读到 {}：{} 行、留下 {} 枚、空行 {} 行、读不出 {} 行、重复 {} 枚（§5.7.22 步骤 5）\n",
+        file.display(),
+        read.lines,
+        read.palette.colors.len(),
+        read.blank,
+        read.dropped.len(),
+        read.repeats(),
+    );
+    for d in &read.dropped {
+        out.push_str(&format!("  读不出 {d}\n"));
+    }
+    if read.dropped.is_empty() {
+        out.push_str("  （没有读不出的行）\n");
+    }
+    let mine = palette_from_stored(current);
+    out.push_str(&format!(
+        "[palette] 本机 {} 枚：{}\n",
+        mine.colors.len(),
+        palette_roster(&mine)
+    ));
+    out.push_str(&format!(
+        "[palette] 这一份 {} 枚：{}\n",
+        read.palette.colors.len(),
+        palette_roster(&read.palette)
+    ));
+    out.push_str(if mine.to_text() == read.palette.to_text() {
+        "[palette] 两份名单相同\n"
+    } else {
+        "[palette] 两份名单不同\n"
+    });
+    out
+}
+
+/// §5.7.22 步骤 5 的后半:落盘之后报一次。与 [`render_import_applied`] 同一副骨架,
+/// 因为「已应用」这句话在两族里问的是同一件事 —— 写没写成、耗时多少、门有没有再校正。
+pub fn render_palette_applied(kept: usize, ms: u64, corrections: &[String]) -> String {
+    let mut out = format!("[palette] 已应用 {kept} 枚，写盘耗时 {ms} ms（§5.7.22 步骤 5）\n");
+    out.push_str(&format!(
+        "[palette] 应用后又校正 {} 项（写进本机之后闸才发现的）\n",
+        corrections.len()
+    ));
+    for c in corrections {
+        out.push_str(&format!("  应用时校正 {c}\n"));
+    }
+    if corrections.is_empty() {
+        out.push_str("  （应用时没有再校正任何项）\n");
+    }
+    out
+}
+
+/// §5.7.22 步骤 4:把这一台机器档里那一排色写成一份可以带给别人的调色板档,返回写出的枚数。
+///
+/// 走 [`falcon_core::colors::Palette::to_text`] 而不是 [`Config::export_text`]:后者写出的是
+/// **一整份 settings**(`annotation.palette` 只是其中一行),而 §5.7.22 步骤 4 要递给人的是
+/// 「一组色」—— 一枚一行、`#RRGGBB`、谁都能拿记事本改。枚数取自写出去的那一份文本自己的
+/// 行数,不是设置页自报的枚数。
+///
+/// alpha 在这一手同样是丢弃:`to_text` 用的是 `ColorFormat::HexUpper`,写出 `#RRGGBB`。
+/// 那是 §5.7.21 第 3 步那只手欠着的同一件事(V1.181 块 ⑨),本档不替它编一个已落地的说法。
+pub fn palette_export(path: &Path) -> Result<String, String> {
+    let (stored, text) = with(|s| {
+        let cfg = s.config.annotation.palette.clone();
+        (cfg.len(), palette_from_stored(&cfg).to_text())
+    });
+    if let Some(dir) = path.parent() {
+        if !dir.as_os_str().is_empty() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
+    }
+    // 末尾那一枚换行是给记事本看的:一份没有换行结尾的档,编辑器会把它画成缺了最后一行。
+    // `Palette::from_text` 走 `str::lines()`,那一枚换行因此不会多数出一行。
+    std::fs::write(path, format!("{text}\n").as_bytes())
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok(format!(
+        "[palette] 本机 {stored} 枚 → 写出 {} 枚到 {}（§5.7.22 步骤 4）\n",
+        text.lines().count(),
+        path.display()
+    ))
+}
+
+/// §5.7.22 步骤 5:读一份调色板档、报出会盖掉本机哪一排色;只有 `confirm` 才真写。
+///
+/// 两件事这一手必须拦住:
+///
+/// 1. **一份读不出任何颜色的档不许把出厂那十枚带回来**。[`Config::validate`]
+///    对空名单的做法是回填 `default_palette()` 而**不记一句警告**,所以「这档是空的」与
+///    「这档写了十枚出厂色」在落盘之后完全同一副样子。空档在这里当 Err 退回,本机一枚不动。
+/// 2. **写失败不许报成功**。[`Settings::save`] 把失败记进 `problems` 而自己只返回耗时,所以
+///    这一手看的是 save 前后 `problems` 长没长 —— 与 [`config_import`] 同一条 §5.17 的规矩。
+pub fn palette_import(path: &Path, confirm: bool) -> Result<String, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let read = palette_read_text(&text);
+    // 这一手排在读本机之前:拦下一份空档不需要知道本机有什么,而**退了这一趟就一定一枚没写**。
+    if read.palette.colors.is_empty() {
+        return Err(format!(
+            "{} 读不出任何颜色（{} 行里 {} 行读不出、{} 行是空行）：不落盘，本机那一排原样不动",
+            path.display(),
+            read.lines,
+            read.dropped.len(),
+            read.blank
+        ));
+    }
+    let current = with(|s| s.config.annotation.palette.clone());
+    let mut out = render_palette_preview(path, &read, &current);
+    if !confirm {
+        out.push_str("[palette] 未应用：加 --confirm 才会写入（§5.7.22 步骤 5）\n");
+        return Ok(out);
+    }
+    let kept = read.palette.colors.len();
+    let roster = read
+        .palette
+        .to_text()
+        .lines()
+        .collect::<Vec<_>>()
+        .join(", ");
+    let (outcome_ms, corrections) = with(|s| -> Result<(u64, Vec<String>), String> {
+        let corrections = s
+            .config
+            .set_str("annotation.palette", &roster)
+            .map_err(|e| e.to_string())?;
+        let before = s.problems.len();
+        let ms = s.save();
+        if s.problems.len() > before {
+            Err(s.problems[before].clone())
+        } else {
+            Ok((ms, corrections))
+        }
+    })?;
+    out.push_str(&render_palette_applied(kept, outcome_ms, &corrections));
     Ok(out)
 }
 
@@ -2960,6 +3226,58 @@ mod tests {
         );
     }
 
+    /// §5.16 那枚 `[advanced] recognize_text` 落到库里那一格之后，清单这一格自此是它的**第一位
+    /// 读者**（P148）：库里那三种形状说三句话，一句也不并成一句。
+    ///
+    /// 数的是**字符**而不是字节 —— 同一句中文在 UTF-8 里的字节数是它的三倍，拿字节数当「几个字」
+    /// 报给用户就是把尺用错。而「有字」判的是长度而不是 `is_some()`：跑过而一个字也没有，
+    /// 对用户不是「这一行有文字」，那是第三件事。
+    #[test]
+    fn the_history_list_says_what_the_recognition_left_in_a_row() {
+        let at_ms = 1_700_000_000_000;
+        let rec = |ocr: Option<&str>| falcon_core::history::Record {
+            id: 7,
+            captured_at: at_ms,
+            monitor_id: "主屏".to_string(),
+            rect: falcon_core::PhysRect::new(10, 20, 64, 32),
+            source: falcon_core::history::Source::Region,
+            path: None,
+            thumb: None,
+            cancelled: false,
+            locked: false,
+            ocr_text: ocr.map(str::to_string),
+            note: String::new(),
+        };
+        let one = |r: falcon_core::history::Record| history_rows_joined(&[r], -480);
+
+        // ① NULL：这一行从没识别过 ⇒ 与本轮之前一字不差。
+        assert_eq!(
+            one(rec(None)),
+            "7 · 2023-11-14 14:13 · 64×32 · 主屏 · region",
+            "没识别过的那一行多了话"
+        );
+
+        // ② 空串：识别跑成了而一个字也没有 —— 第三件事，不能说成①，也不能说成③。
+        let blank = one(rec(Some("")));
+        assert!(
+            blank.ends_with(" · 本机识别过，没有字"),
+            "跑过而没字的那一行没说它跑过：{blank}"
+        );
+        assert!(!blank.contains("有识别文字"), "空串被说成了有字：{blank}");
+
+        // ③ 有字：数到 12 个字符（含那个换行），而不是 22 个字节。
+        let text = one(rec(Some("总价 12.00\n第二行")));
+        assert_eq!(
+            "总价 12.00\n第二行".len(),
+            22,
+            "这一格的对照要指着字节数（`len()`）与字符数（`chars().count()`）不等的那一串"
+        );
+        assert!(
+            text.ends_with(" · 有识别文字 12 字"),
+            "有字那一行报的不是字符数：{text}"
+        );
+    }
+
     /// P98：[`history_rows_at`] 的三种答法是三件事，而这一族把它们**分开**答：
     /// `[history] enabled` 关着 ⇒ `Err` 点「没开」；开着而库里没行 ⇒ `Ok(空串)`（一次
     /// 正常的空）；库里真有两行 ⇒ `Ok` 里倒序点名那两个行号，而 `limit` 是 `newest` 里
@@ -3549,5 +3867,271 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// §5.7.22 的第一位读者：色带走桥的那一份，枚数与顺序都由档决定。
+    ///
+    /// 反证钉在这里 —— 本文件之外那一页曾经写着六枚自己挑的字面量，而档里是十枚。一轮只
+    /// 量「递出六枚」的跑级会把它自己写的常量读成绿色，所以这里量的不是某枚数，而是
+    /// **输出的段数跟着输入的段数走**：1 / 3 / 6 / 10 / 20 各跑一遍，六那一遍也在内。
+    #[test]
+    fn band_colors_joined_hands_back_as_many_colors_as_the_file_named() {
+        for n in [1usize, 3, 6, 10, 20] {
+            let colors: Vec<String> = (0..n).map(|i| format!("#{:02X}0000", i + 1)).collect();
+            let joined = band_colors_joined(&colors);
+            let cells: Vec<&str> = if joined.is_empty() {
+                vec![]
+            } else {
+                joined.split('|').collect()
+            };
+            assert_eq!(cells.len(), n, "{n} 枚颜色走到页上成了 {} 段", cells.len());
+            for (i, cell) in cells.iter().enumerate() {
+                assert_eq!(
+                    *cell,
+                    format!("{:02X}0000", i + 1),
+                    "{n} 枚里的第 {i} 段读成 {cell:?}，档里写的是 {:?}",
+                    colors[i]
+                );
+            }
+        }
+    }
+
+    /// 同一枚颜色的两种拼法必须落到同一段上：归一那一步只有一台解析器（`colors::parse`），
+    /// 而 `#E81123` 走十六进制那一支、`rgb(232, 17, 35)` 走函数那一支 —— 两支给出同一个答案
+    /// 才是「页上没有第二台解析器」这句断言的机械形状。顺带钉三件：大写、六位、无 `#`；
+    /// `#RGB` 短式展开成 `RRGGBB`；以及档里重复的一枚**照旧重复**（不替用户去重）。
+    #[test]
+    fn band_colors_joined_normalizes_spellings_without_editing_the_list() {
+        let colors = [
+            "#E81123",
+            "rgb(232, 17, 35)",
+            "#fff",
+            "rgba(0, 120, 215, 1)",
+            "#E81123",
+        ]
+        .iter()
+        .map(|s| (*s).to_string())
+        .collect::<Vec<String>>();
+        assert_eq!(
+            band_colors_joined(&colors),
+            "E81123|E81123|FFFFFF|0078D7|E81123"
+        );
+
+        // alpha 在这一格落地为丢弃，而这一条是本文档里写着的账（§5.7.21 第三步的门把手还不交
+        // alpha），不是悄悄丢：带 `AA` 的八位式与前六位读成同一段。顺带钉住"谁在前"——
+        // 档里的拼法是 CSS 的（alpha 在末），不是 QML 那枚整数读的 `0xAARRGGBB`，同一串十六
+        // 进制数字两种读法给出两枚不同的颜色，所以这一格不许留给读者猜。
+        assert_eq!(
+            band_colors_joined(&["#E8112380".to_string()]),
+            "E81123",
+            "rgba 的一枚落成了别的段"
+        );
+        assert_eq!(
+            band_colors_joined(&["#80E81123".to_string()]),
+            "80E811",
+            "八位式被当成 `#AARRGGBB` 读了：档里的 alpha 在末"
+        );
+        // 四位短式 `#RGBA` 同样展开到 RGB 三段（alpha 落回丢弃那一条）。
+        assert_eq!(band_colors_joined(&["#fff8".to_string()]), "FFFFFF");
+    }
+
+    /// 读不出来的一枚不上带，与空表 ⇒ 空串 —— 后一半是页上那一次 `.split("|")` 的陷阱：
+    /// `"".split("|")` 在 JS 里数出**一段空串**而不是零段（P92 / P93 钉过的那一格），所以
+    /// `AnnotationToolbar.qml` 必须先滤零长段。这里把这枚形状留在档上，是因为一旦有人把
+    /// 那一次 filter 删掉，档里一枚也没有时屏幕上会多出一枚点不动的空芯片。
+    #[test]
+    fn band_colors_joined_leaves_no_room_for_a_color_it_cannot_read() {
+        let colors = ["#E81123", "not-a-colour", "255", "hsl(0, 100%, 49%)"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect::<Vec<String>>();
+        let joined = band_colors_joined(&colors);
+        let cells: Vec<&str> = joined.split('|').collect();
+        assert_eq!(cells.len(), 2, "{joined:?} 不是两枚");
+        assert_eq!(cells[0], "E81123");
+        assert_eq!(
+            cells[1],
+            format_hsl_cell(),
+            "hsl 那一支没有走到与 hex 同一台解析器上"
+        );
+        assert_eq!(band_colors_joined(&[]), "", "空表该给出空串");
+    }
+
+    /// `hsl(0, 100%, 49%)` 归一成什么，由 `colors::parse` 自己算——这一枚辅助函数存在的唯一
+    /// 理由是把「同一台解析器」这句断言写成读数而不是写成一枚手抄的常量。
+    fn format_hsl_cell() -> String {
+        let [r, g, b, _] = falcon_core::colors::parse("hsl(0, 100%, 49%)")
+            .expect("hsl parses with the file's own parser");
+        format!("{r:02X}{g:02X}{b:02X}")
+    }
+
+    /// 出厂那一排确实是十枚而不是六枚：`Annotation::default()` 的主人（`config.rs`）与桥
+    /// 递出的段数在这里对一次。写死 10 是一枚会被 `default_palette` 的改动当场抓到的断言，
+    /// 而不是对旧页上那六个字面量的引用。
+    #[test]
+    fn the_shipped_palette_hands_the_band_more_than_the_old_page_drew() {
+        let ann = falcon_core::config::Annotation::default();
+        let joined = band_colors_joined(&ann.palette);
+        let cells: Vec<&str> = joined.split('|').filter(|c| !c.is_empty()).collect();
+        assert_eq!(cells.len(), ann.palette.len(), "{joined:?} 段数没跟着档走");
+        assert_eq!(
+            cells.len(),
+            10,
+            "config.rs 的 default_palette 改了枚数，这一格与它上面那两格一起重读"
+        );
+        assert_ne!(cells.len(), 6, "六枚是旧页上那一份常量，不是档里的答案");
+    }
+
+    /// §5.7.22 步骤 4 与步骤 5 是同一只手写、同一只手读：导出的那一份必须原样读得回来，
+    /// 而它写的拼法只能是模型自己的那一拼（一枚一行、`#RRGGBB`）。拿「每行再走一次导出」
+    /// 来断言拼法，是为了不在这里再抄一份正则——规则一旦有两套，漂的那一套永远是没人测的。
+    #[test]
+    fn a_palette_file_this_round_writes_reads_back_as_the_same_row() {
+        let ann = falcon_core::config::Annotation::default();
+        let text = palette_from_stored(&ann.palette).to_text();
+        let read = palette_read_text(&text);
+        assert_eq!(read.palette.colors.len(), 10, "出厂那一排是十枚，不是别的");
+        assert_eq!((read.lines, read.blank, read.dropped.len()), (10, 0, 0));
+        assert_eq!(read.repeats(), 0);
+        for line in text.lines() {
+            assert_eq!(
+                palette_from_stored(&[line.to_string()]).to_text(),
+                line,
+                "{line:?} 不是模型自己会写出的那一拼"
+            );
+        }
+        // 落盘的那一份多末尾一枚换行（给记事本看的），而 `str::lines()` 不因此多数一行。
+        assert_eq!(
+            palette_read_text(&format!("{text}\n")).palette.colors.len(),
+            10
+        );
+    }
+
+    /// 空行、读不出的行、重复的行——三笔账各数各的，加起来必须等于文件的行数。这一式是
+    /// 那句「留下 M 枚」能不能被读的人信的证据；它要是算不平，报告里那三个数就有一个是编的。
+    #[test]
+    fn palette_read_text_keeps_the_bookkeeping_of_the_file_it_read() {
+        let read = palette_read_text("#E81123\n#E81123\n#F38B00\n\nnope\n#0078D7\n");
+        assert_eq!(
+            (read.lines, read.blank, read.dropped.len()),
+            (6, 1, 1),
+            "{:?}",
+            read.dropped
+        );
+        assert_eq!(read.dropped, vec!["nope".to_string()]);
+        assert_eq!(read.palette.colors.len(), 3, "重复的那一枚不许占两个位置");
+        assert_eq!(read.repeats(), 1);
+        assert_eq!(
+            read.lines,
+            read.blank + read.dropped.len() + read.palette.colors.len() + read.repeats()
+        );
+        // 记事本那种 CRLF 结尾：同一排色，不该多数一行，也不该把 `\r` 当成颜色的一部分。
+        let win = palette_read_text("#E81123\r\n#F38B00\r\n");
+        assert_eq!(
+            (win.lines, win.blank, win.dropped.len(), win.repeats()),
+            (2, 0, 0, 0)
+        );
+        assert_eq!(win.palette.colors.len(), 2);
+    }
+
+    /// 一份读不出任何颜色的档**不许**变成出厂那十枚。[`Config::validate`] 对空名单的做法是
+    /// 回填 `default_palette()` 而一个字也不警告，所以走到那一步之后，「这档是空的」与
+    /// 「这档写了十枚出厂色」在盘上完全同一副样子——用户那一排色就此没有作者地没了。
+    #[test]
+    fn a_palette_file_with_nothing_readable_is_refused_before_it_touches_the_machine() {
+        let dir = sandbox("empty-palette");
+        let path = dir.join("empty.txt");
+        std::fs::write(&path, "not a colour\n\n").unwrap();
+        let e = palette_import(&path, true).expect_err("空档必须被拒，不能被回填成出厂那十枚");
+        assert!(e.contains("读不出任何颜色"), "{e}");
+        assert!(e.contains(&path.display().to_string()), "{e}");
+        assert_eq!(
+            palette_read_text(&std::fs::read_to_string(&path).unwrap())
+                .palette
+                .colors
+                .len(),
+            0,
+            "这一句拒的就是这一手读出来的那个 0，不是别的读数"
+        );
+        // 加不加 `--confirm` 改的是「写不写」，不是「拦不拦」：预览那一趟也说同一句话。
+        assert!(palette_import(&path, false).is_err());
+    }
+
+    /// 头部那句报「读不出 K 行」，下面就得有 K 行「读不出 …」——「零枚」与「没去看」在日志里
+    /// 得长得不一样，与 [`render_import_applied`] 同一枚理由。「相同」那一支也得有它的对面，
+    /// 否则这一格只测了走得到的一半。
+    #[test]
+    fn the_palette_preview_prints_one_row_for_every_row_it_dropped() {
+        let path = std::path::Path::new("shared.txt");
+        let current: Vec<String> = falcon_core::config::Annotation::default().palette;
+        let read = palette_read_text("#123456\nnope\n#ABCDEF\nstill-not\n");
+        let out = render_palette_preview(path, &read, &current);
+        let rows: Vec<&str> = out.lines().filter(|l| l.starts_with("  读不出 ")).collect();
+        assert_eq!(rows, vec!["  读不出 nope", "  读不出 still-not"], "{out}");
+        assert_eq!(rows.len(), read.dropped.len());
+        assert!(out.contains("[palette] 本机 10 枚："), "{out}");
+        assert!(
+            out.contains("[palette] 这一份 2 枚：#123456, #ABCDEF"),
+            "{out}"
+        );
+        assert!(out.contains("两份名单不同"), "{out}");
+
+        let mine = palette_from_stored(&current);
+        let same = render_palette_preview(path, &palette_read_text(&mine.to_text()), &current);
+        assert!(same.contains("两份名单相同"), "{same}");
+        assert!(same.contains("（没有读不出的行）"), "{same}");
+        assert!(
+            same.contains("[palette] 读到 shared.txt：10 行、留下 10 枚"),
+            "{same}"
+        );
+        // 「未应用」那一句是 `--confirm` 那一道闸的话，不属于这份读数。
+        assert!(!same.contains("未应用"), "{same}");
+        assert!(!same.contains("已应用"), "{same}");
+    }
+
+    /// 落盘之后那一行报的枚数，报的是**模型留下的那些枚**，不是文件行数、也不是本机枚数；
+    /// 校正那一句两半都印得出，「零项」与「没去看」得长得不一样。
+    #[test]
+    fn render_palette_applied_counts_the_row_it_written_and_the_corrections_it_found() {
+        let one = render_palette_applied(3, 7, &["annotation.palette: dropped x".to_string()]);
+        assert!(
+            one.contains("[palette] 已应用 3 枚，写盘耗时 7 ms"),
+            "{one}"
+        );
+        assert!(one.contains("应用后又校正 1 项"), "{one}");
+        assert_eq!(
+            one.lines()
+                .filter(|l| l.starts_with("  应用时校正 "))
+                .count(),
+            1,
+            "{one}"
+        );
+        let none = render_palette_applied(10, 1, &[]);
+        assert!(none.contains("应用后又校正 0 项"), "{none}");
+        assert!(none.contains("（应用时没有再校正任何项）"), "{none}");
+        assert_eq!(
+            none.lines()
+                .filter(|l| l.starts_with("  应用时校正 "))
+                .count(),
+            0,
+            "{none}"
+        );
+        assert_eq!(none.lines().count(), 3, "{none}");
+    }
+
+    /// alpha 在这一手是**丢弃**而不是支持：一份写着 `#E8112380` 的档，模型留下的是 `#E81123`。
+    /// 这与 V1.181 块 ⑨ 那句「递给 QML 的门把手只带 RGB」是同一件事的两面，钉在这里是为了让
+    /// 「共享的那份文件」与「屏幕上那一排」说的是同一枚颜色——而不是档里写着八位、屏上画着六位。
+    #[test]
+    fn a_shared_palette_carries_no_alpha_and_the_band_reads_the_same_row() {
+        let read = palette_read_text("#E8112380\n#80E81123\n");
+        assert_eq!(read.palette.to_text(), "#E81123\n#80E811");
+        let stored: Vec<String> = read
+            .palette
+            .to_text()
+            .lines()
+            .map(|l| l.to_string())
+            .collect();
+        assert_eq!(band_colors_joined(&stored), "E81123|80E811");
     }
 }

@@ -104,7 +104,46 @@ pub fn code_of(tool: Option<Kind>) -> i32 {
         .unwrap_or(0)
 }
 
-/// The toolbar's labels, in [`TOOLS`]' order and pipe-separated.
+/// The tool row in **one** table: the kind, the name on the button, and the sentence
+/// a hover owes the user (§5.21.2 第一枚「工具栏按钮应提供提示文本」).
+///
+/// One table rather than two lists because two lists are how 橡皮's button ends up
+/// saying 画笔: `TOOLS` is the order of the codes, this is the order of `TOOLS`, and
+/// index `i` of both has to name the same tool — which no binding can check and every
+/// click would find out.
+///
+/// Each hint starts with its own button's name for the same reason a doc comment has
+/// to sit next to the thing it describes: a tooltip that names a different tool is a
+/// sentence about something else, and "the hint is non-empty" would let it pass.
+const TOOL_TEXTS: [(Option<Kind>, &str, &str); 15] = [
+    (None, "选择", "选择：挪动选区，或选中已有的标注"),
+    (Some(Kind::Rect), "矩形", "矩形：拖出一枚矩形框"),
+    (Some(Kind::RoundedRect), "圆角", "圆角：拖出一枚圆角的矩形"),
+    (Some(Kind::Ellipse), "椭圆", "椭圆：拖出一枚椭圆"),
+    (Some(Kind::Line), "直线", "直线：拖出一段直线"),
+    (
+        Some(Kind::Polyline),
+        "折线",
+        "折线：逐点连下去，双击收住这条线",
+    ),
+    (Some(Kind::Arrow), "箭头", "箭头：拖出一支单头的箭头"),
+    (
+        Some(Kind::DoubleArrow),
+        "双向",
+        "双向：拖出一支两头都带箭头的线",
+    ),
+    (Some(Kind::Pencil), "画笔", "画笔：按住拖出手写的轨迹"),
+    (Some(Kind::Marker), "荧光", "荧光：拖出一条半透明的高亮"),
+    (Some(Kind::Mosaic), "马赛克", "马赛克：把拖过的地方打碎"),
+    (Some(Kind::Blur), "模糊", "模糊：把拖过的地方虚化"),
+    (Some(Kind::Text), "文本", "文本：拖出一只框，再往里打字"),
+    (Some(Kind::Zoom), "放大", "放大：先拖源区，再拖放大图落在哪"),
+    (Some(Kind::Eraser), "橡皮", "橡皮：拖过的标注被擦掉"),
+];
+
+const _: () = assert!(TOOLS.len() == TOOL_TEXTS.len());
+
+/// The toolbar's labels, in [`TOOLS`] order and pipe-separated.
 ///
 /// Rust owns the list because a QML copy of it is a second source of truth that can
 /// be renamed out of step with the enum - and index `i` of the labels has to name
@@ -113,26 +152,19 @@ pub fn code_of(tool: Option<Kind>) -> i32 {
 /// The words are the PRD's own §5.7 headings, shortened to what a button holds:
 /// 圆角矩形 is §5.7.3 and draws as 圆角.
 pub fn tool_names() -> String {
-    TOOLS
+    TOOL_TEXTS
         .iter()
-        .map(|k| match k {
-            None => "选择",
-            Some(Kind::Rect) => "矩形",
-            Some(Kind::RoundedRect) => "圆角",
-            Some(Kind::Ellipse) => "椭圆",
-            Some(Kind::Line) => "直线",
-            Some(Kind::Arrow) => "箭头",
-            Some(Kind::DoubleArrow) => "双向",
-            Some(Kind::Pencil) => "画笔",
-            Some(Kind::Marker) => "荧光",
-            Some(Kind::Mosaic) => "马赛克",
-            Some(Kind::Blur) => "模糊",
-            Some(Kind::Text) => "文本",
-            Some(Kind::Number) => "编号",
-            Some(Kind::Polyline) => "折线",
-            Some(Kind::Zoom) => "放大",
-            Some(Kind::Eraser) => "橡皮",
-        })
+        .map(|(_, name, _)| *name)
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// The same row's hover text, in [`TOOLS`] order and pipe-separated - §5.21.2 第一枚
+/// 的另一半，与 [`tool_names`] 同枚数同序，所以第 `i` 句提示只能是第 `i` 枚钮的。
+pub fn tool_hints() -> String {
+    TOOL_TEXTS
+        .iter()
+        .map(|(_, _, hint)| *hint)
         .collect::<Vec<_>>()
         .join("|")
 }
@@ -2639,6 +2671,50 @@ mod tests {
                 labels[i],
                 l.tool()
             );
+        }
+    }
+
+    #[test]
+    fn every_hint_sits_on_the_button_it_names() {
+        // §5.21.2 第一枚判的是「这句提示说的是不是这一枚钮」。非空不够：一句写歪了
+        // 名字的提示照样填满那一格。所以判定钉在同一张表的三列上 —— 第 `i` 行的
+        // kind 必须是 `TOOLS[i]`、句子必须以第 `i` 行的名字起头，而且除了名字还得
+        // 说出点它之后会发生什么。
+        let names_s = tool_names();
+        let hints_s = tool_hints();
+        let names: Vec<&str> = names_s.split('|').collect();
+        let hints: Vec<&str> = hints_s.split('|').collect();
+        assert_eq!(
+            hints.len(),
+            TOOLS.len(),
+            "a button with no sentence over it, or a sentence with no button"
+        );
+        for (i, (kind, name, hint)) in TOOL_TEXTS.iter().enumerate() {
+            assert_eq!(*kind, TOOLS[i], "row {i} is not the tool drawn there");
+            assert_eq!(names[i], *name, "row {i} renamed its own button");
+            assert!(
+                hint.starts_with(&format!("{name}：")),
+                "button {i} is named {name} but its hint says {hint}"
+            );
+            assert!(
+                hint.chars().count() > name.chars().count() + 1,
+                "the hint on {name} repeats the name and says nothing else"
+            );
+            assert!(!hint.contains('|'), "the hint on {name} splits itself");
+        }
+    }
+
+    #[test]
+    fn no_two_buttons_share_a_hint_sentence() {
+        // Two cells with the same sentence is one cell that was never read: 撤销 and
+        // 重做 sit next to each other, and a shared string is how a copy-paste of the
+        // first one survives the review.
+        let hints_s = tool_hints();
+        let hints: Vec<&str> = hints_s.split('|').collect();
+        let mut seen: Vec<&str> = Vec::new();
+        for hint in hints {
+            assert!(!seen.contains(&hint), "{hint} is on two buttons");
+            seen.push(hint);
         }
     }
 

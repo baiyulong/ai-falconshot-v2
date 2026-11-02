@@ -312,7 +312,12 @@ pub struct DipRect {
 }
 
 /// PRD §5.3.7 — the size readout can be shown in physical pixels or DIPs.
+///
+/// Persisted as `[capture] size_unit` since P164, and spelled the way [`Unit::label`] spells it:
+/// `snake_case` puts `"px"` / `"dip"` in the file, which is what every other stored enum in the
+/// config does (`CaptureMode`, `AlphaBg`, `Format`, `Collision`) and what a user reads on the chip.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Unit {
     #[default]
     Px,
@@ -320,11 +325,30 @@ pub enum Unit {
 }
 
 impl Unit {
+    /// The one order the product speaks: the size bar's chips, the settings gate's refusal, and the
+    /// round trip all read this list rather than each keeping their own.
+    pub const ALL: [Unit; 2] = [Unit::Px, Unit::Dip];
+
     pub fn label(self) -> &'static str {
         match self {
             Unit::Px => "px",
             Unit::Dip => "dip",
         }
+    }
+
+    /// [`Unit::label`]'s inverse, for the text typed into the settings row. Reading the same list
+    /// `label` writes is what keeps a third spelling from appearing.
+    pub fn from_label(text: &str) -> Option<Unit> {
+        Self::ALL.iter().copied().find(|u| u.label() == text)
+    }
+
+    /// The accepted spellings in one line, for the message that refuses one.
+    pub fn labels_line() -> String {
+        Self::ALL
+            .iter()
+            .map(|u| u.label())
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     pub fn show(self, phys: u32, scale: Scale) -> u32 {
@@ -380,6 +404,27 @@ pub enum Anchor {
     BottomLeft,
     BottomRight,
     Center,
+}
+
+impl Anchor {
+    /// The point this anchor names on `r` - the one corner that `set_size` is not
+    /// allowed to move. It lives here rather than inside `set_size` because §5.3.8's
+    /// whole promise is "the corner you did not drag stays put", and a promise you can
+    /// only check by re-reading a constructor's arithmetic is a promise nothing tests.
+    ///
+    /// `right()` and `bottom()` are the exclusive edges, so a `TopRight` anchor sits at
+    /// the coordinate the new rect's right edge lands on. That is the half-open
+    /// convention `PhysRect` already keeps; the check is always equality of two points
+    /// measured the same way.
+    pub fn point(self, r: &PhysRect) -> PhysPoint {
+        match self {
+            Anchor::TopLeft => PhysPoint::new(r.x, r.y),
+            Anchor::TopRight => PhysPoint::new(r.right(), r.y),
+            Anchor::BottomLeft => PhysPoint::new(r.x, r.bottom()),
+            Anchor::BottomRight => PhysPoint::new(r.right(), r.bottom()),
+            Anchor::Center => r.center(),
+        }
+    }
 }
 
 pub const DEFAULT_HIT_SLOP: u32 = 5;
@@ -477,14 +522,53 @@ pub fn nudge_edge(r: &PhysRect, handle: Handle, dx: i32, dy: i32, bounds: &PhysR
 pub fn set_size(r: &PhysRect, w: u32, h: u32, anchor: Anchor) -> PhysRect {
     let w = w.max(1);
     let h = h.max(1);
-    let (x, y) = match anchor {
-        Anchor::TopLeft => (r.x, r.y),
-        Anchor::TopRight => (r.right() - w as i32, r.y),
-        Anchor::BottomLeft => (r.x, r.bottom() - h as i32),
-        Anchor::BottomRight => (r.right() - w as i32, r.bottom() - h as i32),
-        Anchor::Center => (r.center().x - (w as i32) / 2, r.center().y - (h as i32) / 2),
+    let p = anchor.point(r);
+    // The origin is the anchor pulled back by the new size along whichever axes that
+    // anchor is measured from. One match per axis rather than five pairs, so `TopRight`
+    // and `BottomRight` cannot disagree about how far right the right edge is.
+    let dx = match anchor {
+        Anchor::TopLeft | Anchor::BottomLeft => 0,
+        Anchor::TopRight | Anchor::BottomRight => -(w as i32),
+        Anchor::Center => -(w as i32) / 2,
     };
-    PhysRect::new(x, y, w, h)
+    let dy = match anchor {
+        Anchor::TopLeft | Anchor::TopRight => 0,
+        Anchor::BottomLeft | Anchor::BottomRight => -(h as i32),
+        Anchor::Center => -(h as i32) / 2,
+    };
+    PhysRect::new(p.x + dx, p.y + dy, w, h)
+}
+
+/// PRD §5.3.6 的第二条规则 —— "输入值超出屏幕范围时，应限制到有效区域" —— 落在尺寸那一趟上。
+///
+/// [`set_size`] 不管边界，因为叫它的人里有两类：§5.3.8 的比例锁只需要换尺寸，滑回桌面由它
+/// 自己后面那一次 `fitted_into` 负责；钉图的滚轮缩放根本没有桌面可夹。这一枚是**打进来的那
+/// 对数字**的路：用户写了 5000×4000，答案不该是"选区跑到屏幕外，下一笔拖拽再把它滑回来"。
+///
+/// 让路的是**对面那条边**，锚点这一侧的边一条也不动：结果取理想矩形与桌面的交集，于是
+/// `TopRight` 锚住时缩短的是左边，`BottomLeft` 锚住时缩短的是上边。这不是 `fitted_into`
+/// 的滑动 —— 滑动会把第一条规则钉死的那枚锚点搬走，而那正是"从哪一角扩展"这句话的反面。
+pub fn set_size_within(
+    r: &PhysRect,
+    w: u32,
+    h: u32,
+    anchor: Anchor,
+    bounds: &PhysRect,
+) -> PhysRect {
+    let q = set_size(r, w, h, anchor);
+    let l = q.x.max(bounds.x);
+    let t = q.y.max(bounds.y);
+    let rr = q.right().min(bounds.right());
+    let bb = q.bottom().min(bounds.bottom());
+    // 最少留一像素，与 `set_size` 里那两枚 `.max(1)` 同一口径：夹完只剩 0 的话，"限制到有效
+    // 区域"就把选区删了，而没人按过删除。
+    //
+    // 最后那一次 `fitted_into` 在正常路上取不到任何动作 —— 交集已经把 w/h 收到桌面以内、把
+    // 左边与上边收到桌面起点，四条 if 全都落空。它管的只有那一枚 `.max(1)` 造出的窄片：锚点
+    // 正好压在桌面的外沿（一张还没拖开的选区就是这种）时，"对面让路"让到对面追上了锚点，再
+    // 保锚点就得把像素放到屏幕外。那一格上第二条规则赢，这一枚函数才有"结果必在桌面内"这条
+    // 能被性质测试问出来的保证。
+    PhysRect::new(l, t, (rr - l).max(1) as u32, (bb - t).max(1) as u32).fitted_into(bounds)
 }
 
 pub fn scale_about(r: &PhysRect, factor: f64, anchor_point: PhysPoint) -> PhysRect {
@@ -534,6 +618,34 @@ pub fn parse_ratio(spec: &str) -> Option<f64> {
         Some(w / h)
     } else {
         None
+    }
+}
+
+/// The corner that stays put when `handle` is dragged: the one diagonally opposite it.
+///
+/// Only the four corners answer. PRD §5.3.8 fixes the rule to 「调整角点时保持比例」, so an
+/// edge handle says `None` and keeps moving a single dimension - which is what an edge
+/// handle *is*. `Body` is not a corner either.
+pub fn anchor_of_corner(handle: Handle) -> Option<Anchor> {
+    Some(match handle {
+        Handle::Nw => Anchor::BottomRight,
+        Handle::Ne => Anchor::BottomLeft,
+        Handle::Sw => Anchor::TopRight,
+        Handle::Se => Anchor::TopLeft,
+        _ => return None,
+    })
+}
+
+/// The corner a *newly drawn* rectangle holds still: the one the pointer went down at,
+/// which follows the quadrant the pointer dragged into. `from_points` normalises the two
+/// points into a rect, so without this the anchor would have to be re-derived from the
+/// rect's own corners - and a rect whose width is zero names two corners at once.
+pub fn anchor_of_drag(from: PhysPoint, to: PhysPoint) -> Anchor {
+    match (to.x >= from.x, to.y >= from.y) {
+        (true, true) => Anchor::TopLeft,
+        (true, false) => Anchor::BottomLeft,
+        (false, true) => Anchor::TopRight,
+        (false, false) => Anchor::BottomRight,
     }
 }
 
@@ -615,6 +727,25 @@ mod tests {
     }
 
     #[test]
+    fn the_unit_labels_are_the_spellings_the_file_stores() {
+        // §5.3.7 step 1: the settings row types a name and the gate reads it back. `label` writes
+        // the spelling, `from_label` reads it, and `ALL` is the one order both the chips and the
+        // refusal message use - so no third spelling can appear on that path.
+        for unit in Unit::ALL {
+            assert_eq!(Unit::from_label(unit.label()), Some(unit));
+        }
+        assert_eq!(Unit::labels_line(), "px, dip");
+        assert_eq!(
+            Unit::ALL[0],
+            Unit::default(),
+            "the shipped unit is the list's first"
+        );
+        for bad in ["PX", "Px", "pixels", "dip ", ""] {
+            assert_eq!(Unit::from_label(bad), None, "{bad} is not a unit");
+        }
+    }
+
+    #[test]
     fn clamp_reports_truncation() {
         let (kept, clipped) = PhysRect::new(950, 10, 100, 100).clamp_to(&b()).unwrap();
         assert!(clipped);
@@ -639,6 +770,88 @@ mod tests {
         assert_eq!(parse_ratio("0:9"), None);
         assert_eq!(parse_ratio("16"), None);
         assert!(constrain_aspect(&PhysRect::new(0, 0, 10, 0), 1.0, Anchor::TopLeft).is_none());
+    }
+
+    /// §5.3.8's other half: the lock is only worth anything if it holds the corner the
+    /// user is *not* dragging. The pairing is asserted against `anchor_of_corner` itself,
+    /// so a wrong table (`Nw` with `TopLeft`) cannot pass by keeping a corner that was
+    /// never fixed.
+    #[test]
+    fn a_corner_handle_anchors_the_opposite_corner() {
+        let r = PhysRect::new(100, 100, 40, 30);
+        for (handle, a) in [
+            (Handle::Nw, Anchor::BottomRight),
+            (Handle::Ne, Anchor::BottomLeft),
+            (Handle::Sw, Anchor::TopRight),
+            (Handle::Se, Anchor::TopLeft),
+        ] {
+            assert_eq!(
+                anchor_of_corner(handle),
+                Some(a),
+                "{handle:?} names the wrong corner"
+            );
+            let out = constrain_aspect(&r, 16.0 / 9.0, a).unwrap();
+            assert_eq!(a.point(&out), a.point(&r), "{handle:?} let its anchor move");
+        }
+        for edge in [Handle::N, Handle::E, Handle::S, Handle::W, Handle::Body] {
+            assert_eq!(anchor_of_corner(edge), None, "{edge:?} is not a corner");
+        }
+    }
+
+    /// A drag that goes up-and-left from the press point keeps that press point as its
+    /// corner - and the four quadrants are four different anchors, not one guess.
+    #[test]
+    fn a_new_drag_anchors_the_press_point() {
+        let from = PhysPoint::new(100, 100);
+        for to in [
+            PhysPoint::new(140, 130),
+            PhysPoint::new(140, 70),
+            PhysPoint::new(60, 130),
+            PhysPoint::new(60, 70),
+        ] {
+            let a = anchor_of_drag(from, to);
+            assert_eq!(
+                a.point(&PhysRect::from_points(from, to)),
+                from,
+                "{to:?} moved the press point"
+            );
+        }
+        // A drag that has not moved yet (or only straight down) still names one corner,
+        // and `constrain_aspect` is the one that declines: a zero-area rect has no ratio.
+        assert_eq!(anchor_of_drag(from, from), Anchor::TopLeft);
+        assert_eq!(
+            anchor_of_drag(from, PhysPoint::new(100, 140)),
+            Anchor::TopLeft
+        );
+    }
+
+    proptest! {
+        /// The claim the mask makes when it says "the corner keeps the ratio". It is
+        /// stated as *which rect the lock may return* rather than as a percentage: the
+        /// error of rounding one axis to integer pixels is `r²/2w` on the width-driven
+        /// candidate, which is 7.6% at 41×2.5 - a tolerance written as "5%" would have
+        /// been a number chosen to pass, and this round's ledger is about not doing that.
+        /// The candidate disjunction says the real thing: one pixel of one axis, or the
+        /// anchor did not move.
+        #[test]
+        fn locking_a_corner_returns_one_of_the_two_rounded_candidates(
+            x in 0i32..400, y in 0i32..400, w in 1u32..400, h in 1u32..400,
+            which in 0usize..4,
+        ) {
+            let handle = [Handle::Nw, Handle::Ne, Handle::Sw, Handle::Se][which];
+            let anchor = anchor_of_corner(handle).unwrap();
+            let r = PhysRect::new(x, y, w, h);
+            for ratio in [1.0, 4.0 / 3.0, 16.0 / 9.0, 2.5] {
+                let out = constrain_aspect(&r, ratio, anchor).unwrap();
+                prop_assert_eq!(anchor.point(&out), anchor.point(&r));
+                let by_w = (out.w, ((out.w as f64 / ratio).round().max(1.0)) as u32);
+                let by_h = (((out.h as f64 * ratio).round().max(1.0)) as u32, out.h);
+                prop_assert!(
+                    (out.w, out.h) == by_w || (out.w, out.h) == by_h,
+                    "{out:?} is neither candidate at {ratio:.3} ({by_w:?} / {by_h:?})"
+                );
+            }
+        }
     }
 
     proptest! {
@@ -721,5 +934,106 @@ mod tests {
                 prop_assert_eq!(got, corner, "{}", name);
             }
         }
+
+        #[test]
+        fn a_typed_size_within_the_screen_is_exactly_the_typed_size(
+            x in 200i32..300, y in 200i32..300, w in 1u32..100, h in 1u32..100,
+            nw in 1u32..100, nh in 1u32..100,
+        ) {
+            let desk = PhysRect::new(0, 0, 800, 600);
+            let r = PhysRect::new(x, y, w, h);
+            for (anchor, name) in [
+                (Anchor::TopLeft, "TopLeft"),
+                (Anchor::TopRight, "TopRight"),
+                (Anchor::BottomLeft, "BottomLeft"),
+                (Anchor::BottomRight, "BottomRight"),
+                (Anchor::Center, "Center"),
+            ] {
+                let ideal = set_size(&r, nw, nh, anchor);
+                let out = set_size_within(&r, nw, nh, anchor, &desk);
+                // 理想矩形本来就在桌面里时，"限制到有效区域"一个字都不许改 —— 这一条就是
+                // "用户打 37，屏幕上不许变成 38" 那句验收话的性质版本。
+                let inside = ideal.x >= desk.x
+                    && ideal.y >= desk.y
+                    && ideal.right() <= desk.right()
+                    && ideal.bottom() <= desk.bottom();
+                prop_assert!(inside, "{:?} {} left the desk", anchor, name);
+                prop_assert_eq!(out, ideal, "{} got moved while it fit", name);
+            }
+        }
+
+        #[test]
+        fn a_typed_size_never_leaves_the_screen(
+            x in -200i32..1000, y in -200i32..800, w in 1u32..600, h in 1u32..600,
+            nw in 1u32..2000, nh in 1u32..2000,
+        ) {
+            let desk = PhysRect::new(0, 0, 800, 600);
+            let r = PhysRect::new(x, y, w, h);
+            for (anchor, name) in [
+                (Anchor::TopLeft, "TopLeft"),
+                (Anchor::TopRight, "TopRight"),
+                (Anchor::BottomLeft, "BottomLeft"),
+                (Anchor::BottomRight, "BottomRight"),
+                (Anchor::Center, "Center"),
+            ] {
+                let out = set_size_within(&r, nw, nh, anchor, &desk);
+                prop_assert!(out.x >= desk.x && out.y >= desk.y, "{name} 跑出了桌面");
+                prop_assert!(
+                    out.right() <= desk.right() && out.bottom() <= desk.bottom(),
+                    "{name} 跑出了桌面"
+                );
+                prop_assert!(out.w >= 1 && out.h >= 1, "{name} 夹没了选区");
+            }
+        }
+    }
+
+    #[test]
+    fn a_typed_size_too_big_gives_way_at_the_far_edge_only() {
+        // 一张 100×100 的选区贴在 800×600 桌面的右下角，打 1200×900：四个方向各让各的边，
+        // 而锚住的那一角一步也不许走 —— §5.3.6 两条规则同时成立的那一格。
+        let desk = PhysRect::new(0, 0, 800, 600);
+        let sel = PhysRect::new(700, 500, 100, 100);
+        assert_eq!(
+            set_size_within(&sel, 1200, 900, Anchor::TopLeft, &desk),
+            PhysRect::new(700, 500, 100, 100),
+            "左上角锚住：让的是右与下"
+        );
+        assert_eq!(
+            set_size_within(&sel, 1200, 900, Anchor::TopRight, &desk),
+            PhysRect::new(0, 500, 800, 100),
+            "右上角锚住：右边仍到 800，让的是左边"
+        );
+        assert_eq!(
+            set_size_within(&sel, 1200, 900, Anchor::BottomLeft, &desk),
+            PhysRect::new(700, 0, 100, 600),
+            "左下角锚住：下边仍到 600，让的是上边"
+        );
+        assert_eq!(
+            set_size_within(&sel, 1200, 900, Anchor::BottomRight, &desk),
+            desk,
+            "右下角本来就压在桌面上：整张桌面就是它能长到的地方"
+        );
+        // 打下来的数字本来就装得下时，一个像素都不许动 —— 上面那四臂说的是"让路"，这一臂
+        // 说的是"没路可让时不让"。
+        assert_eq!(
+            set_size_within(&sel, 50, 40, Anchor::TopLeft, &desk),
+            PhysRect::new(700, 500, 50, 40)
+        );
+        // 中心是唯一一枚两条边同时可让的锚点，而这张桌面关于它对称，所以让得对等。
+        let full = PhysRect::new(0, 0, 800, 600);
+        let c = set_size_within(&full, 1000, 200, Anchor::Center, &desk);
+        assert_eq!(c, PhysRect::new(0, 200, 800, 200));
+        assert_eq!(c.center(), full.center(), "中心锚住的换算把中心搬走了");
+    }
+
+    #[test]
+    fn an_anchor_pinned_to_the_far_edge_keeps_one_pixel_on_screen() {
+        // 还没拖开的选区是这种：零号尺寸的起点正压在桌面的外沿。往屏幕外打的尺寸夹到底，
+        // 剩下的一像素留在**桌面里**，而不是挂在屏幕外——第二条规则在这一格赢过第一条。
+        let desk = PhysRect::new(0, 0, 800, 600);
+        let at_edge = PhysRect::new(800, 600, 0, 0);
+        let out = set_size_within(&at_edge, 100, 100, Anchor::TopLeft, &desk);
+        assert_eq!(out, PhysRect::new(799, 599, 1, 1));
+        assert!(desk.contains(out.center()), "夹完的那一像素得在屏幕上");
     }
 }

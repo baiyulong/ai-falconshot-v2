@@ -9,6 +9,7 @@
 
 use crate::annotation::{Kind, FONT_MAX, FONT_MIN};
 use crate::encode::Format;
+use crate::geometry::Unit;
 use crate::naming::Collision;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -59,6 +60,109 @@ pub const ACTIONS: &[&str] = &[
     "solo",
     "pin_edit",
     "custom_task",
+];
+
+/// §5.21.2 第二枚「快捷键设置页应提供对应功能说明」的那一份名单：一枚动作名、它的中文名、
+/// 这一枚会做什么。**名单外的名字一处也不许再有一份中文**，因为「同一个动作在两个地方各叫
+/// 一个名」在这一档里必须是量不出来的，而它只能靠「只有一本名册」成立 —— 下面这五枚读者是
+/// 逐个 grep 现读来的，不是从这段话说出来的：
+/// * 设置页那一行 → [`crate::config::action_texts`]（`qt_bridge::settings_view::action_of`）；
+/// * 托盘菜单里那一项、与按下之后运行日志里那一句排队 → `qt_bridge::hotkey::Work::label`
+///   （它只经 `name_of` 问这张表）；
+/// * `--hotkeys` 那份报告的归宿列 → 同一个 `Work::label`（`hotkey::report` 里那一格）；
+/// * 配置那一层证词里的 `tray labels` 一行 → [`Tray::label`]。
+///
+/// 只有 `白板` 与 `退出` 那两枚留在 `hotkey::Work::label` 里 —— 它们既没有可绑定动作名、
+/// 也没有一句要递给设置页的说明。
+///
+/// **历史里那一格不是这里的读者**，这一句要单独写着：`settings::history_rows_joined` 印的是
+/// `rec.source`（这一次来自热键、角落还是托盘），与一枚动作叫什么无关。草稿里曾把「历史里的
+/// 那一格」列进上面那串读者，而那一列没有经一次现读 —— 它和本轮一并修掉的 [`Tray::label`]
+/// 私字典是同一枚坏的两面：一面是替别人家认领一枚读者，另一面是在别处再养一本名册。
+///
+/// **前十二枚与 [`ACTIONS`] 同序同 id**，这一条不是靠这段话保证的：`tests` 里那一格逐枚比对
+/// 那十二个 id，漏一枚、重一枚、换了序都红。
+///
+/// 末尾三枚（`menu` / `settings` / `none`）不在 §5.16.1 那十二名里，它们是 §5.18.2 那四枚
+/// 托盘键独有的写法。把它们并进来而不是另起一张表，是因为页上问的是同一件事——「这一格写的
+/// 这个名字，是什么意思」；而它们**不能**走 [`crate::hotkey::Work::of`] 那条通路（`menu` 与
+/// `none` 压根没有 `Work`，`settings` 也不是可绑定动作，见 `hotkey::tray_run_of` 自己的说明：
+/// 把 `settings` 塞进那条路会读出一张假的「未接线」）。归宿问哪张表由设置页按行的形状分头问，
+/// 名字与说明在这里只有一份。
+///
+/// 每一句说明写的都是 `crate::hotkey::run` 里那一臂**此刻真做得动**的事，没有一句写「会弹出
+/// 某个对话框」而对面其实没有那扇窗 —— `capture_custom` 是这条规矩的一条正例：P166 之前它只有
+/// 名字没有那扇窗，所以它的说明写的是*动作本来是什么*而不是「打开对话框」；P166 把 §5.3.5 那扇
+/// 「自定义截图」窗落成了码，这一句「按填好的坐标与尺寸截一块区域，不经过遮罩」如今是**眼前做得
+/// 到的事**的读数，改它反而要让说明与窗各说一套。
+/// 做不动的那三枚（`switch_group` / `pin_edit` / `custom_task`）只说这一枚动作*本来*是什么，
+/// 接没接线由设置页现问归宿表、现拼
+/// 那两个字——把「未接线」写死进这一格，接上的那天它就成了假话，而那正是本模块头部记过的
+/// 同一枚坏（名单不会错，它只会先旧）。
+pub const ACTION_TEXTS: [(&str, &str, &str); 15] = [
+    ("capture", "截图", "冻住此刻的屏幕并罩上遮罩，拖一块就截一块"),
+    ("capture_custom", "自定义截图", "按填好的坐标与尺寸截一块区域，不经过遮罩"),
+    ("capture_repeat", "重复上次截图", "把上一次框过的那块区域原样再截一次，贴成一张图"),
+    ("capture_active_window", "活动窗口截图", "截取此刻接手键盘的那一扇窗，贴成一张图"),
+    ("paste_pin", "贴出剪贴板", "把剪贴板里的图贴到屏幕上，剪贴板没有可贴的东西就拒"),
+    ("toggle_pins", "隐藏/显示全部贴图", "把屏幕上全部贴图收起来，再按一次放开"),
+    ("show_all_pins", "显示全部贴图", "放开全部贴图（只置成显示，不跟着上一次的态翻）"),
+    ("hide_all_pins", "隐藏全部贴图", "收起全部贴图（只置成隐藏，不跟着上一次的态翻）"),
+    ("switch_group", "切换分组", "在贴图分组之间轮流切换显示哪一组"),
+    (
+        "solo",
+        "独显",
+        "只留下此刻选中的那几张贴图，其余的按 pin.solo_dim_opacity 压暗（为 0 则隐藏）；再按一次全部还原；一枚也没选中时直接拒绝",
+    ),
+    ("pin_edit", "贴图编辑", "让选中的贴图进入标注编辑"),
+    ("custom_task", "自定义命令", "跑一条用户自己写好的命令行任务"),
+    ("menu", "托盘菜单", "点开托盘菜单"),
+    ("settings", "首选项", "打开设置窗"),
+    ("none", "不绑定", "这一格什么都不做"),
+];
+
+/// 一枚动作名的中文名与功能说明。名单外的名字交回 `None` = 这一行没有可递的说明。
+///
+/// 这一枚函数是那张表的**唯一门面**：设置页与托盘都从这里读，两处各抄一份中文迟早不一样。
+pub fn action_texts(id: &str) -> Option<(&'static str, &'static str)> {
+    ACTION_TEXTS
+        .iter()
+        .find(|(a, _, _)| *a == id)
+        .map(|(_, name, desc)| (*name, *desc))
+}
+
+/// §5.18.2 那四枚键各自能填的动作。
+///
+/// 名单不是这里发明的：`menu` 与 `settings` 是 §5.18.2 两条规则点名"必须留得住"的那两处入口，
+/// 其余全部取自 §5.18.1 那张菜单建议表里本进程**已经有一只手接得住**的事。表里剩下的
+/// 「自定义截图」「图片分组」「历史记录」「帮助」「检查更新」「退出」不在这里出现 —— 它们
+/// 要么没有对应的 `Work` 臂，要么是 §5.18.1 让菜单去做的多步流程；把它们列进来就再造一次
+/// "配得上却什么都不做"那一族（P140 在热区那一头刚刚把它关掉，见
+/// `qt_bridge::hot_corner::check` 的逐名判据）。
+pub const TRAY_ACTIONS: &[&str] = &[
+    "menu",
+    "settings",
+    "capture",
+    "paste_pin",
+    "toggle_pins",
+    "show_all_pins",
+    "hide_all_pins",
+    "none",
+];
+
+/// 能把人带到托盘菜单或设置页的那两枚动作 —— §5.18.2 的两条规则问的就是这一枚名单。
+///
+/// 文档把那件事说了两遍（"至少保留一种可打开托盘菜单或设置页的入口"与"不允许所有入口都配置为
+/// 无法进入设置的动作"），但它是**同一枚判据的两面**，所以这里只有一份名单、一处判断。
+pub const TRAY_ENTRY_ACTIONS: &[&str] = &["menu", "settings"];
+
+/// 四枚键的默认动作。顺序就是 [`Tray::entries`] 的顺序；`Default` 与"改回本键默认"读同一份，
+/// 因为分成两处写迟早会不一样。
+const TRAY_DEFAULTS: [(&str, &str); 4] = [
+    ("left", "capture"),
+    ("double", "capture"),
+    ("middle", "none"),
+    ("right", "menu"),
 ];
 
 /// The five actions PRD §5.15 lets a hot corner run. It is a subset of
@@ -242,6 +346,15 @@ impl Default for General {
     }
 }
 
+/// §5.2.4 / §5.3.5 第四步那枚「延时时间」的界：`0` 是不延时，上界 300 秒。
+///
+/// 写成两枚公有的常数而不是只留在 [`Config::normalize`] 那一次 `clamp` 里：`qt_bridge::custom`
+/// 那一扇「自定义截图」对话框要在**按下之前**就拒掉一个越界的数（写进档里再被 `clamp` 悄悄改成
+/// 300，页上打的与屏幕上数的是两回事），而同一枚界在两处各写一遍数字，迟早一处改了另一处不说。
+/// `clamp` 用的就是这两枚，所以「档里的钳位」与「页上的拒绝」问的是同一个数。
+pub const DELAY_SECONDS_MIN: u32 = 0;
+pub const DELAY_SECONDS_MAX: u32 = 300;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Capture {
@@ -262,6 +375,9 @@ pub struct Capture {
     pub magnifier_color_format: String,
     /// §5.3.5 the live size readout.
     pub show_dimensions: bool,
+    /// §5.3.7 step 1: which unit the readout opens on. `px` is the physical pixels the result
+    /// detail names, `dip` is the same rect divided by the screen the selection lies on.
+    pub size_unit: Unit,
     /// §5.2.4 default for the delayed-capture picker; 0 shoots immediately.
     pub delay_seconds: u32,
     /// §5.3.6 snap selection edges to the window under the cursor.
@@ -281,6 +397,7 @@ impl Default for Capture {
             magnifier_coordinates: true,
             magnifier_color_format: "hex_upper".into(),
             show_dimensions: true,
+            size_unit: Unit::default(),
             delay_seconds: 0,
             snap_to_window: true,
         }
@@ -319,6 +436,13 @@ pub struct Annotation {
     pub blur_radius: u32,
     /// §5.20.3 the palette travels with exported settings.
     pub palette: Vec<String>,
+    /// §5.7.22 step 3 「保存为调色板方案」: one saved band per entry, spelled
+    /// `名字=#RRGGBB #RRGGBB …` — one `=` between the name and the colours, one space
+    /// between two colours. The shape is chosen by the writer this key goes through:
+    /// [`Config::set_str`] parses an array by splitting on `,`, so a comma anywhere in an
+    /// entry would silently become a second scheme, and a space is what a colour list never
+    /// contains. Empty by default: a band nobody has saved is not a scheme the file invents.
+    pub palette_schemes: Vec<String>,
     /// §7.2 undo depth; plan §6.4 fixed 200 steps and a 400 ms merge window.
     pub undo_limit: usize,
     pub undo_merge_ms: u32,
@@ -348,6 +472,7 @@ impl Default for Annotation {
             arrow_style: "straight".into(),
             blur_radius: 12,
             palette: default_palette(),
+            palette_schemes: Vec::new(),
             undo_limit: 200,
             undo_merge_ms: 400,
             show_toolbar_on_hover: true,
@@ -364,6 +489,44 @@ fn default_palette() -> Vec<String> {
     .iter()
     .map(|s| (*s).to_string())
     .collect()
+}
+
+/// The one grammar a saved palette scheme ([`Annotation::palette_schemes`]) is written and read
+/// with: `名字=#RRGGBB #RRGGBB …`. `None` is the answer for an entry with no `=`, a name that is
+/// only spaces, or a colour list that is only spaces — those are not half a scheme, they are a
+/// different key.
+///
+/// Both directions live here because the page composes entries and the file reader has to agree
+/// with it: a second parser would be a second opinion about what the user saved.
+pub fn scheme_split(entry: &str) -> Option<(&str, Vec<&str>)> {
+    let (name, colors) = entry.split_once('=')?;
+    let name = name.trim();
+    let colors: Vec<&str> = colors.split_whitespace().collect();
+    if name.is_empty() || colors.is_empty() {
+        return None;
+    }
+    Some((name, colors))
+}
+
+/// Which names a scheme may carry. `=` is the separator inside an entry, `,` is what
+/// [`Config::set_str`] splits an array on, `|` is what the settings window's own rows and the
+/// gauge legs split on, and a control character (including `RECORD`) would break every one of
+/// those readers. Everything else — Chinese, spaces, digits — is the user's to name.
+pub fn scheme_name_ok(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['=', ',', '|']) && !name.chars().any(char::is_control)
+}
+
+/// Render one scheme. `None` when the name is not one the storage can keep inside one entry, or
+/// when a colour carries a separator that would split the entry's colour list.
+pub fn scheme_join(name: &str, colors: &[String]) -> Option<String> {
+    if !scheme_name_ok(name.trim())
+        || colors
+            .iter()
+            .any(|c| c.contains([' ', ',', '=', '|']) || c.chars().any(char::is_control))
+    {
+        return None;
+    }
+    Some(format!("{}={}", name.trim(), colors.join(" ")))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -645,6 +808,95 @@ impl Default for Appearance {
     }
 }
 
+/// §5.18.2 自定义托盘鼠标动作：四枚键 = 左键、双击、中键、右键各跑哪一枚动作。
+///
+/// 默认值不是随手挑的：它是本轮改码**之前**这台机器上真实在跑的那一身行为（左键与双击都起截图、
+/// 右键开菜单、中键没人理会）。这样做的是"变成可配"这一件事本身，而不是顺手替用户改掉他早就
+/// 习惯的点击 —— 后者是另一条需求，文档没写，这里就不发明。
+///
+/// 四枚键**即时生效**：泵线程每一次点击都现问一次配置，所以这一节不进 [`RESTART_KEYS`]，
+/// 设置页上那四行也就不会挂着`（需重启）`。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Tray {
+    /// 左键单击。
+    pub left: String,
+    /// 左键双击。
+    pub double: String,
+    /// 中键单击。
+    pub middle: String,
+    /// 右键单击。
+    pub right: String,
+}
+
+impl Default for Tray {
+    fn default() -> Self {
+        let mut tray = Self {
+            left: String::new(),
+            double: String::new(),
+            middle: String::new(),
+            right: String::new(),
+        };
+        for (name, action) in TRAY_DEFAULTS {
+            tray.set_entry(name, action);
+        }
+        tray
+    }
+}
+
+impl Tray {
+    /// 按 §5.18.2 点名的键位顺序交出 (键名, 当前动作) 四枚。
+    ///
+    /// 判据、归一、门、页都读这一份顺序：四枚字段在外面各写一遍，加第五枚时漏一处就少查一格，
+    /// 而"少查一格"在门上是绿的不是红的。
+    pub fn entries(&self) -> [(&'static str, &str); 4] {
+        [
+            ("left", self.left.as_str()),
+            ("double", self.double.as_str()),
+            ("middle", self.middle.as_str()),
+            ("right", self.right.as_str()),
+        ]
+    }
+
+    /// 按键名写一枚动作。名单外的名字**不写**：这一枚只服务上面那四枚，写错名字必须是这里
+    /// 静悄悄地什么都不发生，而不是把另一枚键顶掉。
+    pub fn set_entry(&mut self, name: &str, action: &str) {
+        match name {
+            "left" => self.left = action.to_string(),
+            "double" => self.double = action.to_string(),
+            "middle" => self.middle = action.to_string(),
+            "right" => self.right = action.to_string(),
+            _ => {}
+        }
+    }
+
+    /// 本键的默认动作，供归一落回。名单外的键名交 `"none"`。
+    pub fn default_entry(name: &str) -> &'static str {
+        TRAY_DEFAULTS
+            .iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| *v)
+            .unwrap_or("none")
+    }
+
+    /// §5.18.1 那张菜单表与 §5.18.2 那四枚键共用的动作名 → 人话。门与页都读它，这样
+    /// "这一格显示什么"与"这一格存什么"不会因为两处各写一份字典而漂开。
+    ///
+    /// **这一枚函数曾经自己养着一本名册**：八枚键各写死一句中文，而那几句与
+    /// [`ACTION_TEXTS`] 里同名的几枚**不一样**（`paste_pin` 那里叫「贴图」、这里叫「贴出剪贴板」，
+    /// `settings` 是「打开设置页」对「首选项」，`none` 是「不做任何事」对「不绑定」），
+    /// 名单也只有八枚 —— 其余四枚落进 `other` 那一臂，交回的是英文 id 本身。本轮把名册交还给
+    /// 那张唯一的表，是因为同一轮里「一枚动作的中文名」第一次有了一本正账（#281）：留着第二本
+    /// 不会天天错，它只会在两本各改各的那天起，让配置那一层的证词与托盘上那一项各说一个名。
+    ///
+    /// 名单外的值**原样交回**而不是折成一句"未知动作"：证词里看见的是盘上真存着的那串字，
+    /// 不是这里替它起的名字。返回类型仍是 `Cow` 而不是 `&'static str`，是因为这一枚的调用方
+    /// 要的那一串本来就可能来自一份配置而不是名单。
+    pub fn label(action: &str) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(action_texts(action).map_or(action, |(name, _)| name))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct History {
@@ -720,8 +972,14 @@ pub struct About {
     /// §5.21.1
     pub auto_check_updates: bool,
     pub check_every_days: u32,
-    /// `stable` | `beta` | `nightly`.
+    /// `stable` | `beta` | `nightly`. 名单只有一个作者：[`crate::update::CHANNELS`]。
+    /// 这里再写一遍字面量的话，加一枚通道就会变成「Config 认为合法、而清单那一层拒绝」——
+    /// 用户看到的是一句「别针配好了但检查更新说不认识」，那是两张表互相矛盾的形状的标本。
     pub channel: String,
+    /// §5.21.1 第 3 步「系统获取版本信息」的那份东西从哪儿来。本 build 只读本机路径；
+    /// 写 URL 会被 `[about cfg]` 那行数出来，并由检查更新自己交回一句拒绝（见
+    /// [`crate::update::Answer::RemoteRefused`]）。
+    pub release_feed: String,
     /// §5.21.3 attach diagnostics to feedback.
     pub send_diagnostics: bool,
 }
@@ -732,8 +990,76 @@ impl Default for About {
             auto_check_updates: true,
             check_every_days: 7,
             channel: "stable".into(),
+            release_feed: String::new(),
             send_diagnostics: false,
         }
+    }
+}
+
+/// §5.4.4 白板模式与 §5.4.5 透明白板模式：那一身底色与那块画布多大。
+///
+/// 两枚键存的是**用户打的那串字**，不是解析后的值：页上显示的就是盘上存的，判据读的也是
+/// 同一串，解释只发生在 [`Whiteboard::surface`] 与 [`Whiteboard::size`] 这两一步上 —— 与
+/// `[tray]` 那四枚键同形（#281：一份名单只能有一处解释它）。
+///
+/// `background` 那一格同时是 §5.4.4 与 §5.4.5 的分岔：`transparent` 就是透明白板，所以文档
+/// 里那两节在这儿是一枚键而不是两枚 —— 两枚键会互相矛盾（"底色是白的"与"没有底色"不能同时
+/// 为真），而一枚键不能。
+///
+/// 两枚键**即时生效**：白板每一趟都现读，没有一扇挂着的窗等着新值，故不进 [`RESTART_KEYS`]。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Whiteboard {
+    /// §5.4.4 步骤 2「选择白板背景颜色」；写成 `transparent` 便是 §5.4.5。
+    pub background: String,
+    /// §5.4.4 步骤 3「与屏幕或指定区域匹配」：`screen` 或 `WxH`。
+    pub size: String,
+}
+
+impl Default for Whiteboard {
+    fn default() -> Self {
+        Self {
+            background: crate::whiteboard::DEFAULT_COLOUR.to_string(),
+            size: crate::whiteboard::DEFAULT_SIZE.to_string(),
+        }
+    }
+}
+
+impl Whiteboard {
+    /// 这一格此刻要的是哪一枚面。默认值是白，所以"读不出颜色"必须说出来而不是替用户猜。
+    pub fn surface(
+        &self,
+    ) -> Result<crate::whiteboard::Surface, crate::whiteboard::WhiteboardError> {
+        crate::whiteboard::Surface::parse(&self.background)
+    }
+
+    /// 这一格此刻要的是多大一块。
+    pub fn size(&self) -> Result<crate::whiteboard::Size, crate::whiteboard::WhiteboardError> {
+        crate::whiteboard::Size::parse(&self.size)
+    }
+
+    /// 两枚键的默认值，供归一落回；名单外的键名交 `None`（这一节只有两枚，写错名字不该把
+    /// 另一枚顶掉 —— 与 [`Tray::set_entry`] 同一理由）。
+    pub fn default_for(name: &str) -> Option<&'static str> {
+        match name {
+            "background" => Some(crate::whiteboard::DEFAULT_COLOUR),
+            "size" => Some(crate::whiteboard::DEFAULT_SIZE),
+            _ => None,
+        }
+    }
+
+    /// 这一节里哪一枚键读不出来。`validate` 与设置页的闸共用的就是这一份判据：闸拦的是
+    /// "正在打字的那一格"，归一处理的是"盘上已经存着的那一格"，两处若是两套规则，盘上就会
+    /// 存着一份页上说不清的档。
+    pub fn violations(&self) -> Vec<(&'static str, String)> {
+        let mut bad = Vec::new();
+        if let Err(e) = self.surface() {
+            bad.push(("background", e.to_string()));
+        }
+        if let Err(e) = self.size() {
+            bad.push(("size", e.to_string()));
+        }
+        bad
     }
 }
 
@@ -742,11 +1068,13 @@ impl Default for About {
 pub struct Config {
     pub general: General,
     pub capture: Capture,
+    pub whiteboard: Whiteboard,
     pub annotation: Annotation,
     pub pin: Pin,
     pub card: Card,
     pub output: Output,
     pub hotkey: Hotkey,
+    pub tray: Tray,
     pub hot_corner: HotCorner,
     pub appearance: Appearance,
     pub history: History,
@@ -870,6 +1198,22 @@ impl Config {
         self.flat().map(|f| f.contains_key(key)).unwrap_or(false)
     }
 
+    /// The stored **type** of one setting, read from the document rather than from
+    /// the text `flat()` rendered. `Some` means the file really carries a boolean
+    /// here, so a widget may offer a switch; `None` covers both "no such key" and
+    /// "this key is text/number/array".
+    ///
+    /// Sniffing `get_str(key) == "true"` instead would draw a switch for any key
+    /// whose *content* happens to be the word `true` — `annotation.font_family =
+    /// "true"` is a legal file — and the click would then overwrite a text field.
+    /// §5.20.2 asks the page to mark each row with the kind of hand it takes, and
+    /// that decision has to live where the type lives.
+    pub fn get_bool(&self, key: &str) -> Option<bool> {
+        let parts: Vec<&str> = key.split('.').collect();
+        let doc = self.to_document().ok()?;
+        find_value(&doc, &parts)?.as_bool()
+    }
+
     /// Write a dotted setting from the string a settings widget produced. The
     /// stored type decides how the text is parsed, so a bool never becomes the
     /// string `"true"`.
@@ -915,6 +1259,38 @@ impl Config {
                 });
             }
         }
+        if parts.len() == 2 && parts[0] == "tray" {
+            // §5.18.2 的四枚键都是闭集字符串。名单外就在这儿拒掉，而不是让页面上那一格文本框
+            // 把 `nope` 存下来、等下一次开档时才变成一句关于整份档的抱怨 —— §5.18.2 的规则是
+            // 一条会拦下的规则，拦在被打字的那一格上才有用。
+            let text = raw.trim();
+            if !TRAY_ACTIONS.contains(&text) {
+                return Err(ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    reason: format!("{text} is not a tray action ({})", TRAY_ACTIONS.join(", ")),
+                });
+            }
+        }
+        if parts.len() == 2 && parts[0] == "whiteboard" {
+            // §5.4.4 与 §5.4.5 的两枚键各用各的读法，读的正是产品那两枚解析器本身 —— 闸与
+            // 判据之间没有第二份名单，所以"页上收下、下一次开档才抱怨"这一族在此关死。
+            let text = raw.trim();
+            let why = match parts[1] {
+                "background" => crate::whiteboard::Surface::parse(text)
+                    .err()
+                    .map(|e| e.to_string()),
+                "size" => crate::whiteboard::Size::parse(text)
+                    .err()
+                    .map(|e| e.to_string()),
+                _ => None,
+            };
+            if let Some(reason) = why {
+                return Err(ConfigError::InvalidValue {
+                    key: key.to_string(),
+                    reason,
+                });
+            }
+        }
         if parts.len() == 2 && parts[0] == "pin" && parts[1] == "alpha_bg" {
             // The stored type is an enum, so there is no correction the gate can
             // make here — but without this rung the typo surfaces at
@@ -933,6 +1309,26 @@ impl Config {
                 });
             }
         }
+        if parts.len() == 2 && parts[0] == "capture" && parts[1] == "size_unit" {
+            // §5.3.7 第一步的那一格在设置页上是一行文本框（枚举键在页上都是文本框）。闸放在这儿
+            // 而不是 `validate()` 里，是因为 `Unit` 是**存进档的类型**：拼错的名字到了
+            // `from_document` 那里会变成一句关于整份文件的抱怨（"unknown variant …"），而不是
+            // 关于用户刚打过字的那一格的回答 —— 与上面 `pin.alpha_bg` 那一条是同一枚理由。
+            let text = raw.trim();
+            match Unit::from_label(text) {
+                // 认下了就按名单上的拼法存进档：` px ` 与 `px` 存的是同一枚字面。
+                // 只把 trim 用在判断上、把原样交给 `coerce`，会被这一格自己的闸放行、
+                // 再在下一行的 `from_document` 那里顶回来 —— 交回的是"unknown variant
+                // ` px `"这样一句关于整份文件的抱怨，而用户刚打的明明是一个合法的单位。
+                Some(unit) => raw = unit.label(),
+                None => {
+                    return Err(ConfigError::InvalidValue {
+                        key: key.to_string(),
+                        reason: format!("{text} is not a size unit ({})", Unit::labels_line()),
+                    })
+                }
+            }
+        }
         let next = coerce(&old, parts[parts.len() - 1], raw)?;
         let slot = find_value_mut(&mut doc, &parts)
             .ok_or_else(|| ConfigError::UnknownKey(key.to_string()))?;
@@ -942,6 +1338,32 @@ impl Config {
         *self = toml_edit::de::from_document::<Config>(doc)
             .map_err(|e| ConfigError::Parse(e.to_string()))?;
         Ok(self.validate())
+    }
+
+    /// §5.18.2 那两条规则的**唯一**一处判断：四枚入口里必须至少有一枚能把人带到托盘菜单或
+    /// 设置页。交出空表就是合规。
+    ///
+    /// `validate()` 拿它决定要不要强行留一扇窗，门拿它数违规，两边读的是同一句判断 —— 写两遍
+    /// 就会有两份各自会漂的口径，而这两份一旦不一致，报出来的"合规"就没有证人。
+    pub fn tray_violations(&self) -> Vec<String> {
+        if self
+            .tray
+            .entries()
+            .iter()
+            .any(|(_, action)| TRAY_ENTRY_ACTIONS.contains(action))
+        {
+            return Vec::new();
+        }
+        let roster = self
+            .tray
+            .entries()
+            .iter()
+            .map(|(name, action)| format!("{name}={action}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        vec![format!(
+            "tray: none of the four entries ({roster}) opens the tray menu or the settings page"
+        )]
     }
 
     /// §5.20.3 step 4: what the incoming file would overwrite, item by item.
@@ -1012,8 +1434,8 @@ impl Config {
             &mut w,
             "capture.delay_seconds",
             &mut self.capture.delay_seconds,
-            0,
-            300,
+            DELAY_SECONDS_MIN,
+            DELAY_SECONDS_MAX,
         );
         clamp(
             &mut w,
@@ -1260,6 +1682,54 @@ impl Config {
         if self.annotation.palette.is_empty() {
             self.annotation.palette = default_palette();
         }
+        // §5.7.22 step 3. Same rule as the band above: a value this gate cannot read is reported
+        // and dropped, never guessed at — a scheme the file invented a name for is the one thing
+        // a user saving their own colours does not expect to find on the page later. A scheme
+        // keeps the colours it can read (a bad hex says nothing about the six good ones beside
+        // it), and an entry with nothing left, no name, or a name already taken goes.
+        let saved: Vec<String> = std::mem::take(&mut self.annotation.palette_schemes);
+        let mut taken: Vec<String> = Vec::new();
+        for entry in saved {
+            let Some((name, colors)) = scheme_split(&entry) else {
+                w.push(format!(
+                    "annotation.palette_schemes: {entry} is not `name=colour colour`, dropped"
+                ));
+                continue;
+            };
+            let mut kept: Vec<&str> = Vec::new();
+            for c in &colors {
+                if crate::colors::parse(c).is_some() {
+                    kept.push(c);
+                } else {
+                    w.push(format!("annotation.palette_schemes.{name}: dropped {c}"));
+                }
+            }
+            if kept.is_empty() {
+                w.push(format!(
+                    "annotation.palette_schemes.{name}: no colour left, dropped"
+                ));
+                continue;
+            }
+            if taken.iter().any(|n| n == name) {
+                w.push(format!(
+                    "annotation.palette_schemes.{name}: a second scheme of that name, dropped"
+                ));
+                continue;
+            }
+            // The kept list goes back out through the same writer the page uses, so an entry that
+            // the reader would break apart again never reaches the file: a name holding a
+            // separator, or a colour holding one, is dropped here rather than stored as two.
+            let kept: Vec<String> = kept.into_iter().map(str::to_string).collect();
+            match scheme_join(name, &kept) {
+                Some(entry) => {
+                    taken.push(name.to_string());
+                    self.annotation.palette_schemes.push(entry);
+                }
+                None => w.push(format!(
+                    "annotation.palette_schemes.{name}: a separator inside it, dropped"
+                )),
+            }
+        }
 
         if !self.annotation.default_tool.is_empty()
             && !ANNOTATION_TOOLS.contains(&self.annotation.default_tool.as_str())
@@ -1326,7 +1796,7 @@ impl Config {
             ));
             self.appearance.toolbar_placement = "auto".into();
         }
-        if !matches!(self.about.channel.as_str(), "stable" | "beta" | "nightly") {
+        if !crate::update::CHANNELS.contains(&self.about.channel.as_str()) {
             w.push(format!(
                 "about.channel: unknown {:?}, using stable",
                 self.about.channel
@@ -1437,6 +1907,41 @@ impl Config {
                 "hot_corner.corners.{corner}: unknown action {action:?}, cleared"
             ));
             self.hot_corner.corners.insert(corner, String::new());
+        }
+
+        // §5.18.2：先按名单归一，再问"至少留一扇能进菜单或设置页的入口"。这个顺序要紧 ——
+        // 名单外的值先落回本键默认，`tray_violations` 才不会拿着一串垃圾去判"没有一枚能打开
+        // 菜单"，报出来的原因才是真的那一个。
+        let tray_bad: Vec<(&'static str, String)> = self
+            .tray
+            .entries()
+            .iter()
+            .filter(|(_, action)| !TRAY_ACTIONS.contains(action))
+            .map(|(name, action)| (*name, action.to_string()))
+            .collect();
+        for (name, action) in tray_bad {
+            let fallback = Tray::default_entry(name);
+            w.push(format!(
+                "tray.{name}: {action:?} is not a tray action, using {fallback}"
+            ));
+            self.tray.set_entry(name, fallback);
+        }
+        // 两条例是同一枚判据的两面，所以这里只问一次；违规就强行把右键落回 `menu`，
+        // 因为"没有一扇窗进得去"是一台会用不起来的机器，不是用户可以带着跑的配置。
+        for reason in self.tray_violations() {
+            w.push(format!("{reason}; tray.right falls back to \"menu\""));
+            self.tray.set_entry("right", "menu");
+        }
+        // §5.4.4 / §5.4.5：两枚键都是"读不出就得落回"的字符串。落回默认而不是猜用户想写的
+        // 是哪一种颜色 —— 一页档里存着 `beige` 这样的名字时，任何猜测都是替用户发明一份名单。
+        for (name, reason) in self.whiteboard.violations() {
+            let fallback = Whiteboard::default_for(name).expect("both keys are listed");
+            w.push(format!("whiteboard.{name}: {reason}, using {fallback}"));
+            match name {
+                "background" => self.whiteboard.background = fallback.to_string(),
+                "size" => self.whiteboard.size = fallback.to_string(),
+                _ => {}
+            }
         }
         w
     }
@@ -1782,6 +2287,45 @@ pub fn data_dir(cfg: &Config) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::whiteboard::{Size, Surface};
+
+    #[test]
+    fn action_texts_answer_every_bindable_id_in_order() {
+        // §5.21.2 那一页递出去的每一句中文，头一枚读者是这张表自己：id 与 [`ACTIONS`] 逐枚
+        // 对齐（不同序就是错位，页上会拿 A 的说明配 B 那一行）、一枚不重、一句不空。
+        assert_eq!(ACTION_TEXTS.len(), ACTIONS.len() + 3);
+        for (i, id) in ACTIONS.iter().enumerate() {
+            assert_eq!(&ACTION_TEXTS[i].0, id, "第 {i} 枚与 ACTIONS 不同序");
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        for (id, name, desc) in &ACTION_TEXTS {
+            assert!(!name.is_empty(), "{id} 没有中文名");
+            assert!(!desc.is_empty(), "{id} 没有说明");
+            assert!(!desc.contains('\n'), "{id} 的说明换行");
+            assert!(!seen.contains(id), "{id} 出现两次");
+            seen.push(id);
+        }
+        // 末尾那三枚是谁、有几枚，由 TRAY_ACTIONS 答，不是这里重新数一遍（#297）。
+        let extra: Vec<&str> = TRAY_ACTIONS
+            .iter()
+            .copied()
+            .filter(|a| !ACTIONS.contains(a))
+            .collect();
+        assert_eq!(extra, vec!["menu", "settings", "none"]);
+        assert_eq!(
+            ACTION_TEXTS[ACTIONS.len()..]
+                .iter()
+                .map(|t| t.0)
+                .collect::<Vec<&str>>(),
+            extra
+        );
+        // 出厂默认里那九枚绑定，每一枚都问得出说明；名单外问不出（页上就不该硬拼一句）。
+        let c = Config::default();
+        for id in c.hotkey.actions.keys() {
+            assert!(action_texts(id).is_some(), "{id} 没有说明");
+        }
+        assert!(action_texts("nope").is_none());
+    }
 
     #[test]
     fn defaults_round_trip_through_toml() {
@@ -1801,6 +2345,7 @@ mod tests {
         for header in [
             "[general]",
             "[capture]",
+            "[whiteboard]",
             "[annotation]",
             "[annotation.tool_style]",
             "[pin]",
@@ -1808,6 +2353,7 @@ mod tests {
             "[output]",
             "[hotkey]",
             "[hotkey.actions]",
+            "[tray]",
             "[hot_corner]",
             "[hot_corner.corners]",
             "[appearance]",
@@ -1831,11 +2377,13 @@ mod tests {
         for section in [
             "general.",
             "capture.",
+            "whiteboard.",
             "annotation.",
             "pin.",
             "card.",
             "output.",
             "hotkey.",
+            "tray.",
             "hot_corner.",
             "appearance.",
             "history.",
@@ -2053,6 +2601,72 @@ magnifier_zoom = 12
         assert_eq!(c.pin.alpha_bg, AlphaBg::CheckerDark);
         assert!(c.set_str("pin.alpha_bg", "").is_err());
         assert_eq!(c.pin.alpha_bg, AlphaBg::CheckerDark);
+    }
+
+    /// §5.3.7 第一步的「选择单位」自 P164 起是一枚设置项，所以它走的必须是
+    /// `pin.alpha_bg` 走过的那一道闸：拼错时交回的一句话点名 `capture.size_unit`
+    /// 这一枚键，并把唯一合法的两枚写法念出来。少了这道闸，`Unit` 的
+    /// `snake_case` 反序列化会在 `from_document` 那一步让整份文件解析失败 ——
+    /// 设置页拿到的将是一句关于整个文件的抱怨，而不是关于它自己那一个输入框的。
+    #[test]
+    fn a_size_unit_is_written_by_its_own_name_or_answered_by_that_key() {
+        let mut c = Config::default();
+        assert_eq!(c.get_str("capture.size_unit").as_deref(), Some("px"));
+
+        c.set_str("capture.size_unit", "dip").unwrap();
+        assert_eq!(c.capture.size_unit, Unit::Dip);
+        assert_eq!(c.get_str("capture.size_unit").as_deref(), Some("dip"));
+
+        let err = c.set_str("capture.size_unit", "pixels").unwrap_err();
+        match err {
+            ConfigError::InvalidValue { key, reason } => {
+                assert_eq!(key, "capture.size_unit", "{key} / {reason}");
+                assert!(reason.contains("pixels"), "{reason}");
+                assert!(reason.contains("px"), "{reason}");
+                assert!(reason.contains("dip"), "{reason}");
+            }
+            other => panic!("一枚写错的单位被答成 {other:?}"),
+        }
+        // 被拒的那一次写没动过任何值，也不许把 `dip` 换成大写再来一次。
+        assert_eq!(c.capture.size_unit, Unit::Dip);
+        assert!(c.set_str("capture.size_unit", "PX").is_err());
+        assert!(c.set_str("capture.size_unit", "").is_err());
+        assert_eq!(c.capture.size_unit, Unit::Dip);
+        // 两头空格是打字时带进来的，不是拼错的第三种写法：认，且认下之后存进档的
+        // 是名单上那一枚字面本身 —— 否则这一格会被自己的闸放行、再在 `from_document`
+        // 那里被顶成一句关于整份文件的抱怨。这一句是 P164 第一趟 `cargo test` 真报出来的
+        // 那一手（`unknown variant \` px \``），不是补写的。
+        c.set_str("capture.size_unit", " px ").unwrap();
+        assert_eq!(c.capture.size_unit, Unit::Px);
+        assert_eq!(c.get_str("capture.size_unit").as_deref(), Some("px"));
+        assert!(
+            c.export_text().unwrap().contains("size_unit = \"px\""),
+            "打过空格的那一次写把原文存进了档"
+        );
+        assert!(c.set_str("capture.size_unit", "d ip").is_err());
+        assert_eq!(c.capture.size_unit, Unit::Px);
+    }
+
+    /// 单位这一枚枚举在文件里怎么拼、在页上怎么亮，自 P164 起是同一张名单
+    /// （[`crate::geometry::Unit::ALL`]）：`serde` 的 `snake_case` 改了拼法、或
+    /// `label()` 与序列化偏离，都在这一格被抓住，而不是让遮罩读到出厂那一格。
+    #[test]
+    fn the_two_size_units_are_spelled_from_one_list() {
+        let text = Config::default().export_text().unwrap();
+        assert!(
+            text.contains("size_unit = \"px\""),
+            "文件里的出厂单位不是 px：\n{text}"
+        );
+        for unit in Unit::ALL {
+            let mut c = Config::default();
+            c.set_str("capture.size_unit", unit.label()).unwrap();
+            let line = format!("size_unit = \"{}\"", unit.label());
+            let written = c.export_text().unwrap();
+            assert!(written.contains(&line), "{line} 没被这样写进文件");
+            let (back, warnings) = Config::parse_import(&written).unwrap();
+            assert!(warnings.is_empty(), "{warnings:?}");
+            assert_eq!(back.capture.size_unit, unit, "{line} 读不回来");
+        }
     }
 
     /// 一张表、四枚模式：枚举里加一行而名单没跟上、或 `snake_case` 改了拼法，都在
@@ -2312,6 +2926,75 @@ actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
         empty.annotation.palette.clear();
         assert!(empty.validate().is_empty());
         assert_eq!(empty.annotation.palette, default_palette());
+    }
+
+    /// §5.7.22 步骤 3 「保存为调色板方案」: the page writes one whole list through the same
+    /// `set_str` a text row uses, so the grammar of an entry is decided here rather than on the
+    /// page - and an empty list must still be a row, or there is no key to write the first
+    /// scheme into.
+    #[test]
+    fn a_saved_scheme_round_trips_through_the_key_the_page_writes() {
+        let mut c = Config::default();
+        assert_eq!(
+            c.get_str("annotation.palette_schemes").as_deref(),
+            Some(""),
+            "a scheme list nobody has saved is still a row the page can write"
+        );
+
+        let one = scheme_join("工作", &["#E81123".into(), "#0078D7".into()]).unwrap();
+        assert_eq!(one, "工作=#E81123 #0078D7");
+        let (name, colors) = scheme_split(&one).unwrap();
+        assert_eq!((name, colors), ("工作", vec!["#E81123", "#0078D7"]));
+        assert!(scheme_split("没有等号").is_none());
+        assert!(scheme_split("空名单=").is_none());
+        assert!(scheme_split("=只有色没有名").is_none());
+        assert!(scheme_join("带,号的", &["#E81123".into()]).is_none());
+        assert!(scheme_join("带=号的", &["#E81123".into()]).is_none());
+        assert!(scheme_join("带|号的", &["#E81123".into()]).is_none());
+        assert!(scheme_join("带\n行的", &["#E81123".into()]).is_none());
+        assert!(scheme_join("工作", &["#E81123 #0078D7".into()]).is_none());
+        assert!(scheme_join("", &["#E81123".into()]).is_none());
+
+        c.set_str(
+            "annotation.palette_schemes",
+            "工作=#E81123 #0078D7, 旧=#FFFFFF",
+        )
+        .unwrap();
+        assert_eq!(
+            c.annotation.palette_schemes,
+            ["工作=#E81123 #0078D7", "旧=#FFFFFF"]
+        );
+        // and the file that comes back out reads in as the same two schemes
+        let text = c.export_text().unwrap();
+        let (again, warnings) = Config::parse_import(&text).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(
+            again.annotation.palette_schemes,
+            c.annotation.palette_schemes
+        );
+
+        let mut fix = Config::default();
+        fix.annotation.palette_schemes = vec![
+            "甲=#E81123 not-a-colour".into(),
+            "甲=#0078D7".into(),
+            "没有等号".into(),
+            "乙=nope".into(),
+            "带|号=#E81123".into(),
+        ];
+        let warnings = fix.validate();
+        assert_eq!(fix.annotation.palette_schemes, ["甲=#E81123"]);
+        for needle in [
+            "甲: dropped not-a-colour",
+            "a second scheme of that name",
+            "is not `name=colour colour`",
+            "乙: no colour left",
+            "带|号: a separator inside it",
+        ] {
+            assert!(
+                warnings.iter().any(|w| w.contains(needle)),
+                "no warning for {needle}: {warnings:?}"
+            );
+        }
     }
 
     /// §5.5.6's "或按配置填充背景色" and §5.5.7 step 2's 边框颜色、宽度、阴影强度和边距
@@ -2611,5 +3294,289 @@ actions = []
                 assert!(matches!(got, Theme::Light | Theme::Dark));
             }
         }
+    }
+
+    /// §5.18.2 的四枚键默认就是本轮改码**之前**这台机器真实在跑的那一身：左键与双击都起截图、
+    /// 右键开菜单、中键没人理会。断言写成字面值而不是引用 `Tray::default()` —— 这一条证的正是
+    /// "变成可配"这件事本身没有顺手改掉用户已经习惯的点击。
+    #[test]
+    fn the_tray_defaults_are_the_clicks_this_machine_already_made() {
+        let tray = Tray::default();
+        assert_eq!(tray.left, "capture");
+        assert_eq!(tray.double, "capture");
+        assert_eq!(tray.middle, "none");
+        assert_eq!(tray.right, "menu");
+        assert!(Config::default().tray_violations().is_empty());
+    }
+
+    /// 文档把同一件事说了两遍（"至少保留一种…"与"不允许所有…"），判据只有一枚，所以违规
+    /// 只该交出**一句**。两句就是两份会各自漂的口径，而它们一旦不一致，"合规"就没有证人。
+    #[test]
+    fn a_tray_with_no_way_in_says_it_once() {
+        let mut cfg = Config::default();
+        cfg.tray.left = "capture".into();
+        cfg.tray.double = "paste_pin".into();
+        cfg.tray.middle = "none".into();
+        cfg.tray.right = "toggle_pins".into();
+        let bad = cfg.tray_violations();
+        assert_eq!(bad.len(), 1, "{bad:?}");
+        // 一句里把四枚逐名交出来：只说"有一枚不合规"答不出是哪四枚配成了这一身。
+        for name in [
+            "left=capture",
+            "double=paste_pin",
+            "middle=none",
+            "right=toggle_pins",
+        ] {
+            assert!(bad[0].contains(name), "{name} 不在证词里：{}", bad[0]);
+        }
+    }
+
+    /// 违规的档开档时不许原样留着：没有一扇窗进得去的托盘是一台用不起来的机器，所以
+    /// `validate` 把右键落回 `menu`，并把这一手作为一条 warning 说出来（改过用户写的值
+    /// 就要报，与这一段里其余的归一同一条口径）。
+    #[test]
+    fn validate_keeps_a_window_open_and_says_so() {
+        let mut cfg = Config::default();
+        cfg.tray.left = "none".into();
+        cfg.tray.double = "none".into();
+        cfg.tray.middle = "none".into();
+        cfg.tray.right = "capture".into();
+        let warnings = cfg.validate();
+        assert_eq!(cfg.tray.right, "menu", "右键没有落回 menu");
+        assert!(
+            warnings.iter().any(|l| l.contains("tray.right falls back")),
+            "{warnings:?}"
+        );
+        assert!(
+            cfg.tray_violations().is_empty(),
+            "修完还违规：{:?}",
+            cfg.tray
+        );
+    }
+
+    /// §5.4.4 与 §5.4.5 的默认值就是"白板"这两个字在本机上的字面意思：一块与屏幕一样大的
+    /// 白色画布。默认值不承担 §5.4.5 —— 透明必须是用户打出来的 `transparent`。
+    #[test]
+    fn the_whiteboard_defaults_are_a_white_screen_sized_board() {
+        let cfg = Config::default();
+        assert_eq!(cfg.whiteboard.background, "#FFFFFF");
+        assert_eq!(cfg.whiteboard.size, "screen");
+        assert_eq!(
+            cfg.get_str("whiteboard.background").as_deref(),
+            Some("#FFFFFF"),
+            "页上读不到就是没有这一行"
+        );
+        assert_eq!(
+            cfg.get_str("whiteboard.size").as_deref(),
+            Some("screen"),
+            "页上读不到就是没有这一行"
+        );
+        assert_eq!(
+            cfg.whiteboard.surface().unwrap(),
+            Surface::Solid([255, 255, 255])
+        );
+        assert_eq!(cfg.whiteboard.size().unwrap(), Size::Screen);
+        assert!(cfg.whiteboard.violations().is_empty());
+        for name in ["background", "size"] {
+            assert!(
+                !needs_restart(&format!("whiteboard.{name}")),
+                "whiteboard.{name} 被标成需重启"
+            );
+        }
+    }
+
+    /// 读不出的两枚键各落回各的默认，各说一句：合并成一句就答不出是哪一枚键出的错，而
+    /// 这一族的归一与 `[tray]` 那一段同一条口径 —— 改过用户写的值就要报。
+    #[test]
+    fn a_whiteboard_that_cannot_be_read_falls_back_and_says_so() {
+        let mut cfg = Config::default();
+        cfg.whiteboard.background = "beige".into();
+        cfg.whiteboard.size = "0x0".into();
+        let warnings = cfg.validate();
+        assert_eq!(cfg.whiteboard.background, "#FFFFFF", "底色没有落回默认");
+        assert_eq!(cfg.whiteboard.size, "screen", "尺寸没有落回默认");
+        for key in ["whiteboard.background", "whiteboard.size"] {
+            assert!(
+                warnings.iter().any(|l| l.starts_with(&format!("{key}:"))),
+                "{key} 没被说出来：{warnings:?}"
+            );
+        }
+        assert!(cfg.whiteboard.violations().is_empty(), "修完还违规");
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+    }
+
+    /// 页上打字那一格当场拒（与 `the_box_refuses_an_action_that_is_not_on_the_list` 同一
+    /// 条 §5.20.2 的理由），且拒的是**产品真正会用的那枚解析器** —— 闸若自带一份名单，
+    /// 盘上就能存下一页解释不了的值。
+    #[test]
+    fn the_whiteboard_box_refuses_what_the_product_cannot_read() {
+        let mut cfg = Config::default();
+        for (key, bad) in [
+            ("whiteboard.background", "beige"),
+            ("whiteboard.background", "1280x720"),
+            ("whiteboard.size", "big"),
+            ("whiteboard.size", "#FFFFFF"),
+        ] {
+            let err = cfg.set_str(key, bad).unwrap_err();
+            match err {
+                ConfigError::InvalidValue { key: k, reason } => {
+                    assert_eq!(k, key);
+                    assert!(reason.contains(bad), "{reason}");
+                }
+                other => panic!("交回的是 {other:?}，不是 InvalidValue"),
+            }
+        }
+        assert_eq!(
+            cfg.whiteboard.background, "#FFFFFF",
+            "被拒的一格不该已经改掉"
+        );
+        assert_eq!(cfg.whiteboard.size, "screen", "被拒的一格不该已经改掉");
+        // §5.4.5 的那一个字面必须收得下，拒掉它就是把透明白板拒出了配置。
+        cfg.set_str("whiteboard.background", "transparent").unwrap();
+        cfg.set_str("whiteboard.size", "1280x720").unwrap();
+        assert_eq!(cfg.whiteboard.surface().unwrap(), Surface::Transparent);
+        assert_eq!(
+            cfg.whiteboard.size().unwrap(),
+            Size::Canvas {
+                width: 1280,
+                height: 720
+            }
+        );
+        assert!(cfg.whiteboard.violations().is_empty());
+    }
+
+    /// 两枚键要能跟着一次写档、一次读档走完全程，否则 §5.4.4 的"选颜色"就只是页上的
+    /// 一格装饰 —— 与 `the_tray_keys_travel_through_the_file` 同一格判据。
+    #[test]
+    fn the_whiteboard_keys_travel_through_the_file() {
+        let mut cfg = Config::default();
+        cfg.set_str("whiteboard.background", "#102030").unwrap();
+        cfg.set_str("whiteboard.size", "800x600").unwrap();
+        let flat = cfg.flat().unwrap();
+        for key in ["whiteboard.background", "whiteboard.size"] {
+            assert!(flat.contains_key(key), "{key} 不在 flat() 里");
+        }
+        assert_eq!(
+            flat.get("whiteboard.background").map(String::as_str),
+            Some("#102030"),
+            "flat() 里那格不是打进去的值"
+        );
+        let text = cfg.export_text().unwrap();
+        assert!(text.contains("[whiteboard]"), "段头没了：\n{text}");
+        let (back, warnings) = Config::parse_import(&text).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(back.whiteboard, cfg.whiteboard, "走了一趟档就不是那一身了");
+    }
+
+    /// 顺序要紧：名单外的值先落回本键默认，再问"至少留一扇进得去的入口"。反过来写的话
+    /// 一个 `nope` 会被算成"进不去"，报出来的原因就是假的那一个 —— 这一条测的是假原因出不来。
+    #[test]
+    fn an_unknown_tray_action_is_normalized_before_the_rule_runs() {
+        let mut cfg = Config::default();
+        cfg.tray.right = "nope".into();
+        let warnings = cfg.validate();
+        assert_eq!(
+            cfg.tray.right,
+            Tray::default_entry("right"),
+            "没有落回本键默认"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|l| l.contains("tray.right") && l.contains("not a tray action")),
+            "{warnings:?}"
+        );
+        assert!(
+            !warnings.iter().any(|l| l.contains("opens the tray menu")),
+            "归一之后不该再有违规：{warnings:?}"
+        );
+    }
+
+    /// §5.18.2 的四枚键即时生效：都不进 `RESTART_KEYS`。挂了 `（需重启）` 的设置页行是
+    /// §5.20.2 第二条的判据，标错与漏标同样是错的读数。
+    #[test]
+    fn no_tray_key_owes_a_restart() {
+        for name in ["left", "double", "middle", "right"] {
+            assert!(
+                !needs_restart(&format!("tray.{name}")),
+                "tray.{name} 被标成需重启"
+            );
+        }
+    }
+
+    /// 页面上那一格打字进去时就要拦下，而不是等下一次开档才变成一句关于整份档的抱怨 ——
+    /// §5.18.2 是一条会拦人的规则，拦在被打字的那一格上才有用。
+    #[test]
+    fn the_box_refuses_an_action_that_is_not_on_the_list() {
+        let mut cfg = Config::default();
+        let err = cfg.set_str("tray.middle", "nope").unwrap_err();
+        match err {
+            ConfigError::InvalidValue { key, reason } => {
+                assert_eq!(key, "tray.middle");
+                assert!(reason.contains("nope"), "{reason}");
+                assert!(reason.contains("menu"), "名单没有说出来：{reason}");
+            }
+            other => panic!("交回的是 {other:?}，不是 InvalidValue"),
+        }
+        assert_eq!(cfg.tray.middle, "none", "被拒的一格不该已经改掉");
+        assert!(cfg.set_str("tray.middle", "settings").is_ok());
+        assert_eq!(cfg.tray.middle, "settings");
+        assert!(cfg.tray_violations().is_empty());
+    }
+
+    /// 四枚键得能跟着一次写档、一次读档走完全程：`flat()` 是导出与预览那两格数的分母，
+    /// 段没进去就是"键在档里没人读"那一族的又一次发病。
+    #[test]
+    fn the_tray_keys_travel_through_the_file() {
+        let mut cfg = Config::default();
+        cfg.set_str("tray.left", "settings").unwrap();
+        cfg.set_str("tray.double", "show_all_pins").unwrap();
+        let flat = cfg.flat().unwrap();
+        for key in ["tray.left", "tray.double", "tray.middle", "tray.right"] {
+            assert!(flat.contains_key(key), "{key} 不在 flat() 里");
+        }
+        assert_eq!(
+            flat.get("tray.left").map(String::as_str),
+            Some("settings"),
+            "flat() 里那格不是打进去的值"
+        );
+        let text = cfg.export_text().unwrap();
+        let (back, warnings) = Config::parse_import(&text).unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(back.tray, cfg.tray, "走了一趟档就不是那一身了");
+    }
+
+    /// [`Config::get_bool`] 交的是**档里存着的那一位**，不是 `flat()` 渲染出来的那串字。
+    ///
+    /// 这一枚判错的方向是「把文本键当开关」：`set_str` 对文本键是把串原样存下来，语法闸不会
+    /// 拦，所以页上要是靠自己猜文本，按一下就写掉一枚字体名。数与串都算不上一枚开关。
+    #[test]
+    fn a_boolean_is_decided_by_the_stored_type_not_by_its_text() {
+        let mut cfg = Config::default();
+        cfg.set_str("annotation.font_family", "true").unwrap();
+        assert_eq!(
+            cfg.get_str("annotation.font_family").as_deref(),
+            Some("true"),
+            "这一问的对面没了：页上那格写着 true 却是一枚文本"
+        );
+        assert_eq!(cfg.get_bool("annotation.font_family"), None);
+        assert_eq!(cfg.get_bool("history.max_items"), None, "整数不是开关");
+        assert_eq!(cfg.get_bool("pin.alpha_bg"), None, "枚举串不是开关");
+        assert_eq!(cfg.get_bool("hot_corner.corners.top_left"), None);
+        assert_eq!(cfg.get_bool("general.language"), None);
+        assert_eq!(
+            cfg.get_bool("nope.nope"),
+            None,
+            "不在册的键不许猜出一枚开关"
+        );
+
+        assert_eq!(cfg.get_bool("hot_corner.enabled"), Some(false));
+        cfg.set_str("hot_corner.enabled", "true").unwrap();
+        assert_eq!(cfg.get_bool("hot_corner.enabled"), Some(true));
+        assert_eq!(cfg.get_str("hot_corner.enabled").as_deref(), Some("true"));
+        assert!(
+            cfg.set_str("hot_corner.enabled", "maybe").is_err(),
+            "bool 键的门此刻不拦任何文本：上面那两枚读数就没有对面"
+        );
     }
 }

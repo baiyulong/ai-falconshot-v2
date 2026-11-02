@@ -496,16 +496,16 @@ pub fn invert(src: &Frame) -> Frame {
     out
 }
 
-/// Refuse a JPEG export whose transparency would silently turn black/white
-/// (§5.5.6 rule, §8.2), unless the caller already flattened it onto a fill.
+/// Refuse a lossy export whose transparency would silently turn black/white
+/// (§5.5.6 rule, §8.2, §5.4.5 rule 2), unless the caller already flattened it onto
+/// a fill. The list of formats is asked, not listed: `Format::supports_alpha` is the
+/// one authority §5.4.5 needs, and a copy of it here was missing GIF and ICO -
+/// which encode.rs:175 already flattens, so the pixels and the promise disagreed.
 pub fn warns_about_transparency(
     frame: &Frame,
     format: crate::encode::Format,
 ) -> Result<(), EncodeError> {
-    if !matches!(
-        format,
-        crate::encode::Format::Jpg | crate::encode::Format::Bmp | crate::encode::Format::Tga
-    ) {
+    if format.supports_alpha() {
         return Ok(());
     }
     if frame.has_transparency() {

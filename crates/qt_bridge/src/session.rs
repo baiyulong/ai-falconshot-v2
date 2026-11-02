@@ -74,6 +74,12 @@ pub mod qobject {
         fn pinMessages() -> QString;
         #[rust_name = "pin_quit_after"]
         fn pinQuitAfter(ms: i32);
+        /// Give the GUI thread up to `ms` of turns. A door that waits after `app.exec()` has
+        /// returned has to pump to see anything an `interval: 0` QML Timer would have done -
+        /// see `pinPumpEvents` in `cpp/pin_shim.h`, which names the P176 census row that slept
+        /// instead. Qt 6 returns void here, so nothing is handed back but the turn taken.
+        #[rust_name = "pin_pump_events"]
+        fn pinPumpEvents(ms: i32);
         /// Off in a gauge run and on in a resident one: a session whose last mask
         /// closes must still be listening to its hot keys. See [`crate::hotkey`].
         #[rust_name = "set_quit_on_last_window_closed"]
@@ -236,7 +242,82 @@ pub mod qobject {
         /// 与 `all_hidden` 打 P37 起走的就是这条路。窗不常驻而是按需造，理由与浮窗那一格相同：
         /// 桌面上多一扇我们的窗，`pin window` 那一档挑到的就可能不是它想的那一块。
         #[qproperty(i32, settings_open)]
+        /// §5.3.5 那一扇「自定义截图」对话框「该不该在场」的唯一读数：`1` 是开，`0` 是关。与
+        /// 上面那一格同一条路 —— 写它的是桥（[`crate::hotkey::Work::CustomCapture`]：一次热键或
+        /// 托盘里那一点）与窗自己（关掉、或量具那几条腿走完自己收），读的只有 `main.qml` 那一条
+        /// `syncCustom`。桥这侧一次 `show()` 也不叫：谁造这扇窗，销毁就归谁。
+        #[qproperty(i32, custom_open)]
+        /// 对话框**自己那一场**倒计时还剩几枚数。它与 [`Self::delay_left`] 不是一格：那一格数的是
+        /// 「按下截图到遮罩出现」那一段（§5.2.4，数完开遮罩），这一格数的是「按下开始截图到真的
+        /// 截这一块」（§5.3.5 第 301 行 + 第 302 行，数完截填好的那块）。两场的算术同源
+        /// （[`crate::delay::Countdown`]、同枚 `STEP_MS`），实例各是一个。
+        ///
+        /// 页上那枚 `Timer` 的 `running` 绑的是这枚**值**而不是一次调用（[`Self::warm_left`] 那条
+        /// 教训）：数满那一枚落地成 0，定时器就此自己停，不会多截一张。
+        #[qproperty(i32, custom_left)]
+        /// 页上那一句结果 / 拒绝的**原文**。它只有两位作者 —— [`crate::custom`] 里那一格，与
+        /// 把那一格搬到这里的这三只手（[`Self::custom_set`] / [`Self::custom_start`] /
+        /// [`Self::custom_tick`]）。窗不许自己拼一句「已截图」：那句子的作者在上面那一档，而门判的
+        /// 就是窗递回来的那一串与现算的那一串逐字节相同（#281）。
+        #[qproperty(QString, custom_note)]
+        /// §5.14.4 第 1309 行那扇「历史记录管理」窗「该不该在场」的唯一读数：`1` 是开、`0` 是关。
+        /// 与 [`Self::settings_open`]、[`Self::custom_open`] 同一副骨架：写它的是桥
+        /// （[`crate::hotkey::Work::History`]：托盘里那一点）与窗自己（「关闭」那一枚钮），读的只有
+        /// `main.qml` 那一条 `syncHistory`。桥这侧一次 `show()` 也不叫：谁造这扇窗，销毁就归谁。
+        #[qproperty(i32, history_window_open)]
+        /// §5.12.3 / §5.12.4 第 1218 行与第 1236 行那一扇「图片分组管理」窗「该不该在场」的唯一
+        /// 读数：`1` 是开、`0` 是关。与上面两格同一副骨架 —— 写它的是桥
+        /// （[`crate::hotkey::Work::Groups`]：§5.18.1 第 1437 行托盘里那一点）与窗自己（那枚「关闭」钮，
+        /// 名字出自 [`crate::group_window::CLOSE_WORD`]），读的只有 `main.qml` 那一条 `syncGroup`。PRD 第 1251 行那三个入口
+        /// （托盘菜单 / 分组面板 / 快捷键）里，「分组面板」这一格自此在盘上有一扇窗可对，
+        /// 「快捷键」那一格仍归未接线的 `switch_group`（台账 ⑫）。
+        #[qproperty(i32, group_window_open)]
         #[qproperty(i32, all_hidden)]
+        /// §5.6.1 步骤 2 的**结果**那一格：识别出来的整段字，`\n` 分行。
+        ///
+        /// 绑**值**而不是一枚 invokable（同 [`Self::theme`] 那条教训）：面板要在结果落地那一刻
+        /// 自己把「识别中…」换成字，而一次调用不会重新求值。空串在这里是**两种**状态共用的读数
+        /// —— "这一趟还没跑" 与 "跑了、图上没有字"（平台层的 `extract` 对后者交回 `Ok("")`，
+        /// 那是识别成功的答案而不是故障），两者靠 [`Self::ocr_busy`] 分开，所以不必再要第四格
+        /// （#281：两件事挤进一格，读的人就分不出是哪一件）。
+        #[qproperty(QString, ocr_text)]
+        /// 「这一趟识别还没回来」那一格 —— PRD §5.6.1 规则「识别期间应显示进度状态」落到的
+        /// 那唯一一位读数。
+        ///
+        /// 为什么由桥写而不是窗自己点下就置真：一次识别要几百毫秒，期间用户可能改选区、可能关
+        /// 遮罩，而**只有桥知道活儿什么时候完**（结果是工作线程投回来的）。置真的只有
+        /// [`Self::extract_mask_text`] / [`Self::extract_pin_text`] 那两只手，置假的是投回来的
+        /// 那一个闭包与「线程起不动」的那一格补救 —— 一处开始、一处结束，不会有一路把它挂在
+        /// `true` 上没人管。用 `bool` 而不是本文件惯用的 0/1：这一格只有两态，而多出来的那一档
+        /// 「2 是什么」在这一件事上压根没人答得出。
+        #[qproperty(bool, ocr_busy)]
+        /// 失败的那半句，与 [`Self::ocr_text`] 按 [`Self::ocr_busy`] 一起填成互斥的两格。
+        /// §8.6 要「显示失败类型」：这一格写的就是平台层那句原话（`OcrError` 四支各带自己崩在
+        /// 哪一步），桥不替它想一句好听的话；§5.6.1 规则要「允许重新框选」—— 那一半由遮罩
+        /// 本来就还开着来满足，不在这里另开一扇门。空串 = 这一趟没失败。
+        #[qproperty(QString, ocr_error)]
+        /// §5.6.2 步骤 4 与 §5.6.3 步骤 3 的那一张表：一枚码一行。编码与 [`Self::groups`]
+        /// 同一族 —— 字段之间 `\u{1c}`、行之间 `\u{1d}`，一串机器字给 QML 的 `Repeater` 读，
+        /// 人要读的那句在 [`Self::codes_error`] 与 [`Self::status`]。
+        ///
+        /// 每行的形状：`序号\u{1c}类型\u{1c}内容\u{1c}域名\u{1c}能不能开(1/0)\u{1c}为什么不能开`。
+        /// 六格各说一件事（#281）：`类型` 是 §5.6.3 步骤 3 点名要的「条码类型」，`域名` 是
+        /// §5.6.2 安全规则点名要的「打开前显示的完整域名」，最后那一格说的是**这一枚链接为什么
+        /// 不开**（IDN 那一支）—— 与「这不是链接」分得开，因为后者是 `域名` 空且第五格假、第六格也空。
+        ///
+        /// `内容` 那一格里出现 `\u{1c}` `\u{1d}` NUL 时换成 U+FFFD：码的内容是**外来数据**，一枚
+        /// 二维码里带 0x1C 是完全可能的，而分隔符一旦被内容顶开，界面读出的每一格都错位。这一处
+        /// 替换只发生在**显示**那一路 —— 复制与打开走的是 [`Self::copyCodeAt`] / [`Self::openCodeAt`]
+        /// 那两只按序号的手，它们碰的是 Rust 自己存着的那一串原样字节，一个字符也不改。
+        #[qproperty(QString, codes_rows)]
+        /// 「这一趟读码还没回来」。与 [`Self::ocr_busy`] 同一形状、同一理由：读码在另一条线程上跑，
+        /// 而**只有桥知道活儿什么时候完**。§5.6.1 那条「识别期间应显示进度状态」的规则对本节同样
+        /// 成立，只是 PRD 把那一节写在了文字提取那一条下面。
+        #[qproperty(bool, codes_busy)]
+        /// 这一趟为什么没有表可摆。§5.6.2 安全规则「对无法识别或损坏的二维码显示明确提示」那一格
+        /// 就落在这里：`rxing` 答「这一张里一枚也没有」与答「引擎读不动」是两句原话，桥不替它们
+        /// 合并成一句好听的话（[`falcon_core::barcode::BarcodeError`] 两支各一支）。空串 = 有表、没故障。
+        #[qproperty(QString, codes_error)]
         type Session = super::SessionRust;
 
         /// Re-read the state machine. QML calls this once at start-up and every
@@ -472,6 +553,68 @@ pub mod qobject {
         #[cxx_name = "toggleGroupShown"]
         fn toggle_group_shown(self: Pin<&mut Self>, id: i64) -> i32;
 
+        // ── §5.12.3 / §5.12.4 那一扇「图片分组管理」窗的**读数**那几枚 ──────────────────────────
+        // 它们一只也不改模型：改模型的是上面那五枚（新建 / 重命名 / 排序 / 删除 / 切换）。这一族
+        // 存在的理由是 #281 —— 页上那些中文若由 `.qml` 自己写，「钮上写着删除、递进产品的却是
+        // 重命名」只能靠数出来；名字的作者在 [`crate::group_window`]，页与门共读同一处。
+        // 与 [`Self::historyWindowTitle`] 那一族同一分工。
+
+        /// 窗标题（PRD 第 1218 行那一串字「图片分组管理」的唯一作者）。
+        #[qinvokable]
+        #[cxx_name = "groupWindowTitle"]
+        fn group_window_title(self: &Self) -> QString;
+
+        /// 页上那六枚钮的名字，`|` 分隔。
+        #[qinvokable]
+        #[cxx_name = "groupWindowButtons"]
+        fn group_window_buttons(self: &Self) -> QString;
+
+        /// 「显示中 / 已隐藏」那两串字（第 1252 行那一读的两种态）。
+        #[qinvokable]
+        #[cxx_name = "groupWindowStateWords"]
+        fn group_window_state_words(self: &Self) -> QString;
+
+        /// 规则 1（第 1243 行）那一句问与两枚答钮：`问|退回未分组|随组销毁`。
+        #[qinvokable]
+        #[cxx_name = "groupWindowDeleteWords"]
+        fn group_window_delete_words(self: &Self) -> QString;
+
+        /// 窗自己那枚「关闭」钮的名字。
+        #[qinvokable]
+        #[cxx_name = "groupWindowCloseWord"]
+        fn group_window_close_word(self: &Self) -> QString;
+
+        /// 量具那两条腿要打进那两枚输入框的名字（`新建名|改名名`，空串 = 这一趟没有量具的腿）。
+        /// 名字由本档起、由本档判，页上不自己拼一名（那样门判的就成了页自己写的字）。
+        #[qinvokable]
+        #[cxx_name = "groupWindowNames"]
+        fn group_window_names(self: &Self) -> QString;
+
+        /// 那扇窗量具那十条腿的计划（空串 = 这一趟没有量具的腿要跑）。
+        #[qinvokable]
+        #[cxx_name = "groupWindowPlan"]
+        fn group_window_plan(self: &Self) -> QString;
+
+        /// 页上那十条腿读回来的一行原文。
+        #[qinvokable]
+        #[cxx_name = "groupWindowReport"]
+        fn group_window_report(self: &Self, line: &QString);
+
+        /// 一枚贴图**此刻**显不显（1/0）：第 1253 行「系统统一更新该分组内贴图的可见状态」在界面
+        /// 一侧唯一可读的那一眼，读的是 [`crate::state::PinState::view_data`] 的 `live` 本体 ——
+        /// 与 `PinWindow.qml` 那一眼同一格，桥侧不数第二遍。不在集里的那一枚也答 0，那是「没了」
+        /// 与「藏起来」共用的一眼，分界问下面那一枚。
+        #[qinvokable]
+        #[cxx_name = "groupWindowLive"]
+        fn group_window_live(self: &Self, id: i64) -> i32;
+
+        /// 一枚贴图**还在不在集里**（1/0）：§5.12.3 那两臂「退回未分组 / 随组销毁」的唯一分界 ——
+        /// 退回的还在场上、销毁的不在了。这一格界面自己读不到（`live` 对两者都答 0），所以它是
+        /// 本窗独有的一枚读数，而不是上面那一枚的第二份。
+        #[qinvokable]
+        #[cxx_name = "groupWindowHeld"]
+        fn group_window_held(self: &Self, id: i64) -> i32;
+
         /// §5.15「隐藏全部贴图」。置起全局收起那枚理由，扇出全场每扇窗 ⇒ 发 [`Self::pins_epoch`]。
         /// 交回切换之后的全局态（恒 `1` = 已收起）。这一手不碰任何一枚贴图自身的可见性。
         #[qinvokable]
@@ -500,6 +643,23 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "savePin"]
         fn save_pin(self: Pin<&mut Self>, id: i64, path: &QString, filter: &QString) -> QString;
+
+        /// §5.5.8「刷新截图」的两枚落点共用的一只手。`overwrite` 是**规则 1 那一枚选择**本身
+        /// （覆盖 = `true`，另钉一张 = `false`），由菜单那两行各自钉死：桥不替用户决定要哪一种，
+        /// PRD 两句都是「可选」。
+        ///
+        /// 「这一枚配不配刷」「那块区域还在不在屏幕上」都不在这里判 —— 判的人是
+        /// [`crate::state::PinState::refresh`] 与 [`falcon_core::refresh::plan`]，连「请重新
+        /// 选择」那半句也是那里写的。这一格只做两件事：把答复搬到 [`Self::status`]，以及把名单
+        /// 的账重读一遍。
+        ///
+        /// 收尾那一句 `refresh()` 是**两行一起叫**的：另钉一张会多出一枚贴图，新那扇窗靠 `count`
+        /// 那一枚 notify 由 `main.qml` 造出来（与 `destroy_pin` / `undo_destroy` 同一式）；覆盖
+        /// 那一路不换成员，`refresh()` 只把四格账重读一遍，幂等。让两行各判一次「要不要扇」，
+        /// 就是「这一手有没有改变名单」的第二处（#281）。
+        #[qinvokable]
+        #[cxx_name = "refreshPin"]
+        fn refresh_pin(self: Pin<&mut Self>, id: i64, overwrite: bool) -> QString;
 
         /// §5.8.2 - whatever is on the clipboard becomes a pin. -1 and a status
         /// line when there was nothing to pin (§8.1: no window, but a message).
@@ -667,6 +827,43 @@ pub mod qobject {
         #[cxx_name = "historyFlip"]
         fn history_flip(self: Pin<&mut Self>, back: bool) -> QString;
 
+        /// 那扇窗的标题（PRD 第 1309 行那一串字）、那四枚钮的名字、表头那枚全选的两个字、
+        /// 二次确认那一问与两答：全部出自 [`crate::history_window`]。页上抄一份中文名单，
+        /// 改一天「钮上写着删除、递进产品的却是清空」只能靠数出来（#281，与
+        /// [`Self::customLabels`] 那一族同一个理由）。
+        #[qinvokable]
+        #[cxx_name = "historyWindowTitle"]
+        fn history_window_title(self: &Self) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "historyWindowButtons"]
+        fn history_window_buttons(self: &Self) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "historyWindowSelectAll"]
+        fn history_window_select_all(self: &Self) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "historyWindowConfirmWords"]
+        fn history_window_confirm_words(self: &Self) -> QString;
+
+        /// §6.2「显示历史记录占用多少空间」在**这一扇窗上**的读法。算术与措辞的唯一作者
+        /// 仍是 [`crate::settings::history_usage_line`]；读的落点是 `MaskState` 那两枚**会话快照**
+        /// 而不是全局那一枚（理由写在 [`crate::history_window::usage_line`] 头顶）。
+        #[qinvokable]
+        #[cxx_name = "historyWindowUsage"]
+        fn history_window_usage(self: &Self) -> QString;
+
+        /// 那扇窗量具那几条腿的计划（空串 = 这一趟没有量具的腿要跑）。
+        #[qinvokable]
+        #[cxx_name = "historyWindowPlan"]
+        fn history_window_plan(self: &Self) -> QString;
+
+        /// 页上那几条腿读回来的一行原文。
+        #[qinvokable]
+        #[cxx_name = "historyWindowReport"]
+        fn history_window_report(self: &Self, line: &QString);
+
         /// 此刻遮罩上那一只框，物理桌面像素，`x,y WxH` 一句话说完 ——
         /// [`crate::mask::MaskState::hole`] 的原文。界面要确认「选区回到原来了没有」只能问这一格：
         /// `MaskView` 那四枚 `hole_x…hole_h` 是**这一扇窗的 DIP 投影**，跨屏时还会是空的，那两套
@@ -720,14 +917,14 @@ pub mod qobject {
 
         // ── §5.20.1 的那一扇窗：页上那一排标签、那一页的行、点中的那一枚键 ──────────────
         //
-        // 这七枚没有一枚自己判事。类与行的名单来自 [`crate::settings_view`]（它来自
-        // `Config::flat()` 与 §5.20.1 那十一类），改值的闸门来自 `Config::set_str`，落盘来自
+        // 这些入口没有一枚自己判事。类与行的名单来自 [`crate::settings_view`]（它来自
+        // `Config::flat()` 与那份名单），改值的闸门来自 `Config::set_str`，落盘来自
         // [`crate::settings::Settings::save`]。界面拿到的只是这些格子读出来的**字串**，
         // 于是「页上写着 5000」与「内存里是 5000」之间不存在第二条路可以各说一面（#281）。
 
-        /// 页顶那排标签：§5.20.1 的十一类，顺序就是文档里那一列数字。一行一串字，
+        /// 页顶那排标签：那份名单（§5.20.1 的十一类加「托盘」），顺序就是文档里那一列数字。
         /// `Repeater` 那侧 `split("\u{1d}")` —— 这所房子把 Rust 的列表交给界面的唯一写法，
-        /// 而分隔符是控制字符而不是 `|`：行里的**值是用户自己打的**（`appearance.font_family`
+        /// 而分隔符是控制字符而不是 `|`：行里的**值是用户自己打的**（`annotation.font_family`
         /// 里出现一个 `|` 完全合法），可见分隔符会把一行切成两行。
         #[qinvokable]
         #[cxx_name = "settingsCategories"]
@@ -753,6 +950,25 @@ pub mod qobject {
         #[cxx_name = "settingsSet"]
         fn settings_set(self: &Self, key: &QString, value: &QString) -> QString;
 
+        /// 第 `which` 类每一行要哪一只手：`on` / `off` / `field`，用 `\u{1d}` 连着，与
+        /// [`Self::settingsPage`] 切出来的行**一一对应**（长度差一位就是把某行的手型安到了邻居头上）。
+        ///
+        /// 窗自己不判这一件事：按页上那串文本猜会把一枚恰好写着 `true` 的字体名画成开关，而
+        /// 按下去就是把那一格写成 `false` —— 那一步在语法闸上是过得去的。判的是档里存着的**类型**
+        /// （`Config::get_bool`），界面只画。
+        #[qinvokable]
+        #[cxx_name = "settingsRowKinds"]
+        fn settings_row_kinds(self: &Self, which: i32) -> QString;
+
+        /// 按下第 `which` 类第 `index` 行上那一枚开关：翻一头，走的与「按保存」**同一条路**
+        /// （语法闸、原子落盘、`Written::text` 那一整句）—— 这里不开第二条落盘的路，否则「页上
+        /// 按一下」与「页上按保存」会落成两件不同的事。
+        ///
+        /// 那一行不是一枚开关时，这一枚一处也不动，交回的那一句里写着为什么（页上印的就是那句）。
+        #[qinvokable]
+        #[cxx_name = "settingsToggle"]
+        fn settings_toggle(self: &Self, which: i32, index: i32) -> QString;
+
         /// `--settings-window` 那一档给窗自己的计划。空串在产品会话与另外七道门里，
         /// 于是 `SettingsWindow.qml` 里那几条腿整条不跑（同 `pinGaugePlan` /
         /// `hintGaugePlan` 那一族的口径：量具的代码不许长成用户看得见的一次点击）。
@@ -762,7 +978,7 @@ pub mod qobject {
 
         /// 窗递回来的一行，进的是那一档自己的账（[`crate::settings_view::report`]）。
         ///
-        /// **两档共用这一枚**：`--settings-window` 的三条腿与 §5.20.3 那两枚钮都从这里递。桥上
+        /// **两档共用这一枚**：`--settings-window` 的四条腿与 §5.20.3 那两枚钮都从这里递。桥上
         /// 要是给它们各开一枚，页上就得自己判断「我是哪一档」—— 那是措辞不是读数，所以分派在
         /// [`crate::settings_view::report`] 那一侧按「哪一档 armed」做。
         #[qinvokable]
@@ -794,6 +1010,200 @@ pub mod qobject {
         #[cxx_name = "settingsImportApply"]
         fn settings_import_apply(self: &Self, target: &QString) -> QString;
 
+        // ── §5.7.22 步骤 1/2/3 那一格「调色板管理」。桥这一侧一处也不判事：哪一枚色在排里、
+        // 能不能加、能不能挪、方案存不存得进，全在 [`crate::settings_view`] 那几只手里，而它们
+        // 背后是 `colors::Palette`（模型）与 `Config`（语法闸）。页上拿到的每一句都是那几只手
+        // 自己说的话（#281）。
+
+        /// `--settings-palette` 那一档给窗的计划：十段。空串在产品会话与其余各档里，于是页上
+        /// 那几条量具腿整条不跑（与 [`Self::settings_gauge_plan`] 同一个口径）。
+        #[qinvokable]
+        #[cxx_name = "settingsPalettePlan"]
+        fn settings_palette_plan(self: &Self) -> QString;
+
+        /// 这一格上该写的九枚字（第 0 枚是抬头），与 [`Self::settings_page`] 同一把刀切开。
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteWords"]
+        fn settings_palette_words(self: &Self) -> QString;
+
+        /// 现读的那一排色：一枚一行 `序号|色`。
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteBand"]
+        fn settings_palette_band(self: &Self) -> QString;
+
+        /// 现读的那一列方案：一条一行 `名字|枚数|色 色 …`。
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteSchemes"]
+        fn settings_palette_schemes(self: &Self) -> QString;
+
+        /// 现读的那一排色，**色与色之间一个空格**：量具腿报回的那一行是按 `|` 切的，页上那一串
+        /// `序号|色` 会撑爆段，所以报回走这一枚（[`crate::settings_view::pal_band_flat`]）。
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteBandFlat"]
+        fn settings_palette_band_flat(self: &Self) -> QString;
+
+        /// 步骤 2 的四只手。交回的都是 [`crate::settings_view::Written::text`] 那一整句。
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteAdd"]
+        fn settings_palette_add(self: &Self, hex: &QString) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteDel"]
+        fn settings_palette_del(self: &Self, at: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteMove"]
+        fn settings_palette_move(self: &Self, at: i32, delta: i32) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteEdit"]
+        fn settings_palette_edit(self: &Self, at: i32, hex: &QString) -> QString;
+
+        /// 步骤 3 的三只手：把此刻这一排存成一名方案、应用一名方案（动的是排）、删掉一名方案。
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteSaveScheme"]
+        fn settings_palette_save_scheme(self: &Self, name: &QString) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteApplyScheme"]
+        fn settings_palette_apply_scheme(self: &Self, name: &QString) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "settingsPaletteDropScheme"]
+        fn settings_palette_drop_scheme(self: &Self, name: &QString) -> QString;
+
+        /// §5.21.2 第四枚：第 `which` 类此刻该不该递那一句「首次使用引导」。**只读**：翻一页
+        /// 不算「用户读完了」，所以这一枚一处也不写盘。空串 = 不递（名单外的页、或已经收过的页），
+        /// 窗按空串把那一块整个不画。
+        #[qinvokable]
+        #[cxx_name = "settingsGuide"]
+        fn settings_guide(self: &Self, which: i32) -> QString;
+
+        /// 「知道了」那枚钮背后的一只手：把这一页记成「引导递过了」，并落盘。交回的是
+        /// [`crate::guide::ack`] 那一整句（收下没收下、写没写成、落在哪份档），页上只是画它。
+        #[qinvokable]
+        #[cxx_name = "settingsGuideAck"]
+        fn settings_guide_ack(self: &Self, which: i32) -> QString;
+
+        /// 那一枚钮上该写的**那两个字**：[`crate::guide::ACK_WORD`] 原文。页上那个 `Text` 画的
+        /// 就是这一枚的返回值，所以「引导句里说的是按『知道了』、钮上却写着别的字」这一种坏只有
+        /// 从这里过一次桥才读得出来（§5.20.1 单源那一族的屏幕侧，与 `settingsRowKinds` 同一次
+        /// 取行的道理一样：窗不自己抄第二份措辞，#281）。
+        #[qinvokable]
+        #[cxx_name = "settingsGuideAckWord"]
+        fn settings_guide_ack_word(self: &Self) -> QString;
+
+        // ── §5.21.1 第 2 步与第 4 步在「关于与更新」那一页页脚的那两枚钮。判决、句子、地址、
+        // 闸，一处都不在窗里：问的是 [`falcon_core::update`] 那一层唯一的函数，递回的字来自
+        // [`crate::settings_view::update_words`]，开浏览器走的是与条码那一行同一道闸（
+        // [`crate::session::open_web`]）。窗自己数类号、自己起钮名、自己想一句「现在不能下载」，
+        // 都是这一族要修的坏（#281）。
+
+        /// 第 `which` 类页脚那两枚钮此刻该写的字，`RECORD` 连着两段；**不是**那一页时空串，
+        /// 窗按空串把整块不画（与 [`Self::settings_guide`] 同一形状）。
+        #[qinvokable]
+        #[cxx_name = "updateWords"]
+        fn update_words(self: &Self, which: i32) -> QString;
+
+        /// 第 2 步那一次「点击」在页上的归宿：现问一次，把产品那句判决写进 `status`，并把**同
+        /// 一次判决**交回的那枚入口地址用 `RECORD` 跟在句子后面。分两段而不是分两次问，是为了
+        /// 不让窗拿到「一句新的话、一枚旧的地址」。没有入口时后一段是空串，那枚钮因此画不出来。
+        #[qinvokable]
+        #[cxx_name = "updateAsk"]
+        fn update_ask(self: Pin<&mut Self>) -> QString;
+
+        /// 第 4 步那枚入口按下去的一只手：现问拿**此刻**的地址（清单在两趟之间改了，开的就必须
+        /// 是新那一枚，或者照实说没有可开），再过与「打开这一枚」同一道闸。
+        #[qinvokable]
+        #[cxx_name = "updateOpen"]
+        fn update_open(self: Pin<&mut Self>) -> QString;
+
+        // ── §5.3.5「自定义截图」对话框的那一组桥。这一扇窗的**名单、句子、判据、算术**全部住在
+        // [`crate::custom`] 与它复用的那几只手里（`capture::size_guard` / `capture::clip_note` /
+        // `delay::Countdown` / `config::DELAY_SECONDS_*`），页上只画递回来的东西 —— 与设置页那
+        // 一整族同一分工：把 ["X","Y","宽度","高度","延时"] 抄进 `.qml`，改一天「框上写着宽、递进
+        // Rust 的是高」就只能靠数出来（#281）。
+
+        /// 五格的名字，`|` 连接（[`crate::custom::labels`]）。页上那五格的标签与门里
+        /// 「页上格数 == 名单长度」那一格读的都是这一串。
+        #[qinvokable]
+        #[cxx_name = "customLabels"]
+        fn custom_labels(self: &Self) -> QString;
+
+        /// 每一格旁边那句话，`|` 连接，与 [`Self::custom_labels`] **同序同长**。
+        #[qinvokable]
+        #[cxx_name = "customHints"]
+        fn custom_hints(self: &Self) -> QString;
+
+        /// 窗标题与那一枚钮上的字：分别是 `capture_custom` 在唯一名册里的那一枚名（与托盘那一项、
+        /// 设置页那一行同一个名）与「开始截图」那两个字。
+        #[qinvokable]
+        #[cxx_name = "customTitle"]
+        fn custom_title(self: &Self) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "customStartWord"]
+        fn custom_start_word(self: &Self) -> QString;
+
+        /// 第 `which` 格**此刻**的文本。窗出生时读它起手（延时那一格开在 `[capture] delay_seconds`
+        /// 上），此后不绑 —— `TextField` 里一次赋值就摧毁绑定，屏幕上会留一对说谎的数字
+        /// （`CaptureMask.qml` 的 `sizeBar` 记过的那一族）。
+        #[qinvokable]
+        #[cxx_name = "customCell"]
+        fn custom_cell(self: &Self, which: i32) -> QString;
+
+        /// 填第 `which` 格。**只记账不抓图**：一边打字一边冻画面不是谁要的行为。交回的是这一格
+        /// 形状的毛病（空串 = 这一格没毛病），并把它写进 [`Self::custom_note`]。
+        #[qinvokable]
+        #[cxx_name = "customSet"]
+        fn custom_set(self: Pin<&mut Self>, which: i32, text: &QString) -> QString;
+
+        /// 按下「开始截图」（PRD 第 302 行）。交回这一刻说给用户的那句话：延时为 0 就是截出来的
+        /// 那一块（或那一句拒绝），延时 > 0 就是「还剩几枚数」并挂上 [`Self::custom_left`]。
+        #[qinvokable]
+        #[cxx_name = "customStart"]
+        fn custom_start(self: Pin<&mut Self>) -> QString;
+
+        /// 那枚 `Timer` 每走一步叫一次；数满的那一枚交回截出来的那一块，还在数就交回空串。
+        #[qinvokable]
+        #[cxx_name = "customTick"]
+        fn custom_tick(self: Pin<&mut Self>) -> QString;
+
+        /// 第 `which` 格往上（`delta = 1`）或往下（`delta = -1`）挪一枚 —— PRD 第 309 行「应支持
+        /// 键盘方向键微调数值」。页上那两枚键 handler 只叫这一句并把交回的字回填进那一格，
+        /// **不在页里算**：算术留在 [`crate::custom::nudge`]，那里它有单测、也有门可问。
+        #[qinvokable]
+        #[cxx_name = "customNudge"]
+        fn custom_nudge(self: Pin<&mut Self>, which: i32, delta: i32) -> QString;
+
+        /// 数满那一刻的「实测 | 计划」两枚毫秒，`|` 连接。页递回 `delay-fired` 那一行时接在后面 ——
+        /// 「等了多久」不能让窗自己拿表算，重算的那一刻已经不是数满的那一刻。
+        #[qinvokable]
+        #[cxx_name = "customWaitLine"]
+        fn custom_wait_line(self: &Self) -> QString;
+
+        /// 每枚数之间隔多久，直接给 `Timer.interval`（[`crate::delay::STEP_MS`] 本身）。
+        #[qinvokable]
+        #[cxx_name = "customStepMs"]
+        fn custom_step_ms(self: &Self) -> i32;
+
+        /// `--custom-window` 那一份计划，原文；空串 = 这一趟不是量具跑的，页上那几条腿一条也不跑。
+        #[qinvokable]
+        #[cxx_name = "customGaugePlan"]
+        fn custom_gauge_plan(self: &Self) -> QString;
+
+        /// 窗递回来的一行（`腿名|读数|…`）。打印与判定都在 [`crate::custom::measure`]。
+        #[qinvokable]
+        #[cxx_name = "customGaugeReport"]
+        fn custom_gauge_report(self: &Self, line: &QString);
+
+        /// 把「这一趟该不该有一扇对话框窗」取进 [`Self::custom_open`]，并把 [`crate::custom`] 此刻
+        /// 的注脚与倒计时搬到那两格上。与 [`Self::refresh_settings`] 同一个入口形状：档那一头在
+        /// `engine.load()` 之前写下计划，而 Session 要等 QML 建出来才存在。
+        #[qinvokable]
+        #[cxx_name = "refreshCustom"]
+        fn refresh_custom(self: Pin<&mut Self>);
+
         /// 把「这一趟该不该有一扇设置窗」取进 [`Self::settings_open`]。只有 `main.qml` 在
         /// `Component.onCompleted` 里叫一次：档那一头在 `engine.load()` 之前就被
         /// `--settings-window` 写下计划，而 Session 这个实例要等 QML 建出来才存在，
@@ -801,6 +1211,82 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshSettings"]
         fn refresh_settings(self: Pin<&mut Self>);
+
+        /// 把「这一趟该不该有一扇历史记录管理窗」取进 [`Self::history_window_open`]，与
+        /// [`Self::refresh_custom`] 同一枚理由：`--history-window` 那一份计划写在 `engine.load()`
+        /// 之前，而 Session 这一枚实例要等 `main.qml` 建出来才存在。少了这一行声明，QML 叫到的
+        /// 就是「没有这只手」，那一句只在运行时才说得出。
+        #[qinvokable]
+        #[cxx_name = "refreshHistoryWindow"]
+        fn refresh_history_window(self: Pin<&mut Self>);
+
+        /// 把「这一趟该不该有一扇图片分组管理窗」取进 [`Self::group_window_open`]，与上面两枚
+        /// 同一枚理由：`--group-window` 那一份计划写在 `engine.load()` 之前，而 Session 这一枚
+        /// 实例要等 `main.qml` 建出来才存在。
+        #[qinvokable]
+        #[cxx_name = "refreshGroupWindow"]
+        fn refresh_group_window(self: Pin<&mut Self>);
+
+        /// §5.6.1 步骤 1：把**此刻缝合完的那一块选区**送去识别。识别在另一条线程上跑，结果从
+        /// [`Self::ocr_text`] / [`Self::ocr_error`] 投回来，所以这一只手当场返回、什么都不交：
+        /// 它在 GUI 线程上，而让 GUI 线程等一次几百毫秒的识别，僵住的是桌上每一扇窗。
+        #[qinvokable]
+        #[cxx_name = "extractMaskText"]
+        fn extract_mask_text(self: Pin<&mut Self>);
+
+        /// 同一件事，另一个来源：贴图窗递进来的那一枚 id。§5.6.1 的主入口是遮罩，这一条是
+        /// 已经钉在桌上的那张图也要能读 —— 与 [`Self::copy_pin`] 同一族「两只门、一个落点」。
+        ///
+        /// 贴图取的是 `rendered` 那一格，也就是 [`falcon_core::pin::PinItem::render_shown`] 交回的
+        /// 那一张：裁切、翻转、旋转、灰度/反色都已经在里面，用户眼里那样就是识别的输入。窗上那枚
+        /// **缩放**不在里面（它是 QML 的 transform，不进 `render_shown`），所以放大到 400% 看糊字
+        /// 那一档对识别没有影响 —— 这一条边界写在这儿，是因为它看着像 bug 而不是像设计。
+        #[qinvokable]
+        #[cxx_name = "extractPinText"]
+        fn extract_pin_text(self: Pin<&mut Self>, id: i64);
+
+        /// 面板上「复制全部」与「复制选中」那两只钮走的**同一只手**：那一串字由窗递进来，桥只
+        /// 负责放上剪贴板并说出结果。不在这里读 [`Self::ocr_text`]：选中那一截只有 QML 知道，
+        /// 而一格文本被两只钮各读一遍就会有一遍是过期的（#281）。
+        #[qinvokable]
+        #[cxx_name = "copyOcrText"]
+        fn copy_ocr_text(self: Pin<&mut Self>, text: &QString) -> QString;
+
+        /// §5.6.2 步骤 1 与 §5.6.3 步骤 1 的**同一个**入口（遮罩那一臂）：把此刻缝合完的选区交给
+        /// [`falcon_core::barcode`]。一节写「识别二维码」、一节写「识别条形码」，两只手各开一扇门
+        /// 就会有两套「读到没读到」的判据，而 `rxing` 那一头答的是一次「这一张里所有的码」——
+        /// 一门、一张表、每行自己宣布它是 QR_CODE 还是 CODE_128（§5.6.3 步骤 3 那一问的答）。
+        ///
+        /// 与 [`Self::extractMaskText`] 同一个理由**当场什么都不交**：读码要跑几十到几百毫秒，
+        /// 让 GUI 线程等它，僵住的是桌上每一扇窗。
+        #[qinvokable]
+        #[cxx_name = "readMaskCodes"]
+        fn read_mask_codes(self: Pin<&mut Self>);
+
+        /// 同一件事，另一个来源：贴图窗递进来的那一枚 id。§5.6.2 步骤 1 明写了「或在贴图上打开
+        /// 识别菜单」，而这一条与 [`Self::extractPinText`] 取的是**同一格** `rendered`（裁切、翻转、
+        /// 旋转、灰度/反色都在里面，窗上那枚缩放不在）。
+        #[qinvokable]
+        #[cxx_name = "readPinCodes"]
+        fn read_pin_codes(self: Pin<&mut Self>, id: i64);
+
+        /// 表里每一行「复制」那一只钮：交回剪贴板的是**序号那一枚码的原样内容**，不是界面上那串
+        /// 显示字。按序号而不是把字递过来，为的正是这一句 —— 显示那一格被 [`Self::codes_rows`]
+        /// 的转义碰过，而外来数据里那几个字符碰不得（剪贴板上多一个 U+FFFD 就是内容被改了）。
+        #[qinvokable]
+        #[cxx_name = "copyCodeAt"]
+        fn copy_code_at(self: Pin<&mut Self>, index: i32) -> QString;
+
+        /// §5.6.2 步骤 5 与安全规则的那一只手：把序号那一枚码的内容交给默认浏览器。**这一只手
+        /// 必须在界面已经把域名摆给用户看之后**才被调用 —— 那一格读数在 [`Self::codes_rows`]
+        /// 的第四格里，它与本只手算出来的那枚域名同源（都出自 [`falcon_core::link`]），窗不许
+        /// 自己拼一句「确定要打开吗」。
+        ///
+        /// 交出去的是 Rust 存着的那一串，不是窗递回来的一串：窗要是递了别的，开掉的就不是用户
+        /// 看过域名的那一枚。
+        #[qinvokable]
+        #[cxx_name = "openCodeAt"]
+        fn open_code_at(self: Pin<&mut Self>, index: i32) -> QString;
     }
 
     // Threading is opt-in per QObject; without this declaration `qt_thread()` does
@@ -812,6 +1298,7 @@ pub mod qobject {
 
 use core::pin::Pin;
 
+use cxx_qt::CxxQtType;
 use cxx_qt::Threading;
 use cxx_qt_lib::QString;
 use falcon_core::geometry::PhysPoint;
@@ -844,6 +1331,25 @@ pub struct SessionRust {
     pins_epoch: i32,
     all_hidden: i32,
     settings_open: i32,
+    custom_open: i32,
+    custom_left: i32,
+    custom_note: QString,
+    history_window_open: i32,
+    group_window_open: i32,
+    ocr_text: QString,
+    ocr_busy: bool,
+    ocr_error: QString,
+    /// §5.6.2 / §5.6.3 那三格读数（表、忙、故障），加上下面那一份权威向量。
+    codes_rows: QString,
+    codes_busy: bool,
+    codes_error: QString,
+    /// 这一趟读到的码，**权威的那一份**。[`Self::codes_rows`] 是它的显示形（外来数据里那几个
+    /// 分隔字符在显示形里被换掉），而 [`Self::copy_code_at`] 与 [`Self::open_code_at`] 读的
+    /// 是这里 —— 剪贴板与浏览器拿到的必须是原样那一串。
+    ///
+    /// 它与那一格 qproperty 由**同一个 GUI 线程回调**一次写定（[`codes_landed`]），所以窗上摆的
+    /// 那张表与按序号取到的那一行永远同一趟：不存在「表是新的、向量是旧的」那一格。
+    codes: Vec<falcon_core::barcode::Code>,
 }
 
 /// §5.12 分组快照的编码：把 core `group_rows()` 那张表编成一整串字，交给 [`Self::groups`]
@@ -1214,10 +1720,13 @@ impl qobject::Session {
         let fate = destroy != 0;
         match state::with(|s| s.delete_group(id as u64, fate)) {
             Ok(n) => {
+                // 那两串字的唯一作者是 [`crate::group_window`]：页上那两枚答钮写的就是它们，
+                // 产品这句话里出现的也必须是同一串 —— 这里再打一遍中文，「钮上写的」与「产品说的」
+                // 就成了两个作者（#281），而 `--group-window` 门里 ⑨⑩ 两格正是拿这句话找归宿的。
                 let how = if fate {
-                    "随组销毁"
+                    crate::group_window::DESTROY_WORD
                 } else {
-                    "退回未分组"
+                    crate::group_window::KEEP_WORD
                 };
                 let msg = if n == 0 {
                     "已删除分组（组里没有贴图）".to_string()
@@ -1287,6 +1796,46 @@ impl qobject::Session {
                 -1
             }
         }
+    }
+
+    pub fn group_window_title(&self) -> QString {
+        QString::from(crate::group_window::title().as_str())
+    }
+
+    pub fn group_window_buttons(&self) -> QString {
+        QString::from(crate::group_window::buttons().as_str())
+    }
+
+    pub fn group_window_state_words(&self) -> QString {
+        QString::from(crate::group_window::state_words().as_str())
+    }
+
+    pub fn group_window_delete_words(&self) -> QString {
+        QString::from(crate::group_window::delete_words().as_str())
+    }
+
+    pub fn group_window_close_word(&self) -> QString {
+        QString::from(crate::group_window::CLOSE_WORD)
+    }
+
+    pub fn group_window_names(&self) -> QString {
+        QString::from(crate::group_window::planted_names().as_str())
+    }
+
+    pub fn group_window_plan(&self) -> QString {
+        QString::from(crate::group_window::plan_line().as_str())
+    }
+
+    pub fn group_window_report(&self, line: &QString) {
+        crate::group_window::report(&line.to_string());
+    }
+
+    pub fn group_window_live(&self, id: i64) -> i32 {
+        i32::from(state::with(|s| s.view_data(id as u64).live))
+    }
+
+    pub fn group_window_held(&self, id: i64) -> i32 {
+        i32::from(state::with(|s| s.set.get(id as u64).is_some()))
     }
 
     /// §5.15 三手共用的收尾：先 [`Self::refresh`]（它已把 `all_hidden` 那一格重读上），再报一句
@@ -1457,6 +2006,20 @@ impl qobject::Session {
         self.as_mut().say(&message)
     }
 
+    /// §5.5.8 的手柄：菜单那两行按下的一行决定 `overwrite` 是哪一枚，其余全在
+    /// [`crate::state::PinState::refresh`] 那一格 —— 这里既不算坐标，也不写拒绝那半句。
+    ///
+    /// 两臂都到 [`Self::status`]：成功那句带着「读回了哪一块、哪个后端、多少 ms」，失败那句
+    /// 是规则 2 要的「请重新选择」。用户读的是同一格，量规读的也是同一格。
+    pub fn refresh_pin(mut self: Pin<&mut Self>, id: i64, overwrite: bool) -> QString {
+        let message = match state::with(|s| s.refresh(id as u64, overwrite)) {
+            Ok(done) => done,
+            Err(e) => e,
+        };
+        self.as_mut().refresh();
+        self.as_mut().say(&message)
+    }
+
     pub fn pin_clipboard(mut self: Pin<&mut Self>) -> i64 {
         match state::paste_from_clipboard() {
             Ok(id) => {
@@ -1558,6 +2121,34 @@ impl qobject::Session {
         mask::with(|m| m.lock_history(id, locked));
         let said = mask::with(|m| m.history_lock_last.clone());
         self.as_mut().say(&said)
+    }
+
+    pub fn history_window_title(&self) -> QString {
+        QString::from(crate::history_window::title().as_str())
+    }
+
+    pub fn history_window_buttons(&self) -> QString {
+        QString::from(crate::history_window::buttons().as_str())
+    }
+
+    pub fn history_window_select_all(&self) -> QString {
+        QString::from(crate::history_window::select_all().as_str())
+    }
+
+    pub fn history_window_confirm_words(&self) -> QString {
+        QString::from(crate::history_window::confirm_words().as_str())
+    }
+
+    pub fn history_window_usage(&self) -> QString {
+        QString::from(crate::history_window::usage_line().as_str())
+    }
+
+    pub fn history_window_plan(&self) -> QString {
+        QString::from(crate::history_window::plan_line().as_str())
+    }
+
+    pub fn history_window_report(&self, line: &QString) {
+        crate::history_window::report(&line.to_string());
     }
 
     pub fn history_restore(mut self: Pin<&mut Self>, id: i64) -> QString {
@@ -1726,6 +2317,23 @@ impl qobject::Session {
         QString::from(said.as_str())
     }
 
+    pub fn settings_row_kinds(&self, which: i32) -> QString {
+        // 与 `settings_page` 同一个口径：越界与负数交回空串，那一页压根不存在，窗因此一格开关
+        // 也不画。长度对不对不是这里判的 —— `kinds_line` 与 `page_line` 出自同一份档的同一趟
+        // 枚举，那一件事有单测盯着（`the_kind_line_lines_up_with_the_page_line`）。
+        match usize::try_from(which) {
+            Ok(i) => QString::from(crate::settings_view::kinds_line(i).as_str()),
+            Err(_) => QString::default(),
+        }
+    }
+
+    pub fn settings_toggle(&self, which: i32, index: i32) -> QString {
+        // 翻一头之后落不落盘、落成什么，全在 `settings_view::toggle` 与它背后的 `write` 里；
+        // 本条只把那句它自己说的话交回去 —— 与 `settings_set` 同一只手，不是第二只手。
+        let said = crate::settings_view::toggle_row(which, index).text();
+        QString::from(said.as_str())
+    }
+
     pub fn settings_gauge_plan(&self) -> QString {
         QString::from(crate::settings_view::plan_line().as_str())
     }
@@ -1754,9 +2362,533 @@ impl qobject::Session {
         QString::from(crate::settings_view::io_apply(&target.to_string()).as_str())
     }
 
+    // ── §5.7.22 那一格「调色板管理」。与上面同一族：桥这一侧只把 `settings_view` 那几只手自己
+    // 说的话交回去，页上因此不需要知道「加一枚色要不要先去重」。
+
+    pub fn settings_palette_plan(&self) -> QString {
+        QString::from(crate::settings_view::pal_plan_line().as_str())
+    }
+
+    pub fn settings_palette_words(&self) -> QString {
+        QString::from(crate::settings_view::pal_word_line().as_str())
+    }
+
+    pub fn settings_palette_band(&self) -> QString {
+        QString::from(crate::settings_view::pal_band_now().as_str())
+    }
+
+    pub fn settings_palette_schemes(&self) -> QString {
+        QString::from(crate::settings_view::pal_scheme_now().as_str())
+    }
+
+    pub fn settings_palette_band_flat(&self) -> QString {
+        QString::from(crate::settings_view::pal_band_flat_now().as_str())
+    }
+
+    pub fn settings_palette_add(&self, hex: &QString) -> QString {
+        let said = crate::settings_view::pal_add(&hex.to_string()).text();
+        QString::from(said.as_str())
+    }
+
+    pub fn settings_palette_del(&self, at: i32) -> QString {
+        let said = crate::settings_view::pal_remove(at).text();
+        QString::from(said.as_str())
+    }
+
+    pub fn settings_palette_move(&self, at: i32, delta: i32) -> QString {
+        let said = crate::settings_view::pal_move(at, delta).text();
+        QString::from(said.as_str())
+    }
+
+    pub fn settings_palette_edit(&self, at: i32, hex: &QString) -> QString {
+        let said = crate::settings_view::pal_edit(at, &hex.to_string()).text();
+        QString::from(said.as_str())
+    }
+
+    pub fn settings_palette_save_scheme(&self, name: &QString) -> QString {
+        let said = crate::settings_view::pal_save_scheme(&name.to_string()).text();
+        QString::from(said.as_str())
+    }
+
+    pub fn settings_palette_apply_scheme(&self, name: &QString) -> QString {
+        let said = crate::settings_view::pal_apply_scheme(&name.to_string()).text();
+        QString::from(said.as_str())
+    }
+
+    pub fn settings_palette_drop_scheme(&self, name: &QString) -> QString {
+        let said = crate::settings_view::pal_drop_scheme(&name.to_string()).text();
+        QString::from(said.as_str())
+    }
+
+    // ── §5.21.2 第四枚：复杂页那一句「首次使用引导」。窗拿到的还是**一句字串**，判「这一页
+    // 复杂吗、这一页递过没有」的全在 [`crate::guide`] 那一头 —— 窗里再判一次就是第二份实现，
+    // 而第二份实现会的坏是「页上还有那句、盘上已经记成收过了」这一种。
+
+    pub fn settings_guide(&self, which: i32) -> QString {
+        QString::from(
+            crate::guide::line_for(
+                &crate::guide::current(),
+                usize::try_from(which).unwrap_or(usize::MAX),
+            )
+            .as_str(),
+        )
+    }
+
+    pub fn settings_guide_ack(&self, which: i32) -> QString {
+        QString::from(crate::guide::ack(usize::try_from(which).unwrap_or(usize::MAX)).as_str())
+    }
+
+    pub fn settings_guide_ack_word(&self) -> QString {
+        QString::from(crate::guide::ACK_WORD)
+    }
+
+    // ── §5.21.1 那两枚钮的桥。与上面同一族：这里一处也不判事 —— 哪一页递、递什么字在
+    // [`crate::settings_view`]，判决与那句产品话在 [`falcon_core::update`]，闸在
+    // [`falcon_core::link`] 与 [`platform_windows::open`]。
+
+    pub fn update_words(&self, which: i32) -> QString {
+        // 负数与越界交回空串，与 `settings_page` 同一个口径：那一页压根不存在，页脚也就没有
+        // 任何东西可画。「有这一页但这一页不递更新」走的是同一条路（`update_words` 自己编空串），
+        // 那一件事有单测盯着（`only_the_about_page_offers_the_update_buttons`）。
+        match usize::try_from(which) {
+            Ok(i) => QString::from(crate::settings_view::update_words(i).as_str()),
+            Err(_) => QString::default(),
+        }
+    }
+
+    pub fn update_ask(mut self: Pin<&mut Self>) -> QString {
+        let (_feed, _channel, answer) = ask_update_now();
+        // 句子与地址出自这一枚 `answer`，中间不第二次问档：第 4 步要显示的三样内容自此是
+        // **同一次**判决的三样。窗拿到的第一段就是要写进 `status` 的那句原话（`say` 已经写了）。
+        let sentence = answer.sentence();
+        let url = answer.download_url().unwrap_or_default().to_string();
+        self.as_mut().say(&sentence);
+        QString::from(&*format!("{sentence}{}{url}", crate::settings_view::RECORD))
+    }
+
+    pub fn update_open(mut self: Pin<&mut Self>) -> QString {
+        let (_feed, _channel, answer) = ask_update_now();
+        let said = match answer.download_url() {
+            Some(url) => open_web(url),
+            // 没有地址可开：让产品自己那句话去说为什么（`Available` 那一格写「清单没写入口」、
+            // `NoFeed` 写「还没配发布清单」）。窗不许在这里另想一句「现在不能下载」——那一句会
+            // 是第二份措辞，而它说的明明是同一件事。
+            None => answer.sentence(),
+        };
+        self.as_mut().say(&said)
+    }
+
     pub fn refresh_settings(mut self: Pin<&mut Self>) {
         self.as_mut()
             .set_settings_open(i32::from(crate::settings_view::window_wanted()));
+    }
+
+    // ── §5.3.5 那一扇对话框的桥。每一枚都只是**搬**：名单、句子、判据、算术在 [`crate::custom`]，
+    // 画在 `qml/CustomCaptureWindow.qml`，这一层把它们对上号。
+
+    pub fn custom_labels(&self) -> QString {
+        QString::from(crate::custom::labels().as_str())
+    }
+
+    pub fn custom_hints(&self) -> QString {
+        QString::from(crate::custom::hints().as_str())
+    }
+
+    pub fn custom_title(&self) -> QString {
+        QString::from(crate::custom::title().as_str())
+    }
+
+    pub fn custom_start_word(&self) -> QString {
+        QString::from(crate::custom::START_WORD)
+    }
+
+    pub fn custom_cell(&self, which: i32) -> QString {
+        QString::from(crate::custom::text(usize::try_from(which).unwrap_or(usize::MAX)).as_str())
+    }
+
+    pub fn custom_set(mut self: Pin<&mut Self>, which: i32, text: &QString) -> QString {
+        let said = crate::custom::set(
+            usize::try_from(which).unwrap_or(usize::MAX),
+            &text.to_string(),
+        );
+        self.as_mut().set_custom_note(QString::from(said.as_str()));
+        QString::from(said.as_str())
+    }
+
+    pub fn custom_start(mut self: Pin<&mut Self>) -> QString {
+        let said = crate::custom::start();
+        self.as_mut().set_custom_note(QString::from(said.as_str()));
+        self.as_mut().set_custom_left(crate::custom::left() as i32);
+        QString::from(said.as_str())
+    }
+
+    pub fn custom_tick(mut self: Pin<&mut Self>) -> QString {
+        let said = crate::custom::tick();
+        // 还在数的那一枚交回空串，而**那句「还剩几秒」不在这里说**：页上那一行绑的是
+        // `custom_left` 这枚值，每数一枚自会重新求值。这里若也写一次注脚，空串就会把按下那一刻
+        // 那句「延时 N 秒开始截图」擦掉，屏幕上倒计时那一行反倒成了唯一的读数。
+        if !said.is_empty() {
+            self.as_mut().set_custom_note(QString::from(said.as_str()));
+        }
+        self.as_mut().set_custom_left(crate::custom::left() as i32);
+        QString::from(said.as_str())
+    }
+
+    pub fn custom_nudge(mut self: Pin<&mut Self>, which: i32, delta: i32) -> QString {
+        let moved = crate::custom::nudge(usize::try_from(which).unwrap_or(usize::MAX), delta);
+        // 挪过的那一格仍走 `set`，所以那一格的形状注脚已经在 `nudge` 里改过一次；这里把它搬上
+        // qproperty，页上那一句读数自会跟上 —— 页不自己判「这一格对不对」。
+        self.as_mut()
+            .set_custom_note(QString::from(crate::custom::note().as_str()));
+        QString::from(moved.as_str())
+    }
+
+    pub fn custom_wait_line(&self) -> QString {
+        QString::from(crate::custom::wait_line().as_str())
+    }
+
+    pub fn custom_step_ms(&self) -> i32 {
+        crate::custom::step_ms() as i32
+    }
+
+    pub fn custom_gauge_plan(&self) -> QString {
+        QString::from(crate::custom::plan_line().as_str())
+    }
+
+    pub fn custom_gauge_report(&self, line: &QString) {
+        crate::custom::report(&line.to_string());
+    }
+
+    pub fn refresh_custom(mut self: Pin<&mut Self>) {
+        self.as_mut()
+            .set_custom_open(i32::from(crate::custom::window_wanted()));
+        self.as_mut().set_custom_left(crate::custom::left() as i32);
+        self.as_mut()
+            .set_custom_note(QString::from(crate::custom::note().as_str()));
+    }
+
+    /// 把「这一趟该不该有一扇历史记录管理窗」取进 [`Self::history_window_open`]。
+    /// 与 [`Self::refresh_custom`] 同一分工：只搬读数，造不造窗归 `main.qml`。
+    pub fn refresh_history_window(mut self: Pin<&mut Self>) {
+        self.as_mut()
+            .set_history_window_open(i32::from(crate::history_window::window_wanted()));
+    }
+
+    /// 把「这一趟该不该有一扇图片分组管理窗」取进 [`Self::group_window_open`]。同一分工：
+    /// 只搬读数，造不造窗归 `main.qml`。
+    pub fn refresh_group_window(mut self: Pin<&mut Self>) {
+        self.as_mut()
+            .set_group_window_open(i32::from(crate::group_window::window_wanted()));
+    }
+
+    // ── §5.6.1 文字提取。那三格读数只由下面这一条腿写：两只入口各起一次线程，结果投回
+    // GUI 线程落地。识别本体在 [`platform_windows::ocr`] —— 桥这一侧不判「认得出认不出」，
+    // 只搬像素和那一句话（#281）。
+
+    pub fn extract_mask_text(mut self: Pin<&mut Self>) {
+        let frame = mask::with(|m| m.delivered());
+        self.as_mut().run_ocr(frame, "选区");
+    }
+
+    pub fn extract_pin_text(mut self: Pin<&mut Self>, id: i64) {
+        let frame = state::with(|s| s.with_rendered(id as u64, |f| f.clone()));
+        self.as_mut().run_ocr(frame, "贴图");
+    }
+
+    /// 「复制全部」与「复制选中」那两只钮共用的那一只：那一串字由窗递进来，桥不判它是全部
+    /// 还是半截，也不去读 [`Self::ocr_text`]（读一遍就有一遍是过期的）。
+    pub fn copy_ocr_text(mut self: Pin<&mut Self>, text: &QString) -> QString {
+        let said = copy_words(&text.to_string());
+        self.as_mut().say(&said)
+    }
+
+    /// 两条入口共用的那一段：置忙，把这张 `Frame` 交给一条起了名的工作线程，结果投回 GUI
+    /// 线程写那三格。
+    ///
+    /// 为什么非要另起线程：`extract` 在系统线程池上要跑几百毫秒，而这一只手是从 QML 的一次
+    /// 点击里调进来的 —— 那就是 GUI 线程。在它上面等结果，僵住的是桌上**每一扇**窗（遮罩、
+    /// 贴图、气泡都泵在同一条线程上）。工作线程只碰它自己拥有的两样：那份像素（`Frame` 是
+    /// `Send`）与投回去的那一句。
+    fn run_ocr(
+        mut self: Pin<&mut Self>,
+        frame: Option<falcon_core::frame::Frame>,
+        label: &'static str,
+    ) {
+        let Some(frame) = frame else {
+            // 一张都没喂进去，这不许算「识别到零行」：空结果必须是引擎真跑过一遍交回的答案，
+            // 否则 §8.6 要的失败类型就被写成了一句成功的话。
+            self.as_mut().set_ocr_busy(false);
+            self.as_mut().set_ocr_text(QString::default());
+            self.as_mut().set_ocr_error(QString::from(
+                format!("{label}：此刻没有可识别的像素。").as_str(),
+            ));
+            return;
+        };
+        self.as_mut().set_ocr_busy(true);
+        self.as_mut().set_ocr_text(QString::default());
+        self.as_mut().set_ocr_error(QString::default());
+        let handle = self.qt_thread();
+        let spawned = std::thread::Builder::new()
+            .name("falconshot-ocr".to_string())
+            .spawn(move || {
+                let outcome = platform_windows::ocr::extract(&frame);
+                // `queue` 既不阻塞这条线程，也不在对象已毁时 panic —— 条件是读它的结果而不是
+                // unwrap（cxx-qt 自己的口径，`hotkey.rs` 那一路用的是同一枚写法）。
+                if let Err(e) = handle.queue(move |session| ocr_landed(outcome, session)) {
+                    eprintln!("falconshot: 识别结果投不回 GUI 线程（{e}）");
+                }
+            });
+        if let Err(e) = spawned {
+            // 线程起不动就当场把忙放下来：挂在 `true` 的那一格会让面板一直说「识别中…」而
+            // 什么都不等 —— 那一格的本份是「有活儿在跑」，没有活儿就得是假。
+            self.as_mut().set_ocr_busy(false);
+            self.as_mut().set_ocr_error(QString::from(
+                format!("{label}：起不动识别线程（{e}）。").as_str(),
+            ));
+        }
+    }
+
+    // ── §5.6.2 与 §5.6.3 读码。那一格表、那一格忙、那一格故障，加上 Rust 自己存着的那一份
+    // 权威内容，只由下面这一条腿写：两只入口各起一次线程，结果投回 GUI 线程落地。读的本体在
+    // [`falcon_core::barcode`] —— 桥这一侧不判「读得出读不出」，只搬像素和那一句话（#281）。
+
+    pub fn read_mask_codes(mut self: Pin<&mut Self>) {
+        let frame = mask::with(|m| m.delivered());
+        self.as_mut().run_codes(frame, "选区");
+    }
+
+    pub fn read_pin_codes(mut self: Pin<&mut Self>, id: i64) {
+        let frame = state::with(|s| s.with_rendered(id as u64, |f| f.clone()));
+        self.as_mut().run_codes(frame, "贴图");
+    }
+
+    /// 与 [`Self::run_ocr`] 同一形状、同一理由（另起一条起了名的线程、结果投回、起不动就当场
+    /// 把忙放下来），不同的只有落到哪三格。
+    ///
+    /// 为什么不复用 `run_ocr`：那一手落的是 `ocr_*` 三格，这一手落的是 `codes_*` 三格，而两趟
+    /// 各自跑得完 —— 并成一格就会有一趟的结果被另一趟踩掉（#281 那一族），省下的那段代码买不回
+    /// 那一格。
+    fn run_codes(
+        mut self: Pin<&mut Self>,
+        frame: Option<falcon_core::frame::Frame>,
+        label: &'static str,
+    ) {
+        let Some(frame) = frame else {
+            // 与 `run_ocr` 同一格理由：一张都没喂进去，不许算「读到零枚码」。零枚必须是引擎真跑
+            // 过一遍交回的答案（`BarcodeError::NotFound`），否则 §8.6 要的失败类型就被写成了
+            // 一句成功的话。
+            self.as_mut().set_codes_busy(false);
+            self.as_mut().set_codes_rows(QString::default());
+            self.as_mut().set_codes_error(QString::from(
+                format!("{label}：此刻没有可读的像素。").as_str(),
+            ));
+            return;
+        };
+        self.as_mut().set_codes_busy(true);
+        self.as_mut().set_codes_rows(QString::default());
+        self.as_mut().set_codes_error(QString::default());
+        let handle = self.qt_thread();
+        let spawned = std::thread::Builder::new()
+            .name("falconshot-codes".to_string())
+            .spawn(move || {
+                let outcome = falcon_core::barcode::read(&frame);
+                if let Err(e) = handle.queue(move |session| codes_landed(outcome, session)) {
+                    eprintln!("falconshot: 读码结果投不回 GUI 线程（{e}）");
+                }
+            });
+        if let Err(e) = spawned {
+            self.as_mut().set_codes_busy(false);
+            self.as_mut().set_codes_error(QString::from(
+                format!("{label}：起不动读码线程（{e}）。").as_str(),
+            ));
+        }
+    }
+
+    /// 表里第 `index` 行，取的是 [`SessionRust::codes`] 那一份权威向量而不是界面那一串显示字。
+    /// 序号是窗递进来的：它要是与这一趟不同步（表比向量旧、或用户在两趟之间按了一次），这一只手
+    /// 答的是「这一行不在了」，不猜它想指哪一行。
+    fn code_at(&self, index: i32) -> Option<&falcon_core::barcode::Code> {
+        usize::try_from(index)
+            .ok()
+            .and_then(|i| self.rust().codes.get(i))
+    }
+
+    /// 「复制这一枚」：交回剪贴板的是原样那一串，一个字符也不改。
+    pub fn copy_code_at(mut self: Pin<&mut Self>, index: i32) -> QString {
+        let said = match self.code_at(index) {
+            Some(code) => copy_words(&code.text),
+            None => "这一行不在了，没有可复制的内容。".to_string(),
+        };
+        self.as_mut().say(&said)
+    }
+
+    /// §5.6.2 步骤 5 与安全规则那一只手。域名那一格与这里算出来的是同一只手（
+    /// [`falcon_core::link`]），所以窗在用户点头之后按序号叫这一只，摆出去的与开掉的就是同一枚。
+    ///
+    /// 递不递得给浏览器那一判在 [`open_web`] 里，与 §5.21.1 那枚下载入口共用同一只手。
+    pub fn open_code_at(mut self: Pin<&mut Self>, index: i32) -> QString {
+        let Some(code) = self.code_at(index) else {
+            return self.as_mut().say("这一行不在了，没有可打开的内容。");
+        };
+        // 克隆出来再判：`open_web` 要把这一句交出去，而 `code` 借的是 `self`，下面 `say` 要写 `self`。
+        let text = code.text.clone();
+        let said = open_web(&text);
+        self.as_mut().say(&said)
+    }
+}
+
+/// 「这一串字递不递得给浏览器」那一道闸的**唯一**作者：条码那一行（
+/// `qobject::Session::open_code_at`）与 §5.21.1 第 4 步那枚下载入口
+/// （`qobject::Session::update_open`）问的都是它。
+///
+/// 收在一处不是因为两处像，是因为「这一枚开得了吗」只许有一个答案（#281）：清单上那串地址是
+/// 别人写的一份档里的字符串，与用户扫到的一枚码在闸面前是同一个东西 —— 先过
+/// [`falcon_core::link::classify`]，只有 `http`/`https` 且域名全 ASCII 才递
+/// [`platform_windows::open::browser`]。
+fn open_web(text: &str) -> String {
+    match falcon_core::link::classify(text) {
+        falcon_core::link::Target::Web(web) if web.openable() => {
+            match platform_windows::open::browser(&web.url) {
+                Ok(()) => format!("已在默认浏览器打开 {}。", web.display_host()),
+                Err(e) => format!("打开失败：{e}"),
+            }
+        }
+        // IDN 那一支：`browser` 自己也会拒（同一份判据），这里先答是为了那句里能带上域名 ——
+        // 用户有权知道是哪一枚没开。
+        falcon_core::link::Target::Web(web) => format!(
+            "{}：域名含非 ASCII 字符，本轮不代用户点头。",
+            web.display_host()
+        ),
+        falcon_core::link::Target::Other(scheme) => {
+            format!("这不是浏览器链接（scheme 是 {scheme}）。")
+        }
+        falcon_core::link::Target::NotALink => "这一枚码的内容不是链接。".to_string(),
+    }
+}
+
+/// §5.21.1 第 3 步那一次「获取」在本 build 唯一的起手形状：**现问**档上那两枚 `[about]` 键，
+/// 递给 core 那一层唯一的判决函数 [`falcon_core::update::check`]。托盘那一臂（
+/// `crate::hotkey` 的 `Work::Update`）与「关于与更新」页上那两枚钮走的都是这一枚（#281）——
+/// 「同名的两只手读到两份不同的清单」这一种坏因此没有立足处。
+///
+/// 一次也不写档、一次也不联网（[`falcon_core::update`] 头顶记的就是这一条边界）。交回三元组是
+/// 为了让托盘那一臂那句 `note` 的原文一个字不变地继续印它自己的读数：窗这一侧只取第 3 段。
+pub(crate) fn ask_update_now() -> (String, String, falcon_core::update::Answer) {
+    let (feed, channel) = crate::settings::with(|s| {
+        (
+            s.config.about.release_feed.clone(),
+            s.config.about.channel.clone(),
+        )
+    });
+    let answer = falcon_core::update::check(&feed, &channel, env!("CARGO_PKG_VERSION"));
+    (feed, channel, answer)
+}
+
+/// 工作线程投回来的那一步：三格一次写定、忙放下来。与 `hotkey::run` 同一族 —— 那一头的结果
+/// 也是从别的线程排队进来的，写的也是 GUI 线程上的格子。
+fn ocr_landed(
+    outcome: Result<String, platform_windows::ocr::OcrError>,
+    mut session: Pin<&mut qobject::Session>,
+) {
+    let (text, error) = match outcome {
+        Ok(text) => (text, String::new()),
+        Err(err) => (String::new(), err.to_string()),
+    };
+    session.as_mut().set_ocr_text(QString::from(text.as_str()));
+    session
+        .as_mut()
+        .set_ocr_error(QString::from(error.as_str()));
+    session.as_mut().set_ocr_busy(false);
+}
+
+/// 工作线程投回来的那一步：表、权威向量、故障三样一次写定、忙放下来。与 [`ocr_landed`] 同一族。
+///
+/// 为什么 `codes` 与 `codes_rows` 必须在**同一个**回调里写：那两只按序号的手读的是向量，界面上
+/// 摆的是表 —— 分开写就会有一刻表是这一趟的、向量是上一趟的，用户按第 0 行复制到的却是上一枚码
+/// 的内容。这一枚回调跑在 GUI 线程上，两次 `set` 之间进不来点击，所以「一次写定」在这一层是真的
+/// 一次，不是一句希望。
+fn codes_landed(
+    outcome: Result<Vec<falcon_core::barcode::Code>, falcon_core::barcode::BarcodeError>,
+    mut session: Pin<&mut qobject::Session>,
+) {
+    let (codes, error) = match outcome {
+        Ok(codes) => (codes, String::new()),
+        Err(err) => (Vec::new(), err.to_string()),
+    };
+    let rows = codes_encode(&codes);
+    session.as_mut().rust_mut().codes.clone_from_slice(&codes);
+    session
+        .as_mut()
+        .set_codes_rows(QString::from(rows.as_str()));
+    session
+        .as_mut()
+        .set_codes_error(QString::from(error.as_str()));
+    session.as_mut().set_codes_busy(false);
+}
+
+/// §5.6.2 步骤 4 / §5.6.3 步骤 3 那张表的编码：字段之间 `\u{1c}`（文件分隔）、行之间 `\u{1d}`
+/// （组分隔），与 [`group_encode`] 同一族机器串，给 QML 的 `Repeater` 读，不是给人读的一句话。
+///
+/// 每行的形状：`序号\u{1c}类型\u{1c}内容\u{1c}域名\u{1c}能不能开(1/0)\u{1c}为什么不能开`。
+///
+/// [`group_encode`] 同一族机器串。这里的 `内容` 是**外来数据** —— 一枚二维码里带 0x1C 是完全
+/// 可能的，分隔符一旦被内容顶开，界面读出的每一格都错位。所以那一格在**显示形**里把 `\u{1c}`
+/// `\u{1d}` 与 NUL 换成 U+FFFD；复制与打开不经这一串（`copyCodeAt` / `openCodeAt` 那两只手读的
+/// 是 `SessionRust::codes` 里那一份原样的），所以被换掉的那几个字符永远进不了剪贴板，也永远
+/// 进不了浏览器。
+fn codes_encode(codes: &[falcon_core::barcode::Code]) -> String {
+    codes
+        .iter()
+        .enumerate()
+        .map(|(index, code)| {
+            let (host, openable, why) = match falcon_core::link::classify(&code.text) {
+                falcon_core::link::Target::Web(web) => (
+                    web.display_host(),
+                    web.openable(),
+                    if web.openable() {
+                        String::new()
+                    } else {
+                        "域名含非 ASCII 字符，本轮不打开".to_string()
+                    },
+                ),
+                falcon_core::link::Target::Other(scheme) => (
+                    String::new(),
+                    false,
+                    format!("scheme 是 {scheme}，不是浏览器那一类"),
+                ),
+                falcon_core::link::Target::NotALink => (String::new(), false, String::new()),
+            };
+            format!(
+                "{index}\u{1c}{}\u{1c}{}\u{1c}{host}\u{1c}{}\u{1c}{why}",
+                code.format,
+                sanitize(&code.text),
+                i32::from(openable)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\u{1d}")
+}
+
+/// 把会顶开分隔符的那三个字符换成 U+FFFD。**只**用于显示形，见 [`codes_encode`] 那一封信。
+fn sanitize(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '\u{1c}' | '\u{1d}' | '\0' => '\u{fffd}',
+            other => other,
+        })
+        .collect()
+}
+
+/// 「把一串字放上剪贴板，并说出结果」那一只手的身子。§5.6.1 那两只钮与 §5.6.2 那一行「复制」
+/// 用的是同一句话：同一件事在两个入口各写一遍，就会有两套「复制成功」的说法（#281）。
+fn copy_words(words: &str) -> String {
+    if words.is_empty() {
+        "没有可复制的字。".to_string()
+    } else {
+        match platform_windows::clip::write_text(words) {
+            Ok(()) => format!("已复制 {} 字。", words.chars().count()),
+            Err(e) => format!("复制失败：{e}"),
+        }
     }
 }
 
@@ -1821,6 +2953,15 @@ pub mod shim {
         qobject::pin_top_levels().to_string()
     }
 
+    /// Give the GUI thread up to `ms` of turns. A row of [`crate::hotkey::report`] that waits
+    /// for something QML does has to call this: the report runs after `app.exec()` returned,
+    /// so a bare sleep holds the thread the Timer would have run on. Qt 6 hands back no count,
+    /// so the answer to "did the loop turn" is what QML pushed for itself, not a number here.
+    /// GUI thread only.
+    pub fn pump_events(ms: u64) {
+        qobject::pin_pump_events(ms.clamp(0, i32::MAX as u64) as i32);
+    }
+
     /// Press the default button of a native `#32770` dialog *this process* is showing,
     /// and report what was pressed. `top_levels` cannot serve this because it walks
     /// Qt's own `topLevelWindows()`, and a native file dialog is not one of them.
@@ -1882,7 +3023,10 @@ pub mod shim {
 
 #[cfg(test)]
 mod tests {
+    use super::codes_encode;
     use super::group_encode;
+    use super::sanitize;
+    use falcon_core::barcode::Code;
 
     /// §5.12 那一串字的编码，两枚控制字符的分隔不会撞进用户打的分组名里：名字里带 `|`、带 `,`、
     /// 甚至带空格都要能原样解回来 —— 这正是选控制字符而不是可见分隔符的理由。这一格是 §9.1
@@ -1908,5 +3052,133 @@ mod tests {
     #[test]
     fn an_empty_group_table_encodes_to_nothing() {
         assert_eq!(group_encode(&[]), "");
+    }
+
+    /// §5.6.2 步骤 4 与 §5.6.3 步骤 3 那一张表的形状：一枚码一行、六格，且**类型**与**域名**
+    /// 各占自己那一格 —— 界面拼不出一句「类型是 https、域名是 QR_CODE」那种话。
+    #[test]
+    fn a_code_row_carries_its_type_its_content_and_its_host() {
+        let line = codes_encode(&[Code {
+            text: "https://paypal.com@evil.com/x".to_string(),
+            format: "QR_CODE".to_string(),
+        }]);
+        let fields: Vec<&str> = line.split('\u{1c}').collect();
+        assert_eq!(
+            fields,
+            [
+                "0",
+                "QR_CODE",
+                "https://paypal.com@evil.com/x",
+                // 显示的那一枚域名就是浏览器要去的那一枚：userinfo 顶不掉它。
+                "evil.com",
+                "1",
+                "",
+            ],
+            "{line}"
+        );
+    }
+
+    /// 一维码不是链接：第五格假、第四与第六格空，界面于是摆得出「复制」而不摆「打开」。
+    /// 而 IDN 那一支**是**链接、有域名，只是不开 —— 第六格说得出为什么。两格分得开是这一枚
+    /// 单测的存在理由（#281：把「不是链接」和「是链接但不开」并成一格，界面就只能说一句话）。
+    #[test]
+    fn a_bar_code_and_an_idn_link_are_two_different_rows() {
+        let line = codes_encode(&[
+            Code {
+                text: "12345678".to_string(),
+                format: "CODE_128".to_string(),
+            },
+            Code {
+                text: "https://exämple.com/".to_string(),
+                format: "QR_CODE".to_string(),
+            },
+        ]);
+        let rows: Vec<Vec<&str>> = line
+            .split('\u{1d}')
+            .map(|row| row.split('\u{1c}').collect())
+            .collect();
+        assert_eq!(rows.len(), 2, "{line}");
+        assert_eq!(
+            &rows[0][1..],
+            ["CODE_128", "12345678", "", "0", ""],
+            "{line}"
+        );
+        assert_eq!(rows[1][0], "1", "序号跟着行走，不跟着重数");
+        assert_eq!(rows[1][3], "exämple.com", "{line}");
+        assert_eq!(rows[1][4], "0", "IDN 不开");
+        assert!(rows[1][5].contains("非 ASCII"), "{line}");
+    }
+
+    /// 外来数据顶分隔符：一枚内容里带 0x1C 的码，**显示形**必须还是两行六格。这一枚钉的是编码
+    /// 不会因用户扫到的东西而错位；它同时钉住「被换掉的只有显示形」——`sanitize` 改那三个字符，
+    /// 别的字符一个不碰。
+    #[test]
+    fn content_cannot_push_a_separator_around() {
+        let line = codes_encode(&[
+            Code {
+                text: "a\u{1c}b\u{1d}c\0d".to_string(),
+                format: "QR_CODE".to_string(),
+            },
+            Code {
+                text: "second".to_string(),
+                format: "QR_CODE".to_string(),
+            },
+        ]);
+        let rows: Vec<Vec<&str>> = line
+            .split('\u{1d}')
+            .map(|row| row.split('\u{1c}').collect())
+            .collect();
+        assert_eq!(rows.len(), 2, "两枚码还是两行：{line}");
+        assert_eq!(rows[0][2], "a\u{fffd}b\u{fffd}c\u{fffd}d", "{line}");
+        assert_eq!(rows[1][0], "1", "{line}");
+        assert_eq!(
+            sanitize("保留：中文 \n\t 与 emoji 🎯"),
+            "保留：中文 \n\t 与 emoji 🎯"
+        );
+    }
+
+    /// 空表编成空串，与 `codes_error` 那一格分得开：「一枚也没有」是引擎答的话（它答的是
+    /// `NotFound`，落进故障那一格），不是界面自己数出来的一张空表。
+    #[test]
+    fn no_codes_encodes_to_nothing() {
+        assert_eq!(codes_encode(&[]), "");
+    }
+
+    /// 面板上那颗「复制」与那颗「打开」递回桥的只有**序号**，而桥拿它去 `codes.get(i)` 取原样字节。
+    /// 所以这一格钉的是两只手共用的那一件地址：`codes_encode` 写进第一格的那个数字，必须正好是同一枚
+    /// `Code` 在表里的下标 —— 差一格，用户按第一行复制到的就是第二枚码，而界面上一切看起来都对
+    /// （#433 那一族：形状对不等于读的是同一枚）。域名与「能不能开」也跟着同一格走，否则「确认打开」
+    /// 显示的域名就不是真被打开的那一枚。
+    #[test]
+    fn the_row_number_a_chip_hands_back_addresses_the_same_code() {
+        let rows = vec![
+            Code {
+                text: "https://example.com/a".to_string(),
+                format: "QRCode".to_string(),
+            },
+            Code {
+                text: "CODE128 payload".to_string(),
+                format: "Code128".to_string(),
+            },
+            Code {
+                text: "第三枚：不是链接".to_string(),
+                format: "EAN13".to_string(),
+            },
+        ];
+        let line = codes_encode(&rows);
+        let got: Vec<Vec<&str>> = line
+            .split('\u{1d}')
+            .map(|r| r.split('\u{1c}').collect())
+            .collect();
+        assert_eq!(got.len(), rows.len(), "{line}");
+        for (i, f) in got.iter().enumerate() {
+            assert_eq!(f[0].parse::<usize>().unwrap(), i, "{line}");
+            assert_eq!(f[1], rows[i].format, "{line}");
+            assert_eq!(f[2], rows[i].text, "{line}");
+        }
+        assert_eq!(got[0][3], "example.com", "{line}");
+        assert_eq!(got[0][4], "1", "{line}");
+        assert_eq!(got[1][3], "", "{line}");
+        assert_eq!(got[2][4], "0", "{line}");
     }
 }

@@ -14,6 +14,11 @@ path = "src/lib.rs"
 # rooted at `::windows_core`, which the `windows` crate's re-export cannot satisfy.
 # It is the version `windows` already depends on, so nothing new enters the build.
 windows-core = "0.62.2"
+# `windows-future` for the same reason: `RecognizeAsync` and `StoreAsync` hand back a
+# `windows_future::IAsyncOperation`, and neither that type nor `AsyncStatus` is
+# reachable through the `windows` crate's own re-exports. Again the version `windows`
+# already depends on, so nothing new enters the build.
+windows-future = "0.3.2"
 windows = { version = "0.62.2", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
@@ -32,6 +37,7 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_StationsAndDesktops",
+    "Win32_System_WinRT",
     "Win32_Storage_FileSystem",
     "Win32_Storage_Xps",
     "Win32_Security",
@@ -42,6 +48,7 @@ windows = { version = "0.62.2", features = [
     "Media_Ocr",
     "Storage",
     "Storage_Streams",
+    "Security_Cryptography",
     "Win32_System_Registry",
     "Win32_Globalization",
     "Devices_Enumeration",

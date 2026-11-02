@@ -70,7 +70,12 @@ pub struct Countdown {
 }
 
 impl Countdown {
-    fn new(ticks: Vec<u32>, step_ms: u64, armed_ms: u64) -> Self {
+    /// P166 起这一枚构造是 `pub(crate)`：「自定义截图」对话框（PRD 第 301 行「可选输入延时时间」）
+    /// 要的是**同一副倒计时算术**、但另起一场 —— 全局那一枚 `RUNNING` 槽数完开的是遮罩
+    /// （[`arm_from_config`] 的第一位读者 [`crate::hotkey::Work::Capture`]），对话框那一场数完截的是
+    /// 填好的那一块区域。两场均摊同一枚 `STEP_MS` 与同一套 `held/planned`，而它们不能共用一个槽，
+    /// 否则对话框按下的那一场会把遮罩叫出来。
+    pub(crate) fn new(ticks: Vec<u32>, step_ms: u64, armed_ms: u64) -> Self {
         Countdown {
             ticks,
             step_ms,

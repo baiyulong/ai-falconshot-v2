@@ -27,6 +27,7 @@ use falcon_core::naming;
 use falcon_core::pin::{
     clamp_zoom, Desktop, GroupFate, GroupId, Monitor, PinId, PinItem, PinSet, PinSlot,
 };
+use falcon_core::refresh::Refresh;
 
 use crate::capture;
 use crate::session::shim;
@@ -89,6 +90,26 @@ pub struct PinViewData {
     /// §5.11 规则②「恢复原状态而不是无条件显示全部」也只有分开才量得出来。
     /// 读的是 core 那一枚字段本体，不在这里重新判断（#281）。
     pub solo_hidden: bool,
+    /// §5.9.5–§5.9.8 的「系统更新显示状态」落到窗上的四枚布尔与一枚角度。§5.9.6 规则说的
+    /// 是**更新显示状态**，而在这之前显示状态得先读得到：菜单那六行点的是 invokable，
+    /// 按完之后窗上没有任何一格能回答「现在是不是灰的」，量规也就无从判「再按一次恢复」
+    /// 与「按了两次等于没按」是同一件事还是两件事。
+    ///
+    /// 五枚都是**读** core 那一枚字段本体（[`falcon_core::pin::PinItem::grayscale`] 那一族），
+    /// 桥侧不长第二份判断（#281）。`rotation` 是 0/90/180/270 而不是「转了几次」：§5.9.5
+    /// 那一格要的判据是「以 90 度为基本单位」与「转满四圈回到同一状态」，两者都从角度读得出，
+    /// 而次数读不出后者（四圈与零圈在次数上是两枚数、在显示上是同一张图）。
+    pub rotation: i32,
+    pub flip_h: bool,
+    pub flip_v: bool,
+    pub grayscale: bool,
+    pub inverted: bool,
+    /// §5.5.8：这一枚贴图现在配不配被「刷新」。菜单那两行的 `visible` 与
+    /// [`PinState::refresh`] 的第一只拒绝臂读的是同一格（判断本体只有
+    /// [`PinState::refreshable`] 那一处），所以窗上不会多出一行按下之后只会说「不能刷」的入口
+    /// —— 形状同 §5.9.15 的那枚 `has_transparent_pixels`：一枚「这一手有点得动的东西」的格子，
+    /// 而不是一行点了没反应的装饰（#494 / #433 那一族）。
+    pub refreshable: bool,
 }
 
 /// What one §8.5 screen change did to the pins, as three counts and no prose:
@@ -234,14 +255,112 @@ impl PinState {
     /// A picture becomes a pin at `at`. The id comes from the set, so `next_id`
     /// and a restored session can never collide.
     pub fn add(&mut self, frame: Frame, at: PhysPoint) -> Result<PinId, String> {
+        self.place(frame, at, false)
+    }
+
+    /// §5.5.8: [`Self::add`] for the one kind of picture a 刷新 can do anything with —
+    /// pixels a `capture` leg has just read off the desktop **at `at`**, this bitmap being
+    /// exactly that rectangle's contents.
+    ///
+    /// A leg that puts a picture somewhere other than where it read it keeps calling
+    /// [`Self::add`]: recording a rectangle these pixels did not come from would paint the
+    /// pin with a picture of something else the next time the user asks it to refresh, and
+    /// the claim is the whole reason the field exists (see
+    /// [`falcon_core::pin::PinItem::captured_at`]). The four presenters in
+    /// [`crate::capture`] are the product's only callers, which is what lets this be the
+    /// field's only writer.
+    pub fn add_captured(&mut self, frame: Frame, at: PhysPoint) -> Result<PinId, String> {
+        self.place(frame, at, true)
+    }
+
+    fn place(&mut self, frame: Frame, at: PhysPoint, captured: bool) -> Result<PinId, String> {
         let size = PhysSize::new(frame.width, frame.height);
         let id = self
             .set
             .spawn(falcon_core::pin::ImageRef::Volatile, size, at, &self.cfg)
             .map_err(|e| e.to_string())?;
+        if captured {
+            match self.set.get_mut(id) {
+                Some(p) => p.captured_at = Some(at),
+                // `spawn` handed this id out one line ago, so this arm is the set
+                // disagreeing with itself. It is recorded rather than trusted: a pin that
+                // quietly lost its provenance reads back as「不是从屏幕上截下来的」from then
+                // on, and a run that said nothing about how it got that way would be
+                // grading itself on a sentence it had already broken.
+                None => self.note(format!(
+                    "pin {id}: 刚开出来的贴图不在集合里，原截图坐标没记上"
+                )),
+            }
+        }
         self.frames.insert(id, frame);
         self.sync(id);
         Ok(id)
+    }
+
+    /// §5.5.8 的那一问，菜单那两行和 [`Self::refresh`] 共读一枚答案：这一枚贴图现在配不配
+    /// 被刷新。
+    ///
+    /// 条件只有「它记不记得自己来自屏幕上哪一块」这一格，与 core 那只拒绝臂是同一格
+    /// （[`falcon_core::refresh::plan`] 的第一臂），所以「菜单上有一行、按下来说不能刷」和
+    /// 「能刷却没有那一行」都不必留一扇窗来发现。
+    ///
+    /// GIF 不占一格判断：会动的贴图只从文件里来（[`Self::clips`] 的唯一写入者是
+    /// [`Self::attach_clip`]，而它只接在 `add` 之后、从不接在 [`Self::add_captured`] 之后），
+    /// 那一路从来不带原截图坐标 —— 两件事不会同时成立，为它写一臂拒绝就是
+    /// 一行走不到的分支。
+    fn refreshable(&self, p: &PinItem) -> bool {
+        p.captured_rect().is_some()
+    }
+
+    /// §5.5.8 步骤 2–4 for one pin: 执行「刷新截图」, 按原截图坐标重新读取屏幕内容, and the
+    /// two destinations 步骤 4 offers. `overwrite` is 规则 1's choice, taken from the
+    /// gesture rather than from a setting — the reason is written on
+    /// [`falcon_core::refresh::plan`], and it is not `[output] reuse_last_file`, which is
+    /// §5.5.8's *file* half and already has one reader.
+    ///
+    /// The answer is the sentence the user reads: `Ok` when new pixels went out, `Err` when
+    /// nothing moved and 规则 2「区域失效时应提示重新选择」is the whole of what happened. Both
+    /// arms reach `Session::status`, which is the slot `HintWindow.qml` reads a pin's
+    /// sentences from.
+    ///
+    /// Deliberately absent: [`capture::remember`]. §5.2.5's 重复上次截图 keeps whatever the
+    /// last *capture* asked for, and re-legging that one slot from inside one pin's refresh
+    /// would make the next 重复 read this pin's corner instead of the region the user
+    /// dragged out — a second requirement answered by a gesture that never mentioned it.
+    pub fn refresh(&mut self, id: PinId, overwrite: bool) -> Result<String, String> {
+        let want = match self.set.get(id) {
+            Some(p) => falcon_core::refresh::plan(p, &self.desk.bounds, overwrite),
+            None => {
+                return Err(format!(
+                    "贴图 {id} 已经不在桌上了：这一手没有落点，屏幕也没有被重读。"
+                ))
+            }
+        };
+        match want {
+            Refresh::Refused(said) => Err(said),
+            Refresh::Overwrite(rect) => {
+                let (frame, _, said) = capture::re_read(&rect, &format!("刷新贴图 {id}"))?;
+                self.frames.insert(id, frame);
+                // The content key cannot see this: same crop, same rotation, same size, so
+                // `sync` would answer "nothing moved" and hand Qt nothing while the fresh
+                // screen read sat in `frames`. Dropping the cache is what makes the promise
+                // 「用新内容更新结果」true rather than a repaint that never arrives.
+                self.pushed.remove(&id);
+                if !self.sync(id) {
+                    return Err(format!(
+                        "{said} —— 新内容读到了，但这一张没能送上线：屏幕上还是上一张，复制与保存也还是上一张的内容。"
+                    ));
+                }
+                Ok(said)
+            }
+            Refresh::NewCopy(rect) => {
+                let (frame, read, said) =
+                    capture::re_read(&rect, &format!("按贴图 {id} 的原坐标新截"))?;
+                let at = PhysPoint::new(read.x, read.y);
+                let new = self.add_captured(frame, at)?;
+                Ok(format!("{said}，钉成贴图 {new}；贴图 {id} 自己没动。"))
+            }
+        }
     }
 
     /// The fields that decide the pixels. Position, zoom and opacity are absent
@@ -453,6 +572,12 @@ impl PinState {
             // 所以这里不查副本、直接问名单本体（`pin_check.rs` 里那枚 `drawn()` 判的就是它）。
             selected: self.set.is_selected(id),
             solo_hidden: p.solo_excluded,
+            rotation: p.rotation,
+            flip_h: p.flip_h,
+            flip_v: p.flip_v,
+            grayscale: p.grayscale,
+            inverted: p.inverted,
+            refreshable: self.refreshable(p),
         }
     }
 
@@ -890,6 +1015,18 @@ impl PinState {
             .map_err(|e| group_say("", &e))
     }
 
+    /// §5.12.2 的那一只手**点名**版本：同一枚 core `assign_group`，只是名单由调用方递进来而不是
+    /// 从「此刻选中的那些枚」读。窗上那一只手要的从来是后者（真人用勾选挑枚），而**量具**要的是
+    /// 前者 —— 一条腿要在没有任何一扇窗被点过的情况下把三枚贴图分好家，读选中名单就只能先制造
+    /// 一次点击，那是拿量具的输入冒充用户的一次操作。
+    ///
+    /// 与 [`Self::assign_selection_to_group`] 同样不动像素 ⇒ 不 `sync`，变的只是分组快照。
+    pub fn assign_group(&mut self, ids: &[PinId], group: Option<GroupId>) -> Result<usize, String> {
+        self.set
+            .assign_group(ids, group)
+            .map_err(|e| group_say("", &e))
+    }
+
     /// §5.12.3「拖动排序」：`delta` 是 ±1（上移/下移），core 自己饱和夹边。同样不动像素，
     /// 只动那一串字的**顺序** ⇒ 不 `sync`。
     pub fn move_group(&mut self, id: GroupId, delta: i32) -> Result<(), String> {
@@ -1129,6 +1266,14 @@ impl PinState {
     /// *handed*, and there is no other way to ask without copying megabytes into the row.
     pub(crate) fn with_rendered<R>(&self, id: PinId, f: impl FnOnce(&Frame) -> R) -> Option<R> {
         self.rendered.get(&id).map(f)
+    }
+
+    /// §5.5.8 的门要说「按**原截图坐标**重读」有没有真按在那一块上，而那一块除了贴图自己
+    /// 没有别人知道：`captured_at` 是 core 那一格的字段，桥不另存一份（#281）。所以门问的
+    /// 是这一枚访问器，而不是自己重算一遍矩形。与 [`Self::with_rendered`] 同一形状：读的是
+    /// 产品自己那一格，一个像素也不复制。
+    pub(crate) fn captured_of(&self, id: PinId) -> Option<PhysRect> {
+        self.set.get(id).and_then(|p| p.captured_rect())
     }
 
     /// §5.9.16 - the pin's own pixels onto the clipboard.
@@ -2167,7 +2312,7 @@ pub fn selftest() -> (bool, String) {
 
         // §5.20.1 与 §5.20.2 的那一格，紧挨上面那一格放：两行问的是同一件事的两头——上面那行问
         // 「门把打进去的值改成了什么」，这一行问「哪些值有资格被改、哪些值改了要重启」。四格全是
-        // 纯读数（出厂默认那份 config 的键清单、十一类的归属、需重启标记与那份名单的逐字比对、
+        // 纯读数（出厂默认那份 config 的键清单、名单上的归属、需重启标记与那份名单的逐字比对、
         // 语法闸的三臂），一件物事也不写盘、也不看屏幕，所以它长在**每一趟** `--selftest` 都走得到
         // 的地方，而不是长在下面那条要真桌子的梯子里：一句不必靠屏幕的判据如果被屏幕挡住，
         // 那一趟就谁也没问过它（这一格的位置是 P141 自己搬的：它先被写在梯尾，而 `--selftest`
@@ -2804,6 +2949,88 @@ pub fn selftest() -> (bool, String) {
             ),
         );
 
+        // §5.12.2 的**点名**版本与「贴图如何处理」那两臂的**分界**：上面那一格证的是「名单里那几枚
+        // 跟着走」，这一格证的是两件它证不了的事 ——
+        // ① [`PinState::assign_group`] 收的是**递进来的那张名单**而不是此刻的选中名单：这里特意把
+        //    两枚都选上、只点名一枚，那一枚进组而另一枚**照旧不在组里**。若这一只手只是
+        //    `assign_selection_to_group` 的第二份写法，这一位断言当场翻。
+        // ② 销毁与退回在界面上唯一的分界是**那一枚还在不在集里**（`--group-window` 门里 ⑨⑩ 两格
+        //    读的就是这一格）：随组销毁的那枚不在、留在场上的那枚在。这里销毁的是自己新种的那一枚
+        //    贴图，`id`／`board` 后面每一格还要用。
+        let g_named = with(|s| s.create_group("点名对面组").ok().unwrap_or(0));
+        let g_back = with(|s| s.create_group("退回对面组").ok().unwrap_or(0));
+        let extra = with(|s| {
+            s.add(demo_frame(48, 36), PhysPoint::new(120, 460))
+                .ok()
+                .unwrap_or(0)
+        });
+        let (named_take, named_only, named_kept) = with(|s| {
+            let _ = s.select_pin(id, false);
+            let _ = s.select_pin(board, true); // 名单里两枚，点名的只有一枚
+            let n = s.assign_group(&[extra], Some(g_named)).ok().unwrap_or(0) as i64;
+            let in_group = s.set.pins_in_group(g_named);
+            (
+                n,
+                in_group.len() as i64,
+                s.set.pins_in_group(g_named).contains(&board) as u32,
+            )
+        });
+        let (back_take, back_rows) = with(|s| {
+            let n = s.assign_group(&[id, board], Some(g_back)).ok().unwrap_or(0) as i64;
+            let rows = s
+                .group_rows()
+                .into_iter()
+                .find(|r| r.0 == g_back)
+                .map(|r| r.3 as i64)
+                .unwrap_or(-1);
+            (n, rows)
+        });
+        let (ung_back, kept_id, kept_board) = with(|s| {
+            let n = s.delete_group(g_back, false).ok().unwrap_or(0) as i64;
+            (
+                n,
+                s.set.get(id).is_some() as u32,
+                s.set.get(board).is_some() as u32,
+            )
+        });
+        let (destroyed_cnt, gone_extra, still_id) = with(|s| {
+            let n = s.delete_group(g_named, true).ok().unwrap_or(0) as i64;
+            (
+                n,
+                s.set.get(extra).is_some() as u32,
+                s.set.get(id).is_some() as u32,
+            )
+        });
+        // 产品那一手（组销毁走 core `PinSet::destroy`）本来就不动桥侧那本 `frames` 账 —— 它收的是
+        // 集里那一枚，纹理归 `sync`/`retire` 那一族管。这一格是自己种的那枚贴图，账留在这里会让后面
+        // 每一格数到一枚已经不存在的位图，所以**仪器自己扫自己留下的尾**，不改产品的那只手。
+        with(|s| {
+            s.frames.remove(&extra);
+            s.retire(extra);
+        });
+        check(
+            "the named list moves and the two fates split",
+            g_named > 0
+                && g_back > 0
+                && extra > 0
+                && named_take == 1
+                && named_only == 1
+                && named_kept == 0
+                && back_take == 2
+                && back_rows == 2
+                && ung_back == 2
+                && kept_id == 1
+                && kept_board == 1
+                && destroyed_cnt == 1
+                && gone_extra == 0
+                && still_id == 1,
+            format!(
+                "点名交回={named_take}（应当 1）组内={named_only} 组里含未点名的板={named_kept}（应当 0）\
+                 点名两枚交回={back_take} 组快照人数={back_rows} 退回交回={ung_back} 退回后在集里=({kept_id},{kept_board})\
+                 销毁交回={destroyed_cnt} 销毁后在集里={gone_extra}（应当 0）同伴仍在={still_id}"
+            ),
+        );
+
         // §5.15「隐藏 / 显示 / 切换全部贴图」：这一格是 `toggle_pins` 那一路由的第一位真机证人，
         // 判的正是它必须独立成立的那件事 —— hide_all 让每扇窗都不 `live`、show_all 把它们放回来，
         // 而 show_all **不会**替**另一桩事**（这里用整组隐藏当对面）放开它单独藏起来的那枚。若两桩
@@ -2891,6 +3118,525 @@ pub fn selftest() -> (bool, String) {
             "closing drops the pixels",
             closed == 2 && shim::self_check(id).contains("null=1"),
             format!("closed={closed} {}", shim::self_check(id)),
+        );
+
+        // §5.21.3 的桥侧第一处读者：诊断那一半从活的 about 横幅与活的主目录里现读，令牌只
+        // 夹在一枚 fixture 行里。三臂各答一个问题 —— 没点下头的臂（配置开关不论怎么摆都得
+        // 省略）、开关跟着配置走的臂、两把闸都开的臂。敏感值在最后一臂里也不许活着出来。
+        use falcon_core::feedback::{self, Draft, Payload};
+        let about = crate::settings::about_cfg();
+        let profile = std::env::var("USERPROFILE").unwrap_or_default();
+        let account = profile.rsplit(['\\', '/']).next().unwrap_or("").to_string();
+        let draft = Draft {
+            description: "selftest 反馈包".to_string(),
+            diagnostics: vec![
+                crate::settings::startup_about_banner(),
+                format!("profile={profile}"),
+                "upstream Authorization: Bearer eyJhbGciOiJIUz12".to_string(),
+            ],
+            logs: vec!["retry token=fixturevalue".to_string()],
+        };
+        let version = env!("CARGO_PKG_VERSION");
+        let unasked = feedback::payload(&draft, about.send_diagnostics, false, version, "windows");
+        let gated = feedback::payload(&draft, about.send_diagnostics, true, version, "windows");
+        let open = feedback::payload(&draft, true, true, version, "windows");
+        let leaks = |p: &Payload| {
+            let j = p.lines.join(" ");
+            let mut v = Vec::new();
+            if j.contains("eyJhbGciOiJIUz12") {
+                v.push("bearer");
+            }
+            if j.contains("fixturevalue") {
+                v.push("token");
+            }
+            if !account.is_empty() && j.contains(account.as_str()) {
+                v.push("account");
+            }
+            v
+        };
+        let (l_no, l_g, l_open) = (leaks(&unasked), leaks(&gated), leaks(&open));
+        check(
+            "feedback bundle scrubs secrets",
+            !unasked.attached
+                && unasked.lines.len() == 3
+                && unasked.lines[2].starts_with("machine=omitted")
+                && gated.attached == about.send_diagnostics
+                && open.attached
+                && open.lines.len() == 2 + draft.diagnostics.len() + draft.logs.len()
+                && open.lines[1] == "desc=selftest 反馈包"
+                && open.lines.iter().any(|l| l.contains(feedback::MARK))
+                && open.redactions >= 2
+                && l_no.is_empty()
+                && l_g.is_empty()
+                && l_open.is_empty(),
+            format!(
+                "未确认臂={}行 省略={} 泄漏={:?} | 开关臂 attached={}==cfg={} 泄漏={:?} | \
+                 双开臂={}行 藏={}枚 泄漏={:?} 主目录名={} | 主目录那一行现读={}",
+                unasked.lines.len(),
+                unasked.lines[2].starts_with("machine=omitted"),
+                l_no,
+                gated.attached,
+                about.send_diagnostics,
+                l_g,
+                open.lines.len(),
+                open.redactions,
+                l_open,
+                if account.is_empty() {
+                    "(现读无主目录)"
+                } else {
+                    account.as_str()
+                },
+                open.lines
+                    .iter()
+                    .find(|l| l.contains("profile="))
+                    .map(String::as_str)
+                    .unwrap_or("(双开臂里没有 profile= 行)"),
+            ),
+        );
+
+        // §5.21.2 第一枚「工具栏按钮应提供提示文本」在这一档里的读者：交出去的那一排句子
+        // ——就是 QML 拿去按 index 分给每一枚钮的那一枚串——此刻在这只跑着的进程里现读。
+        // 它判「每一枚钮拿到且只拿到它自己那一句」；那只气泡本体有没有真长出来判不了，因为
+        // 本仓一枚输入注入器也没有（`SendInput` 零命中，`pin_check.rs` 那一格自己声明过），
+        // 没有一只手能把指针停在钮上。接线那一半由下面那一格判。
+        let names_s = crate::annotate::tool_names();
+        let hints_s = crate::annotate::tool_hints();
+        let names: Vec<&str> = names_s.split('|').collect();
+        let hints: Vec<&str> = hints_s.split('|').collect();
+        let bad: Vec<String> = hints
+            .iter()
+            .enumerate()
+            .filter(|(i, h)| {
+                names
+                    .get(*i)
+                    .is_none_or(|n| !h.starts_with(&format!("{n}：")))
+                    || h.chars().count() <= 2
+            })
+            .map(|(i, h)| format!("{i}:{h}"))
+            .collect();
+        check(
+            "toolbar hints name their own button",
+            names.len() == crate::annotate::TOOLS.len()
+                && hints.len() == crate::annotate::TOOLS.len()
+                && bad.is_empty()
+                && hints.iter().collect::<std::collections::HashSet<_>>().len() == hints.len(),
+            format!(
+                "TOOLS={}枚 names={}句 hints={}句 对不上名={} | 首句={} 末句={}",
+                crate::annotate::TOOLS.len(),
+                names.len(),
+                hints.len(),
+                if bad.is_empty() {
+                    "无".to_string()
+                } else {
+                    bad.join(",")
+                },
+                hints.first().copied().unwrap_or("(空)"),
+                hints.last().copied().unwrap_or("(空)"),
+            ),
+        );
+
+        // 同一节那一排钮的**接线**那一半，仍在同一档里读。它读的是这份 QML 源码文本，而这份
+        // 文本本来就在这枚出货 exe 里（`sendto_check::TOOLBAR_QML`，P154 为 `--sendto` 那一格
+        // 抄进来的），所以这里复用同一份字节而不是再抄一枚 `include_str!`；剥注释用全档唯一
+        // 那把尺 `hint_check::qml_code`（本档自写的那条 `//` 注释里引了一句 `property string
+        // hint: ""` 的式样，不剥就会数出一枚不存在的空串 —— 引文不是活句，#313 / #253 / #268）。
+        let qml = crate::hint_check::qml_code(crate::sendto_check::TOOLBAR_QML);
+        let sites = qml
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                t.ends_with("Cell {") || t.ends_with("Swatch {")
+            })
+            .count();
+        let handed = qml
+            .lines()
+            .filter(|l| l.trim_start().starts_with("hint: "))
+            .count();
+        let required = qml.matches("required property string hint").count();
+        let attached = qml.matches("ToolTip.text:").count();
+        let shown_by = qml.matches("ToolTip.visible:").count();
+        let empty = qml.lines().filter(|l| l.trim() == "hint: \"\"").count();
+        check(
+            "every toolbar button site is handed its hint",
+            sites > 0
+                && sites == handed
+                && required == 2
+                && attached == required
+                && shown_by == attached
+                && empty == 0,
+            format!(
+                "钮的声明位置={sites} 递句子的位置={handed} required={required} ToolTip.text={attached} ToolTip.visible={shown_by} 空串={empty}"
+            ),
+        );
+
+        // §5.21.2 第二枚「快捷键设置页应提供对应功能说明」。这一档不开第三份判断：名字与说明
+        // 读 core 那一张表（`config::ACTION_TEXTS`），接没接线读装配用的那两张归宿表
+        // （`hotkey::Work::of` / `hotkey::tray_run_of`），页上有没有把这句递出去读
+        // `settings_view::Row::text` 此刻真交回的那一枚串 —— 三样都是现读，没有一句是这里重抄的。
+        let texts = falcon_core::config::ACTION_TEXTS;
+        let ids = falcon_core::config::ACTIONS;
+        let misaligned: Vec<String> = ids
+            .iter()
+            .enumerate()
+            .filter(|(i, id)| texts.get(*i).is_none_or(|t| t.0 != **id))
+            .map(|(i, id)| format!("{i}:{id}"))
+            .collect();
+        // 名字或说明为空 = 页上多一处看不见的一句；含 `RECORD` = 那一枚串会把一行切成两行，
+        // 「这一类几枚」那一条读数就此不再是几枚。
+        let blank: Vec<String> = texts
+            .iter()
+            .filter(|(_, name, desc)| {
+                name.is_empty()
+                    || desc.is_empty()
+                    || desc.contains(crate::settings_view::RECORD)
+                    || name.contains(crate::settings_view::RECORD)
+            })
+            .map(|(id, _, _)| id.to_string())
+            .collect();
+        let wired = ids
+            .iter()
+            .copied()
+            .filter(|id| crate::hotkey::Work::of(id).is_some())
+            .count();
+        check(
+            "action table names each bindable id",
+            texts.len() == ids.len() + 3 && misaligned.is_empty() && blank.is_empty(),
+            format!(
+                "名表={}枚 可绑={}枚 有手={wired}枚 无手={}枚 错位={} 空或会切行={} | 尾三枚={}",
+                texts.len(),
+                ids.len(),
+                ids.len() - wired,
+                if misaligned.is_empty() {
+                    "无".to_string()
+                } else {
+                    misaligned.join(",")
+                },
+                if blank.is_empty() {
+                    "无".to_string()
+                } else {
+                    blank.join(",")
+                },
+                texts[ids.len()..]
+                    .iter()
+                    .map(|t| t.0)
+                    .collect::<Vec<&str>>()
+                    .join(","),
+            ),
+        );
+
+        // 页上那一格：类号问 `index_of`（名单里数出来的第几类），不在这里钉一个 5。
+        let which = crate::settings_view::index_of("快捷键").unwrap_or(usize::MAX);
+        let page = crate::settings_view::rows(which);
+        let mut naming = 0usize;
+        let mut said = 0usize;
+        let mut quiet: Vec<String> = Vec::new();
+        let mut invented: Vec<String> = Vec::new();
+        let mut mis_marked: Vec<String> = Vec::new();
+        for r in page.iter() {
+            let t = r.text();
+            match crate::settings_view::action_of(&r.key, &r.value) {
+                Some((name, desc, row_wired)) => {
+                    naming += 1;
+                    if t.contains(name) && t.contains(desc) {
+                        said += 1;
+                    } else {
+                        quiet.push(format!("{}={}", r.key, r.value));
+                    }
+                    // 标了「未接线」的行，必须正是归宿表说没有一只手的那些行。
+                    if t.contains(crate::settings_view::UNWIRED_MARK) != !row_wired {
+                        mis_marked.push(format!("{}={}", r.key, r.value));
+                    }
+                }
+                None => {
+                    if t.contains(crate::settings_view::NOTE_SEP) {
+                        invented.push(format!("{}={}", r.key, r.value));
+                    }
+                }
+            }
+        }
+        check(
+            "hotkey page explains each action",
+            naming > 0
+                && said == naming
+                && quiet.is_empty()
+                && invented.is_empty()
+                && mis_marked.is_empty(),
+            format!(
+                "快捷键那一页={}行 点名动作={naming}行 递出名与说明={said}行 没递={} 没点名却递了={} 接线标错={} | 首行={}",
+                page.len(),
+                if quiet.is_empty() {
+                    "无".to_string()
+                } else {
+                    quiet.join(",")
+                },
+                if invented.is_empty() {
+                    "无".to_string()
+                } else {
+                    invented.join(",")
+                },
+                if mis_marked.is_empty() {
+                    "无".to_string()
+                } else {
+                    mis_marked.join(",")
+                },
+                page.first()
+                    .map(|r| r.text())
+                    .unwrap_or_else(|| "(这一类没有行)".to_string()),
+            ),
+        );
+
+        // §5.21.2 第三枚 前一半：[`crate::cli::PARAM_DOC`] 那张表现在是 §5.17 语法的唯一拼写处，
+        // 这一格量的就是「同源」这件事真成立 —— 方向是**把文档点名的旗标一枚枚喂回 classify 问它收不
+        // 收**，而不是比两份字符串：比句子量到的是字，量不到「收下」。反方向（语法多认一枚文档没讲的
+        // 旗标）在这一改之后结构上不可能发生，因为语法就是从这张表里数出来的；shipped 的 `--help` 恰
+        // 恰漏讲 `--output` 与 `-h` 两枚真被认的旗标，就是旧的两本账已经对不上的读数（本轮补上）。
+        let no_reserved: &[&str] = &[];
+        let mut doc_flags: Vec<String> = Vec::new();
+        for f in crate::cli::verbs()
+            .into_iter()
+            .chain(crate::cli::outputs())
+            .chain(crate::cli::help_flags())
+        {
+            doc_flags.push(f.to_string());
+        }
+        let not_accepted: Vec<String> = doc_flags
+            .iter()
+            .filter(|f| {
+                crate::cli::classify(&[(*f).clone()], no_reserved) == crate::cli::Decision::NotCli
+            })
+            .cloned()
+            .collect();
+        // 文档里 `-o file <路径>` 那一行的第三个记号是一枚占位，说的正是「这一枚值还欠一个
+        // 东西」；把 `pin` 与 `file` 当成同一种东西去问「收不收」，量的是本轮探针自己的空想
+        // （代次 H 的 arm A 就是这么红的：`递不进去=file`）。所以欠的那一个由
+        // [`crate::cli::output_cases`] 从文档自己的示例行里取回来补齐再喂。
+        let doc_cases = crate::cli::output_cases();
+        let doc_targets: Vec<String> = doc_cases.iter().map(|(v, _)| v.clone()).collect();
+        // 案例表把「只点名选项、不点值」的 `--output` 那一行跳过了；这一格问的就是它跳过的
+        // 恰好只有那一行 —— 值名单与案例表数的是同一批行，谁也没漏。
+        let listed_targets: Vec<String> = crate::cli::output_targets()
+            .into_iter()
+            .map(|t| t.to_string())
+            .collect();
+        let value_lists_agree = doc_targets == listed_targets;
+        let dead_targets: Vec<String> = doc_cases
+            .iter()
+            .filter(|(_, argv)| {
+                !matches!(
+                    crate::cli::classify(argv, no_reserved),
+                    crate::cli::Decision::Run { .. }
+                )
+            })
+            .map(|(v, _)| v.clone())
+            .collect();
+        // 喂进去的最厚那一条，就是这一格真正问过的完整写法（不是值名，是 argv）。
+        let fed_longest = doc_cases
+            .iter()
+            .map(|(_, argv)| argv.join(" "))
+            .max_by_key(|s| s.chars().count())
+            .unwrap_or_default();
+        // 值的名单还得**拒得掉**：文档没讲的值，语法不许把它当成一枚输出。
+        let bogus_taken = matches!(
+            crate::cli::classify(
+                &[
+                    "--last".to_string(),
+                    "-o".to_string(),
+                    "dropbox".to_string()
+                ],
+                no_reserved,
+            ),
+            crate::cli::Decision::Run { .. }
+        );
+        check(
+            "cli doc names every flag it ships",
+            !doc_flags.is_empty()
+                && not_accepted.is_empty()
+                && !doc_targets.is_empty()
+                && dead_targets.is_empty()
+                && value_lists_agree
+                && !bogus_taken,
+            format!(
+                "文档点名旗标={}枚 语法不认={} 文档的 -o 值={}枚 递不进去={} 值名单同源={} 最完整一条argv={} 文档没讲的值被收下={}",
+                doc_flags.len(),
+                if not_accepted.is_empty() {
+                    "无".to_string()
+                } else {
+                    not_accepted.join(",")
+                },
+                doc_targets.len(),
+                if dead_targets.is_empty() {
+                    "无".to_string()
+                } else {
+                    dead_targets.join(",")
+                },
+                if value_lists_agree { "是" } else { "否" },
+                fed_longest,
+                if bogus_taken { "是" } else { "否" },
+            ),
+        );
+
+        // §5.21.2 第三枚 后一半：命令行配置处真的把入口递到行上。「该不该递」问
+        // [`crate::settings_view::doc_entry_of`] 那一次，句子里点的是哪一枚旗标从文档表现读，
+        // 再喂回 classify 问它真能不能取到文档 —— 反推页上那一串的长相就是第二份实现。
+        let which_cli = crate::settings_view::index_of("高级与命令行").unwrap_or(usize::MAX);
+        let page_cli = crate::settings_view::rows(which_cli);
+        let help_set = crate::cli::help_flags();
+        let mut handed = 0usize;
+        let mut quiet: Vec<String> = Vec::new();
+        let mut invented: Vec<String> = Vec::new();
+        let mut flag_named: Option<String> = None;
+        for r in page_cli.iter() {
+            match crate::settings_view::doc_entry_of(&r.key) {
+                Some(s) => {
+                    handed += 1;
+                    if r.text().contains(&s) {
+                        flag_named = help_set
+                            .iter()
+                            .find(|f| s.contains(**f))
+                            .map(|f| f.to_string());
+                    } else {
+                        quiet.push(format!("{}={}", r.key, r.value));
+                    }
+                }
+                None => {
+                    if r.text().contains(crate::settings_view::NOTE_SEP) {
+                        invented.push(format!("{}={}", r.key, r.value));
+                    }
+                }
+            }
+        }
+        let flag_hands_docs = match &flag_named {
+            Some(f) => {
+                crate::cli::classify(std::slice::from_ref(f), no_reserved)
+                    == crate::cli::Decision::Help
+            }
+            None => false,
+        };
+        check(
+            "cli config row hands a doc entry",
+            handed > 0 && quiet.is_empty() && invented.is_empty() && flag_hands_docs,
+            format!(
+                "高级与命令行那一页={}行 递入口={handed}行 该递却没递={} 没点名却递了={} 入口点的旗标={flag_named:?} 那一枚真能取到文档={}",
+                page_cli.len(),
+                if quiet.is_empty() { "无".to_string() } else { quiet.join(",") },
+                if invented.is_empty() { "无".to_string() } else { invented.join(",") },
+                if flag_hands_docs { "是" } else { "否" },
+            ),
+        );
+
+        // §5.21.2 第四枚 第一格：那张表自己合不合规矩。名单里的类名要在 §5.20.1 那张表上，
+        // 句子里反引号点出的每一枚键要**真在档里、且真在这一页上** —— P159 为 `--help` 立的那条
+        // 规矩在这一页的翻版：引导里点一枚不存在的键，比不点更坏（用户会去那一页找它）。
+        // 取 `Config::default()` 而不是本进程手里那一份：引导说的是「这一页管哪些事」，那是档的
+        // 结构，不是这台机器此刻的数。
+        let cfg_flat = Config::default();
+        let all_keys = crate::guide::default_keys();
+        let mut g_no_page: Vec<String> = Vec::new();
+        let mut g_invented: Vec<String> = Vec::new();
+        let mut g_off_page: Vec<String> = Vec::new();
+        let mut g_blank: Vec<String> = Vec::new();
+        for (gpage, gbody) in crate::guide::ENTRIES {
+            let which = match crate::settings_view::index_of(gpage) {
+                Some(i) => i,
+                None => {
+                    g_no_page.push(gpage.to_string());
+                    continue;
+                }
+            };
+            if gbody.is_empty() || gbody.contains('\n') {
+                g_blank.push(gpage.to_string());
+            }
+            let owned: Vec<String> = crate::settings_view::rows_of(&cfg_flat, which)
+                .into_iter()
+                .map(|r| r.key)
+                .collect();
+            for token in crate::guide::dotted(gbody) {
+                if !all_keys.contains(&token) {
+                    g_invented.push(format!("{gpage}→{token}"));
+                } else if !owned.contains(&token) {
+                    g_off_page.push(format!("{gpage}→{token}"));
+                }
+            }
+        }
+        let g_complex = crate::guide::complex_pages();
+        check(
+            "guide names only real keys",
+            g_no_page.is_empty()
+                && g_invented.is_empty()
+                && g_off_page.is_empty()
+                && g_blank.is_empty()
+                && !g_complex.is_empty()
+                && g_complex.len() == crate::guide::ENTRIES.len(),
+            format!(
+                "复杂页={}枚 / §5.20.1 那 {} 类里；句子里点档里没有的键={} 点对了名但不在那一页={} 名单外的类名={} 空句或换行={}",
+                g_complex.len(),
+                crate::settings_view::CATEGORIES.len(),
+                if g_invented.is_empty() { "无".to_string() } else { g_invented.join(",") },
+                if g_off_page.is_empty() { "无".to_string() } else { g_off_page.join(",") },
+                if g_no_page.is_empty() { "无".to_string() } else { g_no_page.join(",") },
+                if g_blank.is_empty() { "无".to_string() } else { g_blank.join(",") },
+            ),
+        );
+
+        // 第二格：「只递一次」这件事的三个时刻，全部在**内存里的那份状态**上问 —— 一份空的、
+        // 一份收下过一枚的、另一份全新的。第三趟那一次是这一格唯一能证「一次住在状态里、不是
+        // 住在进程里」的形状：只有进程内的布尔的话，换一份状态也不会再递。
+        // 末尾那一枚 `attempts()` 要的是 0：默认那一趟连一次也不许动那份文件（§9.1 第十五条），
+        // 而这一格印出的那句 `file_summary` 是这台机器此刻真正在读的落点。
+        let g_fresh = crate::guide::State::default();
+        let mut g_quiet: Vec<String> = Vec::new();
+        let mut g_loud: Vec<String> = Vec::new();
+        for i in 0..crate::settings_view::CATEGORIES.len() {
+            let line = crate::guide::line_for(&g_fresh, i);
+            if crate::guide::body(i).is_some() {
+                if !line.starts_with(crate::guide::GREETING)
+                    || !line.contains(crate::guide::ACK_WORD)
+                {
+                    g_quiet.push(crate::settings_view::CATEGORIES[i].0.to_string());
+                }
+            } else if !line.is_empty() {
+                g_loud.push(crate::settings_view::CATEGORIES[i].0.to_string());
+            }
+        }
+        let g_first = g_complex.first().copied().unwrap_or(usize::MAX);
+        let mut g_kept = g_fresh.clone();
+        let g_new_once = g_kept.mark(g_first);
+        let g_new_twice = g_kept.mark(g_first);
+        let g_after = crate::guide::line_for(&g_kept, g_first);
+        let g_again = crate::guide::line_for(&crate::guide::State::default(), g_first);
+        let g_read_back = crate::guide::State::decode(&g_kept.encode());
+        let g_still_handed = (0..crate::settings_view::CATEGORIES.len())
+            .filter(|i| crate::guide::body(*i).is_some() && *i != g_first)
+            .all(|i| !crate::guide::line_for(&g_kept, i).is_empty());
+        check(
+            "first-use guide hands once",
+            g_quiet.is_empty()
+                && g_loud.is_empty()
+                && g_new_once
+                && !g_new_twice
+                && g_after.is_empty()
+                && !g_again.is_empty()
+                && g_read_back.has(g_first)
+                && g_read_back.pending() == g_complex.len().saturating_sub(1)
+                && g_still_handed
+                && crate::guide::attempts() == 0,
+            format!(
+                "一份空状态递={}枚 名单外却递={} 该递没递={}；收下{}那一页：头一回算新收={} 第二回算新收={}；收完之后这一页递={:?}、别页照递={}；换一份全新状态又递={:?}；写回来的状态读回还欠={}枚（要的是 {}）；本趟动过盘={}回（要 0）；桥现在说「{}」；{}",
+                g_complex.len(),
+                g_loud.len(),
+                if g_quiet.is_empty() { "无".to_string() } else { g_quiet.join(",") },
+                crate::settings_view::CATEGORIES.get(g_first).map(|(n, _)| *n).unwrap_or("?"),
+                g_new_once,
+                g_new_twice,
+                g_after,
+                g_still_handed,
+                if g_again.is_empty() { "没递".to_string() } else { "又递了".to_string() },
+                g_read_back.pending(),
+                g_complex.len().saturating_sub(1),
+                crate::guide::attempts(),
+                crate::guide::why_empty(&g_kept, g_first),
+                crate::guide::file_summary(),
+            ),
         );
 
         let problems = with(|s| s.problems.clone());
@@ -3770,10 +4516,10 @@ pub fn capture_selftest() -> (Check, String) {
         let seen = got
             .as_ref()
             .ok()
-            .and_then(|id| with(|s| s.with_rendered(*id, |f| (f.width, f.height))))
+            .and_then(|(id, _)| with(|s| s.with_rendered(*id, |f| (f.width, f.height))))
             .unwrap_or((0, 0));
         let closed = match &got {
-            Ok(id) => with(|s| s.close(&[*id])),
+            Ok((id, _)) => with(|s| s.close(&[*id])),
             Err(_) => 0,
         };
         check(
@@ -3782,7 +4528,11 @@ pub fn capture_selftest() -> (Check, String) {
             format!(
                 "{} -> {}x{} closed={}",
                 match &got {
-                    Ok(id) => format!("pin {id}"),
+                    // P165: the sentence `pin_rect` hands back is now printed here rather than
+                    // dropped. A whole region's sentence is just 「区域 {rect}」, so this row reading
+                    // it is the control for the clipped row below: the presenter says nothing more
+                    // when nothing was cut.
+                    Ok((id, line)) => format!("pin {id}: {line}"),
                     Err(e) => e.clone(),
                 },
                 seen.0,
@@ -3790,6 +4540,37 @@ pub fn capture_selftest() -> (Check, String) {
                 closed
             ),
         );
+    }
+
+    // §5.3.5 校验规则's second bullet has two halves -- 提示 and 自动修正 -- and `fn main` is the only
+    // place the first one used to be printed, which is a place `cargo test` cannot reach. P165 asks
+    // the same question headless: `pin_rect` builds the picture, this row reads the line off the
+    // tuple it hands back, and `close` takes the pin away before any window exists. So the sentence
+    // a real machine produced is in this report, and the remembered region is the proof that the
+    // clipping is what the product kept rather than what was typed.
+    {
+        let want = PhysRect::new(pb.x + pb.w as i32 - 24, pb.y + 40, 40_000, 32);
+        match capture::pin_rect(&want) {
+            Ok((id, line)) => {
+                let kept = with(|s| s.captured_of(id));
+                let closed = with(|s| s.close(&[id]));
+                let says_both = line.contains("你要的是") && line.contains("已裁掉");
+                let narrowed = kept.is_some_and(|got| got != want && got.w < want.w);
+                check(
+                    "an oversized region is clipped and says which number moved",
+                    Check::from(says_both && narrowed && closed == 1),
+                    format!(
+                        "要 {} -> 记 {:?}｜说法「{}」closed={}",
+                        want, kept, line, closed
+                    ),
+                );
+            }
+            Err(e) => check(
+                "an oversized region is clipped and says which number moved",
+                Check::Fail,
+                format!("区域 {want:?} 钉不起来：{e} —— 出界的那一手没有主体可说"),
+            ),
+        }
     }
 
     // The other input path: whatever the pointer is over becomes a picture. Blocked

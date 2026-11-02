@@ -72,12 +72,43 @@ pub mod qobject {
         #[qproperty(i32, hole_h)]
         #[qproperty(f64, dpr)]
         #[qproperty(f64, dim_alpha)]
+        /// §5.4.5 —— 这一扇窗的底该不该是透明的。遮罩窗自己写着 `color: "black"`，暗化层画
+        /// 在它上面；一张透明白板要把暗化归零而底仍是黑，屏幕上出现的就还是一张黑幕。两格
+        /// 由 [`crate::mask::MaskState::board_dim`] / [`crate::mask::MaskState::board_clear`]
+        /// 同一次锁里交出，QML 只绑不判。
+        #[qproperty(bool, board_clear)]
         #[qproperty(bool, shader)]
         /// §5.3.5 —— 遮罩是否显示选区尺寸的一枚影子，从 [`crate::mask::MaskState::show_dimensions`]
         /// 经 [`crate::mask::MaskViewData::show_dimensions`] 抄到这里，再由 QML 用来 gate 一行文字。
         /// 单独放在 qproperty 而不是让 QML 直接读 `settings::show_dimensions()`，是因为 `open`
         /// 时取的这一刻属于那一次流程，而不是手指按下去的那一秒（同 [`crate::mask::MaskState::auto_copy`] 那一格）。
         #[qproperty(bool, show_dimensions)]
+        /// §5.3.8 —— 哪一格比例芯片亮着，抄自 [`crate::mask::MaskViewData::ratio_index`]；
+        /// `-1` 是"自定义那一格"，其原文在 [`Self::ratio_spec`]。QML 只绑不判，所以"按钮上
+        /// 亮着 1:1"与"拖出来锁的是 1:1"是同一个主人说的。
+        #[qproperty(i32, ratio_index)]
+        /// 锁**真的**在不在（[`crate::mask::MaskViewData::ratio_live`]）。自定义那一格打到一半
+        /// 时 [`Self::ratio_index`] 仍是 -1 而这一枚是 `false`：那一格要点灰而不是假装锁着。
+        #[qproperty(bool, ratio_live)]
+        /// 自定义那一格的原文，与上面两格同一次锁里交出（同 [`Self::landed`] 那一路的理由：
+        /// `String` 进不了 `Copy` 的 [`crate::mask::MaskViewData`]，只能走这条元组）。
+        #[qproperty(QString, ratio_spec)]
+        /// §5.3.6 第一条规则的那枚锚点：打进来的宽高会**从哪一角**扩展，
+        /// [`crate::mask::anchor_code`] 的序号，名字表在 [`crate::mask::SIZE_ANCHOR_NAMES`]。
+        /// 它是只读的读数而不是这一轮的按钮 —— PRD 那句要的是"明确"，不是"可挑"，而把它做成
+        /// 一格能挑的芯片就多长一把与拖拽来历打架的第二主人（谁在最后定角，谁说了算）。
+        #[qproperty(i32, size_anchor)]
+        /// §5.3.7 —— 选区尺寸**按当前单位**的读数（[`crate::mask::MaskViewData::size_w`]）。
+        /// 与 [`Self::hole_w`] 分开两格是本轮的量点：那两格是窗内几何（跨屏选区被
+        /// `local_dip` 裁进这一扇窗、除过这一扇窗的缩放），这两格是"这一块有多大"那一句
+        /// 话，两扇窗上必须同字。页上那行 W×H 从此绑这两格，`hole_w`/`hole_h` 只留给画法。
+        #[qproperty(i32, size_w)]
+        #[qproperty(i32, size_h)]
+        /// 这一刻用的单位，[`crate::mask::unit_code`] 的序号；名字表在
+        /// [`crate::mask::SIZE_UNITS`]，过桥走 [`Self::unitNames`] —— 与
+        /// [`Self::size_anchor`] + [`Self::sizeAnchorNames`] 同一形状：**序号过桥、句子留在
+        /// Rust**。页拿它做两件事：取下标亮那枚芯片，以及决定打字进去的数被解释成什么。
+        #[qproperty(i32, size_unit)]
         #[qproperty(i32, revision)]
         #[qproperty(QString, key)]
         #[qproperty(QString, name)]
@@ -165,6 +196,11 @@ pub mod qobject {
         /// P93 只有写侧（`MaskState::history_last` 全仓零读者），这一条是它的第一位读者。
         /// 空串 = 这一场还没走到那道门。
         #[qproperty(QString, history_last)]
+        /// §5.5.10 的那一句发送到应用的话，与上面几条分着放：派发有**四种**答（递出去了 /
+        /// 目标不在这台机器上 / 路径拼不出一条安全参数 / shell 回了失败），合成一句就说不出
+        /// 「点了两次、一次也没递到」与「递到了而对面不在这个机器上」的区别。空串 = 这一场
+        /// 还没按过那一枚芯片。
+        #[qproperty(QString, send_to_last)]
         /// 点击与揭示的两个计数，给这条腿在它自己前后各读一次用：一次点击记一次，
         /// 与开没开成窗无关；开了几个窗是另一个数。两个数并成一个就说不出"点了两次、
         /// 一次也没到 shell"这句话——而那正是默认设置下唯一该发生的事。
@@ -219,10 +255,12 @@ pub mod qobject {
         #[cxx_name = "hitTestAt"]
         fn hit_test(self: &Self, x: f64, y: f64) -> i32;
 
-        /// The pointer moved while held.
+        /// The pointer moved while held. `unlocked` is §5.3.8 的那句"用户应可以临时解除比例约束"
+        /// —— QML 把 `mouse.modifiers` 里那一枚修饰键按下去的那一刻递进来，这一段拖拽就走自由
+        /// 比例；它不进 [`Self::ratio_index`]，所以没有一把"临时按着却永久留在解除态"的门。
         #[qinvokable]
         #[cxx_name = "dragTo"]
-        fn drag(self: Pin<&mut Self>, x: f64, y: f64);
+        fn drag(self: Pin<&mut Self>, x: f64, y: f64, unlocked: bool);
         /// The pointer let go.
         #[qinvokable]
         #[cxx_name = "releaseAt"]
@@ -405,6 +443,81 @@ pub mod qobject {
         #[cxx_name = "toolNames"]
         fn tool_names(self: &Self) -> QString;
 
+        /// §5.21.2 第一枚：同一排钮的悬停句，与 [`Self::toolNames`] 同枚数同序 ——
+        /// 两个串都出自 [`crate::annotate`] 的同一张表，所以第 `i` 句提示只能落在
+        /// 第 `i` 枚钮上。QML 侧 `.split("|")` 后按 index 递。
+        #[qinvokable]
+        #[cxx_name = "toolHints"]
+        fn tool_hints(self: &Self) -> QString;
+
+        /// §5.3.8 第一、二步：比例那一排的标签，与 [`Self::ratioHints`] 同枚数同序 —— 两个串
+        /// 都出自 [`crate::mask::RATIO_CELLS`] 同一张表，所以第 `i` 句提示只能落在第 `i` 枚芯片上
+        /// （与 [`Self::toolNames`] / [`Self::toolHints`] 同一条口径）。
+        #[qinvokable]
+        #[cxx_name = "ratioNames"]
+        fn ratio_names(self: &Self) -> QString;
+
+        #[qinvokable]
+        #[cxx_name = "ratioHints"]
+        fn ratio_hints(self: &Self) -> QString;
+
+        /// §5.3.8 第一步：按下第 `index` 格芯片。返回 `false` 是"那一格不存在"，而锁**原样
+        /// 不动** —— 返回值是这一枚能把"没改动"说出口的唯一通道。
+        #[qinvokable]
+        #[cxx_name = "pickRatio"]
+        fn pick_ratio(self: Pin<&mut Self>, index: i32) -> bool;
+
+        /// §5.3.8 第二步的后半：「或输入自定义比例」。那句话**总是**被记下（屏幕上显示的就是
+        /// 用户打的字），返回值只说锁上没上 —— `false` 之后 [`Self::ratio_live`] 也是 `false`，
+        /// 文本框点灰绑的就是这一枚读数（与 [`Self::ratio_index`] 同一次锁里交出的那三格）。
+        ///
+        /// `apply_` 而不是 `set_`：[`Self::ratio_spec`] 那枚 qproperty 已经生成了 associated
+        /// function `set_ratio_spec`（与 [`Self::apply_shader`] 同一条理由）。
+        #[qinvokable]
+        #[cxx_name = "applyRatioSpec"]
+        fn apply_ratio_spec(self: Pin<&mut Self>, spec: &QString) -> bool;
+
+        /// §5.3.6 第三、四步：把 W 与 H 两格里打进来的数字换成选区尺寸，从
+        /// [`Self::size_anchor`] 那一角扩展，超出桌面的那一头让路。
+        ///
+        /// 返回 `false` = **选区一点没动**（还没拖出选区 / 那对数不是正数 / 装不进 `u32`），
+        /// 与 [`Self::pickRatio`] 的 `false` 同一条口径：门把手不许在"没做成"的时候顺手清掉
+        /// 别的格子。返回 `true` 也不等于"这就是你打的数"—— 夹过的会变小，那是第二条规则。
+        ///
+        /// `apply_` 而不是 `set_`：与 [`Self::applyRatioSpec`]、[`Self::applyShader`] 同一条
+        /// 理由，`set_` 那一族名字已经被 qproperty 的 associated function 占了。
+        #[qinvokable]
+        #[cxx_name = "applySize"]
+        fn apply_size(self: Pin<&mut Self>, w: i32, h: i32) -> bool;
+
+        /// §5.3.6 第一句规则在屏幕上的那行字：锚点的名字，`|` 分隔，下标是 [`Self::sizeAnchor`]
+        /// 那一枚序号 —— 与 [`Self::ratioNames`] 同一形状，句子住在 Rust。
+        #[qinvokable]
+        #[cxx_name = "sizeAnchorNames"]
+        fn size_anchor_names(self: &Self) -> QString;
+
+        /// §5.3.7 第一步「用户在…**尺寸输入区域**选择单位」：单位字样表，`|` 分隔，下标是
+        /// [`Self::sizeUnit`] —— 与 [`Self::sizeAnchorNames`] 同一形状，句子住在 Rust
+        /// （[`crate::mask::unit_names`]，其本身又只是 [`crate::mask::SIZE_UNITS`] 里那两枚
+        /// 单位的 `Unit::label`，所以字样没有第二个主人）。
+        #[qinvokable]
+        #[cxx_name = "unitNames"]
+        fn unit_names(self: &Self) -> QString;
+
+        /// §5.3.7 那两枚芯片的悬停句，`|` 分隔、与 [`Self::unitNames`] 同序（[`crate::mask::UNIT_HINTS`]）。
+        /// 与 [`Self::ratioHints`] 同一分工：中文短语的翻译权不在这一页上。
+        #[qinvokable]
+        #[cxx_name = "unitHints"]
+        fn unit_hints(self: &Self) -> QString;
+
+        /// §5.3.7 第二步：把单位定成第 `code` 格（Repeater 的那一枚 —— 芯片上第 i 个字样只能
+        /// 是清单里第 i 格，所以过界那一臂在 Rust 里答话，[`crate::mask::unit_at_code`]）。
+        /// 返回**真正生效**的那一格的序号而不是 `bool`：这一格没有"没做成"的臂，而页上的芯片
+        /// 必须跟着 Rust 的答案点亮、不能跟着自己递出去的那个下标点。
+        #[qinvokable]
+        #[cxx_name = "setUnit"]
+        fn set_unit(self: Pin<&mut Self>, code: i32) -> i32;
+
         /// P91：§5.5.12 send-to 显示条目第一次跨过 Rust→QML 边界 —— 从
         /// [`crate::settings::output_cfg`] 走 [`crate::settings::pipeline_send_to`]、
         /// [`crate::settings::send_to_menu_entries`] 映射 UI 显示串，最后
@@ -423,6 +536,29 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "shareMenuNames"]
         fn share_menu_names(self: &Self) -> QString;
+
+        /// P181：§5.7.21 那一排颜色芯片的名单第一次跨过这道桥 —— 从
+        /// [`crate::settings::annotation_cfg`] 取档里 `[annotation] palette` 那一排，
+        /// [`crate::settings::band_colors_joined`] 用档自己那台解析器（`colors::parse`）
+        /// 归一成 `RRGGBB` 后 `|` 联起来。与 [`Self::sendToMenuNames`] 同一形状：空表 ⇒
+        /// 空串，QML 侧 `.split("|")` 后先滤零长段再喂 Repeater。
+        ///
+        /// 本轮之前这一枚键在产品路径上**零读者**：`AnnotationToolbar.qml` 写着六枚自己挑
+        /// 的字面量，而档里是十枚（`config.rs` 的 `default_palette`），改档里的颜色不动屏幕。
+        #[qinvokable]
+        #[cxx_name = "bandColors"]
+        fn band_colors(self: &Self) -> QString;
+
+        /// §5.5.10 步骤 2 的那一枚芯片被按下：把这一次的图交给第 `index` 枚目标应用。
+        /// `index` 就是 Repeater 的那一枚 —— 工具条上第 i 枚芯片只能是清单里第 i 个目标，
+        /// 所以过界的那一臂在 Rust 里答话（[`crate::mask::MaskState::send_to_target`]），
+        /// 而不是 QML 自己再数一遍清单（数两遍就是两条会各自漂移的清单）。
+        /// `true` 是 shell 收下了这一次请求；话——包括"目标不在这台机器上，请重新设置路径"
+        /// 那一句拒绝——在 [`crate::mask::MaskState::send_to_last`]，和 复制/保存 一样不经
+        /// 返回值传话。
+        #[qinvokable]
+        #[cxx_name = "sendToTarget"]
+        fn send_to_target(self: Pin<&mut Self>, index: i32) -> bool;
     }
 }
 
@@ -451,8 +587,23 @@ pub struct MaskViewRust {
     hole_h: i32,
     dpr: f64,
     dim_alpha: f64,
+    board_clear: bool,
     shader: bool,
     show_dimensions: bool,
+    // §5.3.8 的三格。`Default` 给的 0/false/空串就是「无」，所以一张还没被挑过比例的窗
+    // 与 P161 之前一模一样：锁关着，第一拖是自由矩形。
+    ratio_index: i32,
+    ratio_live: bool,
+    ratio_spec: QString,
+    // §5.3.6 的锚点。`Default` 给的 0 就是左上角，与 `MaskState::default()`、
+    // `MaskViewData::default()` 那两枚是同一个答案，所以一张还没被分配槽位的窗不会报出
+    // 一个越界下标去索引 `SIZE_ANCHOR_NAMES`。
+    size_anchor: i32,
+    // §5.3.7 的三格。`Default` 给的 0/0/0 与上面那一格同理：还没分配槽位的窗报的是 px、
+    // 尺寸 0×0，而页上那两行都在 `selected` 的门后面，读不到这三格。
+    size_w: i32,
+    size_h: i32,
+    size_unit: i32,
     revision: i32,
     key: QString,
     name: QString,
@@ -487,6 +638,7 @@ pub struct MaskViewRust {
     landed: QString,
     reveal_last: QString,
     pre_notice: QString,
+    send_to_last: QString,
     history_last: QString,
     reveal_clicks: i32,
     reveal_acted: i32,
@@ -522,8 +674,12 @@ impl qobject::MaskView {
             reveal_last,
             pre_notice,
             history_last,
+            send_to_last,
+            ratio_spec,
             clicks,
             acted,
+            dim,
+            clear,
         ) = mask::with(|m| {
             m.ink.flush();
             let label = m
@@ -571,8 +727,14 @@ impl qobject::MaskView {
                 m.reveal_last.clone(),
                 m.pre_notice.clone(),
                 m.history_last.clone(),
+                m.send_to_last.clone(),
+                m.ratio_spec.clone(),
                 m.reveal_clicks as i32,
                 m.reveal_acted as i32,
+                // 这一块板子要暗化多少、窗底要不要跟着透明 —— 与上面那一样本同一次锁，因为
+                // 它们是同一趟流程的读数：分两次问就可能出现"洞是新那一身的、暗化是上一张的"。
+                m.board_dim(),
+                m.board_clear(),
             )
         });
 
@@ -590,9 +752,30 @@ impl qobject::MaskView {
         self.as_mut().set_dpr(view.scale.ratio());
         // The dim the readback asserts against, in the one number QML draws with -
         // so `--mask` checking `1 - DIM` is checking the value actually on screen.
-        self.as_mut().set_dim_alpha(mask::DIM);
-        self.as_mut().set_shader(shader);
+        // A see-through board is the one flow that draws 0 here ([`mask::MaskState::board_dim`]),
+        // and `--mask` never reaches that arm: it opens a freeze, not a board.
+        self.as_mut().set_dim_alpha(dim);
+        self.as_mut().set_board_clear(clear);
+        // 一块透明白板走四条暗化 `Rectangle` 那一路而不是 `ShaderEffect`：那一趟乘的是
+        // `1 - dim_alpha`，dim 归零之后它要 exactly 报"什么都不压"才看得出桌面，而软件 RHI
+        // 上 `status` 停在 Uncompiled 的这一族（P14 测过）已经证明"这一趟到底画了什么"不能
+        // 靠猜。四矩形那一路在 dim=0 时是四张不画的东西，这是它能被读的那一种。
+        self.as_mut().set_shader(shader && !clear);
         self.as_mut().set_show_dimensions(view.show_dimensions);
+        // §5.3.8：芯片亮哪格、锁在不在、自定义那句话是什么 —— 三格与上面那一样本同一次锁，
+        // 分两次问就可能出现"芯片写着 1:1、锁其实还留着上一场的 16:9"。
+        self.as_mut().set_ratio_index(view.ratio_index);
+        self.as_mut().set_ratio_live(view.ratio_live);
+        self.as_mut().set_ratio_spec(QString::from(&*ratio_spec));
+        // §5.3.6 那行"从哪一角扩展"就在这一趟里读出：`view` 与上面两格是同一次锁的样本，
+        // 所以不会出现"尺寸是这一趟的、锚点是上一趟的"。
+        self.as_mut().set_size_anchor(view.size_anchor);
+        // §5.3.7 那对读数与那枚单位用的是**同一次锁里**的同一份样本（`view`），所以不会出现
+        // "数字是这一趟的、单位是上一趟的"那一族；页上两行 W×H 从此绑这两格，`hole_w`/`hole_h`
+        // 退回去只画暗化与八枚把手。
+        self.as_mut().set_size_w(view.size_w as i32);
+        self.as_mut().set_size_h(view.size_h as i32);
+        self.as_mut().set_size_unit(view.size_unit);
         self.as_mut().set_revision(view.revision as i32);
         match &label {
             Some((key, name)) => {
@@ -660,6 +843,8 @@ impl qobject::MaskView {
         self.as_mut().set_pre_notice(QString::from(&*pre_notice));
         self.as_mut()
             .set_history_last(QString::from(&*history_last));
+        self.as_mut()
+            .set_send_to_last(QString::from(&*send_to_last));
         self.as_mut().set_reveal_clicks(clicks);
         self.as_mut().set_reveal_acted(acted);
     }
@@ -698,9 +883,9 @@ impl qobject::MaskView {
         mask::with(|m| m.hit_test(index.max(0) as usize, x, y))
     }
 
-    pub fn drag(mut self: Pin<&mut Self>, x: f64, y: f64) {
+    pub fn drag(mut self: Pin<&mut Self>, x: f64, y: f64, unlocked: bool) {
         let index = *self.index();
-        mask::with(|m| m.drag(index.max(0) as usize, x, y));
+        mask::with(|m| m.drag(index.max(0) as usize, x, y, unlocked));
         self.as_mut().reload();
     }
 
@@ -875,6 +1060,71 @@ impl qobject::MaskView {
         QString::from(&*annotate::tool_names())
     }
 
+    pub fn tool_hints(&self) -> QString {
+        QString::from(&*annotate::tool_hints())
+    }
+
+    pub fn ratio_names(&self) -> QString {
+        QString::from(&*mask::ratio_names())
+    }
+
+    pub fn ratio_hints(&self) -> QString {
+        QString::from(&*mask::ratio_hints())
+    }
+
+    /// §5.3.8 的芯片：改动落在 [`mask::MaskState`] 那一格，所以递完就要 `reload` —— 与
+    /// [`Self::select_tool`] 同一条理由（"芯片亮哪格"是 QML 绑的读数，不是它自己记的账）。
+    pub fn pick_ratio(mut self: Pin<&mut Self>, index: i32) -> bool {
+        let took = mask::with(|m| m.pick_ratio(index));
+        self.as_mut().reload();
+        took
+    }
+
+    /// 同上，而 `spec` 是文本框里那句话的所有权移交（`&QString` → `to_string`，与
+    /// [`Self::save_selection`] 同一条理由）。那句话**总是**被记下，返回值只说锁上没上
+    /// （[`mask::MaskState::set_ratio_spec`]），所以 `false` 之后仍要 `reload`：文本框点灰
+    /// 靠的就是这一次读回来的 [`Self::ratio_live`]。
+    pub fn apply_ratio_spec(mut self: Pin<&mut Self>, spec: &QString) -> bool {
+        let typed = spec.to_string();
+        let took = mask::with(|m| m.set_ratio_spec(&typed));
+        self.as_mut().reload();
+        took
+    }
+
+    /// §5.3.6：尺寸那两格文本框的提交。改动落在 [`mask::MaskState`] 的 `hole` 与（撞锁时）
+    /// 芯片那一格，所以递完就要 `reload` —— 与 [`Self::pick_ratio`] 同一条理由，而这里要的
+    /// 读数比它多：那行 W×H、锚点那一角、芯片亮哪格，三处都是这一次改动的后果。
+    pub fn apply_size(mut self: Pin<&mut Self>, w: i32, h: i32) -> bool {
+        let took = mask::with(|m| m.type_size(w, h));
+        self.as_mut().reload();
+        took
+    }
+
+    pub fn size_anchor_names(&self) -> QString {
+        QString::from(&*mask::size_anchor_names())
+    }
+
+    /// §5.3.7 第一、二步的单位字样表 —— 与 [`Self::size_anchor_names`] 同一条理由：页只做一次
+    /// 下标，字样与序号的主人在 Rust。
+    pub fn unit_names(&self) -> QString {
+        QString::from(&*mask::unit_names())
+    }
+
+    /// §5.3.7 芯片的悬停句 —— 与 [`Self::unit_names`] 同一条理由，两句都在 Rust
+    /// （[`crate::mask::UNIT_HINTS`]），页只做一次下标。
+    pub fn unit_hints(&self) -> QString {
+        QString::from(&*mask::unit_hints())
+    }
+
+    /// §5.3.7 第二步：改动落在 [`mask::MaskState`] 的 `unit`，而它动的不是一格读数而是
+    /// **那对读数怎么算出来的** —— 屏幕上有三处跟着它走（§5.3.5 那行 W×H、sizeBar 那行
+    /// 「当前 …」、以及哪枚芯片亮着），所以递完就要 `reload`，与 [`Self::apply_size`] 同理。
+    pub fn set_unit(mut self: Pin<&mut Self>, code: i32) -> i32 {
+        let landed = mask::with(|m| m.set_unit(code));
+        self.as_mut().reload();
+        mask::unit_code(landed)
+    }
+
     /// P91：`sendToMenuNames()` 的 Rust 侧 —— 从 [`settings::output_cfg`] 走
     /// [`settings::pipeline_send_to`] 拿校验过的 `(name, exe)` 段，
     /// [`settings::send_to_menu_names_joined`] 联成 `|` 分隔串交给 QML。
@@ -894,6 +1144,28 @@ impl qobject::MaskView {
         let o = settings::output_cfg();
         let (known, _, _) = settings::pipeline_share_targets(&o.share_targets);
         QString::from(&*settings::share_menu_names_joined(&known))
+    }
+
+    /// P181：`bandColors()` 的 Rust 侧 —— 从 [`settings::annotation_cfg`] 取档里那一排，
+    /// [`settings::band_colors_joined`] 归一并 `|` 联起来。与 [`Self::send_to_menu_names`]
+    /// 同一分工：名单只有档一个主人，页上那一次 `.split("|")` 是它唯一的读者路径。
+    ///
+    /// 每一扇遮罩窗创建的那一刻读一次（`AnnotationToolbar.qml` 里那两枚 `readonly property`
+    /// 随面板求值一次），与 [`crate::settings::card_cfg`] 同一条理由：改完档再截一张，
+    /// 屏幕上就该是新档里那一排，而不是进程启动那一刻的快照。
+    pub fn band_colors(&self) -> QString {
+        QString::from(&*settings::band_colors_joined(
+            &settings::annotation_cfg().palette,
+        ))
+    }
+
+    /// §5.5.10 步骤 2 的按下：`index` 是 Repeater 的那一枚，越界与否由 Rust 答（同一份清单
+    /// 只在 [`crate::mask::MaskState::send_to_target`] 里数一次）。`reload` 与 复制/保存
+    /// 那一趟是同一条理由：话活在唯一的 mask 状态里，两扇窗都得在**动手之后**重读一次才看得见。
+    pub fn send_to_target(mut self: Pin<&mut Self>, index: i32) -> bool {
+        let done = mask::with(|m| m.send_to_target(index.max(0) as usize));
+        self.as_mut().reload();
+        done
     }
 
     /// §10 第 43 项 ①'s 存完再钉图. Same path handling as [`Self::save_selection`],

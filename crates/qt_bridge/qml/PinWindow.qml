@@ -79,6 +79,21 @@ Window {
     // (or under the last one, when none did) - see `dlg-probe` below.
     property string pushProbe: ""
 
+    // The same attempt's two on-screen readings, taken beside the probe above and for the same
+    // reason: `pushProbe` is the bridge's own bookkeeping (`enabled / layers / hidden`), while
+    // `pushLive` is what *this* window is actually doing about it - the `view.live` that
+    // `CaptureMask.qml` and the pin's `visible` bind to. A door that reads only the first can
+    // report an account that balances while nothing left the screen. `pushEpoch` rides along so
+    // the two can be told apart from a stale binding: the epoch is the §5.5.11 bump that made
+    // this window re-read itself, so a live=false with an epoch that never moved would be a
+    // coincidence rather than a consequence (#316).
+    //
+    // `pushLive` names the pin it speaks for, the way `sel-observe-*` does: hide is a per-pin
+    // verdict, so a bare true/false from whichever window happens to be holding the gauge
+    // could not be lined up against the `hidden=` list that made it.
+    property string pushLive: ""
+    property string pushEpoch: ""
+
     // §5.9.14's own leg, and the three numbers it exists to produce.
     //
     // `gifArmed` is the window: the clip's clock runs the whole time this window is alive, so
@@ -348,9 +363,10 @@ Window {
         // §5.10.4「重置」的单枚那一臂，长在 `op-lone-*` 之后而不是另起一段：此刻名单里只有本窗
         // 一枚，这一手该交回 1 —— 它就是菜单那一枚「重置视图」在用户只选了一枚时走的那一路。
         //
-        // 为什么用 `zoom` 而不是 `rotation` 供「几何被重读回来了」这一句：`rotation` 没有送到
-        // QML 这一侧（`PinView` 那一列里没有它），而 `zoom` 与 `pos` 都不进 `content_key`
-        // —— 所以「重置不重编像素」这一问在这一格才判得动（下面那两枚 `rst-*-rev-*` 读的就是它）。
+        // 为什么用 `zoom` 而不是 `rotation` 供「几何被重读回来了」这一句：`rotation` 自 P145
+        // 起确实送到了 QML 这一侧，但它**进** `content_key`（转一格就是重编像素），而 `zoom` 与
+        // `pos` 都不进 —— 所以「重置不重编像素」这一问在这一格才判得动（下面那两枚 `rst-*-rev-*`
+        // 读的就是它）。
         // 先把本窗的缩放往下迈一档（§5.9.2 那一列的单枚手势，不是批量）， reset 才有的还；
         // 迈不动（已经贴着下限）时这一格由 `rst_rows` 读成 Blocked，不读成一次成立（#433）。
         const rstLoneBase = win.view.zoom
@@ -635,6 +651,87 @@ Window {
             // 「没有一枚在名单里、也没有独显压着」的前提下。
             clearSelectionAction.trigger()
         }
+        // §5.9.5–§5.9.8 的六只手，长在独显那一族之后、`menu` 之前：销毁与独显那两族把名单收空、
+        // 把场上收回满、也把本窗自己的透明度与显示状态还回进门时的样子，而这一族要的正是
+        // 「一枚不被独显压着、名单空着的本窗」这一个起点。它自己同样收梢：四枚开关各按两下
+        // （§5.9.7/§5.9.8 的「再次执行恢复」本来就是这一形状），旋转按满一整圈回到进门那个角，
+        // 所以后面 `menu` 往上那几枚读对话框的行一个字节也没被本族动过。
+        //
+        // 每一枚读数读的都是 `view` 上那一格**本体**（P145 新送的 `rotation` / `flipped_h` /
+        // `flipped_v` / `grayscale` / `inverted`），不是本腿替它记的一份副本 —— §5.9.6 步骤 3
+        // 「系统更新显示状态」与 §5.9.7/§5.9.8 步骤 4「再次执行恢复」这两句，在窗上读不到那一格
+        // 之前只有「按下」这一件事可证（#271：不许向一枚从没供过这格的读数要这一句）。
+        //
+        // 纹理号 `revision` 每按一次必须 +1：这五格全在 `state.rs` 的 `content_key` 里，按一次不
+        // 重编就是像素没到屏幕上；反过来按两次 +2 也是错（同一次开关被编了两张）。
+        const xfRot0 = win.view.rotation
+        gaugeSay("xf-rot-start", String(xfRot0))
+        gaugeSay("xf-rot-geo-start", String(win.view.size_w) + "," + String(win.view.size_h))
+        gaugeSay("xf-rot-rev-before", String(win.view.revision))
+        rotateRightAction.trigger()
+        gaugeSay("xf-rot-cw", String(win.view.rotation))
+        gaugeSay("xf-rot-rev-cw", String(win.view.revision))
+        rotateLeftAction.trigger()
+        gaugeSay("xf-rot-ccw", String(win.view.rotation))
+        gaugeSay("xf-rot-rev-ccw", String(win.view.revision))
+        rotateRightAction.trigger()
+        rotateRightAction.trigger()
+        gaugeSay("xf-rot-half", String(win.view.rotation))
+        rotateRightAction.trigger()
+        rotateRightAction.trigger()
+        gaugeSay("xf-rot-full", String(win.view.rotation))
+        gaugeSay("xf-rot-rev-full", String(win.view.revision))
+        gaugeSay("xf-rot-geo-end", String(win.view.size_w) + "," + String(win.view.size_h))
+        const xfH0 = win.view.flipped_h
+        gaugeSay("xf-fh-start", String(xfH0))
+        flipHAction.trigger()
+        gaugeSay("xf-fh-on", String(win.view.flipped_h))
+        gaugeSay("xf-fh-rev-on", String(win.view.revision))
+        flipHAction.trigger()
+        gaugeSay("xf-fh-off", String(win.view.flipped_h))
+        gaugeSay("xf-fh-rev-off", String(win.view.revision))
+        const xfV0 = win.view.flipped_v
+        gaugeSay("xf-fv-start", String(xfV0))
+        flipVAction.trigger()
+        gaugeSay("xf-fv-on", String(win.view.flipped_v))
+        gaugeSay("xf-fv-rev-on", String(win.view.revision))
+        flipVAction.trigger()
+        gaugeSay("xf-fv-off", String(win.view.flipped_v))
+        gaugeSay("xf-fv-rev-off", String(win.view.revision))
+        const xfGray0 = win.view.grayscale
+        gaugeSay("xf-gray-start", String(xfGray0))
+        grayscaleAction.trigger()
+        gaugeSay("xf-gray-on", String(win.view.grayscale))
+        gaugeSay("xf-gray-rev-on", String(win.view.revision))
+        grayscaleAction.trigger()
+        gaugeSay("xf-gray-off", String(win.view.grayscale))
+        gaugeSay("xf-gray-rev-off", String(win.view.revision))
+        const xfInv0 = win.view.inverted
+        gaugeSay("xf-inv-start", String(xfInv0))
+        invertAction.trigger()
+        gaugeSay("xf-inv-on", String(win.view.inverted))
+        gaugeSay("xf-inv-rev-on", String(win.view.revision))
+        invertAction.trigger()
+        gaugeSay("xf-inv-off", String(win.view.inverted))
+        gaugeSay("xf-inv-rev-off", String(win.view.revision))
+        // 六枚字面读的是 Action 自己那一格，不是菜单行：`MenuItem { action: ... }` 的字面就是
+        // 从这一格抄来的，读两处会数出两枚读者而它们本来就是同一枚（#281）。
+        gaugeSay("xf-label-left", rotateLeftAction.text)
+        gaugeSay("xf-label-right", rotateRightAction.text)
+        gaugeSay("xf-label-h", flipHAction.text)
+        gaugeSay("xf-label-v", flipVAction.text)
+        gaugeSay("xf-label-gray", grayscaleAction.text)
+        gaugeSay("xf-label-inv", invertAction.text)
+        // 三枚数字键自己报的键序与开关。`enabled` 在这一刻必须是真：分组名框没被开过，
+        // `groupField.activeFocus` 因此为假，退让那一支没有关掉键。
+        // 三枚数字键自己报的**注册情况**：`sequences` 那一枚列表的长度与 `enabled`。为什么不报
+        // 键帽本体：`String(shortcut.sequences)` 出来的是 Qt 内部那套 QKeySequence 的调试串，
+        // 不是这一档能拿去判的约定（约定变了读数就变，绿的红的都不说明产品）。键帽「1/2/3」
+        // 钉在哪一枚键上由源码扫描那枚单测逐字读文件（那是文件的原文，比任何运行时字符串都准），
+        // 「按下」那一跳没有注入器可证，逐名记在台账。
+        gaugeSay("xf-key-left", String(rotateLeftKey.sequences.length) + "|" + String(rotateLeftKey.enabled))
+        gaugeSay("xf-key-right", String(rotateRightKey.sequences.length) + "|" + String(rotateRightKey.enabled))
+        gaugeSay("xf-key-gray", String(grayscaleKey.sequences.length) + "|" + String(grayscaleKey.enabled))
         gaugeSay("menu", saveAsItem.text)
         gaugeSay("filters", saveAs.nameFilters.join(";;"))
         // The members are read rather than assumed: `selectedNameFilter` came back as
@@ -735,6 +832,10 @@ Window {
         // 关完再读的矩形属于一扇已经不存在的窗。它随 `dlg-probe` 一起报出去，报的是**真的按下
         // 了那一次**（或一趟也没按下的最后一次尝试）自己的读数，不是上一轮等待留下的旧值。
         win.pushProbe = win.session.dialogProbe()
+        // Read in the same breath as the probe, from the same attempt: one is the account, the
+        // other is the screen, and the pair is the claim.
+        win.pushLive = String(win.view.pin_id) + "=" + String(win.view.live)
+        win.pushEpoch = String(win.session.dialog_epoch)
         if (win.pushTries === 1) {
             gaugeSay("dlg-shown", String(saveAs.visible))
             win.readFilter("dlg-shown-filter")
@@ -747,6 +848,10 @@ Window {
             gaugeSay("dlg-push-tries", String(win.pushTries))
             gaugeSay("dlg-push-log", win.pushTriesLog)
             gaugeSay("dlg-probe", win.pushProbe)
+            // The account and the screen, under one key each: `dlg-probe` is what the bridge
+            // believes, these two are what this window was doing about it at that same breath.
+            gaugeSay("dlg-live-open", win.pushLive)
+            gaugeSay("dlg-epoch-open", win.pushEpoch)
             dlgTail.restart()
         } else {
             dlgPush.restart()
@@ -770,6 +875,11 @@ Window {
         // 读的就是"叫过之后账上还剩什么"。它读在 `dlgLeg = false` 之前，是因为那条只是腿的收尾，
         // 而这一枚读数是这一格唯一的证人：读晚了（`jpgArmLeg` 会再落一次盘）就分不清是谁改的账。
         gaugeSay("dlg-probe-gone", win.session.dialogProbe())
+        // The same pair on the far side of the close: `dlg-probe-gone` is the account back to
+        // zero, this is the pin actually being on the screen again. A run that reports the
+        // first without the second hid something it never brought back.
+        gaugeSay("dlg-live-gone", String(win.view.pin_id) + "=" + String(win.view.live))
+        gaugeSay("dlg-epoch-gone", String(win.session.dialog_epoch))
         // Closed last, after the reject above: that one is this phase's own dismissal and
         // is meant to be reported. From here nothing else may answer under the click's
         // keys.
@@ -1425,6 +1535,97 @@ Window {
         onActivated: clearSelectionAction.trigger()
     }
 
+    // §5.9.5 步骤 2「使用数字键或菜单执行向左、向右旋转」和 §5.9.7 步骤 2「使用对应快捷键或菜单
+    // 选择"灰度"」各给了两只门，所以形状照上面 `copyAction` 那一封：落点声明一次，菜单那一行
+    // `action:` 到它，键也 `trigger()` 它。六枚**全部**提成 Action，而不只提那三枚有键的，是因为
+    // `pin_check.rs` 的 `xf-*` 那一族要在真机上按同一只手：菜单那一行自己没有 `onTriggered` 可叫
+    // （`action:` 之后 handler 住在 Action 里），量规叫得着的只有 `trigger()` —— 与上面那封信里
+    // `clearSelectionAction` 有「三枚读者」是同一件事，多出来的那一枚读者是尺自己。
+    //
+    // 字面一律取 PRD 那六句里的词：§5.9.5 写的是「向左、向右旋转」而不是「顺时针/逆时针」，
+    // §5.9.8 写的是「颜色反转」而不是「反色」。方向和角度对得上是因为 core 的
+    // `rotate_cw` 是 +90（顺时针 = 向右），`rotate_ccw` 是 -90（逆时针 = 向左）。
+    Action {
+        id: rotateLeftAction
+
+        text: "向左旋转"
+        onTriggered: win.view.rotateCcw()
+    }
+
+    Action {
+        id: rotateRightAction
+
+        text: "向右旋转"
+        onTriggered: win.view.rotateCw()
+    }
+
+    Action {
+        id: flipHAction
+
+        text: "水平翻转"
+        onTriggered: win.view.flipH()
+    }
+
+    Action {
+        id: flipVAction
+
+        text: "垂直翻转"
+        onTriggered: win.view.flipV()
+    }
+
+    Action {
+        id: grayscaleAction
+
+        text: "灰度"
+        onTriggered: win.view.toggleGrayscale()
+    }
+
+    // §5.9.8 步骤 2 给的是「选择"颜色反转"」——那一句里既没有数字键也没有快捷键，所以这一枚
+    // Action 只有菜单一只读者（加上量规那一枚）。它仍然提成 Action：六枚同一形状比四枚 Action
+    // 加两枚 inline handler 少一处「为什么这两行不一样」。
+    Action {
+        id: invertAction
+
+        text: "颜色反转"
+        onTriggered: win.view.toggleInvert()
+    }
+
+    // 键帽是本档钉的默认，不是 PRD 钉的：第 1010 行只说「数字键」、第 1026 行只说「对应快捷键」，
+    // 而第 7 行明写「快捷键使用常见默认值举例，实际以用户设置和运行平台为准」。这里钉
+    // 1=向左旋转、2=向右旋转、3=灰度，即那三行在菜单上的次序；「§5.16.1 用户可在设置中修改
+    // 快捷键」那一问目前只覆盖全局表 `hotkey.actions`，窗口内这三枚键还没进那张表，差距逐名记
+    // 在台账的欠账里，不在这里冒充已做。
+    //
+    // `enabled: !groupField.activeFocus` 是这三枚键唯一的一处退让：§5.12.1 的分组名框是这扇窗上
+    // 唯一的文本输入（全档 `TextField` 只出现那一处），焦点在它上面时用户打的「1」是名字的
+    // 一个字符，不是旋转的手势。不做这层退让，重命名「第1组」就变成一次旋转。
+    Shortcut {
+        id: rotateLeftKey
+
+        sequences: ["1"]
+        context: Qt.WindowShortcut
+        enabled: !groupField.activeFocus
+        onActivated: rotateLeftAction.trigger()
+    }
+
+    Shortcut {
+        id: rotateRightKey
+
+        sequences: ["2"]
+        context: Qt.WindowShortcut
+        enabled: !groupField.activeFocus
+        onActivated: rotateRightAction.trigger()
+    }
+
+    Shortcut {
+        id: grayscaleKey
+
+        sequences: ["3"]
+        context: Qt.WindowShortcut
+        enabled: !groupField.activeFocus
+        onActivated: grayscaleAction.trigger()
+    }
+
     Menu {
         id: pinMenu
 
@@ -1445,6 +1646,32 @@ Window {
         // assuming the menu still says what §5.5.5 calls it.
         MenuItem { id: saveAsItem; text: "另存为…"; onTriggered: saveAs.open() }
 
+        // §5.6.1 步骤 2 在贴图这一臂。挨着「另存为」而不是排在旋转那一族之后：这一手取的是
+        // **这张图的内容**（读出来的是字），与「把图交出去」同族，而旋转/缩放那一族改的是窗怎么画。
+        //
+        // `asked` 是**递进去**而不是绑出来的（理由与 `AnnotationToolbar.qml` 那封信同一封：绑成一串
+        // 就会和面板自己那颗「收起」互相踩掉），而 `ocrWindow.visible` 绑在它上面 —— 读的那一头
+        // 是绑定，写的那一头不是，两侧才各走各的。
+        MenuItem {
+            text: "提取文字"
+            onTriggered: {
+                ocrPanel.asked = true
+                win.session.extractPinText(win.pinId)
+            }
+        }
+
+        // §5.6.2 步骤 1 与 §5.6.3 步骤 1 在贴图这一臂：PRD 那两节各写「点击识别二维码」/
+        // 「点击条形码识别」，这里一行都担了 —— 底下是同一只读码的手，一行分成两行只会让用户
+        // 先猜图上是哪种码。这一格有宽度（菜单项按最长那行拉），所以写全「扫码（二维码 / 条形码）」
+        // 而不像工具条那颗只留两个字。
+        MenuItem {
+            text: "扫码（二维码 / 条形码）"
+            onTriggered: {
+                codesPanel.asked = true
+                win.session.readPinCodes(win.pinId)
+            }
+        }
+
         MenuSeparator {}
 
         MenuItem { text: "放大"; onTriggered: win.view.zoomStep(true) }
@@ -1453,17 +1680,20 @@ Window {
 
         MenuSeparator {}
 
-        MenuItem { text: "顺时针旋转"; onTriggered: win.view.rotateCw() }
-        MenuItem { text: "逆时针旋转"; onTriggered: win.view.rotateCcw() }
-        MenuItem { text: "水平翻转"; onTriggered: win.view.flipH() }
-        MenuItem { text: "垂直翻转"; onTriggered: win.view.flipV() }
+        MenuItem { action: rotateLeftAction }
+        MenuItem { action: rotateRightAction }
+        MenuItem { action: flipHAction }
+        MenuItem { action: flipVAction }
 
         MenuSeparator {}
 
-        // Grayscale and invert are toggles of the picture, and the picture's own
-        // state is not a window property - so they read as actions, not checks.
-        MenuItem { text: "灰度"; onTriggered: win.view.toggleGrayscale() }
-        MenuItem { text: "反色"; onTriggered: win.view.toggleInvert() }
+        // 灰度与颜色反转是**图**的开关而不是**窗**的开关，所以这两行不画勾选：§5.9.7 与 §5.9.8
+        // 要的是「再次执行恢复」，而菜单上那一格勾是「现在是不是灰的」的另一套说法，PRD 两句都
+        // 没要求它。显示状态本身如今是窗上读得到的一格（`view.grayscale` / `view.inverted`，
+        // P145 起），所以量规那六枚 `xf-*` 行读的是本体而不是字面 —— 这句话以前写的是「不是
+        // 窗的一格所以只能按行动作读」，那一半自 P145 起已经不成立，订正留在台账。
+        MenuItem { action: grayscaleAction }
+        MenuItem { action: invertAction }
         MenuItem { text: "平滑缩放"; checkable: true; checked: win.view.smooth
                    onTriggered: win.view.applySmooth(checked) }
 
@@ -1473,6 +1703,27 @@ Window {
         MenuItem { text: "退出缩略图"; onTriggered: win.view.exitThumbnail() }
         MenuItem { text: "撤销裁剪"; onTriggered: win.view.undoCrop() }
         MenuItem { text: "恢复原图"; onTriggered: win.view.restoreOriginal() }
+
+        MenuSeparator { visible: win.view.refreshable }
+
+        // §5.5.8 刷新截图。规则 1 写的是「用户**可选择**覆盖原图或生成新图」，所以这里两行而不
+        // 是一行加一枚开关：按下哪一行的字就是那一枚选择，读完不需要再回头问「现在是哪一种」。
+        //
+        // 可见性读的是 `view.refreshable` —— 这一枚贴图记不记得自己的**原截图坐标**。从文件、
+        // 从剪贴板、从白板来的那些枚压根没有这块坐标，给它们留一行按下只会回答「不能刷」的菜
+        // 单就是 #494 那一族；而它与按下之后那一格回答的是同一件事（`PinState::refreshable` 与
+        // `falcon_core::refresh::plan` 的第一臂同一格），所以「看得见按不动」在这一层组不出来。
+        //
+        // 区域失效**不在**这一格里预判：那块地方还在不在整个屏幕上，只有真要读之前问得出来，
+        // 而它的答案是规则 2 那句「提示重新选择」—— 写在 `falcon_core::refresh::plan`，窗不替
+        // 它想一句。按下之后 `win.view.reload()` 那一手是覆盖那一路唯一的画上线的机会：新像素
+        // 走的是 `image_key` 那一格，而它只有 reload 会重读。
+        MenuItem { text: "刷新（覆盖这张）"
+                   visible: win.view.refreshable
+                   onTriggered: { win.session.refreshPin(win.pinId, true); win.view.reload() } }
+        MenuItem { text: "刷新（另钉一张）"
+                   visible: win.view.refreshable
+                   onTriggered: { win.session.refreshPin(win.pinId, false); win.view.reload() } }
 
         MenuSeparator { visible: win.view.has_transparent_pixels }
 
@@ -1632,7 +1883,12 @@ Window {
             Menu {
                 id: shownMenu
                 title: "整组显隐"
-                visible: win.groupList.length > 0
+                // 「有组才出现」问的是这一枚子菜单现在许不许点，不是它要不要**自己弹出来**：
+                // `Menu.visible` 是弹窗状态，绑它等于在贴图窗刚构造完那一刻命令一扇子菜单 open 自己。
+                // P172 的门先种三组、后造窗，那一次 `pinWindowComponent.createObject()` 当场
+                // ACCESS_VIOLATION（`WINDOW_RC=-1073741819`），而 `--pin` 在同一拍造四扇窗、零组，
+                // 一次也没坏 —— 坏的是这一格，不是「有几扇窗」。`enabled` 讲的才是「这一行不许点」。
+                enabled: win.groupList.length > 0
                 Repeater {
                     model: win.groupList
                     MenuItem {
@@ -1739,6 +1995,83 @@ Window {
                 placeholderText: "输入分组名称"
                 onAccepted: groupPrompt.accept()
             }
+        }
+    }
+
+    // §5.6.1 步骤 4 在贴图这一臂的那一扇窗。
+    //
+    // 为什么是**一扇窗**而不是贴在 `win` 里的一块面板：这一扇窗的尺寸就是那张图此刻的大小，
+    // 一枚 380 宽的面板贴在里头会被窗本身裁掉 —— 小贴图（缩略图那一档）压根装不下它。窗是
+    // 按需造的（`Instantiator` 带走这扇窗，那一扇跟着没），产品会话里没人点「提取文字」时
+    // 场上就多不出这一扇，`--pin` 那一档数窗的账因此一动不动。
+    //
+    // `flags: Qt.Tool` 是不进任务栏、也不进 alt-tab 那一列：这扇窗只有关于**别人**那一张图，
+    // 自己不是用户正在做的活儿。`transientParent: win` 让它跟着自己的贴图走（贴图关，它也关）——
+    // 写 `transient: win` 是**语法错**而不是类型错：本机 qmllint 6.10.1 实测那一句回
+    // `Expected token '}'`（两份只差在这一行的探针文件，
+    // `.qoder/scratch/p146_lint_ta.txt` 与 `p146_lint_tb.txt`），`qmlcachegen` 同一句、构建 rc=101。
+    // 位置贴在贴图右侧 8 px：不做屏幕夹取，因为 `Screen` 那一枚 attached 属性要先靠 x/y 才知道
+    // 自己在哪一屏，而 x/y 又得由它来夹 —— 上面 `dpr` 那一封信写的就是这个环，本轮不重踩。
+    Window {
+        id: ocrWindow
+
+        flags: Qt.Tool
+        transientParent: win
+        title: "识别结果"
+        color: "transparent"
+
+        width: ocrPanel.width + 8
+        height: ocrPanel.height + 8
+        x: win.x + win.width + 8
+        y: win.y
+        // 只跟着 `asked` 那一格：它是面板自己的「这一扇贴图的活儿还没收」，写它的人是菜单那一行
+        // 与面板上那颗「收起」，读它的只有这一行。
+        visible: ocrPanel.asked
+
+        OcrPanel {
+            id: ocrPanel
+
+            session: win.session
+            x: 4
+            y: 4
+            // 这一臂的来源是**这一枚贴图**：id 由窗递进来，窗换了贴图（`assign`）下按重新识别
+            // 取的就是新那一张 —— 面板不记自己上一次是从哪一枚里读出来的。
+            onReRecognized: win.session.extractPinText(win.pinId)
+        }
+    }
+
+    // §5.6.2 步骤 4 与 §5.6.3 步骤 3 在贴图这一臂的那一扇窗。形状照上面 `ocrWindow` 那一封：
+    // 同一族理由不重抄，只记这一处真正不同的地方 —— **它开在贴图的左边**。
+    //
+    // `ocrWindow` 钉在右边（`win.x + win.width + 8`），这一扇钉在左边，于是两扇窗**各占一侧**：
+    // 同一枚贴图既能提取文字又能扫码，而两扇都 `Qt.Tool`、都没有任务栏入口，若叠在一起，后面那一扇
+    // 就再也按不到。让它们互相让开要么得绑对方的 `height`（一扇窗的内容变了会挪走另一扇），要么
+    // 得有一格「谁先开」的账 —— 两件都不是这一节要的东西，而左右分边一行就够。
+    //
+    // 依旧不做屏幕夹取，理由与 `ocrWindow` 那一封的最后一句同一封（`Screen` 要先靠 x/y 才认屏，
+    // x/y 又要靠它夹）。贴图贴着屏幕左缘时这一扇会出界，本轮承这一笔。
+    Window {
+        id: codesWindow
+
+        flags: Qt.Tool
+        transientParent: win
+        title: "扫码结果"
+        color: "transparent"
+
+        width: codesPanel.width + 8
+        height: codesPanel.height + 8
+        x: win.x - width - 8
+        y: win.y
+        visible: codesPanel.asked
+
+        CodesPanel {
+            id: codesPanel
+
+            session: win.session
+            x: 4
+            y: 4
+            // 来源是**这一枚贴图**：与 `ocrPanel` 那一句同一封，面板不记自己上一次是从哪一枚读的。
+            onReRecognized: win.session.readPinCodes(win.pinId)
         }
     }
 

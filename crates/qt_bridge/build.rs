@@ -8,7 +8,7 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let shader_qrc = bake_shaders(Path::new(&out_dir));
 
-    // The recipe M0 proved, applied for real: one QML module holding the six
+    // The recipe M0 proved, applied for real: one QML module holding the eleven
     // documents, the three cxx-qt bridges, and the thin C++ shim nothing else can
     // be (QQuickImageProvider, QWindow::winId, the Win32 extended styles).
     //
@@ -23,7 +23,12 @@ fn main() {
             .qml_file("qml/CaptureMask.qml")
             .qml_file("qml/AnnotationToolbar.qml")
             .qml_file("qml/HintWindow.qml")
-            .qml_file("qml/SettingsWindow.qml"),
+            .qml_file("qml/SettingsWindow.qml")
+            .qml_file("qml/CustomCaptureWindow.qml")
+            .qml_file("qml/OcrPanel.qml")
+            .qml_file("qml/CodesPanel.qml")
+            .qml_file("qml/HistoryWindow.qml")
+            .qml_file("qml/GroupWindow.qml"),
     )
     .files(["src/session.rs", "src/pin_view.rs", "src/mask_view.rs"])
     .include_dir("cpp")

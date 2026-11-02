@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Window
+import QtQuick.Controls
 import dev.falconshot 1.0
 
 // §5.2's mask: the frozen desktop, dimmed everywhere except the selection.
@@ -123,7 +124,11 @@ Window {
         const alted = (modifiers & Qt.AltModifier) !== 0
         const older = key === Qt.Key_Up && !shifted && !alted
         const newer = key === Qt.Key_Down && !shifted && !alted
-        if (!undo && !redo && !copy && !save && !quick && !older && !newer) {
+        // §5.3.6 第二步的后半「或使用对应快捷操作」：`Ctrl+D`（D = dimensions）把键盘交给
+        // 尺寸那一格。没有选区时这一枚**不接管**——那两格还没长出来，把焦点递给一枚不可见的
+        // 文本框是一次谁也看不见的失败，而"这枚键没反应"与"这枚键被别的接走了"必须能分开说。
+        const sizing = key === Qt.Key_D && !shifted && !alted && win.view.selected
+        if (!undo && !redo && !copy && !save && !quick && !older && !newer && !sizing) {
             return false
         }
         // The toolbar owns the gesture, key or click alike: it is the item that
@@ -139,6 +144,10 @@ Window {
         }
         if (quick) {
             inkBar.quickSave()
+            return true
+        }
+        if (sizing) {
+            sizeBar.focusWidth()
             return true
         }
         if (older || newer) {
@@ -159,7 +168,10 @@ Window {
         return true
     }
 
-    color: "black"
+    // 截图那一路的底是黑的：暗化层画在它上面，桌面从此看不见。§5.4.5 那一块透明白板要的
+    // 是反面 —— 底跟着透明、暗化归零（两格都由 `view.board_clear` / `view.dim_alpha` 递过来，
+    // 界面不自己判是哪一块板），用户才看得穿自己那块画布。
+    color: view.board_clear ? "transparent" : "black"
     flags: Qt.Window | Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint
     // The `--mask` harness finds these by title to put `PrintWindow` on them, and
     // the monitor name is what makes two of them tellable apart in the report. No
@@ -341,19 +353,29 @@ Window {
         border.width: 2
     }
 
+    // §5.3.7 那枚单位在屏幕上的字样：下标是 Rust 的 `size_unit`，字样表也是 Rust 的
+    // `unitNames()`（其本身又只是 `SIZE_UNITS` 里那两枚单位的 `Unit::label`）—— 与下面那枚
+    // `anchorName` 同一条口径：**序号过桥、句子留在 Rust**，这一页上不出现 "px"/"dip" 两个
+    // 字面量，所以清单长出第三格时不会有一行字还停在旧的两格上。
+    readonly property string sizeUnit: win.view.unitNames().split("|")[win.view.size_unit]
+
     // §5.3.5's live size readout, gated by the flow's own copy of
     // `[capture] show_dimensions` (`win.view.show_dimensions`, snapshotted
     // in Rust at `open`). `selected` is the other half of the gate: a hole
-    // that has not been made yet has no width to name, and this is the one
-    // line on the mask whose value comes from the same `hole_w`/`hole_h`
-    // that the eight handles were placed by, so a readout that disagrees
-    // with the box means the box itself is wrong.
+    // that has not been made yet has no width to name.
+    //
+    // §5.3.7 起这一行读 `size_w`/`size_h` 而不是 `hole_w`/`hole_h`，理由不是风格。后两格是
+    // **窗内几何**：`local_dip` 先把跨屏的选区裁进这一扇窗、再除过这一扇窗自己的缩放，它回答
+    // "这一扇窗把洞画在哪、多大"；而这一行回答"你圈的这块有多大"——一张跨了两扇窗的选区没有
+    // "这一扇窗的宽"这种尺寸，两扇窗各报一个数就是两句谎。换绑之后**两扇窗上这一行同字**，
+    // 因为 `size_w`/`size_h` 与 `size_unit` 都来自 Rust 的同一份样本。下面那八枚把手仍然跟着
+    // `hole_w`/`hole_h`：那是画法，不归这句读数管。
     Text {
         x: win.view.hole_x
         y: Math.max(0, win.view.hole_y - 22)
         visible: win.view.selected && win.view.show_dimensions
         color: "white"
-        text: Math.max(0, win.view.hole_w) + " × " + Math.max(0, win.view.hole_h)
+        text: win.view.size_w + " × " + win.view.size_h + " " + win.sizeUnit
     }
 
     // Where the eight grips sit, as fractions of the hole, in `Handle::all()`'s
@@ -410,7 +432,17 @@ Window {
             // accepted, flags - there is no `pressed`, so the test below was false on
             // every move and a drag never reached Rust as a drag.
             if (surface.pressed) {
-                view.dragTo(mouse.x, mouse.y)
+                // §5.3.8「用户应可以临时解除比例约束」的那只手：Alt 按住的这一段拖拽走自由
+                // 比例，松手就回到芯片那一格的锁（它不进 `view.ratio_index`，所以没有一把
+                // "临时按着却永久留在解除态"的门）。
+                //
+                // 是 Alt 而不是 Shift：Shift 已经是方向键的 ×10 步进（`win.step`），同一枚键
+                // 在同一个窗口里不能一边说"挪十倍"一边说"松开锁"。
+                view.dragTo(
+                    mouse.x,
+                    mouse.y,
+                    (mouse.modifiers & Qt.AltModifier) !== 0
+                )
             } else {
                 win.grip = view.hitTestAt(mouse.x, mouse.y)
             }
@@ -551,6 +583,279 @@ Window {
             event.accepted = true
             if (!win.view.stepBack()) {
                 Qt.callLater(() => win.session.endMask())
+            }
+        }
+    }
+
+    // §5.3.8 第一、二步的入口：比例那一排。
+    //
+    // 它长在**窗口**上而不是长在 `AnnotationToolbar` 里，是因为 PRD 的顺序是"先挑比例，再
+    // 拖动创建选区"，而那块面板是 `visible: view.selected`：一张还没拖出选区的屏幕上没有它。
+    //
+    // 每一张屏各有一条，而它们说的是同一个状态 —— 锁住在 Rust 的 `MaskState`（桌面空间），
+    // 所以在 1 号屏按下 1:1，2 号屏那一排跟着亮。这与"选区是一张桌面空间的图、两张窗各画
+    // 自己那部分"是同一条口径，不是两份各自记着比例的界面。
+    component RatioCell: Rectangle {
+        id: cell
+
+        property string label: ""
+        property bool active: false
+        // 与 `AnnotationToolbar` 的 `Cell` 同一枚 `required`：漏了一枚芯片的句子在构造期就
+        // 发红，而不是等 hover。句子的内容不在这档 —— 那四句在 Rust 的 `RATIO_CELLS` 里。
+        required property string hint
+        signal tapped()
+
+        width: cap.implicitWidth + 14
+        height: 22
+        radius: 3
+        color: cell.active ? "#2d7ff7"
+                           : (area.containsMouse ? "#3a3a41" : "transparent")
+
+        Text {
+            id: cap
+            anchors.centerIn: parent
+            text: cell.label
+            font.pixelSize: 12
+            color: "#f2f2f2"
+        }
+
+        MouseArea {
+            id: area
+            anchors.fill: parent
+            hoverEnabled: true
+            cursorShape: Qt.PointingHandCursor
+            onReleased: if (containsMouse) cell.tapped()
+        }
+
+        ToolTip.text: cell.hint
+        ToolTip.visible: area.containsMouse
+        ToolTip.delay: 300
+    }
+
+    Rectangle {
+        id: ratioBar
+
+        // 透明白板（§5.4.5）没有"拖出一张新选区"这一步：那张画布自己的尺寸就是选区，
+        // 所以那一排在它上面没有可锁的东西。`board_clear` 是这一条分支唯一的读数。
+        visible: !win.view.board_clear
+
+        color: "#f0232326"
+        border.color: "#55555c"
+        border.width: 1
+        radius: 6
+
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: 4
+        width: ratioLine.implicitWidth + 12
+        height: ratioLine.implicitHeight + 12
+
+        Row {
+            id: ratioLine
+            anchors.centerIn: parent
+            spacing: 4
+
+            Repeater {
+                model: win.view.ratioNames().split("|")
+
+                delegate: RatioCell {
+                    required property int index
+                    required property var modelData
+
+                    label: modelData
+                    hint: win.view.ratioHints().split("|")[index]
+                    active: win.view.ratio_index === index
+                    onTapped: {
+                        if (win.view.pickRatio(index)) {
+                            // 表里那一格自此是"当前比例"的唯一主人：文本框里上一句自定义就此
+                            // 作废，而不是留着一句看着像还在的话。
+                            ratioField.text = ""
+                            win.grabbed()
+                        }
+                    }
+                }
+            }
+
+            // 「或输入自定义比例」（§5.3.8 第二步的后半）。
+            TextField {
+                id: ratioField
+
+                width: 96
+                height: 22
+                font.pixelSize: 12
+                placeholderText: "自定义 16:10"
+                placeholderTextColor: "#6a6a70"
+                // 绑 Rust 的那句话而不是让面板自己记：两张窗、一个状态，与上面那排芯片同理。
+                text: win.view.ratio_spec
+                // 解不出来时点灰而不是清掉用户打的字：那句是他写的，而 `ratio_live` 说的是
+                // 这一句锁不上 —— 屏幕上得同时看得见这两件事。
+                color: (win.view.ratio_index < 0 && !win.view.ratio_live) ? "#8a8a90" : "#f2f2f2"
+
+                // 焦点是这条腿唯一真正的风险：`surface` 的 `focus: true` 是 Esc 与方向键的入口，
+                // 而 Controls 的 `TextField` 默认吃鼠标焦点。点进文本框之后那两枚键就跟着走进
+                // 文本框 —— 于是这一格自己接住 Esc（先收回打字，取消仍归窗口），并把焦点递回去。
+                Keys.onEscapePressed: (event) => {
+                    event.accepted = true
+                    win.view.pickRatio(0)
+                    // 清的是**这一格**：用户打过字之后 `text:` 那条绑定就没了（QML 里赋值会
+                    // 摧毁绑定），所以光改 Rust 的那一格不会让这里的句子消失。
+                    ratioField.text = ""
+                    win.grabbed()
+                    surface.forceActiveFocus()
+                }
+                onEditingFinished: win.view.applyRatioSpec(text)
+            }
+        }
+    }
+
+    // §5.3.6 第二步的「尺寸输入区域」：两格打字的地方，外加两句只读的话——现在多大、从哪一角扩展。
+    //
+    // 它长在**窗口**上、长在比例那一排下面，与比例那条同一枚理由：PRD 的顺序是"先有一张选区，
+    // 再往里打尺寸"，而 `AnnotationToolbar` 那块面板说的是标注，不是选区自己。
+    //
+    // 两格文本框**不**绑 `hole_w`/`hole_h`。绑过一次、用户打一个字，那条绑定就没了（QML 里赋值
+    // 摧毁绑定），此后拖拽不再更新它——屏幕上就留着一对说谎的数字，而第 162 项 ⑤ 那一格记过的
+    // 正是这一族。所以"现在多大"由旁边那一行 Text 绑着说，文本框只说"我要改成多少"，提交成功
+    // 就清空：一格只会有一个主人。
+    Rectangle {
+        id: sizeBar
+
+        visible: win.view.selected && !win.view.board_clear
+
+        // 被拒的那一次点灰而不是清字：那对数字是用户写的，而"没换掉尺寸"得看得见（与比例
+        // 文本框的 `ratio_live` 同一形状）。
+        property bool refused: false
+        // 序号在 Rust（`size_anchor`），句子也在 Rust（`sizeAnchorNames()`）——这里只做一次下标。
+        property string anchorName: win.view.sizeAnchorNames().split("|")[win.view.size_anchor]
+
+        function commit() {
+            const took = win.view.applySize(Number(widthField.text), Number(heightField.text))
+            sizeBar.refused = !took
+            if (took) {
+                widthField.text = ""
+                heightField.text = ""
+                // 两张屏、一个状态：与比例那排同一枚 `grabbed`，另一扇窗的选区跟着重画。
+                win.grabbed()
+            }
+        }
+
+        function focusWidth() {
+            widthField.forceActiveFocus()
+        }
+
+        color: "#f0232326"
+        border.color: "#55555c"
+        border.width: 1
+        radius: 6
+
+        anchors.horizontalCenter: parent.horizontalCenter
+        y: ratioBar.y + ratioBar.height + 4
+        width: sizeLine.implicitWidth + 12
+        height: sizeLine.implicitHeight + 12
+
+        Row {
+            id: sizeLine
+            anchors.centerIn: parent
+            spacing: 4
+
+            Text {
+                // §5.3.7：这一行与选区框上那行同源（`size_w`/`size_h` + `win.sizeUnit`），所以
+                // px 那一格上，"当前 1024×768 px"、框上那行、以及快速保存那句「（选区 1024×768
+                // 像素）」是**同一个数说了三次**，而不是三处各算一遍各说各的。
+                text: "当前 " + win.view.size_w + "×" + win.view.size_h + " " + win.sizeUnit
+                font.pixelSize: 12
+                color: "#9a9aa0"
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            TextField {
+                id: widthField
+                width: 52
+                height: 22
+                font.pixelSize: 12
+                placeholderText: "宽"
+                placeholderTextColor: "#6a6a70"
+                color: sizeBar.refused ? "#e06a6a" : "#f2f2f2"
+                validator: IntValidator { bottom: 1; top: 99999 }
+
+                // 焦点这一条腿与比例文本框同一条风险：`surface` 的 `focus: true` 是 Esc 与
+                // 方向键的入口。Esc 在这里只收回键盘，不清选区——`stepBack()` 那一档归窗口。
+                Keys.onEscapePressed: (event) => {
+                    event.accepted = true
+                    widthField.text = ""
+                    heightField.text = ""
+                    sizeBar.refused = false
+                    surface.forceActiveFocus()
+                }
+                onEditingFinished: sizeBar.commit()
+            }
+
+            Text {
+                text: "×"
+                font.pixelSize: 12
+                color: "#9a9aa0"
+                anchors.verticalCenter: parent.verticalCenter
+            }
+
+            TextField {
+                id: heightField
+                width: 52
+                height: 22
+                font.pixelSize: 12
+                placeholderText: "高"
+                placeholderTextColor: "#6a6a70"
+                color: sizeBar.refused ? "#e06a6a" : "#f2f2f2"
+                validator: IntValidator { bottom: 1; top: 99999 }
+                Keys.onEscapePressed: (event) => {
+                    event.accepted = true
+                    widthField.text = ""
+                    heightField.text = ""
+                    sizeBar.refused = false
+                    surface.forceActiveFocus()
+                }
+                onEditingFinished: sizeBar.commit()
+            }
+
+            // 第一条规则「应明确选区从哪个方向或锚点扩展」在屏幕上的那一句。它是**读数**不是
+            // 按钮：锚点的主人只有拖拽那一个，做成一格可挑的芯片就多长一把与"我刚按住哪一角"
+            // 打架的第二主人。
+            Text {
+                text: "从 " + sizeBar.anchorName + " 扩展"
+                font.pixelSize: 12
+                color: "#9a9aa0"
+                anchors.verticalCenter: parent.verticalCenter
+
+                ToolTip.text: "按住过哪一角，就打尺寸就从哪一角扩展；拖边与整块移动不改这一枚"
+                ToolTip.visible: tipArea.containsMouse
+                ToolTip.delay: 300
+
+                MouseArea {
+                    id: tipArea
+                    anchors.fill: parent
+                    hoverEnabled: true
+                }
+            }
+
+            // §5.3.7 第一、二步「用户在…**尺寸输入区域**选择单位 / 在 px 与 dip 之间切换」：
+            // 两枚芯片。清单与句子都在 Rust（`unitNames()` 是 `SIZE_UNITS` 那两枚单位的
+            // `Unit::label`，`unitHints()` 是它们各自的悬停句），与上面那排比例芯片同一形状、
+            // 同一枚 `RatioCell` —— 把 ["px","dip"] 抄进这一页，第 `i` 枚钮说的就不再是第 `i`
+            // 个单位，而单位说错的代价是**数字本身**：屏幕上 683、裁下去 1024。
+            //
+            // 亮着的那一格跟着 Rust 交回的序号（`size_unit`，reload 之后重写），不跟着"刚才
+            // 点了哪一枚"：两张屏各有一排芯片，在 1 号屏点 dip 之后 2 号屏那一排得跟着亮 ——
+            // 单位与 §5.3.8 的锁、§5.3.6 的锚点一样住在 `MaskState`（桌面空间），不住在页里。
+            Repeater {
+                model: win.view.unitNames().split("|")
+
+                delegate: RatioCell {
+                    required property int index
+                    required property var modelData
+
+                    label: modelData
+                    hint: win.view.unitHints().split("|")[index]
+                    active: win.view.size_unit === index
+                    onTapped: win.view.setUnit(index)
+                }
             }
         }
     }

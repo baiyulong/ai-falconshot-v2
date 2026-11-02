@@ -63,6 +63,26 @@ pub mod qobject {
         /// back" cannot answer it from `live` alone. Read straight off core's field
         /// in [`crate::state::PinState::view_data`], so the window never guesses.
         #[qproperty(bool, solo_hidden)]
+        /// §5.9.5–§5.9.8 的显示状态五枚：角度与四枚开关，逐枚读的是 core 那一枚字段本体
+        /// （见 [`crate::state::PinViewData::rotation`] 那封信）。为什么非要有这五枚：
+        /// §5.9.6 的规则是「系统**更新显示状态**」、§5.9.7 与 §5.9.8 的规则是「再次执行恢复」，
+        /// 而这两句在没有这五枚之前只有菜单上那六行的**按下**能读——按下之后窗上读不到「现在是
+        /// 灰的」，也就读不到「不再是灰的」是同一次开关还是另一次操作。现在两边读的是同一格。
+        ///
+        /// 两枚翻转在这里叫 `flipped_*` 而不是照 core 写成 `flip_*`：`flip_h`/`flip_v` 在本
+        /// `extern "RustQt"` 里已经是两枚 qinvokable 的 Rust 名，同一对象上再放一枚同名的属性读
+        /// 函数，「按下它」与「它现在是几」就成了同一个符号。
+        #[qproperty(i32, rotation)]
+        #[qproperty(bool, flipped_h)]
+        #[qproperty(bool, flipped_v)]
+        #[qproperty(bool, grayscale)]
+        #[qproperty(bool, inverted)]
+        /// §5.5.8「刷新截图」的两枚菜单行该不该出现在这张贴图的右键里，读的就是这一枚。它是
+        /// [`crate::state::PinState::refreshable`] 那一个条件的搬运（这枚贴图的来历里有没有
+        /// 一枚**原截图坐标**），QML 那一侧不再自己判第二遍（#281）。跟 §5.9.15 的
+        /// `has_transparent_pixels` 同一个形状：菜单行的**可见**与按下时的**落点**共用一格，
+        /// 于是「看得见按不动」与「按得动看不见」这两种骗人的门在这一层就组不出来（#494）。
+        #[qproperty(bool, refreshable)]
         type PinView = super::PinViewRust;
         /// Pull the state machine's current answer for `pin_id`. QML calls this
         /// when the id it was handed changes, and after every gesture below.
@@ -238,6 +258,12 @@ pub struct PinViewRust {
     has_transparent_pixels: bool,
     selected: bool,
     solo_hidden: bool,
+    rotation: i32,
+    flipped_h: bool,
+    flipped_v: bool,
+    grayscale: bool,
+    inverted: bool,
+    refreshable: bool,
 }
 
 /// `dpr` is the one field that must not start at zero: QML divides the physical
@@ -268,6 +294,12 @@ impl Default for PinViewRust {
             has_transparent_pixels: false,
             selected: false,
             solo_hidden: false,
+            rotation: 0,
+            flipped_h: false,
+            flipped_v: false,
+            grayscale: false,
+            inverted: false,
+            refreshable: false,
         }
     }
 }
@@ -301,6 +333,12 @@ impl qobject::PinView {
             .set_has_transparent_pixels(view.has_transparent_pixels);
         self.as_mut().set_selected(view.selected);
         self.as_mut().set_solo_hidden(view.solo_hidden);
+        self.as_mut().set_rotation(view.rotation);
+        self.as_mut().set_flipped_h(view.flip_h);
+        self.as_mut().set_flipped_v(view.flip_v);
+        self.as_mut().set_grayscale(view.grayscale);
+        self.as_mut().set_inverted(view.inverted);
+        self.as_mut().set_refreshable(view.refreshable);
     }
 
     /// One gesture done to the pin, then the properties brought back in line.

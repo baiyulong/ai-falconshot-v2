@@ -2,6 +2,7 @@
 #include "pin_shim.h"
 
 #include <QtCore/QCoreApplication>
+#include <QtCore/QEventLoop>
 #include <QtCore/QHash>
 #include <QtCore/QMap>
 #include <QtCore/QMutex>
@@ -358,6 +359,14 @@ QString pinWindowReport()
 void pinQuitAfter(std::int32_t ms)
 {
     QTimer::singleShot(ms, [] { QCoreApplication::exit(0); });
+}
+
+void pinPumpEvents(std::int32_t ms)
+{
+    // The timeout argument is what makes this a wait rather than a spin: with nothing
+    // pending Qt blocks up to ms for the next event, so the caller's ceiling is spent the
+    // same way `std::thread::sleep` spent it - and the loop still gets its turns.
+    QCoreApplication::processEvents(QEventLoop::AllEvents, ms);
 }
 
 void pinSetQuitOnLastWindowClosed(bool on)

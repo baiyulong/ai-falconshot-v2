@@ -538,6 +538,44 @@ pub fn measure() -> (Check, String) {
         problems.join(" | "),
     );
     qml_row(&mut rep);
+
+    // §5.3.7 步骤三「系统根据当前显示器缩放比例换算尺寸」在真机上的那一对数字。这一格是新长的
+    // 门臂，因为 Rust 的单测能算换算，却算不出"过桥之后屏幕上还剩不还剩这两个数"：这台机器的
+    // 缩放是 2.00，所以同一张选区在 px 那一格读 1536×960、在 dip 那一格读 768×480。
+    //
+    // 判据不从 `size_shown()` 自己推导（那是拿公式验公式）：px 那一格必须等于 `phys_hole`，而
+    // 那是上面 `dim of` / `hole of` 两族**采样屏上像素**时用的同一枚矩形——屏幕上量出来的洞与
+    // 读数说的是同一块地方；dip 那一格必须等于它除过 [`MaskState::size_scale`] 的缩放（选区自己
+    // 那张屏的缩放，由 `monitor_slot_for` 挑，与窗自己的 `slot.scale` 在这台单屏机上正好是同一个
+    // 数，多屏时是两枚——那一半本轮没有证人）。外加一条"切单位不许动选区"：单位是一句读数，
+    // 不是第二次拖拽。
+    let (px, dip, scale, moved) = mask::with(|m| {
+        let before = m.hole;
+        m.set_unit(0);
+        let px = m.size_shown();
+        m.set_unit(1);
+        let dip = m.size_shown();
+        m.set_unit(0);
+        (px, dip, m.size_scale().ratio(), m.hole != before)
+    });
+    // 比较在**显示那一边**做：dip 是 px 除过缩放后四舍五入的，所以 |px/scale − dip| 的上界是
+    // 0.5，取 0.75 既容得下舍入、又容不下任何一次真正的错缩放（那种差是整倍，不是半像素）。
+    // A 代把这行写成了 `|px − dip/scale|`——在 100% 的机器上两种写法一样，在这台 200% 上它把
+    // 1536 与 384 比，于是自己 FAIL 在自己身上（`p162`/`p163` 的仪器自缺陷清单各记一笔）。
+    let close = |px_side: u32, dip_side: u32| {
+        (f64::from(px_side) / scale - f64::from(dip_side)).abs() < 0.75
+    };
+    rep.row(
+        "unit of desktop",
+        Check::from(
+            !moved && px == (phys_hole.w, phys_hole.h) && close(px.0, dip.0) && close(px.1, dip.1),
+        ),
+        format!(
+            "px={}×{}（采样洞 {}×{}）dip={}×{} scale={:.2} 切单位动选区={}",
+            px.0, px.1, phys_hole.w, phys_hole.h, dip.0, dip.1, scale, moved
+        ),
+    );
+
     rep.note("mask state", mask::with(|m| m.line()));
 
     // Ending the flow, and checking it ended: a screen-sized texture is ~24 MB per

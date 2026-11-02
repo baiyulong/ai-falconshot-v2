@@ -408,6 +408,15 @@ const RECT_SLACK: i32 = 2;
 /// 那一声多扇一遍（它是证人不是腿，见上面那封 P134 的订正）。第二臂与第四臂要的「别的那些枚」用的就是
 /// `des-*` 已经点好的那两枚证人，本族不另数（#281）。四臂各走一遍又把名单与独显都收回进门时的样子，
 /// 后面 `menu` 往上那几枚读对话框的行因此一个字节也没被本族动过。
+///
+/// 四十枚 `xf-*`（§5.9.5–§5.9.8 的六只手）排在 `solo-ghost-kept` **之后**、`menu` 之前，理由与
+/// 上面那封同一枚而方向也同一枚：独显那四臂收回来的起点——名单空、场上满、本窗没被压着、自己的
+/// 透明度还是进门那一格——正是显示状态那六只手要的起点，另起一段就得自己再把名单清一遍，而清
+/// 名单那一声 `sel-observe-off` 是证人不是腿。这一族自己同样收梢：旋转按满一圈回到进门那个角、
+/// 四枚开关各按两下回到进门那一格，所以它把窗留在别的样子上的可能性由第一格自己判住
+/// （`xf-rot-geo-start` 对 `xf-rot-geo-end`），后面 `menu` 往上那几枚读对话框的行也一个字节
+/// 没被本族动过。本族不点别的窗：六只手全按在本窗自己身上，场上有几枚贴图对它没有要求，所以
+/// 单窗那一趟也问得动（`des-*` 与 `solo-*` 那种「场上得真有别的两枚」的前提在这里不存在）。
 pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "gif-frames",
     "gif-frame",
@@ -537,6 +546,46 @@ pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "solo-ghost",
     "solo-epoch-ghost",
     "solo-ghost-kept",
+    "xf-rot-start",
+    "xf-rot-geo-start",
+    "xf-rot-rev-before",
+    "xf-rot-cw",
+    "xf-rot-rev-cw",
+    "xf-rot-ccw",
+    "xf-rot-rev-ccw",
+    "xf-rot-half",
+    "xf-rot-full",
+    "xf-rot-rev-full",
+    "xf-rot-geo-end",
+    "xf-fh-start",
+    "xf-fh-on",
+    "xf-fh-rev-on",
+    "xf-fh-off",
+    "xf-fh-rev-off",
+    "xf-fv-start",
+    "xf-fv-on",
+    "xf-fv-rev-on",
+    "xf-fv-off",
+    "xf-fv-rev-off",
+    "xf-gray-start",
+    "xf-gray-on",
+    "xf-gray-rev-on",
+    "xf-gray-off",
+    "xf-gray-rev-off",
+    "xf-inv-start",
+    "xf-inv-on",
+    "xf-inv-rev-on",
+    "xf-inv-off",
+    "xf-inv-rev-off",
+    "xf-label-left",
+    "xf-label-right",
+    "xf-label-h",
+    "xf-label-v",
+    "xf-label-gray",
+    "xf-label-inv",
+    "xf-key-left",
+    "xf-key-right",
+    "xf-key-gray",
     "menu",
     "filters",
     "filter",
@@ -565,6 +614,8 @@ pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "dlg-push-tries",
     "dlg-push-log",
     "dlg-probe",
+    "dlg-live-open",
+    "dlg-epoch-open",
     "dlg-accepted",
     "accept",
     "dlg-filter",
@@ -572,6 +623,8 @@ pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "dlg-dismiss",
     "dlg-rejected",
     "dlg-probe-gone",
+    "dlg-live-gone",
+    "dlg-epoch-gone",
     "f-jpg",
     "close-before",
     "close",
@@ -1115,6 +1168,86 @@ pub(crate) fn probe_ids(said: Option<&str>) -> Vec<String> {
             .map(str::to_owned)
             .collect(),
     }
+}
+
+/// `dlg-live-*` 那两枚读数读成 `(替哪一枚说话, 屏幕上在不在)`。`None` 有三样：这一格压根没有
+/// 这句、那句里没有 `=`（键改了名而值没跟上）、`=` 后面不是 `true`/`false`。三样在这里是同一个
+/// 问题——**这一格问得出问不出**。
+pub(crate) fn live_said(said: Option<&str>) -> Option<(String, bool)> {
+    let (id, v) = said?.split_once('=')?;
+    if id.is_empty() {
+        return None;
+    }
+    match v {
+        "true" => Some((id.to_owned(), true)),
+        "false" => Some((id.to_owned(), false)),
+        _ => None,
+    }
+}
+
+/// §5.5.11 步骤 3 与步骤 4 的第一次**按枚**读数：`hidden=` 是桥那一侧的账，`dlg-live-open` 是
+/// 说话那一枚贴图在自己窗里读到的 `view.live`，两者必须对上同一枚 id 才算同一件事。
+///
+/// 三枚各判一步：开着那一下**不在屏上**（3）、关完之后**回到屏上**（4）、而这两者之间
+/// `dialog_epoch` 确实动过——最后这一枚把「一块屏正好自己空了」从结论里挑出去（#316）。
+/// 两半说的不是同一枚贴图也算 Fail：一趟里换了一枚说话，那条腿量的就不是同一次隐藏。
+///
+/// 那枚键关着时答**问不了**：出厂 `false` 那一臂是步骤 1 的用户决定，不是这一格的成就，与
+/// 「藏与放」那一格同一个方向。
+pub(crate) fn dialog_live(
+    lines: &[String],
+    enabled: Option<&str>,
+    hidden: &[String],
+) -> (Check, String) {
+    let open = live_said(said(lines, "dlg-live-open"));
+    let gone = live_said(said(lines, "dlg-live-gone"));
+    let epoch_open = said(lines, "dlg-epoch-open").and_then(|s| s.parse::<i32>().ok());
+    let epoch_gone = said(lines, "dlg-epoch-gone").and_then(|s| s.parse::<i32>().ok());
+    if enabled != Some("1") {
+        return (
+            Check::Blocked,
+            format!("那枚键关着（enabled={enabled:?}）⇒ 这一格答\"问不了\"而不是答通过"),
+        );
+    }
+    let (Some((id, live_before)), Some((id_after, live_back)), Some(eo), Some(eg)) =
+        (open.clone(), gone.clone(), epoch_open, epoch_gone)
+    else {
+        return (
+            Check::Blocked,
+            format!(
+                "四枚读数缺任一就问不出：open={:?} gone={:?} epoch {:?} -> {:?}",
+                said(lines, "dlg-live-open"),
+                said(lines, "dlg-live-gone"),
+                epoch_open,
+                epoch_gone
+            ),
+        );
+    };
+    let mine = hidden.iter().any(|h| h == &id);
+    let same_pin = id == id_after;
+    let hid = live_before == !mine;
+    let back = live_back;
+    let moved = eg > eo;
+    let check = if same_pin && hid && back && moved {
+        Check::Pass
+    } else {
+        Check::Fail
+    };
+    (
+        check,
+        format!(
+            "替 {id} 说话（关后那半是 {id_after}，{}）；账上 hidden={hidden:?} 里有它 {}，\
+             于是屏上要求 live={} 而现读 {live_before}；关后要求 live=true 而现读 {live_back}；\
+             epoch {eo} -> {eg}（要求真动过，否则这两半只是屏上恰好自己空了）",
+            if same_pin {
+                "同一枚"
+            } else {
+                "换了一枚 ⇒ Fail"
+            },
+            if mine { "在" } else { "不在" },
+            if mine { "false" } else { "true" },
+        ),
+    )
 }
 
 /// A push report with its `desc=<n>` field removed, for the text of a judgement row.
@@ -2551,9 +2684,9 @@ const RST_ROWS: [&str; 4] = [
 /// 重置）里最后一只有读者的手：判据 `state::batch_hand` 全仓只写那一次，所以这里判的是**那一次
 /// 判据在第三只手上还成不成立**，而不是再数一遍名单。
 ///
-/// 几何那一只证人为什么是 `zoom` 而不是 `rotation`：`rotation` 没有送到 QML 这一侧
-/// （`PinView` 那一列里没有它），而 `zoom` 与 `pos` 都不进 `content_key` —— 于是「重置把视图
-/// 还回默认」与「重置不许重编像素」这两问才各自量得动，不互相冒充（#281）。
+/// 几何那一只证人为什么是 `zoom` 而不是 `rotation`：`rotation` 自 P145 起确实送到了 QML 那一侧
+/// （[`crate::pin_view`] 的 `rotation` 格），但它**进** `content_key`，而 `zoom` 与 `pos` 都不进
+/// —— 于是「重置把视图还回默认」与「重置不许重编像素」这两问才各自量得动，不互相冒充（#281）。
 ///
 /// 第一问读的是 `rst-lone-zoom == rst-lone-base`，成立的前提是**这一格之前场上没有任何一只手
 /// 改过缩放**：本档在 QML 里逐名核过，`runGauge` 这一段只有 `rst-lone-turned` 那一行叫
@@ -3226,6 +3359,343 @@ fn solo_rows(lines: &[String], id: PinId, dim: u32) -> Vec<(Check, &'static str,
     out
 }
 
+/// §5.9.5–§5.9.8 那六只手的七枚判据，一枚也不并：旋转那一格、两枚翻转各一格（§5.9.6 那句
+/// 「选择水平翻转或垂直翻转」是两个落点，不是一个）、灰度、颜色反转、六枚字面、数字键那一问自己。
+const XF_ROWS: [&str; 7] = [
+    "pin rotate step",
+    "pin flip horizontal",
+    "pin flip vertical",
+    "pin grayscale toggle",
+    "pin invert toggle",
+    "pin transform labels",
+    "pin transform keys",
+];
+
+/// 菜单上那六行自己写的那六个词，逐字取自 PRD 的 §5.9.5 / §5.9.6 / §5.9.7 / §5.9.8 那四节
+/// （「向左、向右旋转」「水平翻转」「垂直翻转」「灰度」「颜色反转」）。放在这里而不是散进
+/// 判据：字面对不上是一格，六个字面里错哪一个是那一格的 detail 要报的。
+const XF_LABELS: [&str; 6] = [
+    "向左旋转",
+    "向右旋转",
+    "水平翻转",
+    "垂直翻转",
+    "灰度",
+    "颜色反转",
+];
+
+/// 本档给那三枚数字键钉的键帽（PRD 第 1010 行只说「数字键」、第 1026 行只说「对应快捷键」，
+/// 第 7 行明写「快捷键使用常见默认值举例，实际以用户设置和运行平台为准」）。键帽这一半由
+/// [`the_transform_keys_share_the_menu_route`] 那枚源码扫描在文件原文上逐字判；第七格那一枚
+/// live 读数判的是「注册上了一枚键序、且此刻开着」——两半合起来才是「数字键能用」这句话。
+const XF_KEYS: [(&str, &str); 3] = [
+    ("xf-key-left", "1"),
+    ("xf-key-right", "2"),
+    ("xf-key-gray", "3"),
+];
+
+/// §5.9.5–§5.9.8 里能被真机问出来的那七问，从量规的四十枚 `xf-*` 行里读。
+///
+/// 每一枚读数读的都是 `view` 上那一格**本体**（`rotation` / `flipped_h` / `flipped_v` /
+/// `grayscale` / `inverted`，P145 才送到窗上）。为什么非要那一格：§5.9.6 步骤 3 写的是「系统
+/// **更新显示状态**」，§5.9.7 与 §5.9.8 步骤 4 写的是「**再次执行**恢复」，两句话问的都是
+/// 「按下之前是什么、按下之后是什么」，而窗上读不到那一格之前，本腿能问的只有「按下发生过」
+/// 这一件（#271：不许向一枚从没供过这格的读数要这一句）。
+///
+/// 纹理号 `revision` 每按一次必须 +1。这五格全在 `state.rs` 的 `content_key` 里，按一次不涨
+/// 就是像素没到屏幕上；一次按两格涨就是同一张图编了两遍。两问都不并，因为它们是两只手的事。
+///
+/// **旋转的窗口几何只判收梢**（`xf-rot-geo-start` 与 `xf-rot-geo-end` 必须相等），不判「转 90 度
+/// 窗跟着换横竖」：那一问在一张方图上是天然绿的（交换前后同一枚数，#433），而本档的证人正是
+/// 那几枚方图。换横竖那一半的证人是 core 的 `sync_size` 单测与 `pin window` 那一行。
+///
+/// 第七格判的是**注册**：三枚 `Shortcut` 自己报的「键序枚数」与 `enabled`。键帽本体不在这一格
+/// 判（Qt 的 QKeySequence 字符串不是产品约定），它在 `PinWindow.qml` 的原文上由源码扫描逐字读。
+/// 这一格也不判「按下」——全仓一枚注入器也没有（`SendInput` 零命中），所以「键按下去那只手有没有
+/// 动」在本档只有 [`the_transform_keys_share_the_menu_route`] 那一枚源码扫描能证到「门与键共指一枚
+/// Action」，逐名记在台账的欠账里，不拿注册冒充。
+fn xf_rows(lines: &[String]) -> Vec<(Check, &'static str, String)> {
+    let num = |k: &str| said(lines, k).and_then(|v| v.parse::<i64>().ok());
+    let read = |k: &str| -> String {
+        said(lines, k)
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+    let miss = |keys: &[&'static str]| -> Vec<&'static str> {
+        keys.iter()
+            .filter(|k| said(lines, k).is_none())
+            .copied()
+            .collect()
+    };
+    let mut out: Vec<(Check, &'static str, String)> = Vec::new();
+
+    // 第一格：§5.9.5 步骤 2「使用数字键或菜单执行向左、向右旋转」+ 步骤 3「以 90 度为基本单位」。
+    // 六次 `trigger()` 走的是菜单那一行背后那枚 Action，角度这一格必须走出
+    // start → +90 → start → +180 → start，一步也不多、一步也不少；一圈之内不许出现非 90 的角。
+    let lost_rot = miss(&[
+        "xf-rot-start",
+        "xf-rot-geo-start",
+        "xf-rot-rev-before",
+        "xf-rot-cw",
+        "xf-rot-rev-cw",
+        "xf-rot-ccw",
+        "xf-rot-rev-ccw",
+        "xf-rot-half",
+        "xf-rot-full",
+        "xf-rot-rev-full",
+        "xf-rot-geo-end",
+    ]);
+    let r0 = num("xf-rot-start");
+    let unit = r0.is_some_and(|v| v.rem_euclid(90) == 0 && (0..=270).contains(&v));
+    let want = |turns: i64| r0.map(|v| (v + turns * 90).rem_euclid(360));
+    out.push((
+        if !lost_rot.is_empty() {
+            Check::Blocked
+        } else {
+            Check::from(
+                unit
+                    && num("xf-rot-cw") == want(1)
+                    && num("xf-rot-ccw") == r0
+                    && num("xf-rot-half") == want(2)
+                    && num("xf-rot-full") == r0
+                    && num("xf-rot-rev-cw") == num("xf-rot-rev-before").map(|v| v + 1)
+                    && num("xf-rot-rev-ccw") == num("xf-rot-rev-before").map(|v| v + 2)
+                    && num("xf-rot-rev-full") == num("xf-rot-rev-before").map(|v| v + 6)
+                    && said(lines, "xf-rot-geo-end") == said(lines, "xf-rot-geo-start"),
+            )
+        },
+        XF_ROWS[0],
+        format!(
+            "本窗进门角度 {}（90 的整数倍且在 0..=270={}），向右一次读回 {}、向左一次读回 {}、再向右两次读回 {}、再向右两次读回 {}；纹理号从 {} 走到 {}（向右一次）再 {}（向左一次）最后 {}（共六次按下）；收梢尺寸 {} 对进门 {}；判据＝§5.9.5 步骤 3 那句「以 90 度为基本单位」在这一格里是**每次按下恰好一步**：+90、一步回到原角、+180、满一圈回到原角，四读同一枚起点算出来的数不相等就是那只手一次迈了两档或压根没迈；六次按下六次涨号，一次不涨就是转过的像素没重编（`rotation` 在 `content_key` 里，不涨意味着窗上还是旧图），两次一起涨就是同一张编了两遍；一圈之后尺寸必须与进门同一枚数——这一格是后面每一格与 `pin window` 那一行的前置：本族不许把窗留在别的尺寸上。「转 90 度窗跟着换横竖」那一半这里**不判**，方图上交换前后同一枚数、天然绿（#433），它的证人是 core 的 `sync_size` 单测。{}",
+            read("xf-rot-start"),
+            unit,
+            read("xf-rot-cw"),
+            read("xf-rot-ccw"),
+            read("xf-rot-half"),
+            read("xf-rot-full"),
+            read("xf-rot-rev-before"),
+            read("xf-rot-rev-cw"),
+            read("xf-rot-rev-ccw"),
+            read("xf-rot-rev-full"),
+            read("xf-rot-geo-end"),
+            read("xf-rot-geo-start"),
+            if lost_rot.is_empty() {
+                "十一枚齐，判的是那四个角、六次涨号、收梢等于进门".to_string()
+            } else {
+                format!("旋转那十一枚不齐（缺 {lost_rot:?}），这一格没有问")
+            },
+        ),
+    ));
+
+    // 第二至第五格：两只翻转、灰度、颜色反转。四格同一形状，所以判据写一次（#281）在
+    // [`xf_toggle`] 那一处，但四枚名字各占一格——§5.9.6 那句是两个落点，§5.9.7 与 §5.9.8
+    // 是两节不同的话。
+    out.push(xf_toggle(
+        lines,
+        "水平翻转",
+        [
+            "xf-fh-start",
+            "xf-fh-on",
+            "xf-fh-rev-on",
+            "xf-fh-off",
+            "xf-fh-rev-off",
+        ],
+        XF_ROWS[1],
+        "§5.9.6 步骤 2「选择水平翻转」与步骤 3「系统更新显示状态」在这一格里是同一枚窗的一进一出",
+        "flipped_h",
+    ));
+    out.push(xf_toggle(
+        lines,
+        "垂直翻转",
+        [
+            "xf-fv-start",
+            "xf-fv-on",
+            "xf-fv-rev-on",
+            "xf-fv-off",
+            "xf-fv-rev-off",
+        ],
+        XF_ROWS[2],
+        "同一句话的另一只手——并成一格就会读不出「只有水平那一只在动」",
+        "flipped_v",
+    ));
+    out.push(xf_toggle(
+        lines,
+        "灰度",
+        [
+            "xf-gray-start",
+            "xf-gray-on",
+            "xf-gray-rev-on",
+            "xf-gray-off",
+            "xf-gray-rev-off",
+        ],
+        XF_ROWS[3],
+        "§5.9.7 步骤 3「显示为灰度」加步骤 4「再次执行可恢复原始颜色」——「恢复」在这一格是回到进门那一格而不是回到某个默认值（#261：进门那格本来就可以是灰的）",
+        "grayscale",
+    ));
+    out.push(xf_toggle(
+        lines,
+        "颜色反转",
+        [
+            "xf-inv-start",
+            "xf-inv-on",
+            "xf-inv-rev-on",
+            "xf-inv-off",
+            "xf-inv-rev-off",
+        ],
+        XF_ROWS[4],
+        "§5.9.8 步骤 3「RGB 反相显示」加步骤 4「再次执行恢复原图」，与灰度同一形状而那只手是另一枚",
+        "inverted",
+    ));
+
+    // 第六格：六枚字面。读的是 Action 自己那一格（菜单行的字面从它抄），判的是 PRD 那四节里的词。
+    let label_keys = [
+        "xf-label-left",
+        "xf-label-right",
+        "xf-label-h",
+        "xf-label-v",
+        "xf-label-gray",
+        "xf-label-inv",
+    ];
+    let lost_label = miss(&label_keys);
+    let wrong: Vec<String> = label_keys
+        .iter()
+        .zip(XF_LABELS)
+        .filter(|(k, want)| said(lines, k) != Some(*want))
+        .map(|(k, want)| format!("{k}={:?} 要 {want:?}", said(lines, k).unwrap_or("<没读>")))
+        .collect();
+    out.push((
+        if lost_label.is_empty() {
+            Check::from(wrong.is_empty())
+        } else {
+            Check::Blocked
+        },
+        XF_ROWS[5],
+        format!(
+            "窗上那六枚 Action 自己报的字面：{}；判据＝§5.9.5 写的是「向左、向右旋转」而不是「顺时针/逆时针」、§5.9.8 写的是「颜色反转」而不是「反色」，六个词逐字比（菜单那一行的字面是从这一格抄的，读两处只会数出两枚读者而它们本来就是同一枚，#281）；方向那一半不在这格里——`向左旋转` 点的必须是 core 的 -90 那一支，那是第一格的读数管的。对不住的是「哪一行挂在哪个落点上」：那一问 QML 里没有活的可读的格，由源码扫描那枚单测逐枚点名（每枚 Action 一处落点、每枚 `MenuItem {{ action: … }}` 指向同一枚 id）。{}",
+            label_keys
+                .iter()
+                .zip(XF_LABELS)
+                .map(|(k, w)| match said(lines, k) {
+                    Some(v) => format!("{k}={v:?}/{w:?}"),
+                    None => format!("{k}=<没读>/{w:?}"),
+                })
+                .collect::<Vec<String>>()
+                .join("，"),
+            if wrong.is_empty() && lost_label.is_empty() {
+                "六枚齐且六个词全对".to_string()
+            } else if !wrong.is_empty() {
+                format!("对不上的：{}", wrong.join("；"))
+            } else {
+                format!("六枚不齐（缺 {lost_label:?}），这一格没有问")
+            },
+        ),
+    ));
+
+    // 第七格：三枚数字键的**注册**。`sequences` 与 `enabled` 是窗上读得到的两格真值；「按下」
+    // 那一跳没有注入器，本档不判也不冒充判（见上面那封信）。
+    let key_read = |k: &str| -> Option<(String, String)> {
+        said(lines, k).and_then(|v| {
+            v.split_once('|')
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+        })
+    };
+    let lost_key: Vec<&str> = XF_KEYS
+        .iter()
+        .filter(|(k, _)| key_read(k).is_none())
+        .map(|(k, _)| *k)
+        .collect();
+    let bad_key: Vec<String> = XF_KEYS
+        .iter()
+        .filter(|(k, _)| match key_read(k) {
+            Some((count, enabled)) => count != "1" || enabled != "true",
+            None => false,
+        })
+        .map(|(k, want)| match key_read(k) {
+            Some((count, enabled)) => {
+                format!("{k} 报 {count}枚键序/{enabled}，要 1枚/true（这一枚钉的键帽是 {want}）")
+            }
+            None => String::new(),
+        })
+        .collect();
+    out.push((
+        if lost_key.is_empty() {
+            Check::from(bad_key.is_empty())
+        } else {
+            Check::Blocked
+        },
+        XF_ROWS[6],
+        format!(
+            "三枚数字键自己报的「注册了几枚键序 | 开开关关」：{}；判据＝每一枚都必须**恰好注册上一枚键序**且 `enabled` 为真——报 0 枚就是那行 `sequences:` 没接上（键压根不在窗上），报 2 枚以上说明有人给同一只手加了指法而本档只钉了一枚，`false` 那一支本腿不可能出现（分组名框从没被开过，§5.12.1 那扇格栅窗不在这条路上，退让那一支不该关掉键）。**键帽「1/2/3」钉在哪一枚键上不在这一格判**：live 这半读到的若是 `String(shortcut.sequences)`，出来的是 Qt 自己那套 QKeySequence 调试串，格式不是产品约定，拿它当判据等于把绿的红的交给 Qt 的版本（#261）；键帽那一半由源码扫描那枚单测在 `PinWindow.qml` 的原文上逐字读，那是文件的字面而不是运行时的字符串。**「按下」这一跳本档没判也不装判**：全仓零枚 `SendInput`，键帽送到哪扇窗这件事在无人值守的机器上做不到；那只手的落点由第一格与第四格按过（`trigger()` 的就是这枚 Shortcut 的 `onActivated` 要叫的同一枚 Action），而「门与菜单确实共指同一枚 Action」由 [`the_transform_keys_share_the_menu_route`] 那枚源码扫描点名。「§5.16.1 用户可在设置中修改快捷键」目前只覆盖全局表 `hotkey.actions`，这三枚窗口内的键还没进那张表——逐名记在台账。{}",
+            XF_KEYS
+                .iter()
+                .map(|(k, _)| {
+                    format!("{k}={:?}", said(lines, k).unwrap_or("<没读>").to_string())
+                })
+                .collect::<Vec<String>>()
+                .join("，"),
+            if !lost_key.is_empty() {
+                format!("三枚不齐（缺 {lost_key:?}），这一格没有问")
+            } else if !bad_key.is_empty() {
+                bad_key.join("；")
+            } else {
+                "三枚齐，判的是各注册上一枚键序、开关为真、以及那一处退让没把键关掉".to_string()
+            },
+        ),
+    ));
+    out
+}
+
+/// 四格同一形状的开关，判据只写这一次（#281）：进门那一格、按一次、再按一次，中间夹两次按下
+/// 各自的纹理号。四枚名字仍各占一格，见 [`xf_rows`] 上面那封信。
+///
+/// 「进门那一格本来就可以已经是 `true`」是被允许的：恢复的是**进门那一格**而不是某个默认值
+/// （#261——拿 100 当不透明度的归位、拿 `false` 当灰度的起点，都是本档替用户的环境作答）。
+/// 于是第一次按下判的是「读回的要与进门的不同」而不是「读回的必须是 `true`」。
+fn xf_toggle(
+    lines: &[String],
+    name: &str,
+    keys: [&'static str; 5],
+    row: &'static str,
+    clause: &str,
+    prop: &str,
+) -> (Check, &'static str, String) {
+    let [start, on, rev_on, off, rev_off] = keys;
+    let num = |k: &str| said(lines, k).and_then(|v| v.parse::<i64>().ok());
+    let read = |k: &str| -> String {
+        said(lines, k)
+            .map(str::to_string)
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+    let lost: Vec<&'static str> = keys
+        .iter()
+        .filter(|k| said(lines, k).is_none())
+        .copied()
+        .collect();
+    let turned = matches!((said(lines, start), said(lines, on)), (Some(a), Some(b)) if a != b);
+    let back = said(lines, off).is_some() && said(lines, off) == said(lines, start);
+    let one_bake = num(rev_off) == num(rev_on).map(|v| v + 1);
+    (
+        if lost.is_empty() {
+            Check::from(turned && back && one_bake)
+        } else {
+            Check::Blocked
+        },
+        row,
+        format!(
+            "{name}（窗上那一格 `view.{prop}`）：进门 {}，按一次读回 {}（纹理号 {}），再按一次读回 {}（纹理号 {}）；判据＝{clause}——第一下必须**翻**（读回的不许是进门那一格；进门本来就已经是灰的，第一下就该翻成不是灰的，这一格不替 PRD 猜起点），第二下必须**还回去**（与进门那一格同一枚值：「再次执行恢复」是回到自己那一格，不是再翻一次别的、也不是回到某个默认值，#261），两下之间纹理号恰好 +1（`{prop}` 在 `content_key` 的那一列里，不涨就是屏幕上的图没跟着这次开关重编；一次翻两格涨就是同一张编了两遍）。{}",
+            read(start),
+            read(on),
+            read(rev_on),
+            read(off),
+            read(rev_off),
+            if lost.is_empty() {
+                "五枚齐，判的是翻、还、号恰好加一".to_string()
+            } else {
+                format!("五枚不齐（缺 {lost:?}），这一格没有问")
+            },
+        ),
+    )
+}
+
 /// §5.9.16 的复制本身、§5.9.17 的那一路文件，各占一枚名字。
 const COPY_ROWS: [&str; 2] = ["pin copy", "pin copy file"];
 /// The one sentence `copy-drawn` handed back, graded twice: whether the copy of a real,
@@ -3772,6 +4242,13 @@ pub fn measure() -> (Check, String) {
     {
         rep.row(label, verdict, detail);
     }
+    // §5.9.5–§5.9.8 的七问读的是长在 `solo-ghost-kept` 之后、`menu` 之前的四十枚 `xf-*`：
+    // 那一族按的是**本窗自己**的六只手，所以要的起点正是独显收回来的那一个（名单空、场上满、
+    // 本窗没被压着），而它自己也收梢——四枚开关各两下、旋转满一圈，后面读对话框的那几枚
+    // 行因此一个字节也没被本族动过。七枚判据一枚也不并，理由写在 [`xf_rows`] 上面那封信里。
+    for (verdict, label, detail) in xf_rows(&lines) {
+        rep.row(label, verdict, detail);
+    }
     // 这一格的开关读的是产品这一趟加载的那一枚，和 `copy_pin` 走的是同一条路。
     for (verdict, label, detail) in copy_rows(&lines, crate::settings::output_cfg().copy_as_file) {
         rep.row(label, verdict, detail);
@@ -3902,6 +4379,11 @@ pub fn measure() -> (Check, String) {
             "开时 enabled={enabled:?} layers={layers:?} hidden={hidden:?}（要求 1、1、非空）；关后 layers={gone_layers:?} hidden={gone_hidden:?}（要求 0、空）；两行任一没读到、或那枚键关着 ⇒ 本格答\"问不了\"而不是答通过"
         ),
     );
+    // 上面那一格读的是账，这一格读的是屏：同一枚贴图在自己窗里读到的 `view.live`，开时该是
+    // `false`、关完该是 `true`，而这两者之间 `dialog_epoch` 得真动过。P123 起 #176 欠的正是
+    // 这一枚证人——账能对平而屏幕上什么都没藏起来，是那一趟唯一没有被问到的那半。
+    let (live_check, live_said_row) = dialog_live(&lines, enabled.as_deref(), &hidden);
+    rep.row("pin dialog live per pin", live_check, live_said_row);
 
     // §10 第 41 项 ②: this door now reads its before-state the way the mask door has since
     // P39, because comparing "some sentence" against "another sentence" was never the claim.
@@ -4228,12 +4710,13 @@ pub fn measure() -> (Check, String) {
 mod tests {
     use super::{
         alpha_num, alpha_rows, alpha_turn, alpha_yes, ask, ask_check, ask_said,
-        census_blames_earlier_phase, close_rows, copy_rows, des_rows, dialog_hygiene,
-        file_pin_rows, gif_rows, leg_order, mov_rows, op_rows, probe_field, probe_ids, probe_rect,
-        qml_leg_keys, real_click, rst_rows, said, same_file, sel_rows, solo_rows, state,
-        unasked_rows, Ask, Check, PhysRect, PinId, ALPHA_MENU_ITEMS, ALPHA_ROWS, CLOSE_ROWS,
-        COPY_ROWS, DES_ROWS, FILE_PIN_ROWS, GIF_ARM_MS, GIF_MENU_ITEMS, GIF_PIN_ROWS, GIF_STILL_MS,
-        LEG_DELAY_MS, MOV_ROWS, OP_ROWS, PIN_SCHEDULE, RST_ROWS, SEL_ROWS, SOLO_ROWS,
+        census_blames_earlier_phase, close_rows, copy_rows, des_rows, dialog_hygiene, dialog_live,
+        file_pin_rows, gif_rows, leg_order, live_said, mov_rows, op_rows, probe_field, probe_ids,
+        probe_rect, qml_leg_keys, real_click, rst_rows, said, same_file, sel_rows, solo_rows,
+        state, unasked_rows, xf_rows, Ask, Check, PhysRect, PinId, ALPHA_MENU_ITEMS, ALPHA_ROWS,
+        CLOSE_ROWS, COPY_ROWS, DES_ROWS, FILE_PIN_ROWS, GIF_ARM_MS, GIF_MENU_ITEMS, GIF_PIN_ROWS,
+        GIF_STILL_MS, LEG_DELAY_MS, MOV_ROWS, OP_ROWS, PIN_SCHEDULE, RST_ROWS, SEL_ROWS, SOLO_ROWS,
+        XF_KEYS, XF_LABELS, XF_ROWS,
     };
     use std::path::Path;
 
@@ -5152,6 +5635,179 @@ mod tests {
         // 产品 `join(",")` 的名单里若混进空段，它不算一枚 id；一枚也没有也不算空。
         assert_eq!(probe_ids(Some("7,")), vec!["7".to_string()]);
         assert!(probe_ids(Some(",")).is_empty());
+    }
+
+    /// `dlg-live-*` 的三样缺席读成同一个答案，与上面两格**相反**：那里 `covering` 与 `pin` 是
+    /// 两种问法（"这一格没有这个字段" 与 "这个字段是空的"），而这里没有——屏上读不到屏上，
+    /// 就是问不出。
+    #[test]
+    fn a_live_reading_carries_the_pin_it_speaks_for() {
+        assert_eq!(live_said(Some("7=false")), Some(("7".to_string(), false)));
+        assert_eq!(live_said(Some("7=true")), Some(("7".to_string(), true)));
+
+        assert_eq!(live_said(None), None);
+        // 键改了名而值没跟上：一枚没有 id 的 live，门无从知道它替谁说话。
+        assert_eq!(live_said(Some("false")), None);
+        assert_eq!(live_said(Some("=false")), None);
+        // 不是 `true`/`false`：`"1"` 是桥那一侧的写法（`enabled=1`），借到这一格就是两份事实
+        // 各用一套记号，而这一格读的是 QML 那句 `String(view.live)`。
+        assert_eq!(live_said(Some("7=1")), None);
+        assert_eq!(live_said(Some("7")), None);
+    }
+
+    /// 这一格的整条判据是「账说藏了，屏上就得真没了；账说收回，屏上就得真回来」，而**中间那一步
+    /// 是 epoch 动过**。三臂各挡住一种会绿的读法：
+    /// ① 账平而屏没动（P123 起 #176 欠的那一枚证人）；② 屏上恰好自己空了（#316）；
+    /// ③ 两半说的不是同一枚贴图（一趟里换了一枚说话，量的就不是同一次隐藏）。
+    /// 第四臂是诚实的另一半：账上没藏的那一枚，屏上**留着**才是对的。
+    #[test]
+    fn dialog_live_asks_the_screen_and_not_the_account() {
+        let ls = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}|{v}")).collect()
+        };
+        let grade = |pairs: &[(&str, &str)], hidden: &[&str]| {
+            let list: Vec<String> = hidden.iter().map(|s| s.to_string()).collect();
+            dialog_live(&ls(pairs), Some("1"), &list).0
+        };
+        let hidden = ["7"];
+        let good = [
+            ("dlg-live-open", "7=false"),
+            ("dlg-live-gone", "7=true"),
+            ("dlg-epoch-open", "3"),
+            ("dlg-epoch-gone", "4"),
+        ];
+        assert_eq!(grade(&good, &hidden), Check::Pass, "藏了、回来了、中间动过");
+
+        // ① 账上藏着它，屏上却还站着。
+        assert_eq!(
+            grade(
+                &[
+                    ("dlg-live-open", "7=true"),
+                    ("dlg-live-gone", "7=true"),
+                    ("dlg-epoch-open", "3"),
+                    ("dlg-epoch-gone", "4"),
+                ],
+                &hidden
+            ),
+            Check::Fail,
+            "layers=1、hidden 非空而屏上没动 ⇒ 这一格必须红"
+        );
+        // 收回那一半没回来。
+        assert_eq!(
+            grade(
+                &[
+                    ("dlg-live-open", "7=false"),
+                    ("dlg-live-gone", "7=false"),
+                    ("dlg-epoch-open", "3"),
+                    ("dlg-epoch-gone", "4"),
+                ],
+                &hidden
+            ),
+            Check::Fail,
+            "藏了却没放回来 ⇒ 步骤 4 没走"
+        );
+        // ② epoch 一格没动：两半看着像结果，其实是巧合。
+        assert_eq!(
+            grade(
+                &[
+                    ("dlg-live-open", "7=false"),
+                    ("dlg-live-gone", "7=true"),
+                    ("dlg-epoch-open", "3"),
+                    ("dlg-epoch-gone", "3"),
+                ],
+                &hidden
+            ),
+            Check::Fail,
+            "§5.5.11 那一声没扇出来，这两半就不是它的结果"
+        );
+        // ③ 两半换了枚贴图。
+        assert_eq!(
+            grade(
+                &[
+                    ("dlg-live-open", "7=false"),
+                    ("dlg-live-gone", "8=true"),
+                    ("dlg-epoch-open", "3"),
+                    ("dlg-epoch-gone", "4"),
+                ],
+                &hidden
+            ),
+            Check::Fail,
+            "开时替 7 说话、关完替 8 说话 ⇒ 量的不是同一次隐藏"
+        );
+        // ④ 账上没藏 8，屏上留着才是对的（读得到矩形、而这一枚不压在那扇窗上那一臂）。
+        assert_eq!(
+            grade(
+                &[
+                    ("dlg-live-open", "8=true"),
+                    ("dlg-live-gone", "8=true"),
+                    ("dlg-epoch-open", "3"),
+                    ("dlg-epoch-gone", "4"),
+                ],
+                &hidden
+            ),
+            Check::Pass,
+            "没藏着却不许屏上消失，是把保守读法当成了判据"
+        );
+        assert_eq!(
+            grade(
+                &[
+                    ("dlg-live-open", "8=false"),
+                    ("dlg-live-gone", "8=true"),
+                    ("dlg-epoch-open", "3"),
+                    ("dlg-epoch-gone", "4"),
+                ],
+                &hidden
+            ),
+            Check::Fail,
+            "账上没藏它，屏上却少了 ⇒ 藏着与放着的名单不一致"
+        );
+
+        // 读不到就是问不出，四种缺法同一种答。
+        for miss in [
+            &[
+                ("dlg-live-gone", "7=true"),
+                ("dlg-epoch-open", "3"),
+                ("dlg-epoch-gone", "4"),
+            ][..],
+            &[
+                ("dlg-live-open", "7=false"),
+                ("dlg-epoch-open", "3"),
+                ("dlg-epoch-gone", "4"),
+            ][..],
+            &[
+                ("dlg-live-open", "7=false"),
+                ("dlg-live-gone", "7=true"),
+                ("dlg-epoch-gone", "4"),
+            ][..],
+            &[
+                ("dlg-live-open", "7=false"),
+                ("dlg-live-gone", "7=true"),
+                ("dlg-epoch-open", "3"),
+            ][..],
+        ] {
+            assert_eq!(
+                dialog_live(
+                    &ls(miss),
+                    Some("1"),
+                    &hidden.iter().map(|s| s.to_string()).collect::<Vec<_>>()
+                )
+                .0,
+                Check::Blocked,
+                "缺一枚读数 ⇒ 问不了，不是红"
+            );
+        }
+        // 那枚键关着：步骤 1 是用户的决定，这一格不替它记功。
+        let list7: Vec<String> = hidden.iter().map(|s| s.to_string()).collect();
+        assert_eq!(
+            dialog_live(&ls(&good), Some("0"), &list7).0,
+            Check::Blocked,
+            "出厂 false 那一臂不许写成通过"
+        );
+        assert_eq!(
+            dialog_live(&ls(&good), None, &list7).0,
+            Check::Blocked,
+            "连键都没读到也是问不了"
+        );
     }
 
     /// §5.10.1 的那一份名单是**全局**的（core 里只有一枚 `BTreeSet<PinId>`），而 cargo 把同档
@@ -6792,6 +7448,356 @@ mod tests {
         assert!(
             !main.contains("resetTick()"),
             "别名若被当成函数调用，绑定就不会随 notify 重新求值"
+        );
+    }
+
+    /// §5.9.5–§5.9.8 的七枚判据各有各的失败形状：一次迈两档、按了不涨号、满一圈没回到进门的
+    /// 尺寸、翻转没翻、翻转没还回去、两下涨了不止一格、菜单词被改写、键帽注册了不止一枚——
+    /// 每一面只红自己那一枚，其余照旧绿。好的一趟该七枚全绿。缺读数的那几格是「没有问」而不是
+    /// 红（#453），这一族里唯一一处天然绿的尺（转 90 度换横竖）压根不设（#433）。
+    #[test]
+    fn the_seven_transform_rows_answer_apart_for_each_way_the_display_state_can_fail() {
+        let legs = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}|{v}")).collect()
+        };
+        let at = |rows: &[(Check, &'static str, String)], i: usize| rows[i].0;
+        let flip = |pairs: &[(&'static str, &'static str)],
+                    key: &'static str,
+                    value: &'static str|
+         -> Vec<(&'static str, &'static str)> {
+            pairs
+                .iter()
+                .map(|(k, v)| if *k == key { (*k, value) } else { (*k, *v) })
+                .collect()
+        };
+
+        // 一趟「产品全对」的四十枚读数：进门 0 度、窗 120x80、纹理号 10，六次按下走到 16，
+        // 四枚开关各两下走到 24。这几枚数是本档替量规写的**形状**，不是产品的默认值：进门那格
+        // 换成 90 度或换成「已经是灰的」，七枚行照样该全绿（下面 `pre_gray` 那一臂就验这一句）。
+        let good: [(&str, &str); 40] = [
+            ("xf-rot-start", "0"),
+            ("xf-rot-geo-start", "120x80"),
+            ("xf-rot-rev-before", "10"),
+            ("xf-rot-cw", "90"),
+            ("xf-rot-rev-cw", "11"),
+            ("xf-rot-ccw", "0"),
+            ("xf-rot-rev-ccw", "12"),
+            ("xf-rot-half", "180"),
+            ("xf-rot-full", "0"),
+            ("xf-rot-rev-full", "16"),
+            ("xf-rot-geo-end", "120x80"),
+            ("xf-fh-start", "false"),
+            ("xf-fh-on", "true"),
+            ("xf-fh-rev-on", "17"),
+            ("xf-fh-off", "false"),
+            ("xf-fh-rev-off", "18"),
+            ("xf-fv-start", "false"),
+            ("xf-fv-on", "true"),
+            ("xf-fv-rev-on", "19"),
+            ("xf-fv-off", "false"),
+            ("xf-fv-rev-off", "20"),
+            ("xf-gray-start", "false"),
+            ("xf-gray-on", "true"),
+            ("xf-gray-rev-on", "21"),
+            ("xf-gray-off", "false"),
+            ("xf-gray-rev-off", "22"),
+            ("xf-inv-start", "false"),
+            ("xf-inv-on", "true"),
+            ("xf-inv-rev-on", "23"),
+            ("xf-inv-off", "false"),
+            ("xf-inv-rev-off", "24"),
+            ("xf-label-left", "向左旋转"),
+            ("xf-label-right", "向右旋转"),
+            ("xf-label-h", "水平翻转"),
+            ("xf-label-v", "垂直翻转"),
+            ("xf-label-gray", "灰度"),
+            ("xf-label-inv", "颜色反转"),
+            ("xf-key-left", "1|true"),
+            ("xf-key-right", "1|true"),
+            ("xf-key-gray", "1|true"),
+        ];
+        let all = xf_rows(&legs(&good));
+        let names: Vec<&str> = all.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, XF_ROWS.to_vec(), "{names:?}");
+        for row in &all {
+            assert_eq!(row.0, Check::Pass, "好的一趟该七枚全绿：{:#?}", row.2);
+        }
+
+        // 进门就已经是灰的、已经是翻的：第一下该翻成**不是**灰的，第二下该还回「是灰的」。
+        // 这一臂是 #261 的证人——判据若写死「按一次读回 true」，产品在这里就红了而它没错。
+        let pre_gray = flip(&good, "xf-gray-start", "true");
+        let pre_gray = flip(&pre_gray, "xf-gray-on", "false");
+        let pre_gray = flip(&pre_gray, "xf-gray-off", "true");
+        let entered = xf_rows(&legs(&pre_gray));
+        assert_eq!(
+            at(&entered, 3),
+            Check::Pass,
+            "灰度那一格读的是自己那两枚：{:#?}",
+            entered[3].2
+        );
+        for i in 0..7 {
+            assert_eq!(
+                at(&entered, i),
+                Check::Pass,
+                "第 {i} 问不替用户作答：{:#?}",
+                entered[i].2
+            );
+        }
+
+        // 一次迈两档：向右那一下读回 180。角度那一枚红，字面与键照旧绿——它们是三只不同的手。
+        let over = flip(&good, "xf-rot-cw", "180");
+        let over = xf_rows(&legs(&over));
+        assert_eq!(at(&over, 0), Check::Fail, "{:#?}", over[0].2);
+        for i in 1..7 {
+            assert_eq!(at(&over, i), Check::Pass, "第 {i} 问不读角度");
+        }
+
+        // 按了不涨号：转过了却没重编纹理，屏幕上的图还是进门那一张。
+        let no_bake = flip(&good, "xf-rot-rev-cw", "10");
+        let no_bake = xf_rows(&legs(&no_bake));
+        assert_eq!(at(&no_bake, 0), Check::Fail, "{:#?}", no_bake[0].2);
+        for i in 1..7 {
+            assert_eq!(at(&no_bake, i), Check::Pass, "第 {i} 问不读旋转那一族的号");
+        }
+
+        // 满一圈没把窗收回进门的尺寸：后续每一格与 `pin window` 那一行读的就不是同一枚窗了。
+        let grown = flip(&good, "xf-rot-geo-end", "80x120");
+        let grown = xf_rows(&legs(&grown));
+        assert_eq!(at(&grown, 0), Check::Fail, "{:#?}", grown[0].2);
+        for i in 1..7 {
+            assert_eq!(at(&grown, i), Check::Pass, "第 {i} 问不读几何");
+        }
+
+        // 进门角度不是 90 的整数倍：本族没把窗留在这种角度上，出现了就是有人在 core 外面转它。
+        let skewed = flip(&good, "xf-rot-start", "45");
+        let skewed = flip(&skewed, "xf-rot-cw", "135");
+        let skewed = flip(&skewed, "xf-rot-half", "225");
+        let skewed = xf_rows(&legs(&skewed));
+        assert_eq!(
+            at(&skewed, 0),
+            Check::Fail,
+            "步长那一问读的是整圈：{:#?}",
+            skewed[0].2
+        );
+
+        // 翻转按下去没动：窗上那一格还是进门那一格。
+        let stuck = flip(&good, "xf-fh-on", "false");
+        let stuck = xf_rows(&legs(&stuck));
+        assert_eq!(at(&stuck, 1), Check::Fail, "{:#?}", stuck[1].2);
+        assert_eq!(at(&stuck, 2), Check::Pass, "垂直那一只没被这一枚反证碰到");
+        for i in [0, 3, 4, 5, 6] {
+            assert_eq!(at(&stuck, i), Check::Pass, "第 {i} 问不读水平那两枚");
+        }
+
+        // 第二下没还回去（还翻着）：§5.9.6 步骤 3 与 §5.9.7 步骤 4 那两句「恢复」红了。
+        let unturned = flip(&good, "xf-fv-off", "true");
+        let unturned = xf_rows(&legs(&unturned));
+        assert_eq!(at(&unturned, 2), Check::Fail, "{:#?}", unturned[2].2);
+        assert_eq!(
+            at(&unturned, 1),
+            Check::Pass,
+            "水平那一只没被这一枚反证碰到"
+        );
+
+        // 两下涨了不止一格：同一张图编了两遍，代价那一枚红而翻与还那两问照旧。
+        let double = flip(&good, "xf-inv-rev-off", "26");
+        let double = xf_rows(&legs(&double));
+        assert_eq!(at(&double, 4), Check::Fail, "{:#?}", double[4].2);
+        for i in [0, 1, 2, 3, 5, 6] {
+            assert_eq!(at(&double, i), Check::Pass, "第 {i} 问不读反转那一族的号");
+        }
+
+        // 菜单词被改写成「反色」：PRD §5.9.8 步骤 2 写的就是「颜色反转」四个字。
+        let stale = flip(&good, "xf-label-inv", "反色");
+        let stale = xf_rows(&legs(&stale));
+        assert_eq!(at(&stale, 5), Check::Fail, "{:#?}", stale[5].2);
+        for i in [0, 1, 2, 3, 4, 6] {
+            assert_eq!(at(&stale, i), Check::Pass, "第 {i} 问不读字面");
+        }
+
+        // 键被关掉（分组名框那处退让在没开过格栅窗的一趟里不该发生），以及同一只手注册了两枚键帽。
+        let muted = flip(&good, "xf-key-gray", "1|false");
+        let muted = xf_rows(&legs(&muted));
+        assert_eq!(at(&muted, 6), Check::Fail, "{:#?}", muted[6].2);
+        for i in 0..6 {
+            assert_eq!(at(&muted, i), Check::Pass, "第 {i} 问不读键");
+        }
+        let doubled = flip(&good, "xf-key-left", "2|true");
+        let doubled = xf_rows(&legs(&doubled));
+        assert_eq!(
+            at(&doubled, 6),
+            Check::Fail,
+            "一枚键上两把键帽：{:#?}",
+            doubled[6].2
+        );
+
+        // 缺读数：那一格是「没有问」，其余六格照旧绿（红是给产品的话，不是给门的）。
+        let mut no_rot: Vec<(&str, &str)> = good.to_vec();
+        no_rot.retain(|(k, _)| *k != "xf-rot-rev-full");
+        let blind = xf_rows(&legs(&no_rot));
+        assert_eq!(at(&blind, 0), Check::Blocked, "{:#?}", blind[0].2);
+        for i in 1..7 {
+            assert_eq!(at(&blind, i), Check::Pass, "第 {i} 问不读旋转那十二枚");
+        }
+
+        let mut no_switch: Vec<(&str, &str)> = good.to_vec();
+        no_switch.retain(|(k, _)| *k != "xf-fh-rev-off");
+        let blind = xf_rows(&legs(&no_switch));
+        assert_eq!(at(&blind, 1), Check::Blocked, "{:#?}", blind[1].2);
+        assert_eq!(at(&blind, 2), Check::Pass, "垂直那一格与水平那枚缺读数无关");
+
+        let mut no_label: Vec<(&str, &str)> = good.to_vec();
+        no_label.retain(|(k, _)| *k != "xf-label-left");
+        let blind = xf_rows(&legs(&no_label));
+        assert_eq!(at(&blind, 5), Check::Blocked, "{:#?}", blind[5].2);
+
+        let mut no_key: Vec<(&str, &str)> = good.to_vec();
+        no_key.retain(|(k, _)| *k != "xf-key-right");
+        let blind = xf_rows(&legs(&no_key));
+        assert_eq!(at(&blind, 6), Check::Blocked, "{:#?}", blind[6].2);
+
+        // 一句也不说：七枚全是 Blocked，一枚也不红。
+        let silent = xf_rows(&[]);
+        assert_eq!(silent.len(), 7, "{silent:?}");
+        for row in &silent {
+            assert_eq!(row.0, Check::Blocked, "{:#?}", row.2);
+        }
+    }
+
+    /// 那三枚数字键与那六行菜单共指同一批落点，逐串现读 `PinWindow.qml`（引语要回盘上档案对
+    /// #271/#341）。四件事各判各的：① 每枚 Action 的 `id` 与落点各一处（多一处就是第二条路绕过
+    /// 了菜单那一行）；② 每行菜单只写 `action:`，字面不重述；③ 三枚 `Shortcut` 块内**同一块里**
+    /// 键帽、上下文、退让、`trigger()` 四行齐——分开数枚数就证不出「这一枚键叫的是这一只手」；
+    /// ④ 四十枚 `gaugeSay("xf-` 与 `PIN_SCHEDULE` 里那四十枚同名键一枚不多一枚不少。
+    #[test]
+    fn the_transform_keys_share_the_menu_route() {
+        let src = include_str!("../qml/PinWindow.qml");
+
+        // ① 六枚落点：`id` 一次、handler 一次。handler 住的是 core 那六只手的名字。
+        let hands = [
+            ("rotateLeftAction", "win.view.rotateCcw()"),
+            ("rotateRightAction", "win.view.rotateCw()"),
+            ("flipHAction", "win.view.flipH()"),
+            ("flipVAction", "win.view.flipV()"),
+            ("grayscaleAction", "win.view.toggleGrayscale()"),
+            ("invertAction", "win.view.toggleInvert()"),
+        ];
+        for (id, landing) in hands {
+            let decl = src.matches(&format!("id: {id}")).count();
+            let handler = src.matches(&format!("onTriggered: {landing}")).count();
+            let menu = src.matches(&format!("MenuItem {{ action: {id} }}")).count();
+            assert_eq!(decl, 1, "`{id}` 的声明该只有一处，读到 {decl}");
+            assert_eq!(
+                handler, 1,
+                "`{id}` 的落点该只有一处（{landing}），读到 {handler}——两处就是两条路"
+            );
+            assert_eq!(menu, 1, "菜单里 `{id}` 那一行该只挂一处，读到 {menu}");
+        }
+
+        // ② 三枚键：块内四行齐，且 `trigger()` 叫的正是上面那枚 Action。
+        let keys = [
+            ("rotateLeftKey", "1", "rotateLeftAction"),
+            ("rotateRightKey", "2", "rotateRightAction"),
+            ("grayscaleKey", "3", "grayscaleAction"),
+        ];
+        let block = |from: &str| -> String {
+            let start = src.find(from).unwrap_or_else(|| panic!("找不到 {from}"));
+            let rest = &src[start..];
+            let end = rest.find("\n    }").unwrap_or(rest.len());
+            rest[..end].to_string()
+        };
+        for (id, cap, action) in keys {
+            let text = block(&format!("id: {id}"));
+            assert!(
+                text.contains(&format!("sequences: [\"{cap}\"]")),
+                "`{id}` 这一块里没读到键帽 {cap}：{text}"
+            );
+            assert!(
+                text.contains("context: Qt.WindowShortcut"),
+                "`{id}` 不许是 ApplicationShortcut：那会把 {cap} 从别的窗带走：{text}"
+            );
+            assert!(
+                text.contains("enabled: !groupField.activeFocus"),
+                "`{id}` 少了格栅窗那处退让：用户打「{cap}」就成了一次手势：{text}"
+            );
+            assert!(
+                text.contains(&format!("onActivated: {action}.trigger()")),
+                "`{id}` 叫的不是 `{action}`：门与键就不是同一只手了：{text}"
+            );
+        }
+        // 退让那一枚数数的是**代码行**而不是裸词：上面那封信里就引用了同一串字面（带反引号），
+        // 拿裸词数会数出四枚而产品只有三枚——这一族在 `translate_selection` 那一枚反证里记过同一课。
+        assert_eq!(
+            src.matches("\n        enabled: !groupField.activeFocus")
+                .count(),
+            3,
+            "这处退让只该长在那三枚键上，读到不同"
+        );
+
+        // ③ 反证两面：PRD 没写过的词不许进窗；PRD 没给键的那三只手不许自己长出一枚键来
+        // （§5.9.6 只说「选择水平翻转或垂直翻转」、§5.9.8 只说「选择"颜色反转"」，两句都没有键）。
+        for banned in ["text: \"顺时针\"", "text: \"逆时针\"", "text: \"反色\""] {
+            assert_eq!(
+                src.matches(banned).count(),
+                0,
+                "菜单里不许出现 PRD 之外的说法：{banned}"
+            );
+        }
+        for orphan in ["flipHAction", "flipVAction", "invertAction"] {
+            assert_eq!(
+                src.matches(&format!("onActivated: {orphan}.trigger()"))
+                    .count(),
+                0,
+                "`{orphan}` 不该被一枚 `Shortcut` 叫：PRD 那两节没给键，本档也不替它补一枚"
+            );
+        }
+
+        // ④ 四十枚腿：量规说的枚数与 `PIN_SCHEDULE` 里 `xf-` 那一族的枚数同一枚数。
+        let legs = src.matches("gaugeSay(\"xf-").count();
+        let scheduled = PIN_SCHEDULE.iter().filter(|k| k.starts_with("xf-")).count();
+        assert_eq!(legs, 40, "`runGauge` 里 `xf-` 那一族说了 {legs} 枚");
+        assert_eq!(scheduled, 40, "排程里 `xf-` 那一族收了 {scheduled} 枚");
+        assert_eq!(legs, scheduled, "说的与排程的必须同一批名字（两侧都数）");
+    }
+
+    /// 六个词在本档只写一次：`XF_LABELS` 是 PRD 那四句的**唯一**一处誊写处（#281），窗上每枚
+    /// Action 的 `text:` 各一处，菜单那一行没有第二处。四句原文抄在下面，改动任何一枚都得
+    /// 对着这四句改——这一枚单测就是那四句的第二枚读者。
+    #[test]
+    fn the_six_transform_labels_are_written_exactly_once_each() {
+        // PRD §5.9.5 步骤 2「使用数字键或菜单执行向左、向右旋转」
+        // PRD §5.9.6 步骤 2「选择水平翻转或垂直翻转」
+        // PRD §5.9.7 步骤 2「使用对应快捷键或菜单选择“灰度”」
+        // PRD §5.9.8 步骤 2「选择“颜色反转”」
+        assert_eq!(
+            XF_LABELS,
+            [
+                "向左旋转",
+                "向右旋转",
+                "水平翻转",
+                "垂直翻转",
+                "灰度",
+                "颜色反转",
+            ],
+            "六枚词是上面那四句的誊写处，改动要对那四句改"
+        );
+        let src = include_str!("../qml/PinWindow.qml");
+        for word in XF_LABELS {
+            let on_action = src.matches(&format!("text: \"{word}\"")).count();
+            let on_menu = src
+                .matches(&format!("MenuItem {{ text: \"{word}\""))
+                .count();
+            assert_eq!(on_action, 1, "窗上「{word}」该只写一次，读到 {on_action}");
+            assert_eq!(
+                on_menu, 0,
+                "菜单不许重述「{word}」：字面只有 Action 那一枚读者"
+            );
+        }
+        assert_eq!(XF_LABELS.len(), 6, "六枚词与六枚 Action 同一枚数");
+        assert_eq!(
+            XF_KEYS.len(),
+            3,
+            "三枚键帽：§5.9.5 两枚、§5.9.7 一枚，§5.9.6 与 §5.9.8 原文没给键"
         );
     }
 }

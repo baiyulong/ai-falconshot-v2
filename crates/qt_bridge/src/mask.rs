@@ -28,7 +28,8 @@ use std::time::Instant;
 use falcon_core::capture::ScreenSnapshot;
 use falcon_core::encode;
 use falcon_core::geometry::{
-    handle_at, nudge, nudge_edge, resize, Handle, PhysPoint, PhysRect, Scale, DEFAULT_HIT_SLOP,
+    anchor_of_corner, anchor_of_drag, constrain_aspect, handle_at, nudge, nudge_edge, parse_ratio,
+    resize, set_size_within, Anchor, Handle, PhysPoint, PhysRect, Scale, Unit, DEFAULT_HIT_SLOP,
 };
 use falcon_core::naming;
 
@@ -50,6 +51,137 @@ pub(crate) const GAUGE_FLAGS: [&str; 6] =
 /// because QML draws it, the shader multiplies by it and `--mask` asserts a
 /// readback against `1 - DIM` - three places that have to disagree by design.
 pub const DIM: f64 = 0.6;
+
+/// §5.3.8 第一步与第二步的清单：`(芯片标签, 可被 `parse_ratio` 解的比例串, 悬停句)`。
+///
+/// 一份清单只长一处，与 `annotate::TOOL_TEXTS` 同一条口径 —— 标签、比例与句子必须同枚同序，
+/// 而把它们抄进 QML 之后，第 `i` 枚钮说的就不再是第 `i` 个比例。
+///
+/// 第 0 枚是「无」且比例串为空：§5.3.8 的规则只说"用户应可以临时解除比例约束"，而把解除做成
+/// 一格能按回去的芯片，比只有一条"按住 Alt"的手势多一条**看得见**的路。`ratio_index` 落在这一枚
+/// 时锁是彻底关着的（不是 1:1 那种"看着像没锁"）。
+pub const RATIO_CELLS: [(&str, &str, &str); 4] = [
+    ("无", "", "无：选区不锁宽高比，拖到哪算哪"),
+    ("1:1", "1:1", "1:1：拖角点时保持正方形"),
+    ("4:3", "4:3", "4:3：拖角点时保持 4 比 3"),
+    ("16:9", "16:9", "16:9：拖角点时保持 16 比 9"),
+];
+
+/// §5.3.8 第二句规则「用户应可以临时解除比例约束」里**那句话**的唯一主人。
+///
+/// 这一枚常量的理由不是"文案要集中"，而是漂移：按 Alt 这件事写在 [`MaskState::drag`] 的
+/// `unlocked` 参数上，而用户能看见它的唯一一处是芯片的悬停句。句子抄在 QML 里，QML 改了而
+/// Rust 没改（或反过来）时，屏幕上教的手势就不是手指真正要做的那个 —— 而没有任何一格会因此变红。
+/// 于是句子从这里拼过去，且只拼给**真的锁着**的那几枚（见 [`ratio_hints`]）。
+pub const RATIO_RELEASE_HINT: &str = "按住 Alt 可临时解除";
+
+/// 标签，按 [`RATIO_CELLS`] 序、`|` 分隔 —— 与 [`ratio_hints`] 同枚数同序。
+pub fn ratio_names() -> String {
+    RATIO_CELLS
+        .iter()
+        .map(|(name, _, _)| *name)
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// 同一排的悬停句，按 [`RATIO_CELLS`] 序、`|` 分隔（§5.21.2 第一枚的又一处落点）。
+///
+/// 每一句后面跟着 [`RATIO_RELEASE_HINT`] —— 但只跟在那一枚比例串**真的解得开**的芯片后面。
+/// 「无」那一格没有可解除的东西，教它一句"按住 Alt"就是把一条不存在的手势写到屏幕上。
+/// 判据因此不是芯片标签、也不是 index，而是 `parse_ratio(spec)`：与 [`MaskState::ratio_lock`]
+/// 问的是同一枚函数，句子和锁没法各说各话。
+pub fn ratio_hints() -> String {
+    RATIO_CELLS
+        .iter()
+        .map(|(_, spec, hint)| {
+            if parse_ratio(spec).is_some() {
+                format!("{hint}，{RATIO_RELEASE_HINT}")
+            } else {
+                (*hint).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// 锚点在桥上的序号：与 [`RATIO_CELLS`] 同一条口径，**名字与序号都住在 Rust**，QML 只把第
+/// `i` 个名字贴在第 `i` 个序号上。抄一份到 QML 之后，"屏幕上写着左上角而 Rust 用的那枚是
+/// BottomRight"就成了第二条可以各自漂移的路，而没有一格会因此变红。
+pub const SIZE_ANCHOR_NAMES: [&str; 5] = ["左上角", "右上角", "左下角", "右下角", "中心"];
+
+/// [`Anchor`] → 序号。手写五支而不是 `as i32`：枚举的**声明序**不是契约，而这一枚序号是
+/// [`SIZE_ANCHOR_NAMES`] 唯一的下标来历。`the_anchor_code_table_covers_every_anchor` 那一格
+/// 钉的就是这两者不能各长各的。
+pub fn anchor_code(anchor: Anchor) -> i32 {
+    match anchor {
+        Anchor::TopLeft => 0,
+        Anchor::TopRight => 1,
+        Anchor::BottomLeft => 2,
+        Anchor::BottomRight => 3,
+        Anchor::Center => 4,
+    }
+}
+
+/// §5.3.6 第一条规则「应明确选区从哪个方向或锚点扩展」里那枚锚点的名字表，`|` 分隔、按
+/// [`anchor_code`] 序 —— 与 [`ratio_names`] 同一形状。
+pub fn size_anchor_names() -> String {
+    SIZE_ANCHOR_NAMES.join("|")
+}
+
+/// §5.3.7 第二步的那两格单位，**清单只长这一处**：桥上的序号、页上的字样、以及"点一下切到
+/// 哪一格"全都从这一枚数组读出来。把 `["px","dip"]` 抄进 QML 之后，第 `i` 枚字样说的就不再
+/// 是第 `i` 个单位 —— 而单位这件事说错的代价是数字本身：屏幕上写着 683 而裁下去是 1024，
+/// 用户看到的是一句换算错的谎，不是一格样式不对的钮。
+///
+/// P164 起这枚数组是 [`Unit::ALL`] 的别名而不是第二份清单：设置页那一格（`[capture] size_unit`）
+/// 的闸也要数这两枚单位，两处各抄一遍就会有一处漂 —— 芯片的序、字样的序、页上收下的拼法自此
+/// 是同一枚序。
+///
+/// 顺序即序号，[`unit_code`] 手写两支而不是 `as i32`：同 [`anchor_code`] 那条理由，枚举的
+/// **声明序**不是契约。
+pub const SIZE_UNITS: [Unit; 2] = Unit::ALL;
+
+/// [`Unit`] → 序号（[`SIZE_UNITS`] 的下标）。
+pub fn unit_code(unit: Unit) -> i32 {
+    match unit {
+        Unit::Px => 0,
+        Unit::Dip => 1,
+    }
+}
+
+/// 序号 → [`Unit`]。过界的序号不被当成"用户挑了 0 格"：`0` 是 px，而一次页面上的错序点击
+/// 什么也没挑，所以它答出厂的那一格（[`Unit::default`] = px）。
+pub fn unit_at_code(code: i32) -> Unit {
+    usize::try_from(code)
+        .ok()
+        .and_then(|i| SIZE_UNITS.get(i).copied())
+        .unwrap_or_default()
+}
+
+/// 单位字样表，`|` 分隔、按 [`unit_code`] 序 —— 与 [`size_anchor_names`] 同一形状：
+/// **序号过桥、句子留在 Rust**（句子本身是 [`Unit::label`]，所以这张表没有第二个主人）。
+pub fn unit_names() -> String {
+    SIZE_UNITS
+        .iter()
+        .map(|u| u.label())
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+/// 那两枚芯片各自的悬停句，序与 [`SIZE_UNITS`] 一一对上（`the_unit_tables_cover_every_unit_and_agree_on_their_own_length`
+/// 钉住这两枚不许各长各的 —— 页拿第 `i` 句配第 `i` 枚字样，错一格就是一句贴在错单位上的话）。
+///
+/// 两句都说的是**这一格会改什么东西**，而不是把单位名再念一遍：点下去变的不只是读数末尾那两个
+/// 字母，还有"打字进去的那对数被怎么解释"。这一句不说清楚，用户就会以为切了单位只是换个写法。
+pub const UNIT_HINTS: [&str; 2] = [
+    "按实际像素说：这对数就是结果详情里那句「… 像素」的那对数",
+    "按设备无关像素说：这对数是按当前显示器缩放除过的，缩放不是 100% 时它与实际像素不成一比一",
+];
+
+/// 悬停句表，`|` 分隔 —— 与 [`unit_names`] 同一形状。
+pub fn unit_hints() -> String {
+    UNIT_HINTS.join("|")
+}
 
 /// Which screen a confirmed selection came from, as an index into the pairs it is
 /// given - `(monitor name, physical bounds)`, the two things the question reads.
@@ -129,6 +261,80 @@ pub fn esc_owes_row(save_all: bool, had_selection: bool) -> bool {
     save_all && had_selection
 }
 
+/// `[advanced] recognize_text` 那枚键的分岔本体：新记成的这一行值不值得为它跑一次引擎。
+///
+/// 两个条件各有对面。键关着 ⇒ 一次也不该跑，而出厂默认就是关着（`config.rs` 的
+/// `Advanced::default`），所以「默认什么都不做」这一条自此有可测的形状而不是话术。
+/// 行是**取消**的那一行 ⇒ 也不该跑：§5.14.1 要「包括被取消的截图」进的是那一页清单，
+/// 而一张用户已经 Esc 掉的图没有第二位读者会去要它的文字，跑一次只是白占几百毫秒 CPU。
+///
+/// 纯函数，与上面 [`esc_owes_row`] 同一条理由：这一格判的是「要不要花一次引擎」，
+/// `cargo test` 问它四种形状既不用冻结桌面，也不用本机 OCR 引擎在场。
+pub fn auto_ocr_wanted(recognize_text: bool, cancelled: bool) -> bool {
+    recognize_text && !cancelled
+}
+
+/// 引擎那句话翻成 SQLite 那一格的值，两件事必须保持两个形状：`None` 是**没跑成**（引擎缺、
+/// 帧读不动、这一行本就不该跑），那一格留着 NULL；`Some(_)` 是跑成了。
+///
+/// 跑成之后还折一次：一帧全是空白（识别回来的只有空格与换行）与识别出字是两件事 —— 那一格
+/// 若写进一串空白，界面读回来会说「这一行有文字」而用户看见的是空的。故空白折成空串，
+/// 非空原样交回（**不** trim 掉行内换行，§5.6.1「结果应尽量保留自然段和换行」在那儿钉着）。
+pub fn auto_ocr_slot(outcome: Option<String>) -> Option<String> {
+    outcome.map(|text| {
+        if text.trim().is_empty() {
+            String::new()
+        } else {
+            text
+        }
+    })
+}
+
+/// worker 落笔那一步，与 `session.rs` 里那两条 `*_landed` 回调同一形：先过
+/// [`auto_ocr_slot`]，再交给 [`falcon_core::history::History::set_ocr`]。抽成一枚函数是为了
+/// 让「字到底进没进那一格」这一问有一位**不必真跑引擎**的证人：单测把 `Some("…")` 直接递
+/// 进来，指着的就是 SQLite 那一格；线程上跑的是同一只手，不是它的副本。
+///
+/// 写失败（行不在、库被占）只把 `Err` 交回而不响：调用方丢弃它，因为 §5.14.1 那条
+/// 「历史记录失败不许吃掉截图」已经由 [`MaskState::record_history`] 定了口径。
+pub fn write_auto_ocr(
+    history: &falcon_core::history::History,
+    id: i64,
+    outcome: Option<String>,
+) -> Result<(), falcon_core::history::HistoryError> {
+    match auto_ocr_slot(outcome) {
+        Some(text) => history.set_ocr(id, Some(text.as_str())),
+        None => Ok(()),
+    }
+}
+
+/// 把「跑引擎 + 落那一格」整条腿搬到一枚命名线程上。理由是 P146 给 OCR 立的那一条：本机引擎
+/// 是阻塞的（`RecognizeAsync` 由 5 ms 一轮的轮询取回），让 GUI 线程等它，僵住的是桌上每一扇窗。
+///
+/// 线程名字独立（`falconshot-ocr-auto`）而不是复用 `falconshot-ocr`：那一枚是用户点「文字提取」
+/// 起的，这一枚是 `[advanced]` 那枚键起的，两趟挤在一枚线程上就分不出是谁跑的。
+///
+/// SQLite 的连接**在这条线程上开**：把 GUI 线程那枚 `History` 递过线程边界，等于让两个线程握
+/// 同一枚 `rusqlite::Connection`（它 `!Send`，编译也过不去）⇒ 重开一次，而不是共享。
+/// 起不来（线程数耗尽）也不响：那一行留着 NULL，与「没跑成」同一格。
+fn spawn_auto_ocr(
+    frame: falcon_core::frame::Frame,
+    dir: std::path::PathBuf,
+    cfg: falcon_core::config::History,
+    id: i64,
+) -> Option<std::thread::JoinHandle<()>> {
+    std::thread::Builder::new()
+        .name("falconshot-ocr-auto".to_string())
+        .spawn(move || {
+            let outcome = platform_windows::ocr::extract(&frame).ok();
+            let Ok(Some(history)) = crate::settings::history_open_in(&dir, &cfg) else {
+                return;
+            };
+            let _ = write_auto_ocr(&history, id, outcome);
+        })
+        .ok()
+}
+
 /// A screen the mask covers.
 #[derive(Clone, Debug)]
 pub struct Slot {
@@ -184,6 +390,36 @@ pub struct MaskViewData {
     /// 单独放在这里而不复用 [`MaskState::show_dimensions`]，是因为 QML 只拿 `MaskViewData` 而不
     /// 直接读 `MaskState`；跨这一层加一枚 bool 而不是新增一次 lock，成本与 [`Self::shown`] 同量级。
     pub show_dimensions: bool,
+    /// §5.3.8 —— 哪一格比例芯片亮着（抄自 [`MaskState::ratio_index`]，`-1` = 自定义那一格）。
+    /// 走 [`MaskViewData`] 而不是让 QML 直读 `MaskState`，与 [`Self::show_dimensions`] 同一条
+    /// 理由；多带这一枚而不是让 QML 自己记住按了哪格，是因为 `--mask` 要问的就是"锁到底是
+    /// 哪一格"，而一把只存在于 QML 记忆里的芯片没有证人。
+    pub ratio_index: i32,
+    /// 这一刻锁**真的**在不在（[`MaskState::ratio_lock`] 答 `Some` 才为 `true`）。自定义那一格
+    /// 正打到一半（`"1"` 还没冒号）时 [`Self::ratio_index`] 仍是 -1 而这一枚是 `false`：芯片亮着
+    /// 而画不出锁，QML 要把那一格点灰就只有这一枚读数可问。
+    pub ratio_live: bool,
+    /// §5.3.6 —— 打进来的那对宽高会从哪一角扩展，[`anchor_code`] 的序号（抄自
+    /// [`MaskState::size_anchor`]）。名字表不在这里：与 [`Self::ratio_index`] 那一格同理，
+    /// 序号过桥、句子留在 Rust（[`SIZE_ANCHOR_NAMES`]），QML 只做一次下标。
+    ///
+    /// 没有槽位时 [`MaskViewData::default`] 给 `0` = 左上角，与 [`MaskState::default`] 的
+    /// 那一枚是同一个答案，所以"窗还没分到屏"与"用户还没碰过任何一角"在屏幕上读起来一样。
+    pub size_anchor: i32,
+    /// §5.3.7 —— 选区尺寸**按当前单位**的那对读数（[`MaskState::size_shown`] 的答案）。
+    ///
+    /// 不复用 [`Self::hole`] 的 w/h：那两格是"这一扇窗怎么画自己那块暗化与八枚把手"的
+    /// 窗内 DIP 几何（[`MaskState::local_dip`] 还把跨屏的选区**裁**进这一扇窗），而这一对
+    /// 是"你圈的这块有多大"的一句读数。一句问几何、一句问尺寸，把它们塞进同一对字段就是
+    /// 让两个问题共用一个答案 —— P162 记过的那一族"绑过一次就再也更不动的数字"正是同一族。
+    ///
+    /// 出厂 `0`：还没有选区就没有尺寸可说，与 [`Self::hole`] 的默认一致。
+    pub size_w: u32,
+    pub size_h: u32,
+    /// 这一刻用的单位，[`unit_code`] 的序号（名字表在 [`SIZE_UNITS`] / [`unit_names`]）。
+    /// 页上那行字与那枚芯片都从这一格取下标，所以"显示的是 dip"与"打字进去的数按 dip 解释"
+    /// 是同一枚状态说的同一件事，不会各说各的。
+    pub size_unit: i32,
 }
 
 /// What the pointer took hold of, in physical desktop pixels.
@@ -233,6 +469,14 @@ pub struct MaskState {
     /// （复制 / 保存 / 快速保存 / 存完再钉图），而指针在屏幕上是会走的 —— 现场问 ⇒ 同一枚
     /// 选区交出四张长得不一样的图，正是这一整块代码从 P58 起一直在防的那族形状。
     pub cursor: Option<(falcon_core::frame::Frame, falcon_core::geometry::PhysPoint)>,
+    /// §5.4.4 / §5.4.5：这一次流程背后的板子。`None` = 抓来的画面（截图那一路），
+    /// `Some` = 做出来的画面（白板那一路）。它决定的是**遮罩怎么画这块板**：透明的板
+    /// 要让人看穿，所以暗化必须关掉、窗底色不能是黑 —— 不记这一格，透明白板开出来的
+    /// 就是一张黑屏，而 §5.4.5 第二步要的正好是反面。
+    ///
+    /// 它是 [`Self::open`] 之后由 [`open_board`] 点的一格，而且 [`Self::open`] 每趟先清：
+    /// 上一张板的可见性不能跟着下一张活（与 `landed` / `quick_saves` 同一族）。
+    pub board: Option<falcon_core::whiteboard::Surface>,
     /// True = one ShaderEffect pass; false = four dim `Rectangle`s, which is also
     /// what the `QT_QUICK_BACKEND=software` fallback has to be able to draw.
     pub shader: bool,
@@ -332,6 +576,48 @@ pub struct MaskState {
     /// 每一- 张 `MaskViewData` 单测在没设这枚位之前读到 `false` 而不是 `true`，画面不新增文字，
     /// 断言不变。真机上这一格由 `open` 从配置文件里取。
     pub show_dimensions: bool,
+    /// §5.3.8 的比例锁，**第几格**：`0..[`RATIO_CELLS`]` 是表里那四格（0 = 「无」），`-1` 是
+    /// "自定义那一格"，其内容在 [`Self::ratio_spec`]。
+    ///
+    /// 不直接存那枚 `f64` 而存"第几格 + 那句话"，是因为芯片亮哪格与锁是什么不能有两个主人：
+    /// 存 `f64` 就多出一格可以与 index 漂移的状态，而那正是"按钮上写着 1:1、拖出来是 2.0"
+    /// 这种画。比例由 [`Self::ratio_lock`] 现场从这两格算。
+    ///
+    /// `#[derive(Default)]` 给 i32 的 0 就是「无」，所以 `MaskState::default()` 与已有的每一张
+    /// 单测在没有挑过芯片之前锁是关着的 —— 与 P161 之前的字节零改变是同一条。
+    pub ratio_index: i32,
+    /// 自定义那一格的原文（`"2.35:1"` 这样）。选表里那四格时被清空，所以"此刻的比例"永远只有
+    /// 一条来历：index 为负看这句话，index 非负看 [`RATIO_CELLS`]。
+    pub ratio_spec: String,
+    /// §5.3.6 第一条规则：打进来的那对宽高从**哪一角**扩展。
+    ///
+    /// 它是"上一次真正定住过一枚角的动作"的答案：拖出新选区时是指针落点那一角
+    /// （[`anchor_of_drag`]），按住角点调整时是那枚角点的**对角**（[`anchor_of_corner`]）。
+    /// 拖边（N/S/E/W）与整块移动**不改**这一枚，因为它们没有回答"哪一角"这个问题：一条边的
+    /// 对面那条边上，两枚角都站着不动，选哪一枚都是编的。
+    ///
+    /// 存这一格而不是到打尺寸那一刻现算，是因为 `grab` 在松手时就没了（[`Self::release`]），
+    /// 而"我刚刚按住的是哪一角"正是松手之后要打字那一刻才用的信息。出厂 [`Anchor::TopLeft`]
+    /// （`#[derive(Default)]` 给的那一枚）：一张还没被碰过的选区没有别的来历。
+    pub size_anchor: Anchor,
+    /// §5.3.7 第二步的那枚开关：**屏幕上那对数字按什么单位说，打字进去的那对数字就按什么
+    /// 单位解释**。两个问题共用这一枚状态，因为分开就是两只主人：读数说 dip 而输入说 px 的
+    /// 那一格，是本轮在这一路**现场量到的既有不一致**（`hole_w`/`hole_h` 走
+    /// [`MaskState::local_dip`] 除过 `slot.scale`，而 [`Self::type_size`] 把递来的数当作物理
+    /// 像素直接喂给 `set_size_within`）。
+    ///
+    /// 出厂 [`Unit::default`] = px（`#[derive(Default)]` 给 `#[default] Px` 的那一枚），所以
+    /// 这格落地的那一刻起，**已存在每一次按下的答案字节零改变**：px 那两支换算都是恒等
+    /// （[`Unit::show`] / [`Unit::to_phys`] 的 `Unit::Px` 分支原样返回），P162 钉下的每一张
+    /// `type_size` 单测与 `--mask` 门里那 13 行都不必跟着改口。
+    ///
+    /// 它**不再**随会话归零（P164）：[`Self::open`] 在取整段 `[capture]` 快照的那一刻把
+    /// [`Self::capture`]`.size_unit` 交给它，所以这一场的起点是**用户在截图设置里挑过的那一格**，
+    /// 而页上那枚芯片当场切的只是这一场 —— 切完不写档，下一场仍回到档里那一格。这与
+    /// [`Self::size_anchor`]、[`Self::ratio_lock`] 分家是有理由的：那两枚说的是"这一张怎么画"，
+    /// 留着上一张的决定会画出用户没挑过的形状；这一枚说的"这一张按什么单位看"在 PRD §5.3.7
+    /// 第一步里被明写成一格**设置**，设置就该跨过按下的那一次活下来。
+    pub unit: Unit,
     /// 这一张图被**默认行为**复制成功的次数。一次 `Enter` 最多 +1；失败不吃次数也不加。
     ///
     /// 单独一格而不是复用 [`Self::quick_saves`] 那一族的计数，是因为"开关开着却一次也没
@@ -360,6 +646,24 @@ pub struct MaskState {
     /// 叫提醒过。空串是"这一档不丢透明"，不是"没提醒"；它是提醒而不是确认，所以写照常
     /// 发生（P39 ⑦ 那次产品决定的另一读，第 46 项 ①）。
     pub pre_notice: String,
+    /// §5.5.10 步骤 2 那一枚芯片被**点**了几次：一次点击恰好一次，与 shell 收没收下无关。
+    /// 计数在动手**之前**加，与 [`Self::reveal_clicks`] 同一条口径（第 46 项 ③）—— 一个失败了
+    /// 却不计数的点击会把两次真点击读成一次。
+    pub send_to_clicks: u32,
+    /// shell **收下**了几次递图请求。`0` 不等于没点过：它是"这一程真往别人家的进程里交过
+    /// 一次东西"的唯一证据，而 §5.5.10 第三步在这台机器上问得出的全部就是这一格。
+    pub send_to_acted: u32,
+    /// 落到盘上、递出去过几张（不是点了几次）：那枚临时文件的名字要按这一格数，撞了名也按
+    /// `[output] collision` 那一条既有规则走。写失败的那一次不计数 —— 这数的含义是"盘上有几张"。
+    pub send_to_writes: u32,
+    /// 最近一次发送到应用的话，成功失败都写这里而**不**写 [`Self::message`]：那句话要带出
+    /// 交出的是哪一枚程序、哪一枚文件、三臂里的哪一臂，而 `message` 那一行留着的是"已保存到 …"
+    /// 那句证据（[`Self::reveal_last`] / [`Self::auto_copy_last`] 为同一条理由各占过一格）。
+    pub send_to_last: String,
+    /// 这一次递给目标的那枚临时文件。留着有两个用处：门要读回"我们递出去的那一枚确实在盘上，
+    /// 且在**我们自己那一枚**目录下"；而下一次派发要先把上一枚收回（§6.2 第 1600-1601 行
+    /// 「临时文件应按策略自动清理」在派发这一路上的那一次轮次）。
+    pub send_to_landed: Option<std::path::PathBuf>,
     /// Bumped by every `open`, so a second capture in the same process gets keys
     /// nobody has asked for yet. A constant revision would reuse the previous
     /// frame's key, and `Image.cache: false` only re-requests when the URL changes:
@@ -368,16 +672,22 @@ pub struct MaskState {
     next_revision: u32,
     pub problems: Vec<String>,
     /// §5.2–5.4：整段 `[capture]` 自 P65（第 65 项 ② 那一族的结法与 P64 的 `[pin]` 同形）
-    /// 起由 [`crate::settings::capture_cfg`] 送进运行期 —— `open()` 里取一次快照，之后 12
+    /// 起由 [`crate::settings::capture_cfg`] 送进运行期 —— `open()` 里取一次快照，之后 13
     /// 枚键（`default_mode` / `include_cursor` / `freeze_frame` / `highlight_element`
     /// / `magnifier_radius` / `magnifier_zoom` / `magnifier_grid` / `magnifier_coordinates`
-    /// / `magnifier_color_format` / `show_dimensions` / `delay_seconds` / `snap_to_window`）
-    /// 都在 `self.capture.<键>` 那格等着被下一次改码接进 QML。P65 之前只有 `show_dimensions`
-    /// 单独走 [`crate::settings::show_dimensions`]，其余 11 枚停在"键在档里没人读"。
+    /// / `magnifier_color_format` / `show_dimensions` / `size_unit` / `delay_seconds`
+    /// / `snap_to_window`）都在 `self.capture.<键>` 那格。P65 之前只有 `show_dimensions`
+    /// 单独走 [`crate::settings::show_dimensions`]，其余停在"键在档里没人读"。
     ///
-    /// 那 11 枚自 P108 起是 10 枚：`delay_seconds` 有了行为读者 [`crate::delay::arm_from_config`]，
-    /// 而它**不从这里读** —— 延时决定的是 `open()` 之前等多久，那一刻这枚快照还没取。留在本格的
-    /// 那一份仍然是「这一场遮罩开着的时候配置长什么样」，两枚读者各说各的时刻，没有谁覆盖谁。
+    /// 「等着被接进 QML」这一句自 P164 起对 `size_unit` 不再成立：`open()` 在取完这枚快照的下一行
+    /// 就读它（[`Self::unit`]），与 [`Self::show_dimensions`]、[`crate::delay::arm_from_config`]
+    /// 那两枚同族 —— 都是**有行为读者**的那几枚。写在这里而不是只写在那一行注释里，是因为本段的
+    /// 口径就是"哪几枚还停在没人读"。
+    ///
+    /// 除 `show_dimensions` 之外的 12 枚自 P108 起少了一枚（`delay_seconds` 有了行为读者
+    /// [`crate::delay::arm_from_config`]，而它**不从这里读** —— 延时决定的是 `open()` 之前等多久，
+    /// 那一刻这枚快照还没取），自 P164 起再少一枚（`size_unit`）。留在本格的那一份仍然是「这一场
+    /// 遮罩开着的时候配置长什么样」，各枚读者各说各的时刻，没有谁覆盖谁。
     ///
     /// 快照而不是逐字段 reader：`open()` 只跑一次，中途 `write_back` 不改本会话已经开着的
     /// 遮罩，和 P64 的 `PinState::new()` 同一形状。**运行期读数仍欠**（第 65 项 ②）——
@@ -402,6 +712,19 @@ pub struct MaskState {
     /// 空串是"说不出往哪儿写" ⇒ 与 `history=None` 同样不写，所以单测里那枚
     /// `PathBuf::default()` 与真机上那枚说不出的目录都走同一条腿。
     pub history_dir: std::path::PathBuf,
+    /// 整段 `[advanced]` 的快照，与 [`Self::history`]、[`Self::capture`] 同一场 `open` 取。
+    /// 本档在这一层只有一枚键有读者（`recognize_text` ⇒ [`auto_ocr_wanted`]），其余五枚停在
+    /// 别处已有的读者手里（`log_level` / `data_dir` 由 `settings::startup_banner` 念，
+    /// `cli_enabled` 等 Settings 的 CLI 注册按钮）—— 取整段而不是取一枚，是为了不再多养一枚
+    /// 逐字段的 reader（P65 给 `[capture]` 立的同一族处置）。
+    pub advanced: falcon_core::config::Advanced,
+    /// 这一场把「跑一次本机识别、把字落进那一行」交出去几次。数的是**交出去**而不是**落成了**：
+    /// 引擎在另一枚线程上跑，落没落成这一刻在这里说不出（[`Self::auto_ocr_join`] 那枚把手
+    /// 就是为了让单测能等到它）。关着的键一次也不加，与出厂默认同形。
+    pub auto_ocr_asked: u32,
+    /// 最近一次交出去的那条线程的把手。产品路径上一位也不读它 —— 图的是 `cargo test` 能
+    /// `join` 一下，让那条线程不会活过它所测的那个临时目录。
+    pub auto_ocr_join: Option<std::thread::JoinHandle<()>>,
     /// 这一场往 `history.db` 里**成功**写进了几行。失败不吃次数也不加，与
     /// [`Self::auto_copies`] 同一口径：开着却一次没记成，与从没按过，是两件事。
     pub history_records: u32,
@@ -531,6 +854,7 @@ impl MaskState {
         self.pixels_ms = None;
         self.message.clear();
         self.pre_notice.clear();
+        self.board = None;
 
         let started = Instant::now();
         let screens = shim::screens();
@@ -588,6 +912,13 @@ impl MaskState {
         self.naming = crate::settings::naming();
         self.decor = crate::settings::decoration();
         self.quick_saves = 0;
+        // §5.3.8 的锁跟着这一场归零，同 [`Self::quick_saves`] 那一族的理由：锁说的是"这一张要
+        // 怎么截"。留着上一张的 16:9，下一次按下热键后的第一次拖拽就会画出一个用户这一场没有
+        // 挑过的形状 —— 而那一刻芯片是亮着的，没有人在拖之前先去看它。
+        self.reset_ratio();
+        self.reset_size_anchor();
+        // 单位自此不在这三枚里（P164）：PRD §5.3.7 第一步把它写在**截图设置**里，所以它的起点是
+        // 档里那一格而不是出厂那一格 —— 落在下面 `self.capture` 快照之后的那一行。
         // 上一张图的通知不能跟着这一张活：一张已经落盘的路径留着，下一次点击就会去
         // 揭示一张和用户此刻的决定无关的文件。计数同理——它们说的是这一次流程。
         // 唯一让 landed 跨过这一行的，是下面 reuse_last_file 那一支 —— 它带的不是
@@ -599,6 +930,14 @@ impl MaskState {
         self.reveal_auto = 0;
         self.reveal_acted = 0;
         self.reveal_last.clear();
+        // §5.5.10 那三枚计数与那枚临时文件走的是同一条理由：它们说的是**这一次**流程递出去过
+        // 什么。留着上一张的路径，下一次派发就会去收回一张与用户此刻的决定无关的文件 ——
+        // 而收回这件事本来就不保证成功（对面的进程也许正开着它），更不该去动别人的。
+        self.send_to_clicks = 0;
+        self.send_to_acted = 0;
+        self.send_to_writes = 0;
+        self.send_to_last.clear();
+        self.send_to_landed = None;
         self.reveal_after_save = crate::settings::reveal_after_save();
         self.auto_save = crate::settings::auto_save();
         self.auto_copy = crate::settings::auto_copy();
@@ -609,6 +948,11 @@ impl MaskState {
         // 单独走 `MaskViewData` 与 QML，不能在这一轮撤）。
         self.capture = crate::settings::capture_cfg();
         self.show_dimensions = crate::settings::show_dimensions();
+        // §5.3.7 第一步「用户在截图设置……选择单位」的那一条腿：这一场的单位从档里那一格起，
+        // 而不是从 [`Unit::default`] 起。写在快照之后而不是之前，是因为它读的就是这枚快照 ——
+        // 与 [`Self::show_dimensions`] 同一刻取值，所以设置页改完单位，下一次按下热键就用新的，
+        // 而**已经开着的这一场不动**（一页读数在自己脚下被人换掉，正是 P161 那轮写过的不该有的事）。
+        self.unit = self.capture.size_unit;
         // §5.5.8 **跨 mask 会话**那半（第 63 项 ⑦）：reuse_last_file=true 时，把上一次会话
         // quick_out 成功留下的路径抄进 self.landed —— 于是本会话第一次 quick_out 覆写的
         // 就是那一份而不是新起一份 quick-00N。文件不在了就不抄（走命名分支），因为
@@ -625,6 +969,13 @@ impl MaskState {
         // 计数与那句话同理随会话归零：它们说的是这一次流程。
         self.history = Some(crate::settings::history_cfg());
         self.history_dir = crate::settings::history_data_dir();
+        // §5.16 的 `[advanced]` 整段同场取快照：`recognize_text` 那一枚键自本轮起有了一位产品
+        // 读者（[`auto_ocr_wanted`]），而它判的是「刚写下的这一行要不要再花一次引擎」——
+        // 与上面那枚 `[history]` 快照不同场取，就会出现「行按旧配置写、识别按新配置跑」的一帧
+        // 两份状态。计数与把手同样随会话归零：上一场交出去几次，与这一场跑不跑是两件事。
+        self.advanced = crate::settings::advanced_cfg();
+        self.auto_ocr_asked = 0;
+        self.auto_ocr_join = None;
         self.history_records = 0;
         self.history_last_id = None;
         self.history_last.clear();
@@ -763,6 +1114,28 @@ impl MaskState {
         self.shader = shader;
     }
 
+    /// 这一块板子要暗化多少。截图那一路（`board = None`）要的是 [`DIM`] —— 桌面是被藏起来
+    /// 的那一层；透明白板要的是 **0**，因为 §5.4.5 第二步「以透明画布进入标注状态」问的就是
+    /// 用户能不能看穿自己那块画布，压暗 60% 就是把那一句反着做。
+    ///
+    /// 实心板仍旧暗化：它的"未选中区"是这块板的边框，而 #433 那一族要的是每一枚读数都有
+    /// 一个对面 —— `DIM` 在门上的对面是 `1 - DIM`，把它替 0 之后那一格就再没有证人。
+    pub fn board_dim(&self) -> f64 {
+        match self.board {
+            Some(falcon_core::whiteboard::Surface::Transparent) => 0.0,
+            _ => DIM,
+        }
+    }
+
+    /// 窗底色该不该跟着透明。QML 那侧的 `color: "black"` 是遮罩窗自己的底，暗化层画在它
+    /// 上面：暗化归零而底还是黑，屏幕上出现的仍是一张黑幕 —— 这两格必须一起点。
+    pub fn board_clear(&self) -> bool {
+        matches!(
+            self.board,
+            Some(falcon_core::whiteboard::Surface::Transparent)
+        )
+    }
+
     // ------------------------------------------------------------ selection
     //
     // The pointer arrives in window-local device-independent pixels because that is
@@ -814,12 +1187,165 @@ impl MaskState {
         hit
     }
 
+    /// §5.3.8 的锁此刻是什么（宽 / 高），`None` = 不锁。从 [`Self::ratio_index`] 与
+    /// [`Self::ratio_spec`] **算**出来的，不是第三格存着的 —— 见那两格的注释。
+    ///
+    /// 自定义那一格解不出来时答 `None` 而不是留着上一次的比例：`ratio_spec` 是用户**正在打**
+    /// 的那句话，打到 `"1"` 还没打冒号的那一刻，屏幕上亮着的"自定义"芯片不该假装锁着 1:1。
+    pub fn ratio_lock(&self) -> Option<f64> {
+        if self.ratio_index < 0 {
+            parse_ratio(&self.ratio_spec)
+        } else {
+            RATIO_CELLS
+                .get(self.ratio_index as usize)
+                .and_then(|(_, spec, _)| parse_ratio(spec))
+        }
+    }
+
+    /// §5.3.8 第一步与第二步的前半：按下第 `index` 格芯片。越界**不动**并返回 `false` ——
+    /// 一把门把手不该因为 QML 递来一个越界数字就把锁清了。
+    pub fn pick_ratio(&mut self, index: i32) -> bool {
+        let Some((_, _, _)) = RATIO_CELLS.get(index as usize) else {
+            return false;
+        };
+        self.ratio_index = index;
+        self.ratio_spec.clear();
+        true
+    }
+
+    /// §5.3.8 第二步的后半：「或输入自定义比例」。
+    ///
+    /// 那句话**总是**被记下（屏幕上显示的就是用户打的字，主人只能有一个），返回值说的是
+    /// **锁上没上**：解得出来 `true`，解不出来 `false` 而 [`Self::ratio_live`] 跟着变 `false`，
+    /// QML 拿这一枚把文本框点灰。"打错的那句话把已经锁好的 1:1 悄悄松开"与"打错的那句话在
+    /// 屏幕上被改掉"是两件事，前者由 [`Self::ratio_lock`] 现场算出来，后者永远不发生。
+    ///
+    /// 空串是例外 —— 那不是"打错了"而是"清掉了"，与按「无」同一意思，于是 index 回到 0。
+    pub fn set_ratio_spec(&mut self, spec: &str) -> bool {
+        let trimmed = spec.trim();
+        if trimmed.is_empty() {
+            return self.pick_ratio(0);
+        }
+        self.ratio_index = -1;
+        self.ratio_spec = trimmed.to_string();
+        parse_ratio(trimmed).is_some()
+    }
+
+    /// §5.3.8：这一场的锁归零。抽成一枚函数是因为 `open()` 要抓屏、单测不能抓屏（§9.1 第十条
+    /// 的 headless 半边，同 [`Self::seed_landed_from`] 那一条理由），而"下一场不该继承上一场的
+    /// 比例"这一句得有证人。
+    fn reset_ratio(&mut self) {
+        self.ratio_index = 0;
+        self.ratio_spec.clear();
+    }
+
+    /// §5.3.6 那一枚锚点跟着这一场归零，与 [`Self::reset_ratio`] 同一条理由：它说的是"这一张
+    /// 刚刚被按住过哪一角"。留着上一张的 `BottomRight`，下一场第一次打尺寸就会从一张用户这一场
+    /// 没拖过的角上长出去。抽成一枚函数同样是因为 `open()` 要抓屏、单测不能抓屏（§9.1 第十条）。
+    fn reset_size_anchor(&mut self) {
+        self.size_anchor = Anchor::default();
+    }
+
+    /// §5.3.6 第三步与第四步：把打进来的这对着实尺寸换成选区的尺寸，从 [`Self::size_anchor`]
+    /// 那一角扩展，超出桌面的那一头让路（[`set_size_within`]）。
+    ///
+    /// `false` 的三种来历**都不动选区**：第一步还没走（没有选区可调整）、数字不是正数
+    /// （§5.3.5 那条「宽度和高度必须大于 0」在这一路同用，而 0 与负数打的是同一格键盘）、
+    /// 以及递来的数装不进 `u32`。
+    ///
+    /// `true` 说的只是"这一对字换掉了尺寸"，**不是**"这就是你打的数"：夹过的结果可能比打的
+    /// 小，那正是第二条规则要的让路，而让了多少由 `reload` 之后那行 W×H 读数自己说。
+    ///
+    /// 与 §5.3.8 那把锁撞车时，本轮的答案是**打的数字赢、芯片跟着改口**：一次显式的输入比一把
+    /// 还亮着的锁新。留着亮着的 1:1 而矩形已经不是 1:1，屏幕上就是一枚在说谎的芯片。判据不新造
+    /// 容差 —— 把打出来的矩形再喂回锁自己用的那把 [`constrain_aspect`]，它答"不用改"才算还锁着。
+    pub fn type_size(&mut self, w: i32, h: i32) -> bool {
+        if !self.has_selection() {
+            return false;
+        }
+        let (Ok(w), Ok(h)) = (u32::try_from(w), u32::try_from(h)) else {
+            return false;
+        };
+        if w < 1 || h < 1 {
+            return false;
+        }
+        // §5.3.7 第三步：这对数**先按当前单位换成物理像素**，再交给桌面边界去夹。顺序不能
+        // 反过来 —— `set_size_within` 夹的是 [`Self::desktop`]，而桌面是物理像素做的：先夹后换
+        // 就把"200% 屏上的 1024 dip"当成 1024 物理像素夹掉一半，那正是本轮要防的那类错。
+        // [`Unit::Px`] 这一支 `to_phys` 是恒等，所以出厂状态下的字节零改变不是承诺，是算出来的。
+        let scale = self.size_scale();
+        let (w, h) = (self.unit.to_phys(w, scale), self.unit.to_phys(h, scale));
+        let anchor = self.size_anchor;
+        let next = set_size_within(&self.hole, w, h, anchor, &self.desktop());
+        let broke_the_lock = self
+            .ratio_lock()
+            .and_then(|r| constrain_aspect(&next, r, anchor))
+            .is_some_and(|kept| (kept.w, kept.h) != (next.w, next.h));
+        self.set_hole(next);
+        if broke_the_lock {
+            // 走 `pick_ratio(0)` 而不是只把 index 挪一格：自定义那一格的原文也得跟着清，否则
+            // 文本框里还写着「16:10」而锁已经不在了（第 162 项 ⑤ 那一族"亮着却画不出锁"）。
+            self.pick_ratio(0);
+        }
+        true
+    }
+
+    /// §5.3.7 第三步里那句「**当前显示器**缩放比例」的所指：选区**自己那张屏**的缩放，由
+    /// [`monitor_slot_for`] 从槽位里问出来（与选区重叠面积最宽的那一扇，打平取更早的那一扇）。
+    ///
+    /// 不用"这一扇窗自己的缩放"（[`Slot::scale`]）：那样同一张跨屏选区在两扇窗上会读出两个
+    /// 不同的数字，而单位切换问的是"这一块有多大"，不是"你在哪一扇窗上看它"。两张屏、一个
+    /// 状态 —— 与 §5.3.6 的锚点、§5.3.8 的锁走的是同一条口径。
+    ///
+    /// `monitor_slot_for` 自 P67 写下之后一直没有生产调用者，它自己的文档就写着这枚缩放是它
+    /// 的用途（"used to pick which scale a mixed-DIP readout shows"）；本轮是它第一次被真的读。
+    ///
+    /// 一扇槽位都没有（`open` 之前、或槽位全被配不上对丢掉）时答 [`Scale::ONE`]：px 那一支
+    /// 根本不看它，而 dip 那一支在"没有当前显示器可说"的时候，恒等至少不会冒充另一张屏的缩放。
+    pub fn size_scale(&self) -> Scale {
+        let screens: Vec<(String, PhysRect)> = self
+            .slots
+            .iter()
+            .map(|s| (s.name.clone(), s.bounds))
+            .collect();
+        monitor_slot_for(&screens, self.hole)
+            .and_then(|i| self.slots.get(i))
+            .map(|s| s.scale)
+            .unwrap_or(Scale::ONE)
+    }
+
+    /// 屏幕上那对数字：选区自己的物理尺寸先经 [`Self::size_scale`]、再按 [`Self::unit`] 换算过
+    /// 后的样子。**这是一句读数，不是一份几何** —— 窗怎么画暗化与八枚把手仍然走
+    /// [`Self::hole_for`]，见 [`MaskViewData::size_w`] 那一格的理由。
+    pub fn size_shown(&self) -> (u32, u32) {
+        let scale = self.size_scale();
+        (
+            self.unit.show(self.hole.w, scale),
+            self.unit.show(self.hole.h, scale),
+        )
+    }
+
+    /// §5.3.7 第一步「用户在…**尺寸输入区域**选择单位」：把单位定成 [`SIZE_UNITS`] 的第 `code`
+    /// 格。过界的序号答出厂那一格（[`unit_at_code`]）而不是最近的一格 —— 页上的下标错了是
+    /// 一次编程事故，它不该被读成"用户挑了 px"。
+    ///
+    /// 返回**真正生效**的那一格而不是 `bool`：这一格没有"没做成"的臂（任何下标都有答案），
+    /// 而页要点亮的芯片必须跟着 Rust 的答案走，不能跟着自己递出去的那个数字走。
+    pub fn set_unit(&mut self, code: i32) -> Unit {
+        self.unit = unit_at_code(code);
+        self.unit
+    }
+
     /// The pointer moved while held. A new rectangle is normalised from the anchor,
     /// so dragging up-and-left works as well as down-and-right.
     ///
     /// A stroke mid-drag is not a selection drag: the drawing tool already took the
     /// press, so the point goes to the ink and the hole is left alone.
-    pub fn drag(&mut self, index: usize, x: f64, y: f64) {
+    ///
+    /// `unlocked` is §5.3.8 的那句"用户应可以临时解除比例约束"：按住修饰键的那一段拖拽
+    /// 走自由比例，松手即回锁（这一格不进 [`Self::ratio_index`]，所以没有一把"临时按着却
+    /// 永久留在解除态"的门）。
+    pub fn drag(&mut self, index: usize, x: f64, y: f64, unlocked: bool) {
         let Some(p) = self.desk_point(index, x, y) else {
             return;
         };
@@ -829,7 +1355,7 @@ impl MaskState {
         }
         let Some(g) = self.grab else { return };
         let bounds = self.desktop();
-        self.set_hole(match g.handle {
+        let free = match g.handle {
             None => PhysRect::from_points(g.anchor, p),
             // Not `resize`'s `Body` branch: that puts the rectangle's origin under
             // the pointer, which is right for a tool you click to place and wrong
@@ -840,7 +1366,46 @@ impl MaskState {
                 .offset(p.x - g.anchor.x, p.y - g.anchor.y)
                 .fitted_into(&bounds),
             Some(h) => resize(&g.start, h, p, &bounds),
-        });
+        };
+        // §5.3.8「调整角点时保持比例」。`anchor_of_corner` 只对四枚角点答话，所以边把手与
+        // 拖动整块（`Body`）保持原样 —— PRD 把规则钉在角点上，不是漏了边：一条边只能改一个
+        // 维度，把它锁进比例就等于把它变成第二条对角线。
+        //
+        // 桌面边界与这一枚锁相撞时谁付账，本轮量过（`the_border_shortens_the_drag_and_pays_
+        // neither_the_ratio_nor_the_anchor` 与 `the_desktop_never_touches_a_lock_selected_rect`
+        // 的四枚比例串 × 四枚角点共 16 臂）：**边界先赢，但它赢在 `desk_point` 那一次指针夹取
+        // 里**，等轮到比例时它看到的自由矩形已经贴在桌面上。而 `constrain_aspect` 取面积更近的
+        // 那一支，就意味着它只会把两条边收短（要收长另一支才轮得到它，这一句在 16 臂里逐臂反证
+        // 过：选区自己的 w/h 与 r 差不到一枚像素），于是锁选出的矩形 ⊆ 自由矩形 ⊆ 桌面，下面那
+        // 一次 `fitted_into` 在角点锁路上取不到任何动作。所以付账的是**拖拽行程**：抓住的那枚角
+        // 停在桌面上，而不是停在指针上；§5.3.1 那枚对角与比例两条都原样。`fitted_into` 的滑动
+        // 分支不是永远不动 —— Body 那一支每一轮都在用它，16 臂之外还有一臂就是量这个的；尺寸
+        // 改写分支只在锁选出的矩形比整张桌面还大时才走到。
+        // `mask_check` 那一扇门问不出上面任何一句：它没有指针注入器（第 46 项 ②）。
+        let locked = match (self.ratio_lock(), unlocked) {
+            (Some(r), false) => {
+                let anchor = match g.handle {
+                    None => Some(anchor_of_drag(g.anchor, p)),
+                    Some(h) => anchor_of_corner(h),
+                };
+                match anchor.and_then(|a| constrain_aspect(&free, r, a)) {
+                    Some(c) => c.fitted_into(&bounds),
+                    None => free,
+                }
+            }
+            _ => free,
+        };
+        // §5.3.6 第一条规则的来历：这一趟拖拽**定住了哪一角**。它写在锁的外面，因为不锁的时候
+        // 用户同样是在按住一角调整，而松手之后打进来的那对宽高要用的就是这一枚 —— 锁开没开
+        // 不该改变"我刚按住的是哪一角"这个答案。
+        //
+        // `unwrap_or(自己)` 那一支是边把手与整块移动：它们没有回答"哪一角"（[`anchor_of_corner`]
+        // 只对四枚角点答话），所以留着上一次的答案而不是猜一枚新的。
+        self.size_anchor = match g.handle {
+            None => anchor_of_drag(g.anchor, p),
+            Some(h) => anchor_of_corner(h).unwrap_or(self.size_anchor),
+        };
+        self.set_hole(locked);
     }
 
     /// The pointer let go: the selection's grab is dropped, and a half-drawn stroke
@@ -1009,6 +1574,21 @@ impl MaskState {
                 if let Err(e) = history.cleanup(&falcon_core::history::Retention::from(&cfg)) {
                     self.history_last =
                         format!("{}，但 §5.14.4 的自动清理没跑成：{e}", self.history_last);
+                }
+                // §5.16 那枚 `[advanced] recognize_text` 自本轮起有第一位产品读者：这一行刚写进
+                // 库，键开着就多交一条腿出去，把识别回来的文字补进**同一行**的 `ocr_text`。
+                // 三条口径与这一族已有的决定同形：① 取消的那一行不交（[`auto_ocr_wanted`] 判）；
+                // ② 识别结果面板**不开** —— 这一条腿落的是库而不是屏幕，用户点「文字提取」那条
+                // 手动腿（P146）依旧是唯一会开面板的；③ 引擎在另一枚线程上跑，GUI 线程一次也
+                // 不等它（P146 给 OCR 立的那一条）。那句话只说「起了一次」而不说「识别出了什么」，
+                // 这一格在这条腿上还没有读数可说。
+                if auto_ocr_wanted(self.advanced.recognize_text, cancelled) {
+                    self.auto_ocr_asked += 1;
+                    self.auto_ocr_join = spawn_auto_ocr(frame.clone(), dir, cfg.clone(), id);
+                    self.history_last = format!(
+                        "{}并按 `[advanced] recognize_text` 起了一次本机识别（不联网，结果落进那一行）。",
+                        self.history_last
+                    );
                 }
                 Some(id)
             }
@@ -1984,6 +2564,151 @@ impl MaskState {
         self.reveal_now()
     }
 
+    /// §5.5.10 的临时目录：OS temp 下我们自己的那一枚标签。标签是"收回"这件事安全的唯一理由 ——
+    /// [`Self::send_to_landed`] 删得着的只可能是这个目录里的文件。
+    ///
+    /// 为什么不复用 [`crate::state::PinState::clip_dir`]：那一枚目录里每张文件的死活是**问剪贴板**
+    /// 问出来的（`sweep_clip_files`），而派发出去的这一张没有任何一枚剪贴板引用会指向它 ——
+    /// 放进去等于把它交给一条不属于它的清理规则。§6.2 第 1600-1601 行那两句（「临时文件应按策略
+    /// 自动清理」与「应避免在退出时删除仍被剪贴板引用的文件」）在两处各按各自那一问执行。
+    ///
+    /// `pub(crate)` 是给门的，与 `clip_dir` 当初从 `pub(super)` 放开到 `pub(crate)` 同一条理由：
+    /// `sendto_check` 要判「递出去的那一枚在不在我们自己这一枚目录下」，用的是这一枚函数而不是
+    /// 在档头再抄一遍 `%TEMP%\falconshot-sendto`。
+    pub(crate) fn sendto_dir() -> std::path::PathBuf {
+        let mut dir = std::env::temp_dir();
+        dir.push("falconshot-sendto");
+        dir
+    }
+
+    /// §5.5.10 步骤 3：把这一次的图片作为**一条文件参数**交给第 `index` 枚目标应用。
+    ///
+    /// 六道梯，每一道只答自己那一问，而**判**那一道不写在本案：
+    ///   1. 计数先加 —— 第 46 项 ③ 那条口径（一次点击恰好一次，与成没成无关）；
+    ///   2. 手里有没有东西：[`Self::has_selection`] 与 [`Self::delivered`]，后者仍是全仓库
+    ///      唯一一处缝合，所以递出去的那张与 复制/保存 交的是同一张图；
+    ///   3. 清单上还有没有第 `index` 枚；
+    ///   4. 落盘：文件名与字节都交给 [`crate::save::quick_to`]，也就是 `[output]
+    ///      naming_template` / `collision` / `format` 那三条既有规则的唯一读者。本模块不自己
+    ///      拼名字 —— 拆成两只手就是 P35 那一族"两条路对一张图说两句话"的反面；
+    ///   5. 判：三臂择一、目标在不在这台机器上、参数加不加引号，全在
+    ///      [`falcon_core::sendto::plan`]，连拒绝的那一句也是它拼的（`Repath::prompt`）；
+    ///   6. 递：[`platform_windows::open::dispatch`] 那只手只搬运，不第二次判。
+    ///
+    /// 两处次序是**故意**的，写在这里而不是藏起来：
+    ///   * 先落盘后问对面在不在 —— `quick_to` 是"决定文件名"与"写字节"的同一只手，想先问目标
+    ///     就得把命名规则再算一遍。代价是 `Repath` 那一臂会白写一张图，于是那一臂顺手把它收回
+    ///     并把收回说进提示里（与 §5.9.17「剪贴板没接住就收回临时文件」同一枚形状）。
+    ///   * 上一枚派发的文件在**这一次真递成功之后**才收回 —— 一次失败的发送没有资格顺手销毁
+    ///     上一次发送的证据（对面的进程也许正开着它）。
+    pub fn send_to_target(&mut self, index: usize) -> bool {
+        self.send_to_clicks += 1;
+        if !self.has_selection() {
+            self.send_to_last = "还没有选区：先把要发送的范围拖出来。".to_string();
+            return false;
+        }
+        let Some(frame) = self.delivered() else {
+            self.send_to_last = "选区的画面拼不出来：截图还在，可以再发送一次。".to_string();
+            return false;
+        };
+        let (final_ok, _, _) =
+            crate::settings::pipeline_send_to(&crate::settings::output_cfg().send_to_apps);
+        let Some((name, exe)) = final_ok.get(index).cloned() else {
+            // 序号越界只在"清单在两次读之间变了"时到得了：芯片那串名字是工具条绑定时读的那一份，
+            // 而这一枚数是从此刻这份清单里数的。报出**这次**读到的枚数，是因为用户要知道自己
+            // 按到的是第几枚、而清单现在还剩几枚 —— 至于"重新截一次"那句，它不给任何一条本轮
+            // 还没建的控件（工具条不会自己重读那份清单），所以话里只能说清此刻还剩几枚。
+            self.send_to_last = format!(
+                "这一枚目标已经不在这份清单上了：此刻清单里只剩 {} 枚，请重新截一次图再选。",
+                final_ok.len()
+            );
+            return false;
+        };
+        let dir = Self::sendto_dir();
+        if let Err(e) = std::fs::create_dir_all(&dir) {
+            self.send_to_last = format!("发送用的临时目录打不开：{e}");
+            return false;
+        }
+        let (epoch, offset_min) = platform_windows::clock::wall_clock();
+        let facts = naming::NameFacts {
+            width: frame.width,
+            height: frame.height,
+            monitor: "",
+            tool: self.ink.tool().map(|kind| kind.key()).unwrap_or(""),
+        };
+        let quick = crate::save::Quick {
+            dir: &dir,
+            template: &self.naming.template,
+            prefix: &self.naming.prefix,
+            seq: self.send_to_writes + 1,
+            collision: &self.naming.collision,
+        };
+        let path = match crate::save::quick_to(
+            &frame,
+            naming::LocalStamp::from_epoch(epoch, offset_min),
+            facts,
+            &quick,
+            &self.export,
+            "选区",
+        ) {
+            Ok((landed, _said)) => landed,
+            Err(crate::save::Refusal::BadName(e)) => {
+                self.send_to_last = e;
+                return false;
+            }
+            Err(crate::save::Refusal::Write(e)) => {
+                self.send_to_last = format!("{e}。截图还在，可以再发送一次。");
+                return false;
+            }
+        };
+        let spelled = path.to_string_lossy().to_string();
+        match falcon_core::sendto::plan(&name, &exe, &spelled) {
+            falcon_core::sendto::Delivery::Dispatch {
+                arm,
+                exe: used,
+                parameters,
+                path: handed,
+            } => match platform_windows::open::dispatch(&used, &parameters) {
+                Ok(()) => {
+                    self.send_to_acted += 1;
+                    self.send_to_writes += 1;
+                    if let Some(old) = self.send_to_landed.as_ref() {
+                        if old != &path {
+                            let _ = std::fs::remove_file(old);
+                        }
+                    }
+                    self.send_to_landed = Some(path);
+                    self.send_to_last = format!(
+                        "已按{}把 {}×{} 那张交给 {}（{used}）：{handed}。",
+                        arm.label(),
+                        frame.width,
+                        frame.height,
+                        name,
+                    );
+                    true
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&path);
+                    self.send_to_last = format!(
+                        "{e}。刚写的那张临时文件（{}）已收回，截图还在，可以再发送一次。",
+                        path.display()
+                    );
+                    false
+                }
+            },
+            falcon_core::sendto::Delivery::Repath { prompt, .. } => {
+                let _ = std::fs::remove_file(&path);
+                self.send_to_last = format!("{prompt}刚写的那张临时文件已收回。");
+                false
+            }
+            falcon_core::sendto::Delivery::Refused { why, .. } => {
+                let _ = std::fs::remove_file(&path);
+                self.send_to_last = format!("{why}刚写的那张临时文件已收回。");
+                false
+            }
+        }
+    }
+
     /// 这一次运行是不是量具。判据取 argv 而不是取某一道腿的记忆，因为要挡的那一步
     /// （[`platform_windows::reveal::select`]）在腿的下头：腿记不记得自己是腿，不该决定
     /// 用户的桌面会不会多一个窗。前缀匹配，所以 `--mask-soft` 与 `--mask` 同判。
@@ -2215,6 +2940,9 @@ impl MaskState {
             .filter(|r| slot.bounds.contains(PhysPoint::new(r.x, r.y)))
             .map(|r| self.local_dip(slot, &r));
         let typing_live = typing.is_some();
+        // §5.3.7 那对读数在这一趟算，与下面 `hole`／`scale` 是同一份样本：`size_shown()` 读的
+        // 是 `self.hole` 与 `self.unit`，分两次问就会出现"数字是这一趟的、单位是上一趟的"。
+        let shown = self.size_shown();
         MaskViewData {
             live: true,
             shown: self.shown,
@@ -2229,6 +2957,12 @@ impl MaskState {
             first_swap_ms: slot.first_swap_ms,
             shader_status: slot.shader_status,
             show_dimensions: self.show_dimensions,
+            ratio_index: self.ratio_index,
+            ratio_live: self.ratio_lock().is_some(),
+            size_anchor: anchor_code(self.size_anchor),
+            size_w: shown.0,
+            size_h: shown.1,
+            size_unit: unit_code(self.unit),
         }
     }
 
@@ -2335,6 +3069,57 @@ pub fn open_from_freeze(shader: bool) -> Result<Opened, String> {
     let slots = with(|m| m.open(&frozen.snap, shader))?;
     Ok(Opened {
         snap: frozen.snap,
+        ms: frozen.ms,
+        slots,
+    })
+}
+
+/// §5.4.4 / §5.4.5 的那一路：同一套遮罩、同一套标注，只有背后的像素是做的而不是抓的。
+///
+/// 为什么还要冻一次画面：[`MaskState::open`] 是按**物理尺寸**把快照里的显示器与 Qt 报的屏幕
+/// 配对的（[`MaskState::match_monitor`]，两边不同名也不同序，只有尺寸可配），所以一块白板要的
+/// 几何信息只能来自这条唯一认识这台显示器的路。这里把抓到的像素整批换掉、只留那把尺子，代价
+/// 是一次 freeze（`ms=` 照原样印），换来的是"白板开不起来"这一族里最贵的那种失败——屏幕配不上
+/// 对——在这条路上结构上不可能发生。
+///
+/// `size = WxH` 改的是**选区**而不是那块画布：遮罩是一屏一窗、图按窗拉伸，一块比屏幕小的图
+/// 只会得到一张变形的板子；而选区正是这一块流程里"多大一块"的那一格 —— 标注的裁剪跟着它走
+/// （[`MaskState::set_hole`] → `ink.set_hole`），交付的也是它。于是 §5.4.4 第三步那句「与屏幕
+/// 或指定区域匹配」落成的形状是：板子铺满屏，区域居中。
+pub fn open_board(shader: bool) -> Result<Opened, String> {
+    let board = crate::settings::whiteboard_cfg();
+    let surface = board.surface().map_err(|e| e.to_string())?;
+    let size = board.size().map_err(|e| e.to_string())?;
+    let frozen = capture::freeze()?;
+    let mut snap = frozen.snap;
+    for m in snap.monitors.iter_mut() {
+        m.frame = falcon_core::whiteboard::canvas(surface, m.info.bounds.w, m.info.bounds.h)
+            .map_err(|e| e.to_string())?;
+    }
+    let slots = with(|state| {
+        let n = state.open(&snap, shader)?;
+        state.board = Some(surface);
+        if let falcon_core::whiteboard::Size::Canvas { width, height } = size {
+            let b = snap
+                .monitors
+                .iter()
+                .find(|m| m.info.primary)
+                .map(|m| m.info.bounds)
+                .unwrap_or(snap.virtual_bounds);
+            let want = PhysRect::new(
+                b.x + (b.w.saturating_sub(width) / 2) as i32,
+                b.y + (b.h.saturating_sub(height) / 2) as i32,
+                width,
+                height,
+            );
+            if let Some((hole, _)) = want.clamp_to(&b) {
+                state.set_hole(hole);
+            }
+        }
+        Ok::<_, String>(n)
+    })?;
+    Ok(Opened {
+        snap,
         ms: frozen.ms,
         slots,
     })
@@ -2554,7 +3339,7 @@ mod tests {
         assert_eq!(m.press(0, 100.0, 50.0), None);
         assert_eq!(m.grip_code(), 1, "the grip is a new rectangle");
         assert_eq!(m.hole, PhysRect::new(200, 100, 0, 0));
-        m.drag(0, 300.0, 200.0);
+        m.drag(0, 300.0, 200.0, false);
         assert_eq!(m.hole, PhysRect::new(200, 100, 400, 300));
         m.release();
         assert!(m.has_selection());
@@ -2568,8 +3353,772 @@ mod tests {
         let (slots, desk) = one_screen();
         let mut m = selectable(slots, PhysRect::default(), desk);
         m.press(0, 300.0, 200.0);
-        m.drag(0, 100.0, 50.0);
+        m.drag(0, 100.0, 50.0, false);
         assert_eq!(m.hole, PhysRect::new(200, 100, 400, 300));
+    }
+
+    // ------------------------------------------------------------ §5.3.8 固定比例
+    //
+    // 这一族量的是 `MaskState::drag` 这条**手指走的那条路**，而不是 `constrain_aspect` 自己：
+    // 后者在 `crates/core/src/geometry.rs` 里有它的单测与 proptest。分开的理由是这一条规矩的
+    // 难点不在算，而在"哪一次拖拽该被锁、以哪一枚角为钉"。`--mask` 那扇门没有指针注入器，
+    // 它问不出这一段（第 46 项 ② 同一族），所以这三十七条读数之外的那一句只能在这里说。
+
+    /// §5.3.8 步骤 1-4 的一条完整腿：挑 1:1，拖出一张本该是 400×300 的矩形，落下来是正方形。
+    ///
+    /// 期望值不是"随便一枚正方形"：`constrain_aspect` 在两种取整里选**面积更接近**的那一个
+    /// （400×400 差 40,000、300×300 差 30,000 ⇒ 300×300），钉住的是按下那一点 (200,100)。
+    /// 这一格把这枚选择写死在测试里，是为了让它下次被改时在这里发红，而不是在某张屏幕上。
+    #[test]
+    fn a_picked_chip_locks_a_new_drag() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert!(m.pick_ratio(1), "第 1 枚是 1:1");
+        assert_eq!(m.ratio_lock(), Some(1.0));
+        m.press(0, 100.0, 50.0);
+        m.drag(0, 300.0, 200.0, false);
+        assert_eq!(m.hole, PhysRect::new(200, 100, 300, 300));
+    }
+
+    /// 锁钉住的是**按下那一点**，而按下那一点跟手指走：往左上拖时它是右下角。
+    /// 这条腿单独有，是因为 `anchor_of_drag` 是新画这一支唯一的方向判断，而它错了的话
+    /// 正方形会"跟着起点跑"——用户看到的是一张选区在手指的反方向上滑走。
+    #[test]
+    fn the_lock_anchors_the_press_point_of_a_new_drag() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert!(m.pick_ratio(1));
+        m.press(0, 300.0, 200.0);
+        m.drag(0, 100.0, 50.0, false);
+        // 自由矩形是 (200,100,400,300)，钉住右下角 (600,400) ⇒ 300×300 落在 (300,100)。
+        assert_eq!(m.hole, PhysRect::new(300, 100, 300, 300));
+        assert_eq!(m.hole.right(), 600, "按下那一点没动");
+        assert_eq!(m.hole.bottom(), 400);
+    }
+
+    /// §5.3.8 的规则原文是「调整角点时保持比例」，这是那一句的正面：角点在锁上时既保持比例，
+    /// 也保持**对角**那枚角点（§5.3.1 的那一条不能被比例偷偷改掉）。
+    #[test]
+    fn a_corner_drag_under_the_lock_keeps_the_ratio_and_the_corner() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
+        assert!(m.pick_ratio(1));
+        assert!(matches!(m.press(0, 600.0, 500.0), Some(Handle::Se)));
+        m.drag(0, 700.0, 600.0, false);
+        // 自由的 1000×800：面积 800,000，by_w 差 200,000、by_h 差 160,000 ⇒ 800×800。
+        assert_eq!(m.hole, PhysRect::new(400, 400, 800, 800));
+        assert_eq!(m.hole.top_left(), PhysPoint::new(400, 400));
+    }
+
+    /// 同一枚锁下的**边**把手：一条边只改一个维度，所以它不保持比例 —— 这不是漏，是 PRD 把
+    /// 规则钉在角点上。这一格存在的理由是反面：如果哪天有人给边也上了锁，宽度 1000 会变 600
+    /// 或 800，而这条断言就是那一次的证词。
+    #[test]
+    fn an_edge_handle_keeps_one_dimension_free_under_the_lock() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
+        assert!(m.pick_ratio(1));
+        assert!(matches!(m.press(0, 600.0, 350.0), Some(Handle::E)));
+        m.drag(0, 700.0, 350.0, false);
+        assert_eq!(m.hole, PhysRect::new(400, 400, 1000, 600));
+    }
+
+    /// 「用户应可以临时解除比例约束」的那只手：按住修饰键的这一段拖拽画自由矩形，而**芯片没被
+    /// 改动**（`ratio_index` 仍是 1:1），所以下一次拖拽回到锁上。临时如果改的是芯片，松手就
+    /// 永久留在解除态 —— 那不是"临时"。
+    #[test]
+    fn holding_the_release_key_drops_the_lock_for_that_drag_only() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert!(m.pick_ratio(1));
+        m.press(0, 100.0, 50.0);
+        m.drag(0, 300.0, 200.0, true);
+        assert_eq!(m.hole, PhysRect::new(200, 100, 400, 300), "这一拖是自由的");
+        m.drag(0, 300.0, 200.0, false);
+        assert_eq!(m.hole, PhysRect::new(200, 100, 300, 300), "松手就回锁");
+        assert_eq!(m.ratio_index, 1, "临时解除没有动芯片");
+    }
+
+    /// 第 0 枚「无」是一把真的关：挑过 16:9 再挑它，锁必须彻底没有，而不是留着上一格的余量。
+    #[test]
+    fn the_no_chip_is_a_real_off_switch() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert!(m.pick_ratio(3), "第 3 枚是 16:9");
+        assert_eq!(m.ratio_lock(), Some(16.0 / 9.0));
+        assert!(m.pick_ratio(0));
+        assert_eq!(m.ratio_index, 0);
+        assert_eq!(m.ratio_lock(), None);
+        m.press(0, 100.0, 50.0);
+        m.drag(0, 300.0, 200.0, false);
+        assert_eq!(
+            m.hole,
+            PhysRect::new(200, 100, 400, 300),
+            "关着 ⇒ 与本轮之前字节零改变"
+        );
+    }
+
+    /// 「或输入自定义比例」解得出来那一支：`16:10` 是表里没有的，芯片因此落到 -1，
+    /// 而之后按回表里任一格时那句话被清掉 —— 一句话不能在被换掉之后还留在档上。
+    #[test]
+    fn a_custom_line_becomes_the_ratio_and_a_chip_clears_it() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert!(m.set_ratio_spec("16:10"));
+        assert_eq!(m.ratio_index, -1);
+        assert_eq!(m.ratio_spec, "16:10");
+        assert_eq!(m.ratio_lock(), Some(1.6));
+        assert!(m.pick_ratio(2));
+        assert_eq!(m.ratio_spec, "", "表里那一格自此是唯一主人");
+        assert_eq!(m.ratio_lock(), Some(4.0 / 3.0));
+    }
+
+    /// 解不出来那一支：话**留着**（屏幕上显示的就是用户打的字），锁不成立，返回值 `false`。
+    /// 三样必须同时说真话，否则"打错的句子被偷偷改掉"与"看着像锁着其实没锁"两种都会发生。
+    #[test]
+    fn an_unparsable_custom_line_greys_the_lock_without_erasing_the_words() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert!(!m.set_ratio_spec("16:"), "半个比例不该算锁上");
+        assert_eq!(m.ratio_spec, "16:", "但那句话是用户写的，不清");
+        assert_eq!(m.ratio_index, -1);
+        assert_eq!(m.ratio_lock(), None);
+        let v = m.view_data(0);
+        assert_eq!(v.ratio_index, -1);
+        assert!(!v.ratio_live, "芯片亮着而锁不在 —— QML 点灰靠这一枚");
+        // 空串不是"打错了"，是"清掉了"：与按「无」同一意思。
+        assert!(m.set_ratio_spec("   "));
+        assert_eq!(m.ratio_index, 0);
+        assert_eq!(m.ratio_spec, "");
+    }
+
+    /// 越界的那一枚 index 不改任何东西。这一格管的不是"QML 会不会递错"，而是**递错了以后
+    /// 屏幕上写着什么**：`false` 之后芯片仍亮在原来那格、锁仍是原来那个，而不是被一次失败的
+    /// 调用清成「无」。
+    #[test]
+    fn a_chip_index_that_is_not_in_the_table_changes_nothing() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert!(m.pick_ratio(3));
+        for bad in [4, 99, -1, i32::MIN] {
+            assert!(!m.pick_ratio(bad), "{bad} 不在表里");
+            assert_eq!(m.ratio_index, 3, "{bad} 那次没改动芯片");
+            assert_eq!(m.ratio_lock(), Some(16.0 / 9.0));
+        }
+    }
+
+    /// §5.3.8 的锁不跨场：`open()` 走 `reset_ratio`，而那一行在单测里够不着（`open` 要抓屏，
+    /// §9.1 第十条的 headless 半边）。这一格至少钉住那枚函数自己做什么。
+    #[test]
+    fn reset_ratio_leaves_nothing_of_the_last_flow() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        assert!(m.set_ratio_spec("2.35:1"));
+        m.reset_ratio();
+        assert_eq!(m.ratio_index, 0);
+        assert!(m.ratio_spec.is_empty());
+        assert_eq!(m.ratio_lock(), None);
+        assert_eq!(MaskState::default().ratio_index, 0, "出厂就是「无」");
+    }
+
+    /// §5.3.6 那几格用的 100% 单屏台子：算式就是算术本身，不让缩放系数掺进来 —— 与
+    /// `a_drag_can_cross_the_seam_between_two_screens` 同一条理由。
+    fn one_screen_100(hole: PhysRect) -> MaskState {
+        let desk = PhysRect::new(0, 0, 1920, 1080);
+        selectable(vec![slot(0, desk, 1.0)], hole, desk)
+    }
+
+    /// §5.3.6 第三、四步：拖出来的一张选区，定住的是指针落点那一角，所以打进来的宽高只动
+    /// 右下那两条边 —— 左上那一点一步不走。
+    #[test]
+    fn a_typed_size_grows_from_the_corner_the_drag_held() {
+        let mut m = one_screen_100(PhysRect::default());
+        m.press(0, 300.0, 200.0);
+        m.drag(0, 700.0, 400.0, false);
+        m.release();
+        assert_eq!(m.hole, PhysRect::new(300, 200, 400, 200));
+        assert_eq!(
+            m.size_anchor,
+            Anchor::TopLeft,
+            "往右下拖的那一趟定住的是左上角"
+        );
+        assert!(m.type_size(640, 120));
+        assert_eq!(m.hole, PhysRect::new(300, 200, 640, 120));
+    }
+
+    /// 按住**角点**调整之后，锚点是那一角的对角（§5.3.1 与 §5.3.8 共用的那枚
+    /// [`anchor_of_corner`]），所以松手之后打尺寸从对角长出去。这一格是 §5.3.6 第一条规则与
+    /// 拖拽那条路的接缝：答案不是"永远左上角"，那会把用户刚刚按住的东西忘掉。
+    #[test]
+    fn holding_a_corner_moves_the_anchor_to_the_opposite_corner() {
+        let mut m = one_screen_100(PhysRect::new(300, 200, 400, 200));
+        assert!(matches!(m.press(0, 700.0, 400.0), Some(Handle::Se)));
+        m.drag(0, 600.0, 350.0, false);
+        m.release();
+        assert_eq!(m.size_anchor, Anchor::TopLeft);
+        assert!(m.type_size(200, 500));
+        assert_eq!(m.hole, PhysRect::new(300, 200, 200, 500));
+    }
+
+    /// 拖**边**不写锚点：一条边的对面那条边上两枚角都站着不动，选哪一枚都是编的。整块移动
+    /// 同理（它没定过任何一角）。所以这两类动作留下上一次的答案。
+    #[test]
+    fn an_edge_or_body_drag_invents_no_anchor() {
+        let mut m = one_screen_100(PhysRect::default());
+        m.press(0, 300.0, 200.0);
+        m.drag(0, 700.0, 400.0, false);
+        m.release();
+        assert_eq!(m.size_anchor, Anchor::TopLeft);
+        // 上边（N）：往下拖一条，选区长一截，而锚点还是左上角。
+        assert!(matches!(m.press(0, 500.0, 200.0), Some(Handle::N)));
+        m.drag(0, 500.0, 150.0, false);
+        m.release();
+        assert_eq!(m.size_anchor, Anchor::TopLeft, "拖边没有答案，只有上一次的");
+        // 整块拖动（Body）：走的是 `fitted_into` 那一条滑动路，两枚角都跟着走。
+        assert!(matches!(m.press(0, 500.0, 300.0), Some(Handle::Body)));
+        m.drag(0, 900.0, 500.0, false);
+        m.release();
+        assert_eq!(m.size_anchor, Anchor::TopLeft);
+        // 而从右下往左上拖出来的那一张，定住的确实是右下角。
+        let mut back = one_screen_100(PhysRect::default());
+        back.press(0, 700.0, 400.0);
+        back.drag(0, 300.0, 200.0, false);
+        back.release();
+        assert_eq!(back.size_anchor, Anchor::BottomRight);
+        assert!(back.type_size(100, 50));
+        // 右下角站在 (700,400) 上不动，长出去的是左边与上边。
+        assert_eq!(back.hole, PhysRect::new(600, 350, 100, 50));
+    }
+
+    /// §5.3.6 第二条规则在遮罩这一层的版本：打到桌面外时对面让路，而锚住的那一角不搬。
+    /// `geometry.rs` 那几格钉的是同一件事的算术，这一格钉的是"这一趟真从 `MaskState` 走"。
+    #[test]
+    fn a_typed_size_too_big_for_the_desktop_gives_way_at_the_far_edge() {
+        let mut m = one_screen_100(PhysRect::new(1800, 980, 100, 100));
+        assert_eq!(m.size_anchor, Anchor::TopLeft, "没拖过 = 出厂那一枚");
+        assert!(m.type_size(2000, 2000));
+        assert_eq!(m.hole, PhysRect::new(1800, 980, 120, 100));
+        assert_eq!(m.hole.right(), 1920, "右边贴到桌面上沿");
+        assert_eq!(m.hole.bottom(), 1080, "下边贴到桌面下沿");
+    }
+
+    /// `false` 的三种来历都不动选区、也不动芯片：一把门把手不该因为递来 0 就顺手清掉别的格子
+    /// （与 [`MaskState::pick_ratio`] 的越界那一支同一条口径）。
+    #[test]
+    fn a_typed_size_that_is_not_a_positive_number_changes_nothing() {
+        let mut m = one_screen_100(PhysRect::new(300, 200, 400, 200));
+        assert!(m.pick_ratio(2));
+        for bad in [
+            (0, 100),
+            (100, 0),
+            (0, 0),
+            (-5, 100),
+            (100, -1),
+            (i32::MIN, 100),
+        ] {
+            assert!(!m.type_size(bad.0, bad.1), "{bad:?} 不该被接受");
+            assert_eq!(
+                m.hole,
+                PhysRect::new(300, 200, 400, 200),
+                "{bad:?} 那次动了选区"
+            );
+            assert_eq!(m.ratio_index, 2, "{bad:?} 那次动了芯片");
+        }
+        // 没有选区时同样拒绝：第一步还没走，"以当前锚点调整尺寸"没有对象。
+        let mut none = one_screen_100(PhysRect::default());
+        assert!(!none.type_size(100, 100));
+        assert!(!none.has_selection());
+    }
+
+    /// 打的数字与亮着的锁撞车时，本轮的答案是**数字赢、芯片跟着改口**：一次显式的输入比一把
+    /// 还亮着的锁新，而留着亮着的 1:1 配一张 640×120 的矩形，屏幕上就是一枚在说谎的芯片。
+    #[test]
+    fn a_typed_size_that_breaks_the_lock_takes_the_chip_down_with_it() {
+        let mut m = one_screen_100(PhysRect::new(300, 200, 400, 400));
+        assert!(m.pick_ratio(1), "1:1");
+        assert!(m.type_size(640, 120));
+        assert_eq!(
+            m.hole,
+            PhysRect::new(300, 200, 640, 120),
+            "锁没有把打的数字改回去"
+        );
+        assert_eq!(m.ratio_index, 0, "芯片改口到「无」");
+        assert_eq!(m.ratio_lock(), None);
+    }
+
+    /// 另一臂：打的数字本来就合于锁（1:1 打 500×500），芯片一个字都不动 —— 上一格说的是
+    /// "撞车时谁说谎"，这一格说的是"没撞车时不许无动改口"。
+    #[test]
+    fn a_typed_size_that_agrees_with_the_lock_leaves_the_chip_alone() {
+        let mut m = one_screen_100(PhysRect::new(300, 200, 400, 400));
+        assert!(m.pick_ratio(1));
+        assert!(m.type_size(500, 500));
+        assert_eq!(m.hole, PhysRect::new(300, 200, 500, 500));
+        assert_eq!(m.ratio_index, 1, "合于锁的那一次不该改口");
+        assert_eq!(m.ratio_lock(), Some(1.0));
+    }
+
+    /// 序号表与名字表不能各长各的：QML 只做一次下标，而"屏幕上写着左上角、Rust 用的那枚是
+    /// BottomRight"这一族漂移没有别的证人。
+    #[test]
+    fn the_anchor_code_table_covers_every_anchor() {
+        let all = [
+            Anchor::TopLeft,
+            Anchor::TopRight,
+            Anchor::BottomLeft,
+            Anchor::BottomRight,
+            Anchor::Center,
+        ];
+        let codes: Vec<i32> = all.iter().map(|a| anchor_code(*a)).collect();
+        assert_eq!(codes, vec![0, 1, 2, 3, 4], "五枚锚点各占一格、不漏不重");
+        assert_eq!(SIZE_ANCHOR_NAMES.len(), all.len());
+        assert_eq!(size_anchor_names(), "左上角|右上角|左下角|右下角|中心");
+        assert_eq!(Anchor::default(), all[0], "出厂那一枚就是序号 0 那一枚");
+    }
+
+    /// 锚点得过桥才有证人：QML 那一行字绑的是 qproperty，而 qproperty 的来历是
+    /// [`MaskViewData::size_anchor`] 这一格。与上面那枚芯片的走法同一条路。
+    #[test]
+    fn the_view_carries_the_anchor_a_typed_size_will_use() {
+        let mut m = one_screen_100(PhysRect::default());
+        assert_eq!(m.view_data(0).size_anchor, 0, "没拖过 = 左上角");
+        m.press(0, 700.0, 400.0);
+        m.drag(0, 300.0, 200.0, false);
+        m.release();
+        assert_eq!(m.view_data(0).size_anchor, 3, "从右下拖出的那一张");
+        // 槽位都不存在时读到的还是出厂那一枚，而不是越界下标。
+        assert_eq!(m.view_data(9).size_anchor, 0);
+        assert_eq!(MaskViewData::default().size_anchor, 0);
+    }
+
+    /// 锁不跨场那一格的锚点版：`open()` 里那一行在单测够不着（要抓屏），这一格钉住那枚函数
+    /// 自己做什么，以及出厂值。
+    #[test]
+    fn reset_size_anchor_leaves_nothing_of_the_last_flow() {
+        let mut m = one_screen_100(PhysRect::new(300, 200, 400, 200));
+        m.size_anchor = Anchor::BottomRight;
+        m.reset_size_anchor();
+        assert_eq!(m.size_anchor, Anchor::TopLeft);
+        assert_eq!(
+            MaskState::default().size_anchor,
+            Anchor::TopLeft,
+            "出厂就是左上角"
+        );
+    }
+
+    // ---- §5.3.7 尺寸单位切换 ----------------------------------------------------------
+
+    /// 字样表、句子表与序号表三枚不许各长各的：页拿第 `i` 句配第 `i` 枚字样、再按
+    /// [`unit_code`] 的下标点亮第 `i` 枚芯片，而这里没有第二个人会发红 —— 错一格就是一句
+    /// 贴在错单位上的话。`|` 是分隔符，所以句子里出现 `|` 也是同一族漂移。
+    #[test]
+    fn the_unit_tables_cover_every_unit_and_agree_on_their_own_length() {
+        let codes: Vec<i32> = [Unit::Px, Unit::Dip]
+            .iter()
+            .map(|u| unit_code(*u))
+            .collect();
+        assert_eq!(codes, vec![0, 1], "两枚单位各占一格、不漏不重");
+        assert_eq!(SIZE_UNITS.len(), UNIT_HINTS.len(), "字样与句子必须同枚同序");
+        assert_eq!(unit_names(), "px|dip");
+        assert_eq!(
+            unit_hints().split('|').count(),
+            SIZE_UNITS.len(),
+            "句子里不许出现分隔符"
+        );
+        assert_eq!(Unit::default(), SIZE_UNITS[0], "出厂那一格就是序号 0");
+        // 过界的下标不被读成"用户挑了某一格"：它答出厂那一格，并交回真正生效的那枚。
+        assert_eq!(unit_at_code(7), Unit::Px);
+        assert_eq!(unit_at_code(-1), Unit::Px);
+        assert_eq!(unit_at_code(1), Unit::Dip);
+    }
+
+    /// 预期结果第一句「单位切换后，界面显示正确的换算值」在 Rust 侧的那对数字：px 那一格读
+    /// 的是**选区自己的物理尺寸**，与快速保存那句「已保存到 …（选区 800×600 像素）」同一个数
+    /// 字；而窗内几何 `hole` 仍然是除过这一扇窗缩放的画法。两者分开是本轮的量点 —— 换绑之前
+    /// 屏幕上那两行 W×H 读的就是后者，却不带任何单位字样。
+    #[test]
+    fn the_px_readout_is_the_number_the_result_detail_names() {
+        let desk = PhysRect::new(0, 0, 1920, 1080);
+        let mut m = selectable(
+            vec![slot(0, desk, 2.0)],
+            PhysRect::new(300, 200, 800, 600),
+            desk,
+        );
+        assert_eq!(m.unit, Unit::Px, "出厂是 px");
+        assert_eq!(m.size_shown(), (800, 600));
+        let v = m.view_data(0);
+        assert_eq!((v.size_w, v.size_h), (800, 600));
+        assert_eq!(v.size_unit, 0);
+        // 画法归画法：这一扇窗的洞仍然是 200% 除过的数。
+        assert_eq!((v.hole.w, v.hole.h), (400, 300));
+        m.set_unit(1);
+        assert_eq!(m.size_shown(), (400, 300), "200% 屏上 dip 就是那个除过的数");
+        assert_eq!(m.view_data(0).size_unit, 1);
+    }
+
+    /// 单位是一枚状态，不是一扇窗的看法：两扇窗上那行 W×H 必须同字，用的是**选区自己那张屏**
+    /// 的缩放（[`monitor_slot_for`]，它自 P67 写下之后一直没有生产调用者，本轮第一次被读）。
+    #[test]
+    fn one_unit_reads_the_same_size_on_both_windows() {
+        let left = slot(0, PhysRect::new(0, 0, 1920, 1080), 2.0);
+        let right = slot(1, PhysRect::new(1920, 0, 1920, 1080), 1.0);
+        let desk = PhysRect::new(0, 0, 3840, 1080);
+        let mut m = selectable(vec![left, right], PhysRect::new(2100, 100, 400, 300), desk);
+        assert_eq!(m.size_scale(), Scale::of(1.0), "选区整个站在右屏");
+        m.set_unit(1);
+        assert_eq!(m.size_shown(), (400, 300), "100% 那张屏：dip 与 px 同数");
+        assert_eq!(
+            m.view_data(0).size_w,
+            m.view_data(1).size_w,
+            "两张屏、一个状态"
+        );
+        assert_eq!(m.view_data(0).size_unit, 1);
+        assert_eq!(m.view_data(1).size_unit, 1);
+    }
+
+    /// 跨屏那一条对角线：两扇缩放不同的屏都沾到选区时，说了算的是**重叠更宽**的那一扇
+    /// （打平取更早的一扇，[`monitor_slot_for`] 自己的规则，这里只钉它真的被这样用了）。
+    #[test]
+    fn a_straddle_pays_the_wider_overlap_for_its_scale() {
+        let left = slot(0, PhysRect::new(0, 0, 1920, 1080), 2.0);
+        let right = slot(1, PhysRect::new(1920, 0, 1920, 1080), 1.0);
+        let desk = PhysRect::new(0, 0, 3840, 1080);
+        // 1000..2000：左屏占 920、右屏只占 80 ⇒ 用左屏的 2.0。
+        let mut m = selectable(vec![left, right], PhysRect::new(1000, 100, 1000, 300), desk);
+        assert_eq!(m.size_scale(), Scale::of(2.0));
+        assert_eq!(m.size_shown(), (1000, 300), "px 那一格不看任何缩放");
+        m.set_unit(1);
+        assert_eq!(m.size_shown(), (500, 150), "dip 那一格按赢的那一扇除");
+    }
+
+    /// 操作步骤第三句「系统根据当前显示器缩放比例换算尺寸」倒过来那一路：**打字进去的数**按
+    /// 当前单位解释。150% 屏（`slot(..., 1.5)` 就是这一枚测试的那台）上打 200×100 dip，落地是
+    /// 300×150 物理像素，而读回来的还是用户打的那对数 —— 屏幕上没有变形，只是它说的是 dip。
+    #[test]
+    fn typing_in_dip_lands_on_the_desktop_as_physical_pixels() {
+        let desk = PhysRect::new(0, 0, 1920, 1080);
+        let mut m = selectable(
+            vec![slot(0, desk, 1.5)],
+            PhysRect::new(100, 100, 300, 300),
+            desk,
+        );
+        m.set_unit(1);
+        assert!(m.type_size(200, 100));
+        assert_eq!(m.hole, PhysRect::new(100, 100, 300, 150));
+        assert_eq!(m.size_shown(), (200, 100));
+    }
+
+    /// 出厂那一格必须**什么都不换算**：`Unit::Px` 那两支是恒等，所以 P162 钉下的每一张
+    /// `type_size` 单测与 `--mask` 门里那 13 行在 200% 屏上也给出与本轮之前一样的答案。
+    #[test]
+    fn the_px_unit_converts_nothing_even_on_a_200_percent_screen() {
+        let desk = PhysRect::new(0, 0, 1920, 1080);
+        let mut m = selectable(
+            vec![slot(0, desk, 2.0)],
+            PhysRect::new(100, 100, 300, 300),
+            desk,
+        );
+        assert!(m.type_size(500, 400));
+        assert_eq!(m.hole, PhysRect::new(100, 100, 500, 400), "px 就是像素");
+        assert_eq!(m.size_shown(), (500, 400));
+    }
+
+    /// 换算与夹的顺序：先按单位换成物理像素、再让桌面边界夹（§5.3.6 第二条规则）。反过来就
+    /// 会把"200% 屏上的 1000 dip"当成 1000 物理像素夹掉一半。
+    #[test]
+    fn a_typed_dip_number_is_still_clamped_by_the_desktop() {
+        let desk = PhysRect::new(0, 0, 1920, 1080);
+        let mut m = selectable(
+            vec![slot(0, desk, 2.0)],
+            PhysRect::new(0, 0, 100, 100),
+            desk,
+        );
+        m.set_unit(1);
+        assert!(m.type_size(1000, 100));
+        assert_eq!(m.hole.w, 1920, "桌面赢，不是单位赢");
+        assert_eq!(
+            m.size_shown(),
+            (960, 100),
+            "读回来的是夹过之后按 dip 说的数"
+        );
+    }
+
+    /// 还没有选区时单位什么也换不了：`type_size` 那一族的三条拒绝一条不因为本轮多出一格而变，
+    /// 而读数在 dip 那一格也不能凭空造出一对数字。
+    #[test]
+    fn the_unit_cannot_convert_a_selection_that_does_not_exist() {
+        let mut m = one_screen_100(PhysRect::default());
+        m.set_unit(1);
+        assert!(!m.type_size(100, 100), "第一步还没走：什么单位都救不了");
+        assert_eq!(m.hole, PhysRect::default());
+        assert_eq!(m.size_shown(), (0, 0));
+    }
+
+    /// 桥上交回的是**真正生效**的那一格而不是"做没做成"：页上的芯片只有跟着这个答案亮，
+    /// 才不会在递错下标的时候自己骗自己。
+    #[test]
+    fn set_unit_answers_with_the_unit_that_actually_landed() {
+        let mut m = one_screen_100(PhysRect::new(0, 0, 100, 100));
+        assert_eq!(m.set_unit(1), Unit::Dip);
+        assert_eq!(m.unit, Unit::Dip);
+        assert_eq!(m.set_unit(9), Unit::Px);
+        assert_eq!(m.view_data(0).size_unit, 0);
+    }
+
+    /// 切单位是一句读数的事：选区一步不走，锚点与比例锁也不改口 —— 它们各有各的主人，本轮
+    /// 不许顺手把别人那格也动一下（`applySize` 撞锁改口是**那一次输入**的后果，不是这一枚）。
+    #[test]
+    fn switching_the_unit_moves_no_selection_and_touches_no_other_state() {
+        let mut m = one_screen_100(PhysRect::new(300, 200, 400, 200));
+        m.size_anchor = Anchor::BottomRight;
+        assert!(m.pick_ratio(1));
+        let before = m.hole;
+        assert_eq!(m.set_unit(1), Unit::Dip);
+        assert_eq!(m.hole, before, "切单位不动选区");
+        assert_eq!(m.size_anchor, Anchor::BottomRight, "锚点没有第二个主人");
+        assert_eq!(m.ratio_index, 1, "锁不因切单位而改口");
+    }
+
+    /// 三格一起过桥，且没有槽位时不报越界下标：`view_data(9)` 走 [`MaskViewData::default`]，
+    /// 那对读数是 0×0、单位是出厂那一格 —— 与"窗还没分到屏"在屏幕上读起来一样。
+    #[test]
+    fn the_view_carries_the_unit_and_its_own_pair_of_numbers() {
+        let mut m = one_screen_100(PhysRect::default());
+        assert_eq!(m.view_data(0).size_unit, 0, "没挑过 = px");
+        assert_eq!((m.view_data(0).size_w, m.view_data(0).size_h), (0, 0));
+        assert_eq!(MaskViewData::default().size_unit, 0);
+        m.set_unit(1);
+        assert_eq!(m.view_data(0).size_unit, 1);
+        assert_eq!(m.view_data(9).size_unit, 0, "没有槽位就回答出厂那一格");
+        assert_eq!((m.view_data(9).size_w, m.view_data(9).size_h), (0, 0));
+    }
+
+    /// §5.3.7 第一步那条腿的证人。`open()` 里那一行单测够不着（要抓屏），所以这里钉的是它**做的
+    /// 那一手**：单位的起点是 `[capture] size_unit` 那一格，而不是枚举的出厂格；以及这一手会一路
+    /// 走到页上那个序号。两半各钉一件事 —— 前半是"档说了算"，后半是"**芯片不改档**"：页上那一枚
+    /// 点下去只改这一场，下一场仍回到档里那一格。把这两半混成一格，就分不清"用户记住了 dip"与
+    /// "用户上一张临时看了 dip"。
+    #[test]
+    fn the_flow_opens_on_the_unit_the_file_picks() {
+        let mut m = one_screen_100(PhysRect::new(0, 0, 100, 100));
+        assert_eq!(
+            MaskState::default().unit,
+            Unit::Px,
+            "没碰过档的状态仍是出厂那一格"
+        );
+        assert_eq!(
+            falcon_core::config::Capture::default().size_unit,
+            Unit::Px,
+            "档的出厂与枚举的出厂是同一格，所以已存在每一次按下零改变"
+        );
+        m.unit = Unit::Dip;
+        m.capture.size_unit = Unit::Dip;
+        m.unit = m.capture.size_unit; // `open()` 走的那一手
+        assert_eq!(m.unit, Unit::Dip);
+        assert_eq!(m.view_data(0).size_unit, 1, "页上亮的是第二枚芯片");
+
+        let mut n = one_screen_100(PhysRect::new(0, 0, 100, 100));
+        n.unit = Unit::Dip; // 这一场在芯片上点的
+        n.capture = falcon_core::config::Capture::default(); // 下一场开档：档里写的是 px
+        n.unit = n.capture.size_unit;
+        assert_eq!(n.unit, Unit::Px, "芯片不写档，所以下一场回到档里那一格");
+    }
+
+    /// 芯片亮哪格与锁在不在，是 QML 绑的读数而不是它自己记的账 —— 与 `show_dimensions`
+    /// 同一条路径：`MaskState` → `MaskViewData` → qproperty。
+    #[test]
+    fn the_view_carries_which_chip_is_lit_and_whether_the_lock_holds() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::default(), desk);
+        let v = m.view_data(0);
+        assert_eq!((v.ratio_index, v.ratio_live), (0, false), "没挑过 = 无");
+        for (index, want) in [(1, true), (2, true), (3, true)] {
+            assert!(m.pick_ratio(index));
+            let v = m.view_data(0);
+            assert_eq!(v.ratio_index, index);
+            assert_eq!(v.ratio_live, want, "{index} 那格该是锁着的");
+        }
+        // 一张不存在的屏：`view_data` 走 `MaskViewData::default()`，两枚跟着回到「无」。
+        let v = m.view_data(99);
+        assert_eq!((v.ratio_index, v.ratio_live), (0, false));
+    }
+
+    /// 那张表自己的体检，同 `annotate::TOOL_TEXTS` 的那一枚：清单只长一处，而每一格的比例串
+    /// 必须**解得开**（除了「无」那一格的空串，它解不开正是它的意思）。没有这一格，"芯片写着
+    /// 4:3 而拖出来不锁"是一种能在表里安静长大的缺陷。
+    #[test]
+    fn every_ratio_chip_names_a_spec_that_parses() {
+        assert_eq!(RATIO_CELLS.len(), 4);
+        assert_eq!(ratio_names().split('|').count(), RATIO_CELLS.len());
+        assert_eq!(ratio_hints().split('|').count(), RATIO_CELLS.len());
+        for (i, (name, spec, hint)) in RATIO_CELLS.iter().enumerate() {
+            if i == 0 {
+                assert_eq!(*spec, "", "「无」那一格必须真的没有比例串");
+                assert!(parse_ratio(spec).is_none());
+            } else {
+                let r = parse_ratio(spec);
+                assert!(r.is_some(), "{name} 的比例串 {spec:?} 解不开");
+                assert!(r.unwrap().is_finite() && r.unwrap() > 0.0);
+            }
+            assert!(
+                hint.starts_with(name),
+                "{name} 那句提示开头说的不是它自己：{hint}"
+            );
+        }
+    }
+
+    /// §5.3.8 第二句规则「用户应可以临时解除比例约束」在屏幕上**唯一的入口**是芯片的悬停句，
+    /// 所以那半句必须说的是真话：只跟在锁真的成立的那几枚后面。判据不是清单第三格的形状，
+    /// 而是 [`MaskState::ratio_lock`] 与它绑出去的 `ratio_live` —— 也就是 `drag` 那一支真正读的
+    /// 同一枚函数，于是句子与锁没法各说各话。
+    ///
+    /// 没有这一格会怎样：`ratio_hints()` 把句子拼给全部四枚，或谁都不拼，而 `drag` 照旧按
+    /// `unlocked` 分支 —— 屏幕上多教或少教的那半句不会让任何一行变红。「无」那一格带上这句，
+    /// 教的就是一条按下去什么都不会发生的手势。
+    #[test]
+    fn the_release_sentence_rides_only_the_chips_that_lock() {
+        let all = ratio_hints();
+        let hints: Vec<&str> = all.split('|').collect();
+        assert_eq!(hints.len(), RATIO_CELLS.len(), "悬停句与芯片不同数");
+        for (index, (name, spec, base)) in RATIO_CELLS.iter().enumerate() {
+            let (slots, desk) = one_screen();
+            let mut m = selectable(slots, PhysRect::default(), desk);
+            assert!(m.pick_ratio(index as i32), "{name} 那格按不动");
+            let locked = m.ratio_lock().is_some();
+            assert_eq!(
+                locked,
+                parse_ratio(spec).is_some(),
+                "{name}：锁在不在与比例串解不解得开各说了一套"
+            );
+            assert_eq!(
+                m.view_data(0).ratio_live,
+                locked,
+                "{name}：绑出去的与锁不在"
+            );
+            assert!(
+                !base.contains(RATIO_RELEASE_HINT),
+                "{name} 的句子本来就带了一遍，拼出来会是两遍"
+            );
+            let want = if locked {
+                format!("{base}，{RATIO_RELEASE_HINT}")
+            } else {
+                (*base).to_string()
+            };
+            assert_eq!(hints[index], want.as_str(), "{name} 那句的拼法");
+        }
+        assert_eq!(hints[0], RATIO_CELLS[0].2, "「无」那一格必须原样");
+    }
+
+    /// 桌面上那一枚边界与这一枚锁相撞时**谁付账**。量下来的答案是"锁与对角都不付，付的是拖拽
+    /// 行程"：指针在 `desk_point` 里先被夹进桌面（DIP −1000 → 物理 0），`resize` 给出的自由矩形
+    /// 是 (0,0,1200,1000)，1:1 那一枚锁取面积更近的一支 → 1000×1000，而 §5.3.1 那枚钉住的右下角
+    /// 原样停在 (1200,1000)。抓住的那枚左上角停在 (200,0) —— 指针到得了，选区到不了。
+    ///
+    /// 记下来的理由是这一格补的是什么：`drag` 那段注释曾经写反过（"被裁掉之后比例可能不再精确"），
+    /// 而那句话任何一扇门都读不出来 —— `mask_check` 没有指针注入器（第 46 项 ②），它只能量静态
+    /// 颜色，量不到一次拖拽。注释与实现的差别不会让任何一行变红，这一格会。
+    #[test]
+    fn the_border_shortens_the_drag_and_pays_neither_the_ratio_nor_the_anchor() {
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
+        assert!(m.pick_ratio(1));
+        assert!(matches!(m.press(0, 200.0, 200.0), Some(Handle::Nw)));
+        m.drag(0, -1000.0, -1000.0, false);
+        assert_eq!(m.hole, PhysRect::new(200, 0, 1000, 1000));
+        assert_eq!(m.hole.w, m.hole.h, "比例在边界上不该付账");
+        assert_eq!(
+            (m.hole.right(), m.hole.bottom()),
+            (1200, 1000),
+            "§5.3.1 那枚对角逐像素没动"
+        );
+        assert_eq!(m.hole.y, 0, "贴到桌面上沿那一条");
+        assert_eq!(
+            m.hole.top_left(),
+            PhysPoint::new(200, 0),
+            "付账的是拖拽行程：抓住的那枚角停在 (200,0)"
+        );
+        assert_eq!(
+            m.desk_point(0, -1000.0, -1000.0),
+            Some(PhysPoint::new(0, 0)),
+            "边界动手的地方在指针上：夹到桌面角，比例看到的已经是夹过的那一点"
+        );
+    }
+
+    /// 上面那一格是一臂；这一格把**四枚比例串 × 四枚角点**共 16 臂逐臂问同一句话：`drag` 末尾
+    /// 那一次 `fitted_into` 在锁着的角点路上动过手没有。问法是把测试自己算出的自由矩形喂回
+    /// `constrain_aspect`，拿返回值与屏幕上的选区比 —— 相等就是那一步没动手。另有四句是同一臂
+    /// 必须同时说真话的地方：选区在桌面内、钉住的那枚角没动、锁只收短边不拉长边（那正是
+    /// `fitted_into` 唯一可能动手的前提）、比例在选区自己的 w/h 上复现得到（差不到一枚像素）。
+    /// 最后一臂是反面：同一条 `fitted_into` 在 `Body` 那一支每一轮都在滑动整块选区，所以那 16
+    /// 臂的"没动"不是因为这条代码路永远不动 —— 是锁自己先把它排除了。
+    #[test]
+    fn the_desktop_never_touches_a_lock_selected_rect() {
+        let start = PhysRect::new(400, 400, 800, 600);
+        // (把手, 按下的 DIP, 拖到的 DIP) —— 拖的那一点每一臂都远在桌面外，于是指针必定被夹住。
+        let corners = [
+            (Handle::Nw, 200.0, 200.0, -4000.0, -4000.0),
+            (Handle::Ne, 600.0, 200.0, 4000.0, -4000.0),
+            (Handle::Sw, 200.0, 500.0, -4000.0, 4000.0),
+            (Handle::Se, 600.0, 500.0, 4000.0, 4000.0),
+        ];
+        let mut arms = 0;
+        for spec in ["1:1", "4:3", "16:9", "3:4"] {
+            let r = parse_ratio(spec).unwrap();
+            for (handle, px, py, dx, dy) in corners {
+                let (slots, desk) = one_screen();
+                let mut m = selectable(slots, start, desk);
+                assert!(m.set_ratio_spec(spec));
+                assert!(
+                    matches!(m.press(0, px, py), Some(h) if h == handle),
+                    "{spec} × {handle:?}：抓错了把手，这一臂问的就不是它"
+                );
+                m.drag(0, dx, dy, false);
+                let p = m.desk_point(0, dx, dy).unwrap();
+                let free = resize(&start, handle, p, &desk);
+                let anchor = anchor_of_corner(handle).unwrap();
+                let want = constrain_aspect(&free, r, anchor).unwrap();
+                assert_eq!(
+                    m.hole, want,
+                    "{spec} × {handle:?}：边界动了一次锁选出的矩形"
+                );
+                assert!(
+                    m.hole.x >= desk.x
+                        && m.hole.y >= desk.y
+                        && m.hole.right() <= desk.right()
+                        && m.hole.bottom() <= desk.bottom(),
+                    "{spec} × {handle:?} 跑到了桌面上没有的位置：{:?}",
+                    m.hole
+                );
+                assert_eq!(
+                    anchor.point(&m.hole),
+                    anchor.point(&free),
+                    "{spec} × {handle:?}：钉住的那枚角动了"
+                );
+                assert!(
+                    (m.hole.w == free.w && m.hole.h <= free.h)
+                        || (m.hole.h == free.h && m.hole.w <= free.w),
+                    "{spec} × {handle:?}：锁把一条边拉长了（自由 {free:?} → 锁后 {:?}），\
+                     那正是 `fitted_into` 唯一可能动手的前提",
+                    m.hole
+                );
+                let err = (m.hole.w as f64 / m.hole.h as f64 - r).abs() * m.hole.h as f64;
+                assert!(err <= 1.0, "{spec} × {handle:?}：比例差了 {err:.3} 枚像素");
+                arms += 1;
+            }
+        }
+        assert_eq!(arms, 16, "四枚比例串 × 四枚角点");
+
+        // 反面那一臂：整块拖动（不是角点）走的就是 `fitted_into`，它把选区整块滑回桌面内。
+        let (slots, desk) = one_screen();
+        let mut m = selectable(slots, start, desk);
+        assert!(m.pick_ratio(1));
+        assert!(matches!(m.press(0, 400.0, 350.0), Some(Handle::Body)));
+        m.drag(0, 4000.0, 4000.0, false);
+        assert_eq!(m.hole, PhysRect::new(2272, 1320, 800, 600));
+        assert_eq!(
+            m.hole.w, 800,
+            "Body 那一路不锁 —— 尺寸是整块滑过来的，不是裁过来的"
+        );
     }
 
     /// §5.3.1 step 4: a corner drags the two edges it owns and leaves the opposite
@@ -2580,7 +4129,7 @@ mod tests {
         let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
         // The bottom-right corner is physical (1200, 1000) = DIP (600, 500).
         assert!(matches!(m.press(0, 600.0, 500.0), Some(Handle::Se)));
-        m.drag(0, 700.0, 600.0);
+        m.drag(0, 700.0, 600.0, false);
         assert_eq!(m.hole, PhysRect::new(400, 400, 1000, 800));
         assert_eq!(m.hole.top_left(), PhysPoint::new(400, 400));
     }
@@ -2593,7 +4142,7 @@ mod tests {
         let (slots, desk) = one_screen();
         let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
         m.press(0, 600.0, 500.0);
-        m.drag(0, 2000.0, 1200.0);
+        m.drag(0, 2000.0, 1200.0, false);
         assert_eq!(m.hole, PhysRect::new(400, 400, 2672, 1520));
         assert_eq!(m.hole.right(), 3072);
         assert_eq!(m.hole.bottom(), 1920);
@@ -2608,7 +4157,7 @@ mod tests {
         let (slots, desk) = one_screen();
         let mut m = selectable(slots, PhysRect::new(400, 400, 800, 600), desk);
         assert!(matches!(m.press(0, 300.0, 300.0), Some(Handle::Body)));
-        m.drag(0, 350.0, 320.0);
+        m.drag(0, 350.0, 320.0, false);
         assert_eq!(m.hole, PhysRect::new(500, 440, 800, 600));
     }
 
@@ -2636,7 +4185,7 @@ mod tests {
             PhysRect::new(0, 0, 3840, 1080),
         );
         m.press(0, 1900.0, 100.0);
-        m.drag(0, 2100.0, 300.0);
+        m.drag(0, 2100.0, 300.0, false);
         assert_eq!(m.hole, PhysRect::new(1900, 100, 200, 200));
         // And each window still sees only its own half of it.
         assert_eq!(m.view_data(0).hole, PhysRect::new(1900, 100, 20, 200));
@@ -5059,6 +6608,56 @@ mod tests {
         assert_eq!(m.message, said_save, "揭示的那句话把保存的那句证据挤掉了");
     }
 
+    /// §5.5.10 步骤 2/3 那道梯在**动手之前**的那一格：没有选区的一次点击要说"还没有选区"，
+    /// 而那一句要落在 `send_to_last` 上而不是 `message` 上 —— 后者是"已保存到 …"那句证据的
+    /// 槽位（[`MaskState::reveal_last`]、[`MaskState::auto_copy_last`] 为同一条理由各占过一格）。
+    #[test]
+    fn a_send_to_click_without_a_selection_says_so_without_hiding_the_save() {
+        let mut m = MaskState::default();
+        assert!(!m.send_to_target(0));
+        assert_eq!(m.send_to_clicks, 1, "失败的一次点击不该不计数");
+        assert_eq!(m.send_to_acted, 0, "没有选区的一次点击递到了 shell");
+        assert!(
+            m.send_to_last.contains("还没有选区"),
+            "话没说出来：{:?}",
+            m.send_to_last
+        );
+        assert_eq!(m.message, "", "派发的那句话挤掉了保存的那句证据");
+    }
+
+    /// 序号越界那一臂答在**写文件之前**：清单上没有第 N 枚时，一次点击既不该往 temp 里落一张
+    /// 没人接的图，也不该走到 shell。索引取 999 而不是 0，是因为这一格不能依赖这台机器的
+    /// `[output] send_to_apps` 此刻配了几枚 —— 那句话里报出的枚数由实现自己数，测试只判臂。
+    #[test]
+    fn an_out_of_range_target_is_refused_before_a_byte_is_written() {
+        let mut m = savable(PhysRect::new(10, 20, 30, 40));
+        assert!(
+            !m.send_to_target(999),
+            "清单上没有的第 999 枚被当成递出去了"
+        );
+        assert_eq!(m.send_to_clicks, 1);
+        assert_eq!(m.send_to_acted, 0);
+        assert_eq!(m.send_to_writes, 0, "一次越界的点击落了一张盘上的文件");
+        assert!(
+            m.send_to_last.contains("不在这份清单"),
+            "话没说出来：{:?}",
+            m.send_to_last
+        );
+        assert!(m.send_to_landed.is_none(), "越界那一臂留下了临时文件");
+    }
+
+    /// 那枚目录是本程序自己打了标签的一处，而"收回"删得着的只可能是它里面的东西 —— 与
+    /// [`crate::state::PinState::clip_dir`] 同一枚安全口径：不替用户动他自己在 temp 里的文件。
+    #[test]
+    fn the_send_to_directory_is_ours_and_tagged() {
+        let dir = MaskState::sendto_dir();
+        assert!(dir.starts_with(std::env::temp_dir()), "{dir:?}");
+        assert_eq!(
+            dir.file_name().map(|s| s.to_string_lossy().into_owned()),
+            Some("falconshot-sendto".to_string())
+        );
+    }
+
     /// §5.4.3 的算术本体（[`MaskState::stamp_cursor`]）：不开窗、不读屏、不要真光标。
     ///
     /// 分成这几臂是因为它们在字节上各是一种错法：贴错原点、把差值当成绝对坐标、
@@ -5183,5 +6782,145 @@ mod tests {
             again.pixels, plain.pixels,
             "把光标收回去之后缝合不再是同一批字节"
         );
+    }
+
+    /// §5.16 那枚 `[advanced] recognize_text` 的第一分岔（要不要花一次引擎），P148 起。
+    /// 纯函数 ⇒ 四种形状都不开库、不起线程、也不需要本机 OCR 引擎在场（§9.1 第十条的
+    /// headless 半边）。
+    #[test]
+    fn the_auto_ocr_switch_spends_an_engine_run_only_when_it_should() {
+        assert!(!auto_ocr_wanted(false, false), "关着的键反倒要跑");
+        assert!(!auto_ocr_wanted(false, true), "关着又是取消的一行, 更要跑?");
+        assert!(
+            auto_ocr_wanted(true, false),
+            "开着、这一行是确认的, 反倒不跑"
+        );
+        assert!(
+            !auto_ocr_wanted(true, true),
+            "Esc 掉的那一行没有第二位读者, 不该花一次引擎"
+        );
+    }
+
+    /// 第二分岔：引擎那句话翻成那一格的值。三种形状必须分得开 —— **没跑成**（NULL）、
+    /// **跑成而全空白**（空串）、**跑成而有字**（原样, 换行留着）。把第二种塌成第一种,
+    /// §5.6 那一列自此说不出「跑过没有」；把第二种留成空白串, 界面读回来会说「这一行有
+    /// 文字」而用户看见的是空的。
+    #[test]
+    fn a_blank_recognition_is_not_the_same_shape_as_no_recognition() {
+        assert_eq!(auto_ocr_slot(None), None, "没跑成却交回了一格值");
+        assert_eq!(
+            auto_ocr_slot(Some(String::new())),
+            Some(String::new()),
+            "跑成而没字, 不该被说成没跑成"
+        );
+        assert_eq!(
+            auto_ocr_slot(Some("  \n\t ".to_string())),
+            Some(String::new()),
+            "一串空白折不成空串"
+        );
+        assert_eq!(
+            auto_ocr_slot(Some("第一行\n第二行".to_string())),
+            Some("第一行\n第二行".to_string()),
+            "§5.6.1 要保留自然段和换行, 这里不许把它们抹平"
+        );
+    }
+
+    /// 落笔那一步对面是**真的那一格 SQLite**：[`write_auto_ocr`] 就是线程上跑的同一只手,
+    /// 这里把 `Some(…)` 直接递进来, 于是「字进没进它点名的那一行」有一位不必真跑引擎的证人。
+    /// 四件事各判一次：新行是 NULL、有字写进去、没跑成**不清**已有的字、空白写成空串;
+    /// 外加库里没有的那一行只回 `Err` 而不响。
+    #[test]
+    fn the_auto_ocr_write_lands_on_the_row_it_names_and_leaves_the_one_it_does_not() {
+        let hole = PhysRect::new(10, 20, 100, 80);
+        let hdir = sandbox("auto-ocr-write");
+        let mut m = savable(hole);
+        let cfg = falcon_core::config::History {
+            max_items: 0,
+            max_age_days: 0,
+            max_size_mb: 0,
+            ..Default::default()
+        };
+        m.history = Some(cfg.clone());
+        m.history_dir = hdir.clone();
+        // 键在这一格**关着**：这一趟要的是「一行带着 NULL 进来」, 而不是顺带起一条线程。
+        assert!(
+            !m.advanced.recognize_text,
+            "出厂默认就该是关着的, 那句『默认什么都不做』指着这一格"
+        );
+        assert_eq!(m.commit(), Some(hole), "确认没交出选区, 历史也就没有那一行");
+        let id = m.history_last_id.expect("§5.14.1 那一行没记成");
+        assert_eq!(m.auto_ocr_asked, 0, "关着的键在确认那一趟里交出去过一次");
+        assert!(
+            !m.history_last.contains("识别"),
+            "关着的键那句话里说了识别: {:?}",
+            m.history_last
+        );
+
+        let h = crate::settings::history_open_in(&hdir, &cfg)
+            .expect("库打不开")
+            .expect("开着却答 None");
+        assert_eq!(
+            h.get(id).unwrap().unwrap().ocr_text,
+            None,
+            "新记成的那一格该是 NULL"
+        );
+
+        write_auto_ocr(&h, id, Some("总价 12.00\n第二行".to_string())).expect("有字那趟没写成");
+        assert_eq!(
+            h.get(id).unwrap().unwrap().ocr_text.as_deref(),
+            Some("总价 12.00\n第二行"),
+            "写进了那一行却没读回来"
+        );
+
+        write_auto_ocr(&h, id, None).expect("没跑成那一趟不该响");
+        assert_eq!(
+            h.get(id).unwrap().unwrap().ocr_text.as_deref(),
+            Some("总价 12.00\n第二行"),
+            "引擎失败反倒把上一趟跑出来的字清了"
+        );
+
+        write_auto_ocr(&h, id, Some("   \n  ".to_string())).expect("空白那趟没写成");
+        assert_eq!(
+            h.get(id).unwrap().unwrap().ocr_text.as_deref(),
+            Some(""),
+            "空白没落成空串"
+        );
+
+        assert!(
+            write_auto_ocr(&h, id + 9_999, Some("x".to_string())).is_err(),
+            "库里没有的那一行反倒写成了"
+        );
+    }
+
+    /// 键开着那一条腿：确认一趟交出去**一次**, 那句话只说「起了一次本机识别」而不说
+    /// 「识别出了什么」（这一格在这条腿上还没有读数可说）, 而那条线程在本趟 **join 掉** ——
+    /// 它写的正是这一趟那个临时目录, 让它活过测试就成了这位没人等的证人。
+    ///
+    /// 引擎在这台机器上到底跑不跑得得出字, 本项**不判**：判的是这条腿不占 GUI 线程、
+    /// 只在开键时起、以及线程自己不 panic。字落没落进那一格由上一项作证。
+    #[test]
+    fn an_open_switch_hands_the_recognition_off_without_making_the_gui_wait() {
+        let hole = PhysRect::new(10, 20, 100, 80);
+        let hdir = sandbox("auto-ocr-handoff");
+        let mut m = savable(hole);
+        m.history = Some(falcon_core::config::History {
+            max_items: 0,
+            max_age_days: 0,
+            max_size_mb: 0,
+            ..Default::default()
+        });
+        m.history_dir = hdir.clone();
+        m.advanced.recognize_text = true;
+
+        assert_eq!(m.commit(), Some(hole), "确认没交出选区");
+        assert_eq!(m.auto_ocr_asked, 1, "开着只该交出去一次");
+        assert!(
+            m.history_last.contains("recognize_text") && m.history_last.contains("不联网"),
+            "那句话没说它是按哪枚键起的、也没说本机: {:?}",
+            m.history_last
+        );
+        let handle = m.auto_ocr_join.take().expect("交出去了却没有把手");
+        assert!(handle.join().is_ok(), "那条线程 panic 了");
+        assert_eq!(m.auto_ocr_asked, 1, "join 挪了交出去的次数");
     }
 }

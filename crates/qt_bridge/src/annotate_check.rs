@@ -244,6 +244,22 @@ fn grab(
     at: &[PhysPoint],
     notes: &mut Vec<String>,
 ) -> bool {
+    grab_held(m, slots, at, notes, false)
+}
+
+/// [`grab`] is the same motion with nothing held down. `unlocked` is §5.3.8 的那句
+/// "用户应可以临时解除比例约束"：这一位为 `true` 时整段拖拽都按着那个修饰键。
+///
+/// 单独一枚而不是给 [`grab`] 加一位，是因为 [`grab`] 被标注脚本十几处调用，而给它们全递一个
+/// `false` 会把"这一位是 P161 才有的"这条事实散进不相干的行里；留着这一枚，是因为**这一位**
+/// 是本轮唯一能在没有指针注入的情况下问出的那条腿。
+fn grab_held(
+    m: &mut mask::MaskState,
+    slots: &[mask::Slot],
+    at: &[PhysPoint],
+    notes: &mut Vec<String>,
+    unlocked: bool,
+) -> bool {
     let Some(first) = at.first() else {
         return false;
     };
@@ -257,7 +273,7 @@ fn grab(
         // chose is kept: a stroke that wanders onto a second screen is still dragged
         // by *this* window's pointer, and `desk_point` converts from its origin.
         if let Some((_, x, y)) = local(slots, *p) {
-            m.drag(index, x, y);
+            m.drag(index, x, y, unlocked);
         }
     }
     true
@@ -1004,6 +1020,12 @@ struct Hits {
     /// Up to [`NAMED`] of the samples this row lost its grade on, with the colours that
     /// made it one. A count without where and what is not actionable by anyone reading
     /// the log, which is why every bucket that costs the row a point names itself here.
+    ///
+    /// `other_ink` used to be the exception, and it is the bucket `no ghost` is graded
+    /// on: the row asserted "that ink is the ghost" while printing no coordinate, so a
+    /// stroke the undo really left behind and a neighbouring stroke the sample path
+    /// happens to cross were the same one line. Both are now named like every other
+    /// loss.
     examples: Vec<String>,
 }
 
@@ -1075,6 +1097,23 @@ impl Hits {
             self.examples.push(format!(
                 "{},{} read={:?} not ink={:?} nor desktop={:?}",
                 at.x, at.y, got, want, desk
+            ));
+        }
+    }
+
+    /// One more sample that reads as an ink, and not as the ink this row is grading ——
+    /// 与 [`Self::name_one`] 同理，计数和证词在同一次调用里长出来，否则「17 枚」可以说的
+    /// 是一回事、`; first` 那半句说的是另一回事。
+    ///
+    /// `which` 是这一枚像素在这一行里的角色，不是它的颜色：同一枚蓝像素在 `ink box`
+    /// 那一行是「这一行要的那枚墨」，在 `no ghost` 这一行是「 undo 没擦干净的那枚」——
+    /// 由调用方说，因为只有调用方知道自己按 `present` 的哪一头在判。
+    fn name_ink(&mut self, at: PhysPoint, got: [u8; 4], ink: [u8; 4], desk: [u8; 4], which: &str) {
+        self.other_ink += 1;
+        if self.examples.len() < NAMED {
+            self.examples.push(format!(
+                "{},{} read={:?} as {} ink={:?} desk={:?}",
+                at.x, at.y, got, which, ink, desk
             ));
         }
     }
@@ -1298,29 +1337,63 @@ fn band(
         // explain is a sample it read, and `usable` divides by it whether it is named
         // or not. Naming it is what keeps the line honest.
         let c = got.get(px as u32, py as u32);
-        if coloured(c, want) {
+        if !present && same(c, src) {
+            // 判缺席的这一行，它的判据是这一枚像素**又变回了那张冻住的桌面**（见本函数
+            // 的文档：「the pixel has to be the frozen desktop again, not merely "not
+            // blue"」）。把 `coloured` 排在这次比较之前，等于让一行从未看过 freeze 的
+            // 断言自称看见了 ghost：P161 的门实测 `no ghost … 17 the other ink`，而那
+            // 一次比较从来没有做过。
+            if coloured(c, want) {
+                // 桌面自己就是这个颜色。这一枚像素同时满足「是 freeze」和「像墨」，也就是
+                // 这一行的两个候选同色 —— `flat` 的既有定义，所以它退出分母，而不是被算成
+                // 得分或被算成 ghost。
+                h.flat += 1;
+            } else {
+                h.ok += 1;
+            }
+        } else if coloured(c, want) {
             if present {
                 h.ok += 1;
             } else {
-                h.other_ink += 1;
+                h.name_ink(*at, c, want, src, "this row's own");
             }
         } else if coloured(c, other) {
-            h.other_ink += 1;
+            h.name_ink(*at, c, other, src, "the other");
         } else if same(c, src) {
-            // The undone stroke's pixels have to be the frozen desktop again, so for
-            // that row *this is* the expected reading and it belongs to `ok` alone;
-            // counting it in `plain` as well made the buckets overlap and the line's
-            // numbers no longer added up to `usable`.
-            if present {
-                h.plain += 1;
-            } else {
-                h.ok += 1;
-            }
+            // Only the rows that grade a stroke *present* reach here: an absent-graded
+            // sample that matches the desktop was taken by the branch above. This one is
+            // the desktop showing through where nothing was drawn - a miss for the row,
+            // and never counted as `ok`.
+            h.plain += 1;
         } else {
             h.name_one(*at, c, want, src);
         }
     }
     h
+}
+
+/// The ghost row's own sentence, after the counts.
+///
+/// 它跟着读数走而不是领着头。P161 之前这一行无论如何都补一句 "and that ink is the
+/// ghost"，于是 `0 the other ink` 的一趟也在断言一件没有发生的事 —— 而那 17 枚像素其实
+/// 与 freeze 逐通道相等，只是壁纸自己发蓝。三档各说什么：
+///
+/// * 有 `other_ink`：那枚墨就是 undo 没擦干净的那一笔，并且它已经被 [`Hits::name_ink`]
+///   点了名（坐标、颜色、桌面本来那一枚）。
+/// * 没有丢分、但有 `flat`：擦干净的地方都擦干净了，剩下这一段桌面给不出答案 —— 这一行
+///   在这里既看不见 ghost，也看不见「没有 ghost」，说清楚比装看不见好。
+/// * 两者都没有：一条干干净净的路径。
+fn ghost_claim(h: &Hits) -> String {
+    if h.other_ink > 0 {
+        "and that ink is the ghost".to_string()
+    } else if h.flat > 0 {
+        format!(
+            "no ink is left where the desktop can be read, and on {} of the samples the desktop is that colour of its own accord",
+            h.flat
+        )
+    } else {
+        "no ink is left".to_string()
+    }
 }
 
 /// One declared area's worth of ink, counted pixel by pixel instead of sampled along a
@@ -3546,7 +3619,14 @@ pub(crate) fn before_is_products_own(was: Option<&str>, pre: Option<&str>) -> bo
 /// `tapped` signal and the window's `chord()` arm. They sit *between* `q-cell` and `q-census`
 /// because each of them overwrites `message` with the next file's name, and the census has to
 /// stay the last thing this leg says so it can still be that leg's own witness.
+///
+/// `band` is P181's and sits *first* for a reason of the same family: it reads what the panel
+/// already built - the toolbar is made with the mask window, minutes before this leg's Timer
+/// fires - so the only ordering it can respect is "before anything else writes the message
+/// slot and before a dialog is standing". A leg that reads the scene after the click would be
+/// reading a window that may have been closed.
 pub(crate) const MASK_SCHEDULE: &[&str] = &[
+    "band",
     "dlg-folder",
     "dlg-name",
     "f-jpg",
@@ -3572,6 +3652,93 @@ pub(crate) const MASK_SCHEDULE: &[&str] = &[
     "q-census",
     "done",
 ];
+
+/// 档里那一排颜色走到工具栏色带的那一格（§5.7.21 第一步 / §5.7.22 的第一位读者）。
+///
+/// 三段读数各有主人，所以这里比四样东西：`crate::settings::annotation_cfg` 现读的档里原文
+/// 枚数、同一枚函数经 [`crate::settings::band_colors_joined`] 归一后的**期待名单**、页上递回的
+/// 「桥给我几段」（`bandColors()` 滤零长段之后的段数）与「Repeater 造出几枚」（`band.count`），
+/// 以及页上那份名单的颜色本身。期待值出自档、读数出自场景，所以这一格不是拿页上的读数和自己
+/// 比：本轮之前 `AnnotationToolbar.qml` 写着六枚自己挑的字面量，而这一格的期待值是十枚。
+///
+/// 一枚也没解析出来时走 [`Check::Blocked`] 而不是 PASS：那一句"色带走了档"没有东西可带，
+/// 与 §10 第 42 项 ② 那一族的「问过了但答不了」和「压根没问」是两回事，这里说的是第三种。
+///
+/// 这一格说"名单走到了页上"，不说"这一枚芯片在屏幕上是什么颜色"：后者要把指针停在一颗色块
+/// 上取样，而 §10 第 35 项 ⑤ 那一族欠的正是这一只手。
+fn mask_band_row(rep: &mut Report, lines: &[String]) {
+    let ann = crate::settings::annotation_cfg();
+    let want = crate::settings::band_colors_joined(&ann.palette);
+    let want_cells: Vec<&str> = if want.is_empty() {
+        Vec::new()
+    } else {
+        want.split('|').collect()
+    };
+    let leg = match said(lines, "band") {
+        Some(text) => text.to_string(),
+        None => {
+            rep.row(
+                "mask band via qml",
+                Check::Fail,
+                format!(
+                    "日程第一句一条也没发：档里 {} 枚颜色等在那一页上，而量具没开口（不是桌面不肯答）",
+                    ann.palette.len()
+                ),
+            );
+            return;
+        }
+    };
+    let mut cells = leg.splitn(3, '|');
+    let handed = cells.next().unwrap_or_default();
+    let drew = cells.next().unwrap_or_default();
+    let got = cells.next().unwrap_or_default();
+    let got_cells: Vec<&str> = if got.is_empty() {
+        Vec::new()
+    } else {
+        got.split(',').collect()
+    };
+
+    if want_cells.is_empty() {
+        rep.row(
+            "mask band via qml",
+            Check::Blocked,
+            format!(
+                "档里 [annotation] palette 的 {} 枚原文一枚也没解析出来，这一格问不出「色带走了档」；页上那一句 {leg:?}",
+                ann.palette.len()
+            ),
+        );
+        return;
+    }
+
+    let count_want = want_cells.len().to_string();
+    let counted = handed == count_want.as_str() && drew == handed;
+    let ordered = got_cells == want_cells;
+    let why = if counted && ordered {
+        "枚数与名单都对"
+    } else if !counted {
+        "枚数不对：页上递回的两个数与档里可解析的那一枚数不齐"
+    } else {
+        "顺序或颜色不对：页上那份名单与档里那一份逐段比不通过"
+    };
+    rep.row(
+        "mask band via qml",
+        Check::from(counted && ordered),
+        format!(
+            "档 {} 枚原文 / {} 枚可解析 → 桥递出 {handed:?} → 页上造出 {drew:?}；期待 {:?}，页上那份 {:?}（{why}）",
+            ann.palette.len(),
+            want_cells.len(),
+            want_cells.join(","),
+            got
+        ),
+    );
+    rep.note(
+        "mask band 的账",
+        format!(
+            "档里原文 {:?}；归一交给页上的那一份 {:?}（大写 `RRGGBB`、`|` 分隔，alpha 落在 setColor 那一枚门把手之外）",
+            ann.palette, want
+        ),
+    );
+}
 
 /// The two rows above call [`crate::mask::MaskState::save_out`] with a name this run
 /// chose, which proves the encoder and nothing about the dialog: no `FileDialog` was opened,
@@ -3620,6 +3787,8 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
         )
         .line(),
     );
+
+    mask_band_row(rep, &lines);
 
     rep.row(
         "mask dialog opened",
@@ -4620,7 +4789,8 @@ pub fn measure() -> (Check, String) {
         }
 
         // The undone stroke: its pixels have to be the frozen desktop again. `other_ink`
-        // in this row is the ghost itself, counted where it was drawn.
+        // in this row is the ghost itself, counted where it was drawn - and since P161
+        // counted only against the freeze, see [`band`].
         let ghost = band(
             win.phys,
             &got,
@@ -4632,7 +4802,7 @@ pub fn measure() -> (Check, String) {
         rep.row(
             &bitmap_label(&tag, GHOST_ROW),
             ghost.verdict(GHOST_PASS),
-            format!("{}, and that ink is the ghost", ghost.line()),
+            format!("{}, {}", ghost.line(), ghost_claim(&ghost)),
         );
 
         // The dim, which the layer must not have disturbed outside the hole, and the
@@ -4906,9 +5076,21 @@ mod tests {
 
         // The one reorder this door has to refuse: the arm moved underneath its own
         // refusal, which is what P40 did to the other door.
+        //
+        // 两处下标按名字取。P181 之前这一族写的是 `remove(2)` / `insert(5, "f-jpg")`，而日程
+        // 头部添了 `band` 一枚之后那两个数各自指向别的腿 —— 一把量错了东西的尺子不会自己发红，
+        // 它只会继续绿（第 269 项那一族的反面）。
         let mut moved = p41.clone();
-        moved.remove(2);
-        moved.insert(5, "f-jpg");
+        let at = moved
+            .iter()
+            .position(|k| *k == "f-jpg")
+            .expect("the arm is in the schedule");
+        moved.remove(at);
+        let to = moved
+            .iter()
+            .position(|k| *k == "dlg-open")
+            .expect("the refusal is followed by the dialog");
+        moved.insert(to, "f-jpg");
         let problems = pin_check::leg_order(&moved, MASK_SCHEDULE).unwrap_or_default();
         assert!(problems.contains("f-jpg"), "{problems}");
         assert!(problems.contains("日程不符"), "{problems}");
@@ -5371,6 +5553,116 @@ mod tests {
             (h.want, h.ok, h.other_ink, h.plain, h.blended, h.unexplained),
             (4, 1, 2, 0, 0, 1)
         );
+    }
+
+    /// P161 的仪表自证，两半都来自同一扇门的一次实测：`no ghost … 17 the other ink`，
+    /// 而那一行一次也没有和 freeze 比过。
+    ///
+    /// ① 判缺席的行的判据是「这枚像素又变回了那张冻住的桌面」（[`band`] 的文档自己说的），
+    /// 所以它必须排在「这枚像素像墨」之前：一张自己发蓝的壁纸，两个候选同色，归 `flat` 并
+    /// 从分母里退出 —— 既不是 ghost，也不是得分。
+    /// ② 真正丢分的那一枚要自报坐标、读到的颜色、它在这一行里的角色，以及**桌面在这个位置
+    /// 本来是什么颜色**：缺了最后那一格，「undo 没擦干净的一笔」和「采样路过了别家的一笔」
+    /// 是同一行字。
+    #[test]
+    fn the_absence_row_grades_the_desktop_before_it_grades_the_ink() {
+        let cover = PhysRect::new(0, 0, 200, 200);
+        let points: Vec<PhysPoint> = (0..60).map(|i| PhysPoint::new(i, 20)).collect();
+
+        // ① 桌面在 x 0..30 那一段自己就是这一行的那枚墨，屏幕把 freeze 原样还回来。
+        let mut patch = desk(GREY);
+        patch.monitors[0]
+            .frame
+            .fill_rect(&PhysRect::new(0, 20, 30, 1), BLUE);
+        let freeze: Vec<(PhysPoint, [u8; 4])> = points
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (*p, if i < 30 { BLUE } else { GREY }))
+            .collect();
+        let got = read_back(&freeze);
+
+        let wallpaper = band(cover, &got, &patch, &points, BLUE, false);
+        assert_eq!(
+            (
+                wallpaper.ok,
+                wallpaper.other_ink,
+                wallpaper.flat,
+                wallpaper.usable()
+            ),
+            (30, 0, 30, 30),
+            "一片与 freeze 相等的蓝色壁纸被读成了 ghost：{}",
+            wallpaper.line()
+        );
+        assert_eq!(
+            wallpaper.verdict(GHOST_PASS),
+            Check::Pass,
+            "壁纸的颜色偷走了这一行的分母，而它一个像素也没丢"
+        );
+
+        // 同一张图在判存在的那一行里是另一种账：那 30 枚蓝色像素是**得分**，`flat` 一格
+        // 也不该有 —— 两个候选同色只在「要它缺席」的这一头才是无法区分。
+        let still_there = band(cover, &got, &patch, &points, BLUE, true);
+        assert_eq!(
+            (still_there.ok, still_there.plain, still_there.flat),
+            (30, 30, 0),
+            "`flat` 越过了它所属的那一行"
+        );
+
+        // ② 真正的 ghost：桌面是灰的，屏幕上却还压着这一行自己的那枚墨。
+        let clean = desk(GREY);
+        let inked: Vec<(PhysPoint, [u8; 4])> = points.iter().map(|p| (*p, BLUE)).collect();
+        let ghost = band(cover, &read_back(&inked), &clean, &points, BLUE, false);
+        assert_eq!(
+            (ghost.ok, ghost.other_ink, ghost.flat, ghost.usable()),
+            (0, 60, 0, 60)
+        );
+        assert_eq!(ghost.verdict(GHOST_PASS), Check::Fail);
+        assert_eq!(ghost.examples.len(), NAMED, "丢了 60 枚却一枚也没点名");
+        let line = ghost.line();
+        assert!(
+            line.contains(r#"0,20 read=[0, 0, 232, 255] as this row's own ink=[0, 0, 232, 255] desk=[200, 200, 200, 255]"#),
+            "证词少了坐标、角色或桌面本来的颜色：{line}"
+        );
+
+        // 别家的一笔是另一种角色，同一行里两枚丢分、两条证词。
+        let neighbour: Vec<(PhysPoint, [u8; 4])> = points.iter().map(|p| (*p, GREEN)).collect();
+        let crossed = band(cover, &read_back(&neighbour), &clean, &points, BLUE, false);
+        assert_eq!((crossed.other_ink, crossed.flat), (60, 0));
+        assert!(
+            crossed.line().contains(
+                r#"0,20 read=[0, 232, 0, 255] as the other ink=[0, 232, 0, 255] desk=[200, 200, 200, 255]"#
+            ),
+            "路过的那一笔没有说清它是别家：{}",
+            crossed.line()
+        );
+    }
+
+    /// 那句断言得跟着读数走。三档在这里都是可判的：前两档是本轮实测到的与实测不到的
+    /// 那两回事，第三档是「什么都没有」——而 P161 之前这一行把第三档也说成第一档。
+    #[test]
+    fn the_ghost_row_only_claims_a_ghost_when_it_counted_one() {
+        let ghost = Hits {
+            other_ink: 3,
+            ..Hits::default()
+        };
+        assert_eq!(ghost_claim(&ghost), "and that ink is the ghost");
+
+        let blue_wallpaper = Hits {
+            flat: 17,
+            ..Hits::default()
+        };
+        let said = ghost_claim(&blue_wallpaper);
+        assert!(
+            said.contains("17") && said.contains("its own accord"),
+            "桌面给不出答案的那一段没有被说出来：{said}"
+        );
+        assert!(
+            !said.contains("ghost"),
+            "一枚也没有数到的 ghost 又被断言了一次：{said}"
+        );
+
+        let clean = Hits::default();
+        assert_eq!(ghost_claim(&clean), "no ink is left");
     }
 
     #[test]
@@ -6342,6 +6634,184 @@ mod tests {
         assert!(
             line.contains("一行也没发") && line.contains("quick_rows"),
             "{line}"
+        );
+    }
+
+    /// §5.21.2 第一枚「工具栏按钮应提供提示文本」在界面那一侧的读者。
+    ///
+    /// 判源码文本而不是判气泡：本仓一枚输入注入器也没有（`SendInput` 零命中，
+    /// `pin_check.rs` 里那一格自己声明过），没有任何一只手能把指针停在一枚钮上、
+    /// 再看那只泡有没有长出来。能被机械判的是「每一枚钮都被递了一句话」——
+    /// `required property string hint` 让「漏了一枚」在构造期就发红而不是等 hover，
+    /// 而 `hint:` 的行数在源码里是数得出来的。
+    #[test]
+    fn every_toolbar_button_is_handed_a_hint() {
+        const QML: &str = include_str!("../qml/AnnotationToolbar.qml");
+        let is_hint = |l: &str| l.trim_start().starts_with("hint: ");
+        let is_button = |l: &str| {
+            let t = l.trim();
+            t.ends_with("Cell {") || t.ends_with("Swatch {")
+        };
+        let buttons = QML.lines().filter(|l| is_button(l)).count();
+        let hinted = QML.lines().filter(|l| is_hint(l)).count();
+        println!("scan: {buttons} 枚可按的钮 / {hinted} 行递进去的 hint");
+        assert_eq!(
+            buttons, hinted,
+            "{buttons} 枚钮而只有 {hinted} 行 hint：有哪一枚钮欠着它那句提示"
+        );
+
+        // 尺子自己的反证：随便摘掉一行，计数就得掉一枚。它要是不掉，上面那个 `hinted`
+        // 就是一枚常量而不是读数（#269 同一族）。
+        let first = QML
+            .lines()
+            .find(|l| is_hint(l))
+            .unwrap_or_default()
+            .to_string();
+        let dropped = QML
+            .replacen(&first, "", 1)
+            .lines()
+            .filter(|l| is_hint(l))
+            .count();
+        assert_eq!(
+            dropped + 1,
+            hinted,
+            "摘掉一行 {first:?} 后计数没变 ⇒ 这条腿没在数"
+        );
+
+        // 枚数钉在实测的那一个读数上：24 枚 `Cell` + 1 枚 `Swatch`。少了是有人删了一枚
+        // 钮却没删它的句子，多了是新钮没带句子来。
+        assert_eq!(
+            buttons, 25,
+            "P157 实测这一档 24 枚 Cell + 1 枚 Swatch，此刻数到 {buttons}"
+        );
+
+        // 落点只有两处（两个组件各一次），不是每一枚实例各开一只泡。
+        assert_eq!(
+            QML.matches("required property string hint").count(),
+            2,
+            "Cell 与 Swatch 各该有一枚 required hint"
+        );
+        assert_eq!(
+            QML.matches("ToolTip.text:").count(),
+            2,
+            "两只泡的 text 绑定：Cell 一只、Swatch 一只"
+        );
+        assert_eq!(
+            QML.matches("ToolTip.visible:").count(),
+            2,
+            "两只泡都绑在自己的 hover 上，否则它们要么永不出现要么长别处"
+        );
+        assert!(
+            QML.contains("import QtQuick.Controls"),
+            "`ToolTip` 是 QtQuick.Controls 的 attached type，没这一行它就是个不认识的词"
+        );
+
+        // 工具那一排的 15 句由 Rust 交过来，QML 只按 index 递（#281：一份清单只长一处）。
+        assert!(
+            QML.contains("bar.view.toolHints().split(\"|\")[index]"),
+            "工具排的提示没有从 toolHints() 取，那就是在 QML 里另抄了一份"
+        );
+        assert!(
+            QML.contains("bar.view.toolNames().split(\"|\")"),
+            "工具排的标签没有从 toolNames() 取"
+        );
+        for name in ["矩形", "椭圆", "放大", "双向", "荧光", "马赛克"] {
+            assert!(
+                !QML.contains(&format!("label: \"{name}\"")),
+                "QML 里重打了工具名 {name}：名单的第二份就是这么长出来的"
+            );
+        }
+        // 全档只有一处 橡皮 是 QML 自己写的：§5.7.14 那一行自己的 Caption（它不按，
+        // 所以不是名单的第二枚钮）。多出一枚就是有人把工具名又抄了一遍。
+        assert_eq!(
+            QML.matches("label: \"橡皮\"").count(),
+            1,
+            "橡皮 在 QML 里该只长在一行标题上"
+        );
+        // 空串那一问也判**行**而不是判整档文本：首稿在这里用 `QML.matches("hint: \"\"")`，
+        // 被本文件上方那段"`required` 而不是 `property string hint: \"\"`"的注释判红
+        // ——引文不是绑定（#313/#253/#268 同一族）。
+        let empties: Vec<&str> = QML
+            .lines()
+            .filter(|l| is_hint(l))
+            .filter(|l| l.trim() == "hint: \"\"")
+            .collect();
+        assert!(
+            empties.is_empty(),
+            "有钮递的是空串——required 挡得住漏，挡不住空：{empties:?}"
+        );
+    }
+
+    /// §5.7.21 第一步那一排颜色的**唯一主人是档**：`AnnotationToolbar.qml` 里不许再有色值
+    /// 字面量，而色带的模型必须是桥的那一次读。
+    ///
+    /// 判源码而不是判运行，与 [`crate::hint_check`] 的
+    /// `the_hint_palette_is_bound_to_the_theme_and_written_once` 同一族，理由也是那一族写下的
+    /// 那一句：运行只量得到这一趟跑的是什么，量不到颜色是不是只长在一处。而 P181 之前的形状
+    /// 恰恰是「运行全绿、档里那十枚没人读」——门上的 `mask band via qml` 那一格是本轮新加的，
+    /// 它管读数，这一格管读数只能有一个出处。
+    ///
+    /// 尺子自己也要被量：摘掉桥那一次读，计数就得掉一枚（#269 同一族）。
+    #[test]
+    fn the_bands_colors_have_exactly_one_owner_and_it_is_the_file() {
+        const QML: &str = include_str!("../qml/AnnotationToolbar.qml");
+        // 注释不参与：`//` 只有在行首或前面有一个空格时才是注释的起点——`"file:///"` 那一族
+        // 字符串里的两个斜杠不是（拿第一个 `//` 剪，会把一枚写在 URL 之后的色值一起剪掉）。
+        let code = |l: &str| -> String {
+            let t = l.trim_start();
+            if t.starts_with("//") {
+                return String::new();
+            }
+            match t.find(" //") {
+                Some(i) => t[..i].to_string(),
+                None => t.to_string(),
+            }
+        };
+
+        let hexes: Vec<String> = QML.lines().map(code).filter(|l| l.contains("0x")).collect();
+        assert!(
+            hexes.is_empty(),
+            "色值只许长在档里，页上这些行还写着 0x：{hexes:?}"
+        );
+        assert!(
+            !QML.contains("readonly property var palette: ["),
+            "色带的名单又被抄成一份字面量了"
+        );
+
+        let reads = QML
+            .lines()
+            .map(code)
+            .filter(|l| l.contains("bandColors()"))
+            .count();
+        assert_eq!(reads, 1, "桥那一次读只许有一处，多了就是两个主人");
+        // 摘一行这件反证要走同一把滤网：`bandColors()` 在页上那句说明里也出现过，那一行摘下去
+        // 计数不动，而这里要摘的是页上那一次读（#313 / #253 那一族：引文不是绑定）。
+        let first = QML
+            .lines()
+            .find(|l| code(l).contains("bandColors()"))
+            .unwrap_or_default()
+            .to_string();
+        let dropped = QML
+            .replacen(&first, "", 1)
+            .lines()
+            .map(code)
+            .filter(|l| l.contains("bandColors()"))
+            .count();
+        assert_eq!(
+            dropped + 1,
+            reads,
+            "摘掉 {first:?} 之后计数没变 ⇒ 这一格没在数"
+        );
+
+        // 名单确实走到那一排芯片上：Repeater 的模型是页上那一份读数，而 `count` 长在
+        // Repeater 上（`HistoryWindow.qml` 的 `buttonRows` 同一枚读数），不是长在 Row 上。
+        assert!(
+            QML.contains("model: bar.palette"),
+            "色带那排芯片的模型不是页上那份读数"
+        );
+        assert!(
+            QML.contains("id: band") && QML.contains("String(band.count)"),
+            "色带那一格没把「页上造出几枚」交给门"
         );
     }
 }

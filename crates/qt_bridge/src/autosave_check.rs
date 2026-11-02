@@ -97,6 +97,30 @@ fn hist_dir() -> PathBuf {
     dir
 }
 
+/// 把 [`door_dir`] / [`hist_dir`] 那两枚**本档自己命名**的 temp 目录倒空：只删目录里的条目，
+/// 目录本身留着（`retarget()` 还要往里写）。留不得上一趟的东西，因为这一档的三格都数绝对量 ——
+/// 库里的行数、点名第几行、以及落点目录里那几个能解码成 `PLANT_W×PLANT_H` 的文件，它们要的对面
+/// 是「这一趟」，不是「这台机器上攒到今天的总和」。
+///
+/// 只在本档 `arm()` 的头一步叫，一次也不指向用户的 `%APPDATA%\ai-falconshot\history\`；删不掉的
+/// 那一条（也许正被谁开着）不计入、也不报错 —— 本档不替操作系统圆场，而 [`arm`] 打出来的那枚
+/// `swept` 就是这一格对面此刻到底清了几条的读数。
+fn sweep_dir(dir: &std::path::Path) -> usize {
+    let mut gone = 0;
+    for entry in std::fs::read_dir(dir).ok().into_iter().flatten().flatten() {
+        let path = entry.path();
+        let removed = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if removed.is_ok() {
+            gone += 1;
+        }
+    }
+    gone
+}
+
 /// 那把数行数的尺子：自己开一次的 SQLite 读回，不经 `MaskState` 里那枚 `Option<History>`
 /// ——要问的是**盘上此刻有几行**，而不是产品自己数了几次（那两个数各判一格，见下）。
 fn history_rows(dir: &Path) -> Result<u64, String> {
@@ -253,6 +277,154 @@ fn locked_of(dir: &Path, id: i64) -> Result<Option<bool>, String> {
         .map_err(|e| e.to_string())
 }
 
+/// [`value_in_file`] 的一般式：连**表名**都是参数。留着下面那枚两参的包装而不是改它的签名，
+/// 是因为那两枚 `[output]` 键的注释（P59 与 P93 各立一把尺子）说的都是那一段表里的事，
+/// 挪动它们等于替一段已经跑过十几趟的判据重写证词。本轮要问的是另一段表里的
+/// `[advanced] recognize_text`。
+fn table_value_in_file(path: &Path, table: &str, key: &str) -> Option<bool> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut in_table = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_table = t == table;
+            continue;
+        }
+        if !in_table {
+            continue;
+        }
+        if let Some(rest) = t.strip_prefix(key) {
+            let v = rest.split('=').nth(1)?.trim();
+            return match v {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            };
+        }
+    }
+    None
+}
+
+/// [`dial_recognize_key`] 那四步各自的读数。四枚分开放而不折成一枚 `bool`：这一臂要能说出
+/// **断在第几步** —— 「影子里是 true 而盘上找不到那一行」与「盘上有那一行而解析回来是 false」
+/// 是两种完全不同的坏法，折成一枚就说不出是哪一种。
+struct KeyDial {
+    /// 这一臂写又读的那个文件：本档沙盒里的 `pinned-config.toml`。
+    pinned: PathBuf,
+    /// ① 影子里那枚键（拨完当场问回来的）。
+    shadow: bool,
+    /// ③ 盘上那一行的**字面**：`None` 是档里根本没有这一行（而不是"它是假的"）。
+    file_line: Option<bool>,
+    /// ④ 产品的读者 `Config::load` 从那份档读回来的那枚值。
+    parsed: bool,
+    /// ④′ 遮罩此刻那一格（经产品自己的 [`crate::settings::advanced_cfg`] 取到的快照）。
+    snapshot: bool,
+    /// 那份档读回来时报了几条修正 —— 只作读数印出来，本轮不判它（判它就成了替 `Config::load`
+    /// 的警告器作证，那是 config.rs 自己的格子）。
+    load_warnings: usize,
+}
+
+/// P149 给这台量具补的那一臂：把 `[advanced] recognize_text` **经产品自己的两条腿**开到 `true`。
+///
+/// 为什么不写一行 `m.advanced.recognize_text = true` 了事：那一行走的是「字段被谁改过」，而
+/// P148 当时只有 cargo 单测作证的恰好是前面那一段 —— 档上那一行字面经
+/// [`falcon_core::config::Config::load`] 变成 `Advanced` 里的一枚 `bool`、再经
+/// [`crate::settings::advanced_cfg`] 变成 [`crate::mask::MaskState::advanced`] 的那一格。本档把这
+/// 四步分开走，每一步交回一份读数（见 [`KeyDial`]）：① 影子里那枚键拨开；② 产品的写者
+/// （[`crate::settings::with`] 里那一次 `save()`，落点早由 [`pin`] 钉到 [`pinned_path`]）把它落盘；
+/// ③ 盘上那一行的字面由本档逐行找（[`table_value_in_file`]，**不**共用第 ④ 步那台解析器 —— 与
+/// [`value_in_file`] 头上同一条理由：配不上就是两边一起错）；④ 产品的读者把整份档读回来，只把
+/// `[advanced]` 那一段装回影子，遮罩再经 `advanced_cfg()` 重取一次快照。
+///
+/// 装回影子时**只动那一段**：`[output]` 那两枚开关是上面 34 格共同的对面，整份 `Config` 一换
+/// 就是把本轮的读数盖到别的格子上。
+///
+/// 写的是本档沙盒里那份 `pinned-config.toml`，不是用户 `%APPDATA%\ai-falconshot\` 下那一份
+/// （§9.1 第十五条）。那份档原本只在这个进程收工时被写一次，本轮多写一次是因为「档上到底有没有
+/// 这一行」这一问的对面只能是盘上的文件，不能是内存里的一个 `bool`。
+fn dial_recognize_key() -> KeyDial {
+    let pinned = pinned_path();
+    let shadow = crate::settings::with(|s| {
+        s.config.advanced.recognize_text = true;
+        s.save();
+        s.config.advanced.recognize_text
+    });
+    let file_line = table_value_in_file(&pinned, "[advanced]", "recognize_text");
+    let (loaded, report) = falcon_core::config::Config::load(&pinned);
+    let parsed = loaded.advanced.recognize_text;
+    crate::settings::with(|s| s.config.advanced = loaded.advanced);
+    let snapshot = mask::with(|m| {
+        m.advanced = crate::settings::advanced_cfg();
+        m.advanced.recognize_text
+    });
+    KeyDial {
+        pinned,
+        shadow,
+        file_line,
+        parsed,
+        snapshot,
+        load_warnings: report.warnings.len(),
+    }
+}
+
+/// 那一格在盘上的三种形状，与 P148 给 [`crate::mask::auto_ocr_slot`] 立的三口径一一对上 ——
+/// 差别只在这是**从 SQLite 读回来**而不是往库里写。第四种 `Err` 是留给「问不出」的：把库打不开
+/// 印成 NULL，就是把一次失败说成一次「键没起作用」（[`row_said`]、[`picture_said`] 的同一条口径）。
+enum OcrSlot {
+    NoRow,
+    Null,
+    Text(String),
+}
+
+/// 从本档自己的沙盒库里读那一格。**这一档不替它开线程、也不等**：等那一步在 `measure()` 里由
+/// [`crate::mask::MaskState::auto_ocr_join`] 那枚把手做，读到的形状因此是"线程收工之后盘上的样子"。
+fn ocr_of(dir: &Path, id: Option<i64>) -> Result<OcrSlot, String> {
+    let Some(id) = id else {
+        return Ok(OcrSlot::NoRow);
+    };
+    falcon_core::history::History::open(dir)
+        .and_then(|h| h.get(id))
+        .map(|rec| match rec {
+            None => OcrSlot::NoRow,
+            Some(r) => match r.ocr_text {
+                None => OcrSlot::Null,
+                Some(t) => OcrSlot::Text(t),
+            },
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// [`ocr_of`] 那一把尺子的答法，与 [`row_said`] / [`picture_said`] / [`rows_said`] 同一条口径：
+/// 四种形状说四句，"读不回"不许折进"是空的"。有字那一句数的是**字符**，与
+/// `settings::history_rows_joined` 界面上那句同一口径（本轮真机那一趟正是要对照这一格）。
+fn ocr_said(r: &Result<OcrSlot, String>) -> String {
+    match r {
+        Err(e) => format!("读不回（{e}）"),
+        Ok(OcrSlot::NoRow) => "库里没有那一行".to_string(),
+        Ok(OcrSlot::Null) => {
+            "NULL（键关着 / 线程起不来 / 引擎报错 / 库被占，四种在这一格里不分）".to_string()
+        }
+        Ok(OcrSlot::Text(t)) if t.is_empty() => "空串（引擎跑成了，那一帧里没有字）".to_string(),
+        Ok(OcrSlot::Text(t)) => format!("有字 {} 字", t.chars().count()),
+    }
+}
+
+/// 那三格共用的"断在第几步"答法（①影子 ③档上 ④解析回来 ④′遮罩那一格）。
+fn key_dial_said(d: &KeyDial) -> String {
+    format!(
+        "①影子里={}，③档上那一行的字面={}，④`Config::load` 读回来={}，④′遮罩此刻那一格={}，\
+         那次读档报了 {} 条修正",
+        d.shadow,
+        match d.file_line {
+            None => "档里没有这一行".to_string(),
+            Some(v) => v.to_string(),
+        },
+        d.parsed,
+        d.snapshot,
+        d.load_warnings,
+    )
+}
+
 /// 钉的那个落点：本档走的是产品的 `close()` 会写字回的那道门，所以写回必须先钉走
 /// （`reveal_check::pin`、`annotate_check::plant` 为同一件事各钉过一次，这是第三次）。
 fn pinned_path() -> PathBuf {
@@ -285,28 +457,11 @@ fn read_and_write() -> (PathBuf, PathBuf) {
 /// 键名是参数而不是硬编码：本档现在问的是 `[output]` 里在那道门上会合的**两枚**开关
 /// （`auto_save` 与 P59 起的 `auto_copy`），而两枚都必须由同一把尺子量，否则"这一行在档里
 /// 写着 true 而字段是 false"只会在一枚上被抓到。
+///
+/// P149 起逐行找的本体挪进 [`table_value_in_file`]（那一枚还要问 `[advanced]` 那一段表），这一枚
+/// 只把表名钉成 `[output]` ⇒ 上面那两枚键量的还是同一把尺子，判据一字未动。
 fn value_in_file(path: &Path, key: &str) -> Option<bool> {
-    let text = std::fs::read_to_string(path).ok()?;
-    let mut in_output = false;
-    for line in text.lines() {
-        let t = line.trim();
-        if t.starts_with('[') {
-            in_output = t == "[output]";
-            continue;
-        }
-        if !in_output {
-            continue;
-        }
-        if let Some(rest) = t.strip_prefix(key) {
-            let v = rest.split('=').nth(1)?.trim();
-            return match v {
-                "true" => Some(true),
-                "false" => Some(false),
-                _ => None,
-            };
-        }
-    }
-    None
+    table_value_in_file(path, "[output]", key)
 }
 
 /// 目录里现在有几张图。数的是**条目**，不是文件名，所以模板换成日期时间也不会数漏。
@@ -650,7 +805,13 @@ fn plant_row_with_bytes(
 /// 答的是那一行说的话（打印出来给跑门的人看），`Err` 是本档的前置没摆出来 —— 那种情况下
 /// `plan_line()` 保持空串，界面那条腿就此整条不跑，而不是带着一个不存在的行号去回放。
 pub fn arm() -> Result<String, String> {
-    let (_, hdir) = retarget();
+    let (dir, hdir) = retarget();
+    // 本档那两枚落点是 `temp_dir()` 下**跨趟**的目录：上一趟种的行与写的图不会自己走，而这一档
+    // 的每一格都是按「库里只有本档种的这几行」设计的（P115 那段行号注释把 4、5、6 三枚行号数在
+    // 一枚空库上）。`p171_autosave_A.txt` 第一次把这件事照出来：库里此刻有 12 行，比界面那一条腿
+    // 的上限 8 行还多，于是「那句数到 12 行」这一辈子也读不到；而落点目录里 3 份 37×23 对不上
+    // 回放递回来的那 1 条。两格红的都是本档的落点，不是产品的删、也不是产品的回放。
+    let swept = sweep_dir(&dir) + sweep_dir(&hdir);
     // 四枚种进沙盒的行**共用这一枚戳**。它必须在任何一次 `record` 之前取：清单那一格要求
     // 清单头一段点名的就是 `planted` 那一行，而 `newest` 先按 `captured_at` 降序、再按 `id`
     // 降序 —— 戳若各读各的钟，后种的行就在时间这一维上赢了行号那一维，头一段变成别人的行。
@@ -826,7 +987,8 @@ pub fn arm() -> Result<String, String> {
          与第 {batch_b} 行（{PLANT_BATCH2_W}×{PLANT_BATCH2_H}，删前 {batch_b_bytes} 字节，\
          指 {batch_b_file:?}）—— §5.14.4 步骤 2 的「多条」自此有对面；产品此刻已数到 {replays} 次回放、\
          {dels} 次删除、{clears} 次清空、{locks} 次上锁、{restores} 次恢复；\
-         界面那一条腿读最多 {HIST_LIMIT} 行{extra}",
+         界面那一条腿读最多 {HIST_LIMIT} 行{extra}；开工前把本档那两枚落点倒空了 {swept} 条目 \
+         （这一档的每一格数的都是「这一趟」，而 temp 下那两枚目录是跨趟的）",
         hdir.display()
     ))
 }
@@ -1154,6 +1316,21 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     // `[history]` 快照，所以下面三枚前置 `files_before`/`rows_before`/`records_before` 的
     // 算术一位也不动。
     let (dir, hdir) = retarget();
+
+    // ---- P149 补的那一臂，必须在 `commit()` 之前：它开的是那一次确认要不要再花一台引擎。
+    // 读数存着不在这儿印 —— 既有 34 格的名字与位置本轮一格也不动，跑门的人对上一轮的逐格
+    // 比较因此还是比较（`p120b_auto.cmd` 头上为同一件事写过一段），三格排在全部既有格之后。
+    //
+    // 它排在 `retarget()` 之后、**三枚前置读数之前**，这一位置是跑出来的而不是挑出来的：第一趟
+    // 把它放在 `files_before` 与 `files_after` 中间，`confirmation wrote as the switch says`
+    // 当场读 FAIL——「开关=false 而普查 1→2」。那多出来的一份文件是这一臂自己写的：
+    // [`dial_recognize_key`] 经产品自己的写者 `Settings::save()` 落一份 `pinned-config.toml`，
+    // 而那份档就落在 `dir` 里（正是本档给它钉的落点），`count(&dir)` 数目录里的**条目**，
+    // 不分 png 与 toml。那一格对面是文件系统，所以它没错；错的是本档把一次自己写文件的动作
+    // 放进了别人量「一次写文件」的那一段里。挪到前置读数之前，两件事各自的窗口就不重叠了。
+    let dial149 = dial_recognize_key();
+    let asked_b149 = mask::with(|m| m.auto_ocr_asked);
+
     let files_before = count(&dir);
     let rows_before = history_rows(&hdir);
     let records_before = mask::with(|m| m.history_records);
@@ -1172,6 +1349,27 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     let files_after = count(&dir);
     let rows_after = history_rows(&hdir);
     let remembered = capture::last_region();
+
+    // ---- P149 那一臂的运行期读数。等那一条线程**在这里**等，不等到读那一格的时候才等：
+    // 「读回来是 NULL」在这一问里有好几种来路（线程还没落笔 / 引擎没出字 / 库被占），不等就
+    // 只能说前面那一种。P148 立 `auto_ocr_join` 那枚把手时说的就是「产品路径一位也不读它，
+    // 它图的是调用方能等」—— 第一位真在运行期读它的，是这一档。
+    //
+    // 把手是 `take` 走的而不是 `join` 完留在原地：那一枚把手只存最近一次（第 149 项 ⑥），
+    // 本档取走的正是这一次，取走之后遮罩里那格变 `None` 也是这一场的事实，不改判据只看读数。
+    let (asked_a149, row149, thread149) = {
+        let (asked, handle, row) =
+            mask::with(|m| (m.auto_ocr_asked, m.auto_ocr_join.take(), m.history_last_id));
+        let said = match handle {
+            None => "没有把手：这一场一次也没交出去".to_string(),
+            Some(h) => match h.join() {
+                Ok(()) => "线程收工".to_string(),
+                Err(_) => "线程 panic（那一格由 SQLite 此刻的样子定）".to_string(),
+            },
+        };
+        (asked, row, said)
+    };
+    let slot149 = ocr_of(&hdir, row149);
 
     let in_dir = landed
         .as_ref()
@@ -1385,6 +1583,7 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     // 因为 `escape()` 会清掉选区，而上面每一格量的都是「这一次确认」——先让完账，再拆桥。
     let esc_rows_before = history_rows(&hdir);
     let (esc_records_before, commit_row) = mask::with(|m| (m.history_records, m.history_last_id));
+    let esc_asked_b149 = mask::with(|m| m.auto_ocr_asked);
     let files_before_esc = count(&dir);
     let (saves_before_esc, landed_before_esc) = mask::with(|m| (m.quick_saves, m.landed.clone()));
 
@@ -1400,6 +1599,13 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     let esc_rows_after = history_rows(&hdir);
     let files_after_esc = count(&dir);
     let (saves_after_esc, landed_after_esc) = mask::with(|m| (m.quick_saves, m.landed.clone()));
+
+    // P149 反面那一格的两个读数：取消那一次**该不该**再花一台引擎（[`crate::mask::
+    // auto_ocr_wanted`] 判的 `!cancelled` 那一半），以及取消那一行的那一格此刻在盘上是什么样子。
+    // 这里不等线程 —— 要它真的没交出去，就没有线程可等；把手留在原地当这一格的读数（下面印出来）。
+    let esc_asked_a149 = mask::with(|m| m.auto_ocr_asked);
+    let esc_handle149 = mask::with(|m| m.auto_ocr_join.is_some());
+    let esc_slot149 = ocr_of(&hdir, esc_row);
 
     // 第一格问的是**反面**：被取消的这一次不该在文件系统上留下任何东西。§5.5.3 那句
     // 「完成截图后，系统自动生成文件」里的"完成"不含 Esc 清掉的那一枚——它的账记在下面
@@ -2915,6 +3121,86 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
              §5.14.4 步骤 2 的「多条」自此在界面上有了第一次读数；两条腿落在**不同**的行号上，是因为\
              [`plan_line`] 第七、八段那两枚是 `arm()` 专门替这一格种的。",
             batch_a_bytes + batch_b_bytes,
+        ),
+    );
+
+    // ---- P149 的三格，排在全部既有格之后（既有那 34 格的名字与位置一字不动，理由见上面
+    // 那一臂头上那段）。三格各问一段，互不顶撞：①键从档上走到遮罩那一格（P148 当时只有
+    // cargo 单测的那一段），②开着键的这一次确认有没有真花一台引擎、那一格落成三种形状里的
+    // 哪一种，③反面 —— 取消的那一次一次也不该花。
+    rep.row(
+        "the [advanced] recognize_text key reached the mask through the file",
+        Check::from(
+            dial149.shadow
+                && dial149.file_line == Some(true)
+                && dial149.parsed
+                && dial149.snapshot,
+        ),
+        format!(
+            "本档把 `[advanced] recognize_text` 经产品自己的两条腿开到 true：{said149}。四步全对才算这格绿 \
+             —— 「影子里是 true 而档里那一行找不到」是写者没落盘，「档里有那一行而解析回来是 false」是读者不认\
+             这枚键，「解析回来是 true 而遮罩那一格是 false」是 `open()` 那一次快照之后没人再取（本档正是靠\
+             重取一次把它交给遮罩，见 `dial_recognize_key`）。那份档是 {pinned149}：本档沙盒里的\
+             `pinned-config.toml`，不是用户 `%APPDATA%` 下那一份（§9.1 第十五条），它原本只在这个进程收工时\
+             被写一次。P148 落下那一臂的时候，全仓对这四步唯一的证人是 `config.rs` 的解析单测 —— 一份真档\
+             面上「有这一行」的读数，这一轮才有。",
+            said149 = key_dial_said(&dial149),
+            pinned149 = dial149.pinned.display(),
+        ),
+    );
+
+    let ran149 = asked_a149 == asked_b149 + 1;
+    let wrote149 = matches!(&slot149, Ok(OcrSlot::Text(_)));
+    rep.row(
+        "the open key ran the engine once on a confirmed capture",
+        match (ran149, wrote149) {
+            (false, _) => Check::Fail,
+            (true, true) => Check::Pass,
+            // 交出去了、那一格却不是「有值」的两种形状：那一枚 NULL 在这一问里装着四件事（键关着
+            // / 线程起不来 / 引擎报错 / 库被占 —— 第 149 项 ⑤），本档此刻已经知道键开着、把手在、
+            // 线程收了工，剩下两种在这一格里分不开 ⇒ BLOCKED 而不是 FAIL：这一趟不是这一臂坏了，
+            // 是这台机器的那一帧没出字或者引擎当场不答，而那一格没有第二种形状可说。
+            (true, false) => Check::Blocked,
+        },
+        format!(
+            "产品自己数的交出去次数 {asked_b149}→{asked_a149}（要求加一），那一条线程={thread149}，\
+             这一场确认落的行号={row149:?}（与上面 §5.14.1 那一格读到的 `commit_row`={commit_row:?} \
+             同一枚={same_row149}），从沙盒 {hdir_s} 的 `history.db` 把那一行的 `ocr_text` 读回来=\
+             {slot149_said}；产品对这一格自己说的那句话={recorded_said:?}。要求：次数加一（键开着而一次\
+             也没交出，就是 P148 那一条分岔在运行期断了），那一格落成「有字」或「空串」两者之一（跑成了\
+             却没字也是**跑成**，与没跑是两件事 —— 这正是 `auto_ocr_slot` 立的三口径）。「交出去了而那一格\
+             还是 NULL」判 BLOCKED：本档能把「键关着」与「线程没起来」排除掉，剩下「引擎报错」与「库被占」\
+             在同一枚 NULL 里不分（要分就得给那一格再添一种形状，那是 schema 与界面两头的账）。这一格对面\
+             是 SQLite 里的一行，不是这条进程里的一个数。",
+            same_row149 = row149 == commit_row,
+            hdir_s = hdir.display(),
+            slot149_said = ocr_said(&slot149),
+        ),
+    );
+
+    let esc_is_new149 = ate && esc_row.is_some() && esc_row != row149;
+    let esc_spent149 = esc_asked_a149 != esc_asked_b149;
+    let esc_null149 = matches!(&esc_slot149, Ok(OcrSlot::Null) | Ok(OcrSlot::NoRow));
+    rep.row(
+        "the cancelled capture bought no engine run",
+        if esc_spent149 {
+            Check::Fail
+        } else if !esc_is_new149 {
+            Check::Blocked
+        } else {
+            Check::from(esc_null149 && !esc_handle149)
+        },
+        format!(
+            "取消之前交出去次数={esc_asked_b149}，取消之后={esc_asked_a149}（要求一动不动），遮罩里那枚\
+             把手此刻还在不在={esc_handle149}（要求不在：本档已把确认那一次的把手取走并等它收了工，取消\
+             那一次若再交出去一回，这一枚就会是在），取消落的行号={esc_row:?}（与确认那一行={row149:?} \
+             不同={esc_new149}），那一行的 `ocr_text` 读回来={esc_slot149_said}。判据的三件事各管一头：\
+             次数动了 = `auto_ocr_wanted` 那枚 `!cancelled` 在运行期断了 ⇒ FAIL；`escape()` 没吃下选区\
+             或没落新行 ⇒ 这一问没有对面，BLOCKED（上面 §5.14.1 第二条那一格自己判它）；落了新行而那格\
+             不是 NULL ⇒ FAIL —— 一张用户已经 Esc 掉的图不该有人替它花引擎。§5.14.1 那句「包括被取消的\
+             截图」要的是它进清单，不是它进引擎。",
+            esc_new149 = esc_is_new149,
+            esc_slot149_said = ocr_said(&esc_slot149),
         ),
     );
 

@@ -157,6 +157,12 @@ impl Default for EncodeOptions {
 
 pub const ICO_MAX_SIDE: u32 = 256;
 
+/// The background an encoder composites onto when a format cannot store alpha.
+/// Spelled once because §5.4.5's rule 2 promises the user *which* background
+/// their transparency became: `whiteboard::plan_export` reports this constant,
+/// so the sentence in the notice cannot drift away from the pixels.
+pub const FLATTEN_FILL: [u8; 4] = [255, 255, 255, 255];
+
 /// Encode to bytes. JPG/WebP honour `quality`; ICO is downscaled first because
 /// the encoder rejects anything above 256px (P5).
 pub fn encode(frame: &Frame, opt: &EncodeOptions) -> Result<Vec<u8>, EncodeError> {
@@ -179,7 +185,7 @@ pub fn encode(frame: &Frame, opt: &EncodeOptions) -> Result<Vec<u8>, EncodeError
     let prepared = if has_alpha {
         std::borrow::Cow::Borrowed(f)
     } else if f.has_transparency() {
-        std::borrow::Cow::Owned(flatten(f, [255, 255, 255, 255])?)
+        std::borrow::Cow::Owned(flatten(f, FLATTEN_FILL)?)
     } else {
         std::borrow::Cow::Borrowed(f)
     };

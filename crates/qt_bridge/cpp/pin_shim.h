@@ -140,6 +140,15 @@ QString pinWindowReport();
 /// Quit the event loop after ms, so a probe run cannot hang a CI job.
 void pinQuitAfter(std::int32_t ms);
 
+/// Give the calling thread's event loop up to ms of turns. `hotkey::report` runs on the GUI
+/// thread after `app.exec()` has already returned, so a row that waits there with a bare
+/// sleep starves the very `interval: 0` QML Timer it is waiting for - which is what P176's
+/// window census did for its whole 2000 ms ceiling before printing "absent". A wait that
+/// pumps measures the same ceiling against a loop that can still answer. Qt 6 made
+/// processEvents() return void, so this hands back nothing: whether the loop answered is read
+/// from what the QML side pushed, not from a count of events. GUI thread only.
+void pinPumpEvents(std::int32_t ms);
+
 /// How many screen signals the §8.5 watch is connected to, live: `watchScreens()`
 /// counts the pair it made for every screen present when it was armed plus the two
 /// that watch the set itself, and a screen that arrives or leaves moves it again.
