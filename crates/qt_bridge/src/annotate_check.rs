@@ -1524,7 +1524,17 @@ fn footprint(cover: PhysRect, got: &Frame, snap: &ScreenSnapshot, strip: PhysRec
                 continue;
             }
             if coloured(c, GREEN) || coloured(c, BLUE) {
-                f.other_ink += 1;
+                // 但**先问它是不是那张桌面**：P161 给 `band` 的缺席那一臂订正过的同一只手，
+                // 这一行一直是漏的——它的判据是 `other_ink == 0`，而壁纸自己发蓝的一趟，
+                // 「字母之间的空档」每一格都会被数成另一支笔的墨。那条断言从没比过 freeze，
+                // 完整的理由写在 [`band`] 里 `same(c, src)` 那一格；这一格只说它自己也遵守。
+                // 红那一头不跟着挪：`preexisting` 说的正是「桌面本来就是这个颜色」，那是本行
+                // 自己的那支笔的拒答，而 `plain` 说的是别人的笔也没在这里落下墨。
+                if same(c, src) {
+                    f.plain += 1;
+                } else {
+                    f.other_ink += 1;
+                }
                 continue;
             }
             if same(c, src) {
@@ -2307,6 +2317,11 @@ fn shipped_on_screen(
 /// Nothing here is compared against a stroke or a band. The claim is narrower and harder
 /// than the on-screen rows: the bytes that came back out of the clipboard are the bytes
 /// [`crate::annotate::Layer::deliver`] handed over, at the size of the selection.
+///
+/// 开关（[`falcon_core::config::Output::copy_as_file`]，§5.9.17 步 1）开着时，这一腿还多判一路
+/// `CF_HDROP`：那是截图那一臂唯一的真机证人 —— 单元档里那一架梯子不能跑，因为跑一次就要写用户的
+/// 那块板（§10 第 51 项 ② 立的正是这一枚牌），而"板上此刻写着话里点名的那一枚"这一问，只有在
+/// 一块真的板子上才答得出来。贴图那一臂的同一条判据在 `pin_check::copy_rows`。
 fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
     // The reason travels with the refusal: "would not open" is only actionable once the
     // row says who is holding it, which is the same thing `--selftest --clipboard`
@@ -2376,6 +2391,11 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
     let came_back = platform_windows::clip::read()
         .ok()
         .and_then(|c| c.image_bytes);
+    // Read *here*, before the restore: `put_back` publishes the user's own contents and
+    // `write_formats` empties the clipboard first, so a `CF_HDROP` read taken after that
+    // would be reading a board this leg had already wiped. Three answers, not two (#453) -
+    // a board that will not open is not a board with nothing on it.
+    let board = platform_windows::clip::read_files();
     rep.note(
         "clipboard after",
         format!(
@@ -2456,13 +2476,77 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
             }
         ),
     );
+    // §5.9.17 步 1 那一枚开关，在**截图**这一臂上的读数。判据与贴图那一臂（`pin_check::copy_rows`）
+    // 是同一条，读的也是同一枚键 —— `copy_out` 按下去那一刻生效的就是它，所以这里判的是「写这句话
+    // 时生效的那枚开关」而不是本档对配置的记忆。两种答法都可推翻（#274）：
+    //   开着 ⇒ 话里点名一枚文件、它在产品自己那枚临时目录之下、此刻真在盘上，而这块板上此刻写的
+    //         就是它（第三方才读得到的那一路 `CF_HDROP`，Explorer 的 `Ctrl+V` 认的是这一枚）；
+    //   关着 ⇒ 话里不出现「文件引用」，板上也一列文件都不许多出 —— §5.9.16 的老读法。进来之前那一格
+    //         已经确认过 `before` 里没有列表（有的话这一腿整个不跑），所以此刻有的只可能是这一趟写的。
+    // 复制自己退了 ⇒ Blocked 而不是 Fail：文件那一臂压根没被走到，判它"没提供文件"是把一腿的退
+    // 报成另一腿的错（#453）。
+    if done {
+        let as_file = crate::settings::output_cfg().copy_as_file;
+        let named: Option<std::path::PathBuf> = said
+            .split_once("文件引用 ")
+            .map(|(_, rest)| std::path::PathBuf::from(rest.trim()));
+        let ours = named
+            .as_ref()
+            .is_some_and(|p| p.starts_with(crate::state::PinState::clip_dir()));
+        let there = named.as_ref().is_some_and(|p| p.is_file());
+        // 板上这一列点名的是不是话里那一枚：`named` 为 `None` 时问的是"一列都不许有"。
+        let listed = board.as_ref().ok().map(|files| {
+            named
+                .as_ref()
+                .map_or(!files.is_empty(), |p| files.contains(p))
+        });
+        let (file_grade, file_ask) = match (&board, as_file) {
+            (Err(e), true) => (
+                Check::Blocked,
+                format!(
+                    "开关开着，但剪贴板读不回来（{e}）：话里那枚文件判得了，板上写没写它判不了"
+                ),
+            ),
+            (Err(e), false) => (
+                Check::Blocked,
+                format!(
+                    "开关关着，但剪贴板读不回来（{e}）：话里不点名判得了，板上多没多出一列判不了"
+                ),
+            ),
+            (Ok(_), true) => (
+                Check::from(named.is_some() && ours && there && listed == Some(true)),
+                "开着那一侧要：这句点名一路文件、它在产品自己那枚临时目录之下、此刻真在盘上，而这块板上此刻写的就是它".to_string(),
+            ),
+            (Ok(_), false) => (
+                Check::from(named.is_none() && listed == Some(false)),
+                "关着那一侧要：这句里不出现「文件引用」，板上也一列文件都不许多出".to_string(),
+            ),
+        };
+        rep.row(
+            "clipboard file ref",
+            file_grade,
+            format!(
+                "开关={as_file}；点名文件={}；在那枚目录下={ours}；此刻在盘上={there}；板上写着它={:?}；判据＝{file_ask}（§5.9.17 step 1 的截图那一臂，文件名只读不判）。那枚文件是这一腿的产物：交还给用户那块板之后它就成了死引用，下一趟复制的第一道梯（`state::PinState::sweep_clip_files`）把它扫掉，本档不替被测的规则动手删。",
+                named
+                    .as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "<这句没点名文件>".to_string()),
+                listed,
+            ),
+        );
+    } else {
+        rep.row(
+            "clipboard file ref",
+            Check::Blocked,
+            format!("复制这一腿自己退了（话是 {said:?}），文件那一臂没被走到，本格无从判起"),
+        );
+    }
     rep.row(
         "clipboard restored",
         Check::from(back.is_ok()),
         back.unwrap_or_else(|e| e),
     );
 }
-
 /// §5.5.5's 另存为, walked on the machine's own disk.
 ///
 /// Both rows are about the file rather than about the screen: what came back out of the
@@ -3625,8 +3709,14 @@ pub(crate) fn before_is_products_own(was: Option<&str>, pre: Option<&str>) -> bo
 /// fires - so the only ordering it can respect is "before anything else writes the message
 /// slot and before a dialog is standing". A leg that reads the scene after the click would be
 /// reading a window that may have been closed.
+///
+/// `band-move` (§5.7.21 第二步) rides directly behind it for the same reason and one of its own:
+/// the leg *writes* the palette, so it has to run while the panel is still there to re-read it,
+/// and it has to run twice - out and back - so the schedule's own denominator (the config the
+/// Rust side reads when judging `band`) is the roster it started with.
 pub(crate) const MASK_SCHEDULE: &[&str] = &[
     "band",
+    "band-move",
     "dlg-folder",
     "dlg-name",
     "f-jpg",
@@ -3740,6 +3830,128 @@ fn mask_band_row(rep: &mut Report, lines: &[String]) {
     );
 }
 
+/// §5.7.21 第二步：那一排色块能被页上换顺序，而页上跟着换了。
+///
+/// 期待值不出自页上：`before` 是同一趟日程里 `band` 那一句在**动手之前**交回的名单，
+/// `want_after` 由它把头两枚对调算出来，`now` 是判这一格的那一刻现读的档 —— 三份各有各的主人，
+/// 所以这一格比的是「拖完之后页上那份」与「不动手时该长成的那份」，不是页上和自己比。
+///
+/// 六条各说一件事，缺一条就红：
+///
+/// 1. 拖过去之后名单真是头两枚对调；
+/// 2. Repeater 前后都造出那么多枚（`count` 是页上真的造出几枚，不是名单长度）；
+/// 3. 拖回来之后页上那一份与出发时一字不差，**且此刻档里读回来的那一排也与出发时一字不差** ——
+///    落盘真发生过两次，而不是只在内存里换了个绑；
+/// 4. 那枚钟（`bandRevision`）按一次走一格，两次恰好两格：它是页上那一行绑定重发的唯一理由；
+/// 5. 两次按下的**返回值**与各自那一刻窗上 `band_last` 那一格是同一句话 —— 证据走到了窗上那一格，
+///    不只是走到了返回值（那一格只有一格，所以读数必须紧跟每一次按下，见 QML 里那一段的理由）；
+/// 6. 那两句话里不许有「未写入」「写盘失败」：一次被拒的挪动在这一格里不算挪过。
+///
+/// 一排不足两枚时走 [`Check::Blocked`]：这一格问的是「换顺序」，一枚色块的排没有顺序可换，与
+/// 「拖了却没换」是两件事（[`mask_band_row`] 为空名单走 Blocked 是同一族理由）。
+///
+/// 这一格**不**说「一次真的指针拖动会走到这只手」：页上那段 `slotOf` 换算要靠一只合成拖动才量得
+/// 到，而这一族还没有那样的基础设施（§10 第 35 项 ⑤ 欠的正是同一只手）。它说的是那只手改得动档、
+/// 页上跟着换、话留得下来 —— 拖动本身走到那只手，是屏幕上的一次人手动，本档不替它编一个已验证的说法。
+fn mask_band_move_row(rep: &mut Report, lines: &[String]) {
+    let before_leg = said(lines, "band").unwrap_or_default().to_string();
+    let before: Vec<&str> = match before_leg.splitn(3, '|').nth(2) {
+        Some(h) if !h.is_empty() => h.split(',').collect(),
+        _ => Vec::new(),
+    };
+    let leg = match said(lines, "band-move") {
+        Some(text) => text.to_string(),
+        None => {
+            rep.row(
+                "mask band reorder via qml",
+                Check::Fail,
+                "日程第二句一条也没发：页上那一排色块等着被拖，而量具没开口（不是桌面不肯答）".to_string(),
+            );
+            return;
+        }
+    };
+    if before.len() < 2 {
+        rep.row(
+            "mask band reorder via qml",
+            Check::Blocked,
+            format!(
+                "出发时那一份只有 {} 枚（{before_leg:?}）：没有顺序可换，这一格问不出「拖得动」",
+                before.len()
+            ),
+        );
+        return;
+    }
+    let cells: Vec<&str> = leg.splitn(9, '|').collect();
+    if cells.len() < 9 {
+        rep.row(
+            "mask band reorder via qml",
+            Check::Fail,
+            format!("页上那一句只有 {} 段，要九段：{leg:?}", cells.len()),
+        );
+        return;
+    }
+    let (hex_after, count_after, hex_back, count_back, rev0, rev1, rev2, last_ok, sentences) = (
+        cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], cells[6], cells[7], cells[8],
+    );
+
+    let want_before = before.join(",");
+    let mut swapped = before.clone();
+    swapped.swap(0, 1);
+    let want_after = swapped.join(",");
+
+    let ann = crate::settings::annotation_cfg();
+    let now = crate::settings::band_colors_joined(&ann.palette);
+    let now_list: Vec<&str> = if now.is_empty() {
+        Vec::new()
+    } else {
+        now.split('|').collect()
+    };
+    let n = before.len().to_string();
+
+    let ticks = match (rev0.parse::<i32>(), rev1.parse::<i32>(), rev2.parse::<i32>()) {
+        (Ok(a), Ok(b), Ok(c)) => b == a + 1 && c == b + 1,
+        _ => false,
+    };
+    let moved = hex_after == want_after.as_str();
+    let drew = count_after == n.as_str() && count_back == n.as_str();
+    let restored = hex_back == want_before.as_str() && now_list == before;
+    let carried = last_ok == "yes";
+    let accepted = !sentences.contains("未写入") && !sentences.contains("写盘失败");
+    let all = moved && drew && restored && ticks && carried && accepted;
+    let why = if all {
+        "顺序换得动、页上跟着换、回来时档与出发时一字不差"
+    } else if !moved {
+        "拖过去那一份不是把头两枚对调的结果"
+    } else if !drew {
+        "Repeater 造出的枚数与出发时不齐"
+    } else if !restored {
+        "拖回来之后页上或档里那一排与出发时不齐"
+    } else if !ticks {
+        "那枚钟不是按一次走一格"
+    } else if !carried {
+        "moveColor 的返回值与 band_last 不是同一句话"
+    } else {
+        "那两句话里有「未写入」或「写盘失败」：一次被拒的挪动不算挪过"
+    };
+    rep.row(
+        "mask band reorder via qml",
+        Check::from(all),
+        format!(
+            "出发 {want_before:?} → 拖过去 {hex_after:?}（期待 {want_after:?}）→ 拖回来 {hex_back:?}；\
+             档里此刻读回 {now:?}；页上造出 {count_after:?}/{count_back:?}（等 {n} 枚）；\
+             钟 {rev0}→{rev1}→{rev2}；返回值与窗上那一句同一句：{last_ok:?}；那两句话 {sentences:?}（{why}）"
+        ),
+    );
+    rep.note(
+        "mask band reorder 的账",
+        format!(
+            "页上那一只手与设置页「上一格／下一格」那两只钮是同一只（`settings_view::pal_move`），\
+             这一趟各落一次盘；档里原文 {:?}",
+            ann.palette
+        ),
+    );
+}
+
 /// The two rows above call [`crate::mask::MaskState::save_out`] with a name this run
 /// chose, which proves the encoder and nothing about the dialog: no `FileDialog` was opened,
 /// so `AnnotationToolbar.qml`'s `onAccepted` never ran, and §10 第 38 项 ① is exactly the
@@ -3789,6 +4001,7 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
     );
 
     mask_band_row(rep, &lines);
+    mask_band_move_row(rep, &lines);
 
     rep.row(
         "mask dialog opened",
@@ -4949,6 +5162,19 @@ mod tests {
     use falcon_core::capture::{FrozenMonitor, MonitorInfo};
     use falcon_core::geometry::Scale;
 
+    /// 产品自己那句「写不进去」的形状，从常量那一处取，不在这里重打一遍。
+    ///
+    /// 这两格里出现拒绝句的三处曾经各抄一遍产品的话，于是门换措辞而尺子不动时，量具读到的
+    /// 「一句产品自己的话」会跟着老措辞一起绿 —— #455 说的就是这种读数。原因那一枚（路径无效…）
+    /// 此刻由 [`crate::save`] 的翻译那一格当场决定，本门不猜它；这里要的只是「拒绝句」这个形状：
+    /// 它不是「已保存到」，所以既读不出路名，也不该被当成点击前那句已经存在的话。
+    fn refused_save_sentence() -> String {
+        format!(
+            "保存失败：路径无效，那个路径找不到。截图还在，{}",
+            crate::save::SAVE_EXITS
+        )
+    }
+
     /// §10 第 44 项 ①'s three reads, each against the shape the C++ probe and the product's
     /// sentence really have. The two census lines below are copied out of the archived P43
     /// logs rather than invented: the first is what a quiet desktop answers, the second what
@@ -4989,8 +5215,9 @@ mod tests {
         // the clause the size of the picture lives in. Guessing a path from either would
         // let a row read a file the door never said it wrote.
         assert_eq!(
-            landed_path("保存失败：路径不存在。截图还在，可以再保存一次。"),
-            None
+            landed_path(&refused_save_sentence()),
+            None,
+            "a refusal was read as a landing"
         );
         assert_eq!(landed_path("已保存到 c.png"), None);
     }
@@ -5024,18 +5251,13 @@ mod tests {
     /// so a run that says one thing under each is a run whose message moved underneath it.
     #[test]
     fn an_empty_before_half_is_not_a_sentence_the_door_already_had() {
+        let refused = refused_save_sentence();
         // Silence, in both shapes: never read, and read as empty.
         assert!(!before_is_products_own(None, None));
         assert!(!before_is_products_own(Some(""), Some("")));
         // One of the two reads missing is the leg not asking for the refusal at all.
-        assert!(!before_is_products_own(
-            Some("保存失败：路径不存在。截图还在，可以再保存一次。"),
-            None
-        ));
-        assert!(!before_is_products_own(
-            None,
-            Some("保存失败：路径不存在。截图还在，可以再保存一次。")
-        ));
+        assert!(!before_is_products_own(Some(refused.as_str()), None));
+        assert!(!before_is_products_own(None, Some(refused.as_str())));
         // The success sentence cannot be its own before-half: that is the click counted as
         // the evidence that the door was already open.
         assert!(!before_is_products_own(
@@ -5048,8 +5270,8 @@ mod tests {
             Some("保存失败：b")
         ));
         assert!(before_is_products_own(
-            Some("保存失败：路径不存在。截图还在，可以再保存一次。"),
-            Some("保存失败：路径不存在。截图还在，可以再保存一次。")
+            Some(refused.as_str()),
+            Some(refused.as_str())
         ));
         // §10 第 41 项 ②: the same rule now covers the other door, whose refusal is the
         // state machine's own words about an id the set never handed out - the sentence
@@ -6037,6 +6259,42 @@ mod tests {
         assert_eq!(fp.verdict(), Check::Blocked);
     }
 
+    /// 壁纸自己就是另一支笔的颜色，不等于另一支笔在这里落过墨。P161 给 [`band`] 的缺席那一臂
+    /// 订正的那只手，在 文本 这一行一直是漏的：这一行判的是 `other_ink == 0`，于是一趟发蓝的
+    /// 桌面会把「字母之间」那 176 格全数成蓝墨，这一行自此在任何一台蓝壁纸的机器上永远红。
+    /// 反证在同一次调用里：同样的蓝墨落在不发蓝的桌面上，`other_ink` 照样长出来 —— 这一格不是
+    /// 把另一支笔的判断删掉了，是叫它先去比那张 freeze。
+    #[test]
+    fn a_wallpaper_that_is_another_pen_s_colour_is_not_that_pen() {
+        let cover = PhysRect::new(0, 0, 200, 200);
+        let letters_on = |base: [u8; 4]| {
+            let mut got = Frame::filled(200, 200, base).expect("frame");
+            let mut n = 0usize;
+            for y in 10..20 {
+                for x in 10..30 {
+                    if n >= MIN_TEXT_INK {
+                        return got;
+                    }
+                    got.set(x, y, RED);
+                    n += 1;
+                }
+            }
+            got
+        };
+        let fp = footprint(cover, &letters_on(BLUE), &desk(BLUE), strip());
+        assert_eq!(
+            (fp.ink, fp.other_ink, fp.plain, fp.usable()),
+            (MIN_TEXT_INK, 0, 200 - MIN_TEXT_INK, 200)
+        );
+        assert_eq!(fp.verdict(), Check::Pass);
+        let not_the_desk = footprint(cover, &letters_on(GREEN), &desk(GREY), strip());
+        assert_eq!(
+            (not_the_desk.ink, not_the_desk.other_ink, not_the_desk.plain),
+            (MIN_TEXT_INK, 200 - MIN_TEXT_INK, 0)
+        );
+        assert_eq!(not_the_desk.verdict(), Check::Fail);
+    }
+
     #[test]
     fn every_pixel_the_row_walks_lands_in_exactly_one_bucket() {
         // A strip that runs off the window the bitmap photographs, so `off` is reachable,
@@ -6678,11 +6936,40 @@ mod tests {
             "摘掉一行 {first:?} 后计数没变 ⇒ 这条腿没在数"
         );
 
-        // 枚数钉在实测的那一个读数上：24 枚 `Cell` + 1 枚 `Swatch`。少了是有人删了一枚
+        // 枚数钉在实测的那一个读数上：`Cell` 的那些行加一枚 `Swatch`。少了是有人删了一枚
         // 钮却没删它的句子，多了是新钮没带句子来。
+        //
+        // 24 → 29 是「对象」那一行添的五枚（框选 / 复制 / 删除 / 左转 / 右转）：
+        // §5.7.17 第一步与第四步、§5.7.15 第二步在屏幕上第一次有了能按的那一枚。
+        // 29 → 34 是样式那三行添的五枚（圆头 / 方头、三角 / 尖角 / 圆点、更小 / 更大）：
+        // §5.7.8 与 §5.7.10 步骤 2 的「笔刷形状」、§5.7.6 步骤 2 的「其他箭头样式」、
+        // §5.7.3 步骤 2 的「配置圆角半径」——前两组早就过了桥、只在页上缺那一排，第三组
+        // 连同 `annotate` 那头的 setter 一起是本轮新建的。
+        // 35 → 37 是「编号」那一行添的两枚（更小 / 更大）：§5.7.12 步骤 2 的「设置起始编号」，
+        // 与那一枚工具本身同一轮上的 —— 工位进了 `TOOLS`，起始编号才有地方按。
+        // 37 → 38 是「对象」那一行添的一枚「重排」：§5.7.12 步骤 5 的「删除中间编号时可选择是否
+        // 自动重排」。它不在编号那一排，因为它改的就是左边那一枚「删除」怎么被记 —— 亮着的删除
+        // 与它带着的重排合成一条 `Command::Compound`，一次 Ctrl+Z 退的是那一次编辑而不是它的两半。
+        // 38 → 40 是「文本」那一行添的两枚：§5.7.11 那句「文本描边支持颜色和宽度设置」里颜色和
+        // 宽度各一枚（一排 `Swatch` 借主色带那六枚芯片、一排 `Cell` 借 细/中/粗 那三枚）。它们
+        // 排在「描边」那枚开关之后且只在开关开着时才占位：圈不画的时候问它多粗，是读数指着屏幕
+        // 上不存在的东西。
+        // 40 → 41 是「笔刷」那一行添的一枚「扁头」：§5.7.8 规则那句「支持圆形或椭圆形笔刷」要的
+        // 是两种笔头而代码只给了圆的与方的，于是 raster 多了一档 `Shape::Ellipse`、这一排跟着多
+        // 一枚钮。标签避开「椭圆」，因为那两个字是工具排上画椭圆那一格的 —— 下面那条「不许在 QML
+        // 里重打工具名」的闸正是为此立着，它在这一趟真的响了一次。上面 29 → 34 那句里的
+        // 「圆头 / 方头」是当时那两枚的读数，不动。
+        // 41 → 42 是「保存」那一排添的一枚「打开方式」：§5.5.9 那句「不支持原生分享时…提供替代
+        // 方案」走的是替代那一支 —— 本产品没有原生分享面板（WinRT 的 `DataTransferManager` 要应用
+        // 以包身份运行，本程序是一枚未打包 exe），于是分享由「先把这一张写成文件，再交给系统默认的
+        // 看图程序」承担。它挨着 快速保存 放，因为两枚按的都是同一条落盘腿。
+        // 42 → 43 是「保存」那一排添的一枚「贴图」：§5.8.1 步 2 那三个字在屏幕上第一次有了
+        // 能按的那一枚。它挨着「存完再钉图」放而**不**替了它，因为那是 PRD 433 里两件不同的事 ——
+        // 那一枚浮的是用户挑中过的**那份文件**（§10 第 43 项 ①），这一枚浮的是屏幕上这一块画面，
+        // 用户没打算为它交出目录、名字和一次磁盘。
         assert_eq!(
-            buttons, 25,
-            "P157 实测这一档 24 枚 Cell + 1 枚 Swatch，此刻数到 {buttons}"
+            buttons, 43,
+            "实测这一档 41 枚 Cell + 2 枚 Swatch，此刻数到 {buttons}"
         );
 
         // 落点只有两处（两个组件各一次），不是每一枚实例各开一只泡。
@@ -6812,6 +7099,254 @@ mod tests {
         assert!(
             QML.contains("id: band") && QML.contains("String(band.count)"),
             "色带那一格没把「页上造出几枚」交给门"
+        );
+    }
+
+    /// §5.7.21 第二步页上那枚钟与那一句拖过的话，必须**按桥交出的真名字**读。
+    ///
+    /// cxx-qt 给 `#[qproperty]` 露出的 QML 名就是 Rust 那一个（`pen_rgb` / `can_undo` 那一族
+    /// 都这么读），写成驼峰不报错、也不在构造期发红 —— 它只是**静默绑不上**，读回来是
+    /// `undefined`。2026-11-03 真机第一次跑 `--ink` 就红在这一格：页上写着
+    /// `bar.view.bandRevision`，于是档换了顺序而屏幕停在面板创建那一刻，那三个读数全成
+    /// `undefined`。门把手是另一族：`#[qinvokable]` 走 `#[cxx_name]`，驼峰才是它对页上露出的
+    /// 那一个名字，所以这一格里两族的方向正好相反。
+    #[test]
+    fn the_band_clock_and_its_sentence_are_read_by_their_real_names() {
+        const QML: &str = include_str!("../qml/AnnotationToolbar.qml");
+        for snake in ["band_revision", "band_last"] {
+            assert!(
+                QML.contains(&format!("bar.view.{snake}")),
+                "页上没有按 `{snake}` 读那一枚 qproperty：名字一改就是静默绑不上"
+            );
+        }
+        for camel in ["bandRevision", "bandLast"] {
+            assert!(
+                !QML.contains(camel),
+                "页上把 {camel} 当成 qproperty 读了：桥交出的名字是下划线那一个，驼峰只会读回 undefined"
+            );
+        }
+        // 门把手反过来：它按 `#[cxx_name]` 露驼峰名。这一行同时也是「拖完那一次真的走到那只手」
+        // 在源码里的唯一出处 —— 递的是两个格号之差，不是一份新名单（#281）。
+        assert!(
+            QML.contains("bar.view.moveColor(chip.index, to - chip.index)"),
+            "色块拖动没有把格号差递给 moveColor"
+        );
+        // 页上那一行绑定重发的理由必须写在绑定里，而不是写在别处：钟名出现在 `band_said` 之前
+        // 的那几行不算，只算它自己那一读。
+        let ticking = QML
+            .lines()
+            .filter(|l| l.trim_start() == "bar.view.band_revision")
+            .count();
+        assert_eq!(
+            ticking, 1,
+            "band_said 那一行绑定里恰好要有一句 bare 的 bar.view.band_revision：{ticking} 句"
+        );
+    }
+
+    /// §5.7.11 规则三「文本框应支持换行」在**页上那一手**的判据。
+    ///
+    /// 换行怎么被量、怎么被画，`annotate.rs` 里那一格
+    /// `a_newline_grows_the_box_downward_and_draws_the_second_line` 已经当场数过像素；那一只
+    /// 把换行**写进字符串**的手在页上，而本仓一枚输入注入器也没有（`SendInput` 零命中，
+    /// `pin_check.rs` 里那一格自己声明过），真机上没有任何一只手能把 Shift+Enter 送进那枚
+    /// 正拿焦点的字段。所以能被机械判的是它的形状：那一档是 `TextEdit`（单行的 `TextInput`
+    /// 会把这枚键码丢掉）、键先被这一手接住（`accepted` 写在分叉之前，两臂都继承得到）、
+    /// 一枚换行插在光标处、而不带 Shift 的那一臂仍是今天那一条收尾。
+    ///
+    /// 尺子与全档同一把：`hint_check::qml_code` 剥注释（一句散文过不了这一格），
+    /// `include_str!` 拿的是编译进这一手的那一份源。判据切的是**那一档自己**：本页
+    /// `Keys.onReturnPressed` 本来就有两枚（`surface` 的完成选区与 `field` 的那一条），
+    /// 整档 `contains` 会把前一枚读成后一枚。
+    ///
+    /// 尺子自己也被量一次：摘掉插换行那一手，计数就得掉一枚（#269 同一族）。
+    #[test]
+    fn shift_enter_writes_the_newline_and_plain_enter_still_finishes_the_text() {
+        const PAGE: &str = include_str!("../qml/CaptureMask.qml");
+        let code = crate::hint_check::qml_code(PAGE);
+        let lines: Vec<&str> = code.lines().collect();
+
+        // 那一档的入口：开档的是一枚 `TextEdit`，而它下一行就是 `id: field`。
+        let opens: Vec<usize> = lines
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.trim() == "TextEdit {")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            opens.len(),
+            1,
+            "页上 `TextEdit {{` 开了 {} 档，这一格说不出它量的是哪一只输入框",
+            opens.len()
+        );
+        let open = opens[0];
+        assert!(open + 1 < lines.len(), "`TextEdit {{` 后面什么都没有");
+        assert_eq!(
+            lines[open + 1].trim(),
+            "id: field",
+            "`TextEdit` 开的那一档不是那只输入框：紧跟的一行是 {:?}",
+            lines[open + 1].trim()
+        );
+        assert_eq!(
+            lines.iter().filter(|l| l.trim() == "TextInput {").count(),
+            0,
+            "页上还留着一档 `TextInput`：单行的那一只按 Enter 只会收尾，换行永远打不进去"
+        );
+
+        // 那一档的收尾按大括号数出来：下面每一问都只准读它自己那一段。
+        let mut depth = 0usize;
+        let mut close = None;
+        for (i, l) in lines.iter().enumerate().skip(open) {
+            depth += l.matches('{').count();
+            depth = depth.saturating_sub(l.matches('}').count());
+            if depth == 0 {
+                close = Some(i);
+                break;
+            }
+        }
+        let close = close.expect("`field` 那一档的大括号没有合上：这把尺子切不出它读的是哪一段");
+        let block = lines[open..=close].join("\n");
+        println!(
+            "scan: `field` 那一档 = 页上第 {} 到第 {} 行（剥注释后 {} 字符）",
+            open + 1,
+            close + 1,
+            block.chars().count()
+        );
+
+        // 框子仍然只有一个作者：页上绑的是 Rust 量出来的那两格，而这里不许长出第二把尺子。
+        assert_eq!(
+            block.matches("win.view.text_h").count(),
+            1,
+            "`field` 的高度不再绑在 Rust 量出的那一格上：换行把盒子往下撑高就没有人报数了"
+        );
+        assert!(
+            !block.contains(".split("),
+            "页上自己拆起字符串来了：行数与盒子就是这么长出第二个作者的"
+        );
+        assert_eq!(
+            block.matches("wrapMode: TextEdit.NoWrap").count(),
+            1,
+            "那一档既不 wrap、也没把 wrapMode 写成 `TextEdit` 自己那一族的名字"
+        );
+        assert!(
+            !block.contains("TextInput.NoWrap"),
+            "`wrapMode` 还按 `TextInput` 那一族写：这一档的类型已经不是它了"
+        );
+        // 字符串递给 Rust 的手只有一只。
+        const TEXT_HAND: &str = "onTextChanged: win.view.setText(text)";
+        assert_eq!(
+            block.matches(TEXT_HAND).count(),
+            1,
+            "`field` 到 `setText` 的那一条通道不在了，或者多了一条"
+        );
+
+        // 一条 handler：从它的名字到它自己那枚收尾大括号。
+        fn handler(block: &str, head: &str) -> String {
+            let at = block
+                .find(head)
+                .unwrap_or_else(|| panic!("`field` 那一档里找不到 {head}：那把尺子今天量的是空集"));
+            let rest = &block[at..];
+            let mut depth = 0usize;
+            let mut end = None;
+            for (i, c) in rest.char_indices() {
+                match c {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth = depth
+                            .checked_sub(1)
+                            .expect("handler 里先出来一枚 }：这一档的大括号不对账");
+                        if depth == 0 {
+                            end = Some(i + 1);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            rest[..end.expect("handler 没有收尾大括号")].to_string()
+        }
+
+        assert_eq!(
+            block.matches("Keys.onReturnPressed:").count(),
+            1,
+            "`field` 那一档里 Return 的 handler 不止一枚，这一格说不出判的是哪一条"
+        );
+        let ret = handler(block.as_str(), "Keys.onReturnPressed:");
+        let ent = handler(block.as_str(), "Keys.onEnterPressed:");
+        // 主键盘的 Return 与小键盘的 Enter 是两枚键码：两臂必须一模一样，否则换行只在其中
+        // 一枚键上落得下去。
+        let arms = |h: &str| -> Vec<String> {
+            h.lines()
+                .skip(1)
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        };
+        assert_eq!(
+            arms(ret.as_str()),
+            arms(ent.as_str()),
+            "Return 与 Enter 的两臂不是一对：{ret:?} 对 {ent:?}"
+        );
+
+        const ACCEPTED: &str = "event.accepted = true";
+        const INSERT: &str = "field.insert(field.cursorPosition, \"\\n\")";
+        assert_eq!(
+            ret.matches(ACCEPTED).count(),
+            1,
+            "`accepted` 那一行不是恰好一枚：漏掉它的那一臂会把键交给窗口的完成选区"
+        );
+        let shift_at = ret
+            .find("Qt.ShiftModifier")
+            .expect("Return 的 handler 没有 `Qt.ShiftModifier` 那一问：换行没有入口");
+        assert!(
+            ret.find(ACCEPTED).unwrap() < shift_at,
+            "`accepted = true` 写在分叉之后：两臂里有一臂继承不到它"
+        );
+        let else_at = shift_at
+            + ret[shift_at..]
+                .find("else")
+                .expect("Return 的 handler 只有 Shift 那一臂：裸 Enter 不再收尾了");
+        let shift_arm = &ret[shift_at..else_at];
+        let plain_arm = &ret[else_at..];
+
+        // 插换行那一臂：往光标处插一枚 `"\n"`，由 `insert` 自己去发 `textChanged`。
+        assert_eq!(
+            shift_arm.matches(INSERT).count(),
+            1,
+            "Shift 那一臂没有把一枚换行插到光标处：{shift_arm:?}"
+        );
+        assert!(
+            !shift_arm.contains("finishInk"),
+            "Shift 那一臂还在收尾：第二行还没打上去，文本就被提交了"
+        );
+        assert!(
+            !shift_arm.contains("setText"),
+            "Shift 那一臂自己叫了 `setText`：`insert` 已经发过一次 `textChanged`，那是第二次"
+        );
+
+        // 另一臂仍是今天那一条。
+        assert_eq!(
+            plain_arm.matches("win.view.finishInk()").count(),
+            1,
+            "不带 Shift 的那一臂不再收尾，或者收尾了两回"
+        );
+        assert!(
+            plain_arm.contains("win.grabbed()"),
+            "收尾那一臂没有把新画面广播给别的屏"
+        );
+        assert!(!plain_arm.contains(INSERT), "收尾那一臂里多插了一枚换行");
+
+        // 尺子自己的反证：摘掉插换行那一手，上面那一问的计数就得掉一枚。它要是不掉，那句
+        // `Qt.ShiftModifier` 就是常量而不是读数（#269 同一族）。
+        let insert_line = block
+            .lines()
+            .find(|l| l.contains(INSERT))
+            .unwrap_or_default()
+            .to_string();
+        let dropped = block.replacen(&insert_line, "", 1);
+        assert_eq!(
+            dropped.matches(INSERT).count() + 1,
+            block.matches(INSERT).count(),
+            "摘掉 {insert_line:?} 之后计数没变 ⇒ 这一格没在数"
         );
     }
 }

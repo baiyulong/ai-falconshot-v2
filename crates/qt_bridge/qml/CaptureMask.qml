@@ -37,6 +37,18 @@ Window {
     /// the dim on screen 1 before the button is let go.
     signal grabbed()
 
+    /// §5.4.1 / §5.3.9 第 4 步 —— 放大镜这一块面板摆在哪一格，本页**不再自己记**。
+    ///
+    /// 以前这里是两格 `property real cursorX/cursorY`，由 `surface` 的按下/移动/松开三处写。
+    /// 那本账只有鼠标一条腿：键盘把选区挪过一格之后屏幕上没有新的事件进来，面板就留在原地，
+    /// 里面画的却是刚被挪掉的那条边 —— 「面板摆在指针那儿、说的是另一颗像素」。现在页上绑的
+    /// 是 `view.magnifier_anchor_x/y`，那正是桥这一趟真的去采的那一点在本窗的读法（作者：
+    /// `crate::mask::MaskState::magnifier_at_point`，经 `crate::mask::MagnifierData` 交出），
+    /// 于是像素、坐标那一句、色板、面板摆在哪一格四件事同一次装配、同一颗点，不可能再来自两趟。
+    ///
+    /// 换算成窗内 DIP 也仍然只有一位作者：`MaskState::local_dip`，与选区、高亮框、文本框、
+    /// 圆角把手同一把尺子（#281）。
+
     function cursorFor(g) {
         switch (g) {
         case 2:  case 6:  return Qt.SizeFDiagCursor
@@ -53,6 +65,11 @@ Window {
     // ten with Shift, and Alt moves the bottom-right edge instead of the rectangle.
     // The step is a *device* pixel because that is the unit the PRD's title names -
     // 像素级控制 - not the unit the pointer arrives in.
+    //
+    // §5.3.9 第 4 步「放大镜同步显示边缘像素」不在这一格里算：这一手只把方向与步长递过桥，
+    // `view.nudgeHole` 在桥里挪完选区之后紧接着把放大镜重采样到刚被挪掉的那条边（作者：
+    // `crate::mask::MaskState::nudge_magnified` + `falcon_core::geometry::nudge_sample`）。
+    // 页上一旦自己算"哪条边动了"，那就是同一份几何的第二个作者（#281）。
     function step(dx, dy, mods) {
         // §5.14.2 的翻页自 P113 起住在 `chord()` 里（Ctrl+Up / Ctrl+Down），而上面那四行
         // `Keys.on*Pressed` 是**任何**修饰键都会触发的，所以这一格得先让开那一档：不让开，一次
@@ -70,6 +87,11 @@ Window {
         }
         const n = (mods & Qt.ShiftModifier) ? 10 : 1
         view.nudgeHole(dx * n, dy * n, (mods & Qt.AltModifier) !== 0)
+        // 选区是**一整个桌面矩形**，每一扇窗画的是它自己裁出来的那一块 —— 键盘挪过一格之后
+        // 别的屏上那块暗区也要跟着挪，而 `main.qml` 只认这一枚信号（`refreshOtherMasks` 只
+        // reload、不再回发，所以两条腿不会互相刷新到永远）。上面那三处鼠标 handler 早已这么
+        // 办；方向键这一条腿以前没有，跨屏时另一扇屏上的框就差这一格。
+        win.grabbed()
     }
 
     // §5.7.5's 完成折线, §5.7.13's 放大落位 and §5.3's 完成选区 are the same two
@@ -341,6 +363,35 @@ Window {
                 : ""
     }
 
+    // §5.3.2 第三步「系统高亮窗口边界」：光标此刻最直接指向的那一扇**桌面上的窗**。
+    //
+    // 与下面那条 §5.2.3 的选区边**同一族画法**（一张 `color: "transparent"` 的
+    // `Rectangle`，只描边，2 DIP），因为它是同一块屏幕上的第二把框：读的是
+    // `view.hover_*` 那五格，而五格与 `view.hole_*` 出自 Rust 里同一位作者
+    // (`MaskState::local_dip`)，所以在 200% 屏上高亮框与选区不会差出一像素。
+    //
+    // 它画在选区边**之前**，于是选区那条白边压在上面：一扇窗被选中之后，用户要看的
+    // 是"我选了哪一块"，不是"这块底下原本是哪扇窗"。
+    //
+    // 亮不亮只看 `view.hover_live`，不看尺寸，也不看 `view.selected` —— 遮罩是带着
+    // 默认选区开门的（`MaskState::default_hole`），拿 `selected` 当闸门这一路会永远不亮；
+    // 真正的闸门是 Rust 那一格的 `hover_taken`（按过一次就不再报，Esc 第一档清掉选区
+    // 之后又回来），页上只是读它的结果。
+    //
+    // 这一页**不绑** `hover_liveChanged` 之类的信号名：`#[qproperty(bool, hover_live)]`
+    // 生成的 notify 是 `hover_liveChanged` 而不是驼峰，绑错是静默的（本仓踩过两次）。
+    // 绑值这条路没有名字可绑错。
+    Rectangle {
+        x: win.view.hover_x
+        y: win.view.hover_y
+        width: Math.max(0, win.view.hover_w)
+        height: Math.max(0, win.view.hover_h)
+        visible: win.view.hover_live
+        color: "transparent"
+        border.color: "#4cc2ff"
+        border.width: 2
+    }
+
     // §5.2.3's selection edge. 2 device-independent pixels, which is 4 at 200% -
     // the number the user sees as "the box around what I picked".
     Rectangle {
@@ -409,6 +460,23 @@ Window {
         }
     }
 
+    // §5.7.3 步 4 的那一枚圆角把手，与上面八枚同一规：画出来给人握，而**不在页上点** —— 一枚
+    // 按下的归属是 `pressAt` 里 Rust 那一位作者判的，这里再摆一枚 MouseArea 就是让光标与拖拽
+    // 起点各答一次「用户握住了哪一枚」。位置也是 Rust 的（core 的 `grip_point`，加上本窗那一次
+    // 除法），页上一处坐标都不自己算；只有这一枚点画多大是页自己的事，因为那是给人看的数而不是
+    // 给人算的数。圆而不是方，是为了与那八枚角把手在屏幕上分得开：这一枚拧的是角有多圆。
+    Rectangle {
+        visible: win.view.radius_live
+        x: win.view.radius_x - 4
+        y: win.view.radius_y - 4
+        width: 8
+        height: 8
+        radius: 4
+        color: "white"
+        border.color: "black"
+        border.width: 1
+    }
+
     // The whole pointer surface. One MouseArea for the entire screen is the shape
     // the state machine expects: a press anywhere is either a grip on the existing
     // rectangle or the start of a new one, and Rust decides which - so there is no
@@ -422,7 +490,19 @@ Window {
         cursorShape: win.cursorFor(win.grip)
 
         onPressed: (mouse) => {
+            // §5.7.18 步 2「按住 Ctrl 拖动」的那只手：先把**这一枚按下**按着 Ctrl 没有递过去，
+            // 再让 Rust 判这一趟拖的是原物还是副本。次序在这里是有内容的：`pressAt` 里
+            // `Layer::press` 读一次就把那一格归 false，写晚了这一枚按下就按"没按 Ctrl"办了。
+            //
+            // 页上不自己判"点在谁身上"（那是 Rust 那一位作者的 `topmost_at`），也不自己存"这
+            // 一趟是克隆"—— 中途松手不把已经开始的克隆改回移动，所以这一格只在按下递一次，
+            // 不像上面那枚 Shift 每一寸移动都重写。
+            view.holdClone((mouse.modifiers & Qt.ControlModifier) !== 0)
             win.grip = view.pressAt(mouse.x, mouse.y)
+            // §5.4.1：按下这一点也算指针落到某一枚像素上，放大镜跟上；§5.4.2 之后按 C
+            // 取的就是这一颗（`view.pickColor` 读的是桥里刚记下的那一点）。面板摆在哪一格
+            // 也从这一趟来（`view.magnifier_anchor_x/y`），页上不再自己抄一份。
+            view.updateMagnifier(mouse.x, mouse.y)
             win.grabbed()
         }
 
@@ -436,8 +516,15 @@ Window {
                 // 比例，松手就回到芯片那一格的锁（它不进 `view.ratio_index`，所以没有一把
                 // "临时按着却永久留在解除态"的门）。
                 //
-                // 是 Alt 而不是 Shift：Shift 已经是方向键的 ×10 步进（`win.step`），同一枚键
-                // 在同一个窗口里不能一边说"挪十倍"一边说"松开锁"。
+                // 是 Alt 而不是 Shift 说"松开锁"：这一枚键说的是**锁住**（见下面那一手），
+                // 一只手同时按两枚键各说一件相反的事，屏幕上没有谁能猜对是哪一件。Shift 在
+                // 键盘那一趟是方向键的 ×10 步进（`win.step`）—— 那是 KeyPress，这只鼠标按着
+                // 的这一段从不发出，所以两回事不会撞进同一次手势。
+                //
+                // §5.7.4 step 3「按住约束键可创建正圆」的那只手就是 Shift：按着的这一段，笔
+                // 拖出来的那一框锁成 1:1。每一寸移动都照当下这颗键重写一次（`holdConstraint`
+                // 不是一把门），所以中途松手、下一寸就回到自由比例。
+                view.holdConstraint((mouse.modifiers & Qt.ShiftModifier) !== 0)
                 view.dragTo(
                     mouse.x,
                     mouse.y,
@@ -445,13 +532,22 @@ Window {
                 )
             } else {
                 win.grip = view.hitTestAt(mouse.x, mouse.y)
+                // §5.3.2 第二、三步：没按住的那一段每一寸移动都要问一次「这一枚光标落在
+                // 哪一扇窗」，上面那块高亮框读的就是这一手的结果。按下那一段**不**问 ——
+                // `view.pressAt` 在 Rust 里已经为那一点算过一次（`MaskState::press`），
+                // 再问一遍就是同一件事有两个时刻，而高亮说 A、单击选中 B 正是这么长出来的。
+                view.hoverWindow(mouse.x, mouse.y)
             }
+            // §5.4.1：拖拽与悬停都是"指针在屏幕上走到了这一点"，放大镜跟的是**指针**而不是
+            // 选区，所以两条都要更新。§5.4.2 按 `C` 取色读的就是桥里被这一次调用记下那一点。
+            view.updateMagnifier(mouse.x, mouse.y)
             win.grabbed()
         }
 
         onReleased: (mouse) => {
             view.releaseAt()
             win.grip = view.hitTestAt(mouse.x, mouse.y)
+            view.updateMagnifier(mouse.x, mouse.y)
             win.grabbed()
         }
 
@@ -505,6 +601,46 @@ Window {
         // and `Ctrl+Shift+Z` is accepted alongside `Ctrl+Y` because that is what
         // people who came from another program type.
         Keys.onPressed: (event) => {
+            // §5.4.2 —— 裸按 `C` 取色。放在 `win.chord(...)` **之前**判，是为了把
+            // `Ctrl+C`（复制选区）与 `Ctrl+Shift+C`（不接管）留给上面那条通道；否则裸 C 一
+            // 旦吞下按键，`chord()` 那一路的 `copy` 分支就跑不到了。
+            //
+            // 修饰键的判据：**不带 Ctrl、不带 Shift、不带 Alt** 才算裸 C。Shift 在
+            // §5.3.9 里是 ×10 步进、Alt 是"挪哪条边"（都在方向键那一档），Ctrl 是复制；
+            // 三枚里任何一枚按下时 C 都不该被取色器接走。
+            //
+            // 这一格还**不能**在文本框正被输入时接：`field` 拿到焦点时它的 `Keys.on*` 那
+            // 一族会先收到事件并吃掉，本 surface 的 handler 就不会跑；所以这里不用二次判
+            // 焦点——那一族的分工在 §5.7.11 步 5 的注释里已经说过一次。
+            if ((event.modifiers & Qt.ControlModifier) === 0
+                && (event.modifiers & (Qt.ShiftModifier | Qt.AltModifier)) === 0
+                && event.key === Qt.Key_C) {
+                view.pickColor()
+                event.accepted = true
+                return
+            }
+            // §5.7.16 步 3「修改……文字内容」的入口键。双击与 Enter 早被 `finishInkOrHole`
+            // 那条梯子说成"收尾"（§5.7.11 步 3、§5.7.5、§5.7.13 共用那两个事件），裸按别的
+            // 字母又各有其人，所以**起**编辑取 F2：它与 `chord()` 那一族（每枚都要求 Ctrl）
+            // 和裸 C 都不撞。
+            //
+            // 不带修饰键才算这一枚，与裸 C 同一规（Shift 在 §5.3.9 是 ×10 步进、Alt 是"挪哪
+            // 条边"、Ctrl 是复制）。
+            //
+            // 框已经开着时到不了这里：那一枚 `TextEdit` 有焦点，它的 `Keys.on*` 一族先吃掉
+            // 事件，本 surface 的 handler 就不跑 —— 所以这里不必二次判焦点（与 §5.7.11 步 5
+            // 那一段同一分工）。门开不开、哪一枚改得，是 Rust 那一位作者的话（见
+            // `MaskState::edit_text`）；页上不许写第二套判据，也不许自己算框。
+            if ((event.modifiers & (Qt.ControlModifier | Qt.ShiftModifier | Qt.AltModifier)) === 0
+                && event.key === Qt.Key_F2) {
+                // `true` = 框开了，另一扇窗也要重读这六格（`text_seed` 与该当哪一扇亮）；
+                // 没开时屏幕上那句"为什么没反应"已经由 Rust 写进 `message` 那一格。
+                if (view.editText()) {
+                    win.grabbed()
+                }
+                event.accepted = true
+                return
+            }
             if (win.chord(event.key, event.modifiers)) {
                 event.accepted = true
             }
@@ -520,7 +656,7 @@ Window {
     // The field holds the letters while they are being typed and the layer holds them
     // afterwards, so exactly one of the two draws a given string. Both drawing it is a
     // doubled glyph, and that is why the layer keeps no preview of a text box.
-    TextInput {
+    TextEdit {
         id: field
         visible: win.view.text_editing
         x: win.view.text_x
@@ -531,28 +667,52 @@ Window {
         height: Math.max(1, win.view.text_h)
         clip: true
         text: ""
-        color: Qt.rgba(((win.view.pen_rgb >> 16) & 255) / 255,
-                       ((win.view.pen_rgb >> 8) & 255) / 255,
-                       (win.view.pen_rgb & 255) / 255, 1.0)
-        // Device-independent, and Rust divided: the pen's 字号 is a count of device
+        // 那一串字的颜色读的是**这一只框**的读数，不是画笔的：§5.7.16 步 3 改字那一只框里，
+        // 提交上去的那一枚保留它自己的颜色，绑 `pen_rgb` 的字段会在框关掉那一刻换一次色 ——
+        // 用户刚刚看着自己编辑的那一串就是旧的那一枚颜色。落新框时 `text_rgb` 就是画笔的那一枚
+        // （`Layer::typing_colour` 走 `box_style`，没有框时它答画笔），所以这一格两条腿都诚实。
+        // alpha 仍旧按 1.0 铺，与 `pen_rgb` 那一条同规。
+        color: Qt.rgba(((win.view.text_rgb >> 16) & 255) / 255,
+                       ((win.view.text_rgb >> 8) & 255) / 255,
+                       (win.view.text_rgb & 255) / 255, 1.0)
+        // Device-independent, and Rust divided: 字号 is stored as a count of device
         // pixels, and a field sized in the window's own units would be a third of the
-        // height of the text it stands in for on a 300% screen.
+        // height of the text it stands for on a 300% screen. The number read back is the
+        // open box's own (§5.7.16 步 3 改的是那一枚对象的字号时，这一格跟着对象走)，不是
+        // 工具栏上亮着的那一枚 —— `pen_font` 才是。
         font.pixelSize: win.view.text_font
-        // No wrap: the box is measured as one line per paragraph, so a field that
-        // wrapped would show the line in more rows than the committed object has.
-        wrapMode: TextInput.NoWrap
+        // The same style number in string form, and it reads the *box*'s family rather
+        // than the pen's for the same reason 字号 does: Rust measures this box with
+        // [`crate::annotate::Layer::box_style`], which is the object's own style while
+        // §5.7.16 step 3's 改字 box is open. A box that drew in the pen's family would be
+        // previewing a shape the committed object does not have. 字体 for the toolbar stays
+        // `pen_family` — one of the two knobs is the pen's answer, the other the field's.
+        font.family: win.view.text_family
+        // No wrap still, and for the same reason: Rust measures the box as one line per
+        // paragraph, so a field that folded a paragraph on its own would show it in more
+        // rows than the committed object has. What changes is who ends a paragraph: that is
+        // the user's own keystroke now - Shift+Enter, below - rather than a fold this item
+        // decides for a string it was never told to break.
+        wrapMode: TextEdit.NoWrap
         selectByMouse: true
         persistentSelection: false
         // No border: qmllint answers `Type border is used but it is not resolved` for
-        // this group on TextInput, and a name nothing can resolve is a name that cannot
+        // this group on TextEdit too, and a name nothing can resolve is a name that cannot
         // be shown to draw - the caret and the letters are what marks the box.
 
         onVisibleChanged: {
             // A reopened box is a new one: Rust starts its string empty, so the field
             // has to say so too - and the old string would not fire `onTextChanged` on
             // its own, which is how the two copies would go on disagreeing silently.
+            //
+            // §5.7.16 步 3 的那一只不是新的一只：它预先放着那一枚对象自己那句话，而那句话
+            // 只有 Rust 有（[`Layer::typing_text`] 是唯一的一份），所以这一行读的是
+            // `win.view.text_seed` 而不是字面的 `""` —— 新的一枚那一格本来就是空串。光标
+            // 落在句尾：改字的人多半是要在末尾添一个词或删一个字，落在句首会让第一次
+            // 敲键插在整串之前。
             if (visible) {
-                field.text = ""
+                field.text = win.view.text_seed
+                field.cursorPosition = field.text.length
                 field.forceActiveFocus()
             } else {
                 surface.forceActiveFocus()
@@ -564,17 +724,37 @@ Window {
         onTextChanged: win.view.setText(text)
 
         // `Keys` rather than `onAccepted`, and `accepted` rather than a fall-through:
-        // `Enter` means "this text is finished" here, and if the event went on up the
+        // plain `Enter` means "this text is finished" here, and if the event went on up the
         // chain the window's own handler would read it as 完成选区 and close the mask
         // on a crop the user has not looked at.
+        //
+        // `accepted` is written before the two branches split, and on both of them, for a
+        // second reason: a TextEdit that has the focus inserts a line of its own on Return,
+        // shift held or not. Letting it would mean a newline next to the one put in below,
+        // and a finish the user did not ask for - so this handler is the one that wins the
+        // keystroke, whichever way it then goes.
+        //
+        // §5.7.11 规则三「文本框应支持换行」: Shift+Enter is the paragraph break. It goes in
+        // at the caret through the item's own `insert`, which is what both changes the
+        // string and fires `onTextChanged` below - one write, one hand carrying it to Rust,
+        // no second copy of the string here and no second call to `setText`. The box itself
+        // then grows downward on its own, because its height is the one Rust measured for
+        // the string it was just given; nothing about a line count is computed on this side.
         Keys.onReturnPressed: (event) => {
             event.accepted = true
-            if (win.view.finishInk()) win.grabbed()
+            if (event.modifiers & Qt.ShiftModifier)
+                field.insert(field.cursorPosition, "\n")
+            else if (win.view.finishInk())
+                win.grabbed()
         }
 
+        // The numpad's Enter is a different code, and the same two gestures.
         Keys.onEnterPressed: (event) => {
             event.accepted = true
-            if (win.view.finishInk()) win.grabbed()
+            if (event.modifiers & Qt.ShiftModifier)
+                field.insert(field.cursorPosition, "\n")
+            else if (win.view.finishInk())
+                win.grabbed()
         }
 
         // The same ladder `surface` runs, from the item that has the keys while a box
@@ -878,5 +1058,168 @@ Window {
         // The same propagation the pointer does: undo, redo and 全清 change a
         // desktop-space picture that both windows draw.
         onGrabbed: win.grabbed()
+    }
+
+    // §5.4.1 —— 放大镜这一块面板。放在**所有其他兄弟之后**，屏幕上永远在最上层：
+    // `MouseArea` 已经 `anchors.fill: parent`，一张浮在选区上/工具栏上的小面板要能压过它。
+    //
+    // 只在**这扇窗真的被 hover** 且**配置开着放大镜**时可见。前者靠 `surface.containsMouse`
+    // 报信（多屏时只光标所在那一扇窗收到 hover，别的窗 `containsMouse = false`，屏幕上
+    // 就只有一份放大镜）；后者靠桥里的 `magnifier_show` —— 那一格就是 §5.19.3「是否显示
+    // 放大镜」这一枚配置在这里的读者，关掉之后桥每次 hover 都回 `false`，页上什么都不画。
+    //
+    // 面板的**位置**跟着"这一趟真的去采的那一颗点"走：`x = magPanel.atX + offset`，其中
+    // `atX/atY` 绑的是桥里的 `view.magnifier_anchor_x/y`（`crate::mask::MagnifierData::anchor_x`
+    // 在本窗的读法）。以前这里读的是页上自己记的 `win.cursorX/cursorY`，而那一本账只有鼠标
+    // 一条腿会写 —— §5.3.9 第 4 步要的正是"键盘把选区挪过一格之后，这一块面板说的是那条边"，
+    // 于是页上那份副本被取消，位置与像素从此同一次装配（#281）。
+    // 靠右边缘时翻到左边、靠下边缘时翻到上面，PRD §5.4.1 那句"靠近屏幕边缘时自动调整位置"。
+    Rectangle {
+        id: magPanel
+        readonly property real offset: 18
+        readonly property real atX: win.view.magnifier_anchor_x
+        readonly property real atY: win.view.magnifier_anchor_y
+        readonly property real dipW: win.view.magnifier_w / Math.max(1.0, win.view.dpr)
+        readonly property real dipH: win.view.magnifier_h / Math.max(1.0, win.view.dpr)
+        readonly property real rowH: 20
+        readonly property real pad: 6
+        // §5.19.3「放大镜外观」那四枚 `[appearance] magnifier_*` 键的读者：底、字（与描边那
+        // 一笔）、边框宽度、圆角，四枚都从桥里那一趟 hover 来 —— 归一与"读不出来的串落回哪"
+        // 只有一个作者（`crate::mask::MagnifierLook::from_appearance`），页上不自己解析颜色
+        // （#281）。`!== ""` 那一臂只兜第一帧：第一次 `updateMagnifier` 落地之前那两枚
+        // qproperty 还是空串，这里走画师原本写死的那两枚字面（与 `CustomCaptureWindow.qml`
+        // 的 `accent_fill` 同一只口径，判据不许在这儿再写一遍）。
+        readonly property color bgColor: win.view.magnifier_background !== ""
+                                         ? win.view.magnifier_background : "#202020"
+        readonly property color fgColor: win.view.magnifier_foreground !== ""
+                                         ? win.view.magnifier_foreground : "#E0E0E0"
+        // 屏幕翻转的两种情形：被采样的那一点太靠右 / 太靠下时，面板摆到它的另一侧。这里用的是
+        // 这一扇窗自己的宽高（DIP，`win.width`/`win.height` = `win.view.win_w/win_h`）；
+        // 两扇窗各自判各自，屏幕上就同时只有一块面板跑到边缘外那一档。
+        readonly property real flipX: win.width - (atX + offset + dipW + pad) < 0
+        readonly property real flipY: win.height - (atY + offset + dipH + rowH * 2 + pad * 2) < 0
+        x: Math.max(0, flipX
+                       ? atX - offset - dipW
+                       : atX + offset)
+        y: Math.max(0, flipY
+                       ? atY - offset - (dipH + rowH * 2 + pad * 2)
+                       : atY + offset)
+        width: Math.max(dipW, 96) + pad * 2
+        height: dipH + rowH * 2 + pad * 2
+        visible: win.view.magnifier_show && surface.containsMouse
+        // 这四行以前是四枚字面（`#202020` / `#808080` / `1` / `2`），档里那四枚键一个像素也
+        // 穿不过去。描边那一笔吃的是**前景色**：档里没有第五枚颜色键 —— `magnifier_border`
+        // 在 core 是一枚 u32 宽度、上下限住在 `Config::validate` 的 `clamp` 里 —— 而一块面板
+        // 总要有笔画边，桥不替它挑一枚新色（`crate::mask::MagnifierLook::foreground` 头上
+        // 是同一条口径）。
+        color: bgColor
+        border.color: fgColor
+        border.width: win.view.magnifier_border
+        radius: win.view.magnifier_corner_radius
+
+        Column {
+            anchors.fill: parent
+            anchors.margins: magPanel.pad
+            spacing: 2
+
+            Item {
+                width: magPanel.dipW
+                height: magPanel.dipH
+                Image {
+                    id: magImage
+                    anchors.fill: parent
+                    cache: false
+                    asynchronous: false
+                    // 放大纹理**已经**是 nearest-neighbour 出来的（core 里 `magnifier()`
+                    // 用 `fill_rect` 每格 `zoom × zoom` 铺过），页上再走一次 `Fast` 会把
+                    // 那些硬边糊掉——所以这里是 `None`：不缩放，1:1 摆。
+                    smooth: false
+                    fillMode: Image.PreserveAspectFit
+                    source: win.view.magnifier_key !== ""
+                            ? "image://falconshot/" + win.view.magnifier_key
+                            : ""
+                }
+                // §5.4.1 第 3 步的像素网格：overlay 一层 Canvas，把每颗**源**像素的框线
+                // 画出。`magnifier_pixel_w` 是每边源格数、`zoom` 是每格放大几倍 —— 只有
+                // 桥里 `magnifier_grid=true` 时才画（配置在 §5.4.1 那族里就叫"像素网格"）。
+                Canvas {
+                    id: magGrid
+                    anchors.fill: parent
+                    visible: win.view.magnifier_grid && win.view.magnifier_zoom > 1
+                    onPaint: {
+                        const ctx = getContext("2d")
+                        ctx.reset()
+                        const n = win.view.magnifier_pixel_w
+                        if (n <= 0 || width <= 0 || height <= 0) {
+                            return
+                        }
+                        const stepX = width / n
+                        const stepY = height / n
+                        ctx.strokeStyle = "#404040"
+                        ctx.lineWidth = 1
+                        for (let i = 1; i < n; i++) {
+                            ctx.beginPath()
+                            ctx.moveTo(i * stepX, 0)
+                            ctx.lineTo(i * stepX, height)
+                            ctx.stroke()
+                            ctx.beginPath()
+                            ctx.moveTo(0, i * stepY)
+                            ctx.moveTo(width, i * stepY)
+                            ctx.lineTo(width, i * stepY)
+                            ctx.stroke()
+                        }
+                    }
+                }
+            }
+
+            Row {
+                height: magPanel.rowH
+                spacing: 4
+                // §5.4.1 第 3 步的**色板**：一小块按当前那颗源像素的 RGB 上色。
+                // `has_color=false` 时（跨屏缝外、指针跑到快照之外）不画，句子里也不留
+                // 一句"这一颗是黑色"——那本身是一个假的颜色。
+                // 它外面那一圈 1px 灰环描的是**取到的那颗像素**、不是面板：§5.19.3 那四枚
+                // 键没有一枚说的是这一块，所以它不跟着档走（跟着前景色走会让一枚深色样本
+                // 在深底上彻底看不见）。
+                Rectangle {
+                    visible: win.view.magnifier_has_color
+                    width: magPanel.rowH - 4
+                    height: magPanel.rowH - 4
+                    anchors.verticalCenter: parent.verticalCenter
+                    color: "#" + ("000000"
+                        + ((win.view.magnifier_rgb >>> 0) & 0xFFFFFF).toString(16))
+                        .slice(-6).toUpperCase()
+                    border.color: "#808080"
+                    border.width: 1
+                }
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    // §5.4.1 第 3 步的**坐标**：`magnifier_coord` 空 = 配置里
+                    // `magnifier_coordinates=false`，这一档页上不留空行；此时色板那格
+                    // 仍然显示，颜色那句也仍然显示。
+                    visible: win.view.magnifier_coord.length > 0
+                    text: win.view.magnifier_coord
+                    // §5.19.3 的「前景色」在这一行上是**字**：坐标那一句与下面那一句颜色，
+                    // 就是面板上仅有的两处字，两行吃同一枚键（`magnifier_foreground`）。
+                    color: magPanel.fgColor
+                    font.pixelSize: 11
+                }
+            }
+
+            Text {
+                width: parent.width
+                height: magPanel.rowH
+                verticalAlignment: Text.AlignVCenter
+                // §5.4.1 第 3 步的**颜色值**：字符串按 §5.19.3 那族里 `magnifier_color_format`
+                // 装配（HEX/RGB/HSL 三族都走 `falcon_core::colors::format`），与按 C 复制
+                // 进剪贴板的那一句**同一次装配**（同一份配置、同一次锁里交出的同一份
+                // `MagnifierData`）。
+                visible: win.view.magnifier_color.length > 0
+                text: win.view.magnifier_color
+                color: magPanel.fgColor
+                font.pixelSize: 11
+                elide: Text.ElideRight
+            }
+        }
     }
 }

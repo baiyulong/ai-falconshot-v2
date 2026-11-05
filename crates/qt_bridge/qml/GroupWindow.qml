@@ -89,7 +89,21 @@ Window {
     readonly property color word_fill: dark ? "#F2F4F7" : "#12151B"
     readonly property color faint_fill: dark ? "#8B95A5" : "#5A6472"
     readonly property color edge_fill: dark ? "#39424F" : "#B4BEC9"
-    readonly property color accent_fill: dark ? "#4C8DF6" : "#2563B8"
+    // §5.19.2 主题色：绑 `Session.accent` 那枚**值**，而那一格里躺的已经是 core 的 `accent_on`
+    // 按**此刻生效的那套餐具**夹过 3:1 的那一枚（与 `SettingsWindow.qml` 同一只口径，#281：页上
+    // 不写第二份「不够就往哪走」）。`=== ""` 那一臂只兜第一帧 —— `refreshTheme()` 没落地之前，
+    // 桥那侧的 qproperty 还是空串，这里走画师原本写死的那两枚字面。
+    readonly property color accent_fill: win.session.accent !== ""
+        ? win.session.accent
+        : (dark ? "#4C8DF6" : "#2563B8")
+
+    // §5.19.4 界面字体与字号：这一页上那几枚写死的 `font.pixelSize` 自此乘的是共享对象那一份
+    // 倍数（`uiFont.px(...)`），页上不自己算 `ui_font ÷ 出厂磅`，也不自己兜空族 —— 四扇画着字的
+    // 窗共读同一份（#281）。P149 之前这一格只长在设置页那一栋里，改档不动这一扇窗的像素。
+    UiFont {
+        id: uiFont
+        session: win.session
+    }
 
     // 一扇正常的管理窗：有边框、进任务栏、接键盘。第 1218 行写的是「图片分组管理」那样一扇窗，
     // 不是盖在桌面上的浮层，所以这里**不**写 `flags`。
@@ -339,13 +353,15 @@ Window {
                 text: win.typed
                 onTextChanged: if (win.typed !== text) win.typed = text
                 color: win.word_fill
-                font.pixelSize: 13
+                font.pixelSize: uiFont.px(13)
+                font.family: uiFont.family
             }
             Text {
                 anchors.verticalCenter: parent.verticalCenter
                 text: win.note
                 color: win.faint_fill
-                font.pixelSize: 12
+                font.pixelSize: uiFont.px(12)
+                font.family: uiFont.family
                 elide: Text.ElideRight
                 width: parent.width - 260
                 wrapMode: Text.NoWrap
@@ -392,7 +408,8 @@ Window {
                         anchors.verticalCenter: parent.verticalCenter
                         text: modelData.name
                         color: win.word_fill
-                        font.pixelSize: 13
+                        font.pixelSize: uiFont.px(13)
+                        font.family: uiFont.family
                         width: 300
                         elide: Text.ElideRight
                     }
@@ -401,13 +418,15 @@ Window {
                         // 「几枚」是 core 数过抬过来的那一格（`pins_in_group`），页上一格也不自己数。
                         text: modelData.count
                         color: win.faint_fill
-                        font.pixelSize: 12
+                        font.pixelSize: uiFont.px(12)
+                        font.family: uiFont.family
                     }
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
                         text: win.stateWords[modelData.shown ? 0 : 1]
                         color: win.faint_fill
-                        font.pixelSize: 12
+                        font.pixelSize: uiFont.px(12)
+                        font.family: uiFont.family
                     }
                 }
             }
@@ -475,7 +494,8 @@ Window {
             Text {
                 text: win.askWord
                 color: win.word_fill
-                font.pixelSize: 13
+                font.pixelSize: uiFont.px(13)
+                font.family: uiFont.family
                 wrapMode: Text.Wrap
                 width: 440
             }

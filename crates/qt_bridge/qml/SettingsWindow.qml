@@ -74,8 +74,42 @@ Window {
     /// 这一页压根不是「关于与更新」，于是那一块连高度都没有。窗一处也不写这两枚字，也不数类号。
     property var updateWords: []
 
-    /// 上一次「检查更新」那一次判决交回的那枚入口**地址**。空串 = 那一次没有入口，那枚钮画不出来；
-    /// 它绑的是桥那一次交回的第二段，不是本文件另数出来的一份「有没有新版本」。
+    /// §5.21.3 那一块要写的每一枚字，桥递回的那一列原文（`feedbackWords()`，七枚，次序由
+    /// `feedback_window::ON_PAGE` 说了算）。空数组 = 这一页压根不是「关于与更新」，于是那一块
+    /// 连高度一起没有。与 `updateWords` 同一族：本文件一处也不写这几枚字、也不数类号。
+    property var feedbackWords: []
+
+    /// 这一块展开了没有：第 1 步那一次点击之后才是 1，收起那一句回 0。它管的只有**画不画**那三步：
+    /// 递不递东西、那一格空着要不要拒，全都住在桥那两手后面，窗一处也不判（#281）。
+    property bool feedbackOpen: false
+
+    /// 第 2 步的产物：桥现生成、现脱敏的那几行诊断（`feedbackAsk()` 交回的原文）。窗不裁它、
+    /// 不数它、也不在它前面再拼一句「以下是诊断」—— 那一格的抬头也是桥递的字。
+    property string feedbackDiag: ""
+
+    /// 「此刻按下去会递出去的那一段字」：`feedbackPreview()` 交回的原文，与「发送」那一手共用的
+    /// 正是同一只手，所以预览与实际出去的东西不会是两份读数。
+    property string feedbackText: ""
+
+    /// §5.16.2 规则第二句「应提供当前前台程序快速添加功能」那一枚钮上此刻该写的字，桥交回的原文
+    /// （`settingsExclusionWord()`）。空串 = 这一页压根不是「快捷键」，下面那一块连高度一起没有。
+    /// 与 `updateWords` 同一族：本文件一处也不写这几个字、也不数类号 —— 窗里抄一份措辞，改一天
+    /// Rust 那一头就得留一句页上写着旧字。
+    property string exclusionWord: ""
+
+    /// §8.4 第一句「显示冲突的组合键和相关功能」在页上的那一列：桥交回的原文
+    /// （`settingsConflicts()`）按 `RECORD` 切好的每一行。空数组有两种读法，窗对两样的画法一样：
+    /// 这一页压根不是「快捷键」，或者这一趟一行也没什么要用户看（出厂那九枚全成）。
+    property var conflictLines: []
+
+    /// 那一列此刻画没画、画了几行。与 `updateBlockDrawn`、`guideDrawn` 同一族：腿里读的是绑到
+    /// 本文件那两枚 id 上的**值** —— 「桥那一格递了几行」不等于「屏上有那几行」。
+    readonly property bool conflictBlockDrawn: conflictBox.visible
+    readonly property int conflictRowCount: conflictList.count
+
+    /// 上一次「检查更新」**落地**那一条线的第二段：那枚入口的地址。空串 = 那一次没有入口，那枚钮
+    /// 画不出来；它绑的是桥投回来的那一格（`update_line`），不是本文件另数出来的一份「有没有新版本」，
+    /// 也不是窗自己再问一次桥。
     property string updateDownloadUrl: ""
 
     /// 页脚那一块此刻画没画、那枚入口此刻画没画、两枚钮上此刻写着什么。与上面 `guideDrawn` 同一族：
@@ -111,9 +145,11 @@ Window {
     /// 所以这一格不必知道自己是哪一趟。
     property string pendingImport: ""
 
-    /// §5.7.22 那一档给窗的计划，十段（腿等待 ms、开在哪一类、新增那枚色、删的行号、挪的行号、
-    /// 挪的方向、改色的行号、改成的色、保存用的方案名、应用哪一枚方案）。与上面两副计划同一个
-    /// 口径：产品会话里是空串，那一档的腿整条不跑。
+    /// §5.7.22 那一档给窗的计划，十二段（腿等待 ms、开在哪一类、新增那枚色、删的行号、挪的行号、
+    /// 挪的方向、改色的行号、改成的色、保存用的方案名、应用哪一枚方案、导出落到哪份档、导入读哪份
+    /// 档）。与上面两副计划同一个口径：产品会话里是空串，那一档的腿整条不跑。最后两段是**裸路径**，
+    /// 而页上那两枚钮从 `FileDialog` 拿到的是 `file:///…` —— `save::local_path` 两种都认，所以窗
+    /// 不必知道自己此刻是哪一趟。
     property var palPlan: []
 
     /// 页上那一排色：一枚一行 `序号|色`，画的是**桥现读**的那份名单（`settingsPaletteBand`），
@@ -123,12 +159,24 @@ Window {
     /// 方案那一列：一枚一行 `名字|枚数|色 色 …`，同一个理由。
     property var palSchemes: []
 
-    /// 这一格上的字：第 0 枚是抬头，后面八枚是那八枚钮。窗一处也不自己写措辞（#281）——
+    /// 这一格上的字：第 0 枚是抬头，后面十二枚是那十二枚钮。窗一处也不自己写措辞（#281）——
     /// 与 `updateWords` 同一族，改一天说法只需要动 Rust 那一头。
     property var palWords: []
 
     /// 那几只手各自说的话：交回的是 `Written::text` 那一整句，原样印、不复述。
     property string palStatus: ""
+
+    /// 「导入调色板」那一步在页上的两格读数：抬头那一句（那份档自己说的「读到几枚、换成哪几枚」，
+    /// 或「读不出那份档」那一句）与下面那一列**会被换成的色**。与上面 `ioNote` / `ioRows` 同一族：
+    /// §5.7.22 步骤 5 写的是「用户确认后写入」，而确认的对象必须是画出来的那几枚。
+    property string palIoNote: ""
+
+    /// 同一趟的第二格。一行一枚，画的是桥交回的那几行，不是本页抄的一份名单。
+    property var palIoRows: []
+
+    /// 真人从「导入调色板」那张对话框选中的那份档，等下一次按「确认应用这一份」时交给桥。与上面
+    /// 那枚 `pendingImport` 各管各的：两扇对话框、两双手，混用一格就会有一趟的确认写进另一趟。
+    property string pendingPalIoImport: ""
 
     /// 选中哪一枚**色**（0 起，页上那一排的行号）。`-1` 时「删除 / 上移 / 下移 / 改这枚」四枚一律
     /// 不动 —— 与上面那枚 `pick` 同一个理由：没选中就按下去这件事在屏幕上必须有对面。
@@ -150,10 +198,10 @@ Window {
     /// 两档共用这一扇窗，各看各的计划决定跑哪几条腿（`main.rs` 的 refusals 保证不会同时够长）。
     readonly property bool ioArmed: win.ioPlan.length === 3
 
-    /// §5.7.22 那一档够不够跑它那六按。同一枚绑**值**的写法，而段的数目是 10：三档共用这一扇窗，
-    /// 各看各的计划决定跑哪几条腿（`main.rs` 的 refusals 把它们钉成互斥，所以不需要「先跑哪一条」
-    /// 那一层排序）。
-    readonly property bool palArmed: win.palPlan.length === 10
+    /// §5.7.22 那一档够不够跑它那六按加两只 IO 手。同一枚绑**值**的写法，而段的数目是 12：三档共用
+    /// 这一扇窗，各看各的计划决定跑哪几条腿（`main.rs` 的 refusals 把它们钉成互斥，所以不需要
+    /// 「先跑哪一条」那一层排序）。
+    readonly property bool palArmed: win.palPlan.length === 12
 
     /// 这一页上此刻有没有可改的行。空页不是一扇「什么都没有」的窗：它是一枚点不开的入口。
     readonly property bool hasRows: win.rowsText.length > 0
@@ -161,6 +209,10 @@ Window {
     /// 「将被覆盖的项目」那一格此刻有没有东西可确认。没有列行就没有确认按钮可按 —— 与上面那一枚
     /// 同一个理由：§5.20.3 步骤 5 说的是「用户确认后才写入」，而确认的对象必须是画出来的那几行。
     readonly property bool hasIoRows: win.ioRows.length > 0
+
+    /// 「会被换成的那一排」此刻在不在页上。没有那一列行就没有「确认应用这一份」可按 —— 与上面那一枚
+    /// 同一理由，也只有一条腿的区别：那一格确认的是几枚**键**，这一格确认的是几枚**色**。
+    readonly property bool hasPalIoRows: win.palIoRows.length > 0
 
     // §5.19.1 的那套餐具：两枚完整切换的（窗体、卡片、正文、强调），深色浅色各一套。绑的是
     // `Session.theme` 那枚**值**，notify 一到就重新求值 —— 与 `HintWindow.qml` 同一族（靠绑定，
@@ -171,7 +223,23 @@ Window {
     readonly property color word_fill: dark ? "#F2F4F7" : "#12151B"
     readonly property color edge_fill: dark ? "#39424F" : "#B4BEC9"
     readonly property color pick_fill: dark ? "#2C3D57" : "#DCE7F5"
-    readonly property color accent_fill: dark ? "#4C8DF6" : "#2563B8"
+    // §5.19.2 主题色：绑 `Session.accent` 那一枚**值**（P149），而那一格里躺的已经是
+    // `settings::accent_face` 按**此刻生效的那套餐具**夹过对比度的那一枚 —— 页上不再自己挑色，
+    // 也不再写第二份「不够 3:1 就往哪个方向走」（#281）。`=== ""` 那一臂只在启动那第一帧、
+    // `refreshAppearance()` 还没落地时成立，兜的是画师原本写死的两枚字面。
+    readonly property color accent_fill: win.session.accent !== ""
+        ? win.session.accent
+        : (dark ? "#4C8DF6" : "#2563B8")
+
+    // §5.19.4 界面字体与字号。P149 起这一页是那两枚键**唯一**的读者，而「唯一读者」在四扇画着
+    // 字的窗上恰恰是缺陷的另一面：另外三扇把 `font.pixelSize` 写死，改档不动那些像素。倍数、
+    // 空族兜底、取整地板自此搬到 `UiFont.qml` 那一枚共享对象 —— 全仓一份，本文件与那三扇共读
+    // 同一份（#281）。页上写的 `uiFont.px(13)` 与 `uiFont.family` 就是它；`win.uiPx` /
+    // `uiFont.family` 那些行自此不再存在，不是留着第二份拼法。
+    UiFont {
+        id: uiFont
+        session: win.session
+    }
 
     // 一扇正常的窗：有边框、进任务栏、接键盘。§5.20.1 说的是「设置页」，不是一个盖在桌面上的
     // 浮层，所以这里**不**写 `flags`：`Qt.Tool` / `FramelessWindowHint` 属于贴图与提示窗那一族。
@@ -186,7 +254,11 @@ Window {
     // 760 → 1040：P183 在页脚又加了一整节「调色板管理」（那一排色、四枚手上的钮、那一列方案、
     // 存名字的框，合计约 280 px）。与上面两枚改动同一个口径：**窗高没有进任何一格读数**，它是
     // 「页上画着的东西得在屏幕上」这一件事的代价，写在这里是为了让下一轮读得出为什么是 1040。
-    height: 1040
+    // 1040 → 1300：本轮（§5.21.3）那一块**展开**时约 260 px（诊断那几行、填字的那一格、那枚
+    // 勾选框、预览那一段、两枚钮）。它默认收着，只多那一枚钮的 30 px，可是页上没有任何一处
+    // 会滚动 —— 按一次第 1 步就把下面的导出/导入两枚钮顶到窗外，等于让用户为了反馈把配置弄丢。
+    // 与上面三枚改动同一个口径：窗高不进任何一格读数。
+    height: 1300
     color: win.page_fill
 
     /// 一行一串地切开。**空串切出来是 `[""]`，长度 1** —— 这一枚函数存在的理由就是那个 1：
@@ -228,6 +300,19 @@ Window {
         win.guideText = String(win.session.settingsGuide(win.which))
         win.ackWordText = String(win.session.settingsGuideAckWord())
         win.updateWords = win.splitLine(win.session.updateWords(win.which))
+        // §5.21.3 那一块的每一枚字也在这一枚里取：它与那几行同属一页（与上面那两枚同一个理由）。
+        win.feedbackWords = win.splitLine(win.session.feedbackWords(win.which))
+        // 换页就把这一块收回去：第 1 步那一次点击属于**这一页**，留在窗手里的那几行诊断与那一段
+        // 预览因此不该跨页活着 —— 与下面那枚 `updateDownloadUrl` 同一个口径。清掉不判任何事。
+        win.feedbackOpen = false
+        win.feedbackDiag = ""
+        win.feedbackText = ""
+        // 那一枚「把当前前台程序加进来」的字也在这一枚里取：它与那几行同属一页，分两处取就会有一
+        // 瞬间是「行是这一页的、钮是上一页的」。
+        win.exclusionWord = String(win.session.settingsExclusionWord(win.which))
+        // §8.4 那一列也在这一枚里取：它与那几行同属一页，分两处取就会有一瞬间是「行是这一页的、
+        // 那一列是上一页的」。本页没有那一列时桥交回空串，splitLine 因此给一枚空数组。
+        win.conflictLines = win.splitLine(win.session.settingsConflicts(win.which))
         // 换页就换掉上一次那一问的结果：入口那枚钮的存在必须跟着**这一页**的那一次点击走，
         // 不能是别处问出来的旧地址。清空在这里不判任何事 —— 判「有没有地址」的是桥那一次交回。
         win.updateDownloadUrl = ""
@@ -242,24 +327,74 @@ Window {
         win.guideText = ""
     }
 
-    /// 「检查更新」那枚钮（§5.21.1 第 2 步那一次**真的有人按了**的点击）：一次桥拿回同一次判决的
-    /// 两段 —— 前段是要写进状态行的那句原话（桥自己也已经把它写进 `status`），后段是那枚入口的
-    /// 地址。这里不第二次问档，也不在本文件拼第三段：段数不够就是桥没交回两样，两格都不写值。
+    /// 「检查更新」那枚钮（§5.21.1 第 2 步那一次**真的有人按了**的点击）。这里只**起**这一趟：
+    /// 取回那份清单自 P184 起真的走网络（最坏是 resolve + connect + receive 三段超时），而按下去的
+    /// 那一手在 GUI 线程上 —— 在它上面等结果，僵住的是桌上**每一扇**窗。桥交回的是「这一趟在跑」
+    /// 那一句（地址那一支还带 §6.3 要的那句网络请求提示），原样进状态行，窗不重写它。
+    ///
+    /// 上一次那枚入口地址在这里作废：入口那枚钮的存在必须跟着**这一次**问走（与 `refreshPage`
+    /// 里那一清同一口径）。判决落地不由这一枚函数等，由下面那条 `Connections` 送进来。
     function askUpdate() {
-        const parts = win.splitLine(win.session.updateAsk())
+        win.updateDownloadUrl = ""
+        win.statusLine = String(win.session.updateAsk())
+    }
+
+    /// 落地那一条线：桥在工作线程上取回清单、把结果投回 GUI 线程写进 `update_line`，那一串是
+    /// `那句判决 + RECORD + 那枚入口地址` —— 与页上 `splitLine` 早就在用的那把刀同一个格式。
+    /// 段数不够就是桥没交回两样，两格都不写值；这里不第二次问档，也不在本文件拼第三段。
+    function landUpdate(line) {
+        const parts = win.splitLine(line)
         if (parts.length < 2)
             return
         win.statusLine = String(parts[0])
         win.updateDownloadUrl = String(parts[1])
     }
 
-    /// 那枚入口按下去（第 4 步「下载入口」自此不只在句子里）：开不开得成、为什么开不成，说的都是
-    /// 桥那句话。地址那一格此刻是空串时一次桥也不过 —— 按一枚画不出来的钮，等于让页上多出一句
-    /// 没人问过的话（与上面 `ackGuide` 同一形状）。
+    /// 那枚入口按下去（第 4 步「下载入口」自此不只在句子里）：递回的是**窗手里那一句**，桥开的
+    /// 也就是同一句 —— 不再第二次取清单，于是「页上写着的那一趟」与「按下去开的那一句」不会是
+    /// 两趟的读数。地址那一格是空串时一次桥也不过：按一枚画不出来的钮，等于让页上多出一句没人
+    /// 问过的话（与上面 `ackGuide` 同一形状）。
     function openDownload() {
         if (win.updateDownloadUrl === "")
             return
-        win.statusLine = String(win.session.updateOpen())
+        win.statusLine = String(win.session.updateOpen(win.updateDownloadUrl))
+    }
+
+    /// 第 `i` 枚字，桥没递够那一列时答空串。页上不自己补一枚字，也不数「第几枚该是哪一步」——
+    /// 那一列的次序与枚数只有一位主人（`feedback_window::ON_PAGE`，门 ② 那一格钉的就是它）。
+    function feedbackWord(i) {
+        return i < win.feedbackWords.length ? String(win.feedbackWords[i]) : ""
+    }
+
+    /// §5.21.3 第 1 步那一次点击：让第 2 步真的发生一次。桥交回的是**已脱敏的那几行**，原样进
+    /// 那一格，窗不改写它；这一块自此展开，第 3 步那两样才看得见。按下去一次对外动作也没有 ——
+    /// 递东西的是下面那两手。
+    function feedbackAsk() {
+        win.feedbackDiag = String(win.session.feedbackAsk())
+        win.feedbackOpen = true
+        win.feedbackRefresh()
+    }
+
+    /// 第 3 步那两样（用户填的那句话 + 那枚勾选框）改了，就重新问一次「此刻按下去会递出去什么」。
+    ///
+    /// 这里**不**写 `statusLine`：这一条绑定每改一个字跑一次，把整段包刷进状态行会把屏幕上那一行
+    /// 变成打字机的回声（桥上那一手也不记账 —— 记账的那一枚是 `feedbackSend`）。
+    function feedbackRefresh() {
+        win.feedbackText = String(win.session.feedbackPreview(feedDesc.text, feedbackLogs.checked))
+    }
+
+    /// 第 4 步：递出去。窗不判那一格空不空、渠道配没配 —— 那两句话各有其主（`feedback_window::send`
+    /// 与它下面的 `channel_leg`），桥交回哪一句屏幕上就是哪一句。
+    function feedbackSend() {
+        win.statusLine = String(win.session.feedbackSend(feedDesc.text, feedbackLogs.checked))
+    }
+
+    /// 收起这一块：桥交回那句「什么都没递」，窗不重写它，也不留下任何一段看着像递出去过的字。
+    function feedbackClose() {
+        win.statusLine = String(win.session.feedbackClose())
+        win.feedbackOpen = false
+        win.feedbackDiag = ""
+        win.feedbackText = ""
     }
 
     /// 这一行要的是开关吗。`rowsKind` 比 `rowsText` 短时（桥那侧交回空串的那一趟）答 `false` ——
@@ -284,6 +419,21 @@ Window {
         win.statusLine = "选中 " + pair[0]
     }
 
+    /// §5.20.2「设置项变更后即时生效」在这一页上的那一只手：写完一枚 `[appearance]` 键之后
+    /// 重新问一次桥，把主题那一枚词与那四枚外观值取回界面上。
+    ///
+    /// 只叫 `refreshTheme()` 一句：那四格**骑在同一手里**（`session.rs::refresh_theme` 的尾巴
+    /// 就是 `refresh_appearance`），而「先 theme 后那四格」的次序是那一手在 Rust 里担保的 ——
+    /// `accent` 吃的底就是刚写进 `Session.theme` 的那一枚词（`settings::accent_face`），两句摊在
+    /// 页上就有被倒过来写的一日。这里不判任何事 —— 判据全在桥那三枚读者里，页上只是递话（#281）。
+    ///
+    /// 这四枚键没有一枚在 `RESTART_KEYS` 里（core 的名单），所以这一只手就是它们「即时」的全部
+    /// 对面；在名单里的那几枚（`general.language` 等）页上带着`（需重启）`那几个字，这一只手
+    /// 对它们什么都不做。
+    function syncAppearance() {
+        win.session.refreshTheme()
+    }
+
     /// 保存：把输入框那串交过桥（闸门、落盘、`Written::text` 都在 Rust 那侧），再把这一页
     /// 重新取一次 —— 页上那一格跟着值走，这件事不靠任何一处 `property alias` 的运气。
     function saveDraft() {
@@ -292,6 +442,8 @@ Window {
             return
         }
         win.statusLine = String(win.session.settingsSet(win.pickKey, field.text))
+        if (String(win.pickKey).indexOf("appearance.") === 0)
+            win.syncAppearance()
         win.refreshPage()
     }
 
@@ -319,6 +471,22 @@ Window {
         if (k < 0 || k >= win.rowsText.length)
             return
         win.statusLine = String(win.session.settingsToggle(win.which, k))
+        win.refreshPage()
+    }
+
+    /// §5.16.2 规则第二句那一枚「把当前前台程序加进来」：一次桥，页上印的是那句 `Written::text`
+    /// 原文 —— 添成了哪一枚、还是为什么一枚也没添，都是桥说的话，这里不替它圆场。
+    ///
+    /// 与 `toggleRow` 同一种手：不选中任何一行、不碰输入框里那串草稿，按下去就是一次完整的写
+    /// （过闸与落盘都在 Rust 那一头）。`refreshPage()` 那一趟把 `hotkey.exclusions` 那一行的新值
+    /// 取回来，于是「页上那一行」跟着「档里那一串规则」走，而不是跟着这次点击的说法走。
+    ///
+    /// 桥那侧那一手自己会读**此刻**在前台的是谁；窗既不知道、也不该知道那是谁 —— 在这里问一次
+    /// 「谁是前台」再递过去，就是给同一件系统事实第二个主人，而钮按下去到那一刻之间换了的窗归谁。
+    function addForeground() {
+        if (win.exclusionWord === "")
+            return
+        win.statusLine = String(win.session.addForegroundExclusion())
         win.refreshPage()
     }
 
@@ -358,6 +526,9 @@ Window {
         win.ioNote = ""
         // 页上那一列行里可能有刚被覆盖掉的那一枚键的值：重新取一次，别让它停在按之前的读数上。
         win.refreshPage()
+        // 那份档里可能有 `[appearance]` 那几格：导入是一次**成批**的写，页上没有「这一枚键是不是
+        // 外观」这一问可问 ⇒ 无条件重新取一次那四枚值。§5.20.2 的即时生效不该在导入这一支上掉。
+        win.syncAppearance()
         return line
     }
 
@@ -474,6 +645,57 @@ Window {
         return line
     }
 
+    // ── §5.7.22 步骤 4 与 5 在页上的那三只手 ────────────────────────────────────
+    //
+    // 步骤 4（导出成一份谁都能拿记事本改的档）与步骤 5（从那份档读回来、确认后才换掉这一排）此前
+    // 只有命令行那一副（`--export-palette` / `--import-palette --confirm`）—— 页上没有钮，普通用户
+    // 走不到。这三枚函数与那两条旗标背后是**同一批手**（`settingsPaletteExport` 那一枚 invokable
+    // 后面就是 `settings::palette_export`，确认那一枚后面就是 `settings::palette_import_page(.., true)`），
+    // 所以这一页不存在第二条落盘的路，也不存在第二份「未应用」的说法。措辞同样一处不写：画的是桥
+    // 交回的那一整句（#281）。
+
+    /// 步骤 4：把此刻这一排写出去。交回的那一句带着「本机几枚 → 写出几枚到哪份档」，页上只是画它；
+    /// 量具那一趟另把它报给门，因为门判的是**盘上那份文件**读回来是不是同一排，而不是这句话像不像。
+    function doPalIoExport(target) {
+        const line = String(win.session.settingsPaletteExport(target))
+        win.palStatus = line
+        return line
+    }
+
+    /// 步骤 5 的第一步：那份档会把这一排换成哪几枚。**一个字节也不写** —— 写要下面那枚「确认应用
+    /// 这一份」。切开用的是 `settingsPage` 同一把刀，第 0 枚是那份档自己说的抬头、其余才是色。
+    /// 读不出那份档（含「一枚颜色也没读出来」那一种）时桥交回**一句**而没有行：那一格在页上是
+    /// 「一行也没画出来 + 那句话」，而不是「画了一张空表」—— 「没得可换」与「那份档读不出」是两种坏。
+    function doPalIoPreview(target) {
+        win.pendingPalIoImport = target
+        const parts = win.splitLine(win.session.settingsPaletteImportPreview(target))
+        win.palIoNote = parts.length > 0 ? String(parts[0]) : ""
+        win.palIoRows = parts.slice(1)
+        return parts
+    }
+
+    /// 步骤 5 的第二步：确认之后才真写。写完收起那一列行、重新读一次页上那一排 —— 那一列行说的是
+    /// 刚才那一份档，而此刻档里躺着的已经是它了。
+    function doPalIoApply() {
+        const line = String(win.session.settingsPaletteImportApply(win.pendingPalIoImport))
+        win.palStatus = line
+        win.pendingPalIoImport = ""
+        win.palIoRows = []
+        win.palIoNote = ""
+        win.refreshPal()
+        win.refreshPage()
+        return line
+    }
+
+    /// 不应用：那一列行收起来，一个字节也不递过桥。这一枚与 `doPalIoApply` 的分别是「调不调
+    /// `settingsPaletteImportApply`」—— 与上面 `cancelImport` 同一支（明确的保存与取消）。
+    function cancelPalIo() {
+        win.pendingPalIoImport = ""
+        win.palIoRows = []
+        win.palIoNote = ""
+        win.palStatus = "不应用：那份档一枚色也没换"
+    }
+
     /// 选中那一枚方案：它的行号。桥那侧的「应用 / 删」收的都是**名字**，所以这里递的是页上那一行
     /// 此刻写的名字，不是窗自己数的第几枚。
     function pickPalScheme(at) {
@@ -531,7 +753,8 @@ Window {
         return win.doPalEdit(win.palPick, String(palHexField.text))
     }
 
-    /// `--settings-palette` 那六按。报回的每一行前缀是那格的名字，其余原样存进 Rust 那一侧的账。
+    /// `--settings-palette` 那六按加两枚 IO 手（⑦ 导出、⑧ 预览、⑨ 确认应用，共九次真按）。报回的每
+    /// 一行前缀是那格的名字，其余原样存进 Rust 那一侧的账。
     ///
     /// 报的是**窗那一侧的读数**：`pal-open` 里那枚 visible 是窗自己问 Qt 的，`add` / `move` / `del`
     /// 里那两个数是页上真的画了几行（`palBand.length`，不是桥交回了几枚），`edit` 里那两枚色是页上
@@ -572,6 +795,30 @@ Window {
         const saveWas = win.palSchemes.length
         win.doPalSaveScheme(saveName)
         win.session.settingsGaugeReport("save|" + saveName + "|" + saveWas + "|" + win.palSchemes.length)
+        // ⑦ 步骤 4 在页上的那一枚钮：把此刻这一排写进计划里那一份档。报的是**窗用的那枚路径**加桥
+        //    交回的那一整句 —— 那一格判的是「按的是计划里那一份档」，而「导出真的把这一排带出去了」
+        //    的对面是盘上那份文件自己的内容（Rust 那一头读它，不读这句话）。
+        const exportAt = String(win.palPlan[10])
+        win.session.settingsGaugeReport(
+            "pal-export|" + exportAt + "|" + win.doPalIoExport(exportAt))
+        // ⑧ 步骤 5 的第一枚钮：那份档「会换成哪几枚」在页上画成了几行。报的是**窗画**的那一列行数
+        //    （`palIoRows.length`，不是桥交回了几枚 —— 抬头那句画在单独那一格里，不算进这一列）与
+        //    抬头那一句。分母是开档那一刻按页上同一只手算出来的行数，所以「一行也没画」与「画了别的
+        //    数」在这一格里都是红的；「那份档读不出」那一种坏交回**一句而没有行** ⇒ 画 0 行、对不上
+        //    分母，正是这里要拦的那一个。
+        const importAt = String(win.palPlan[11])
+        const ioParts = win.doPalIoPreview(importAt)
+        win.session.settingsGaugeReport(
+            "pal-preview|" + win.palIoRows.length + "|"
+            + String(ioParts.length > 0 ? ioParts[0] : ""))
+        // ⑨ 步骤 5 的第二枚钮：确认之后那一排真的成了那份档里那几枚。两串都是**桥现读**的
+        //    （`settingsPaletteBandFlat`），不是窗自己数的，所以「页上画了但没落盘」在这一格里过不去。
+        //    这一腿排在 ⑥ 之前：那一格问的「按之前不是这一串」要的是门种的那三枚还在盘上，被这一腿
+        //    换掉就没了对面 —— 它因此改问「按之前是导入留下的那一串」。
+        const ioWas = String(win.session.settingsPaletteBandFlat())
+        win.doPalIoApply()
+        win.session.settingsGaugeReport(
+            "pal-import|" + importAt + "|" + ioWas + "|" + String(win.session.settingsPaletteBandFlat()))
         // ⑥ 应用门种的那一枚方案：这一趟里唯一一处「按之前不是这一串、按之后是那一串」。报的是
         //    整排色的那一串空格连着的字，因为它才是「换掉的是哪几枚」这一问的对面。
         const applyName = String(win.palPlan[9])
@@ -757,7 +1004,8 @@ Window {
         Text {
             text: "首选项"
             color: win.word_fill
-            font.pixelSize: 18
+            font.pixelSize: uiFont.px(18)
+            font.family: uiFont.family
             font.bold: true
         }
 
@@ -788,7 +1036,8 @@ Window {
                         anchors.centerIn: parent
                         text: String(modelData)
                         color: win.word_fill
-                        font.pixelSize: 13
+                        font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                     }
 
                     MouseArea {
@@ -809,7 +1058,8 @@ Window {
         Text {
             text: win.cats.length > 0 ? String(win.cats[win.which]) + "（" + win.rowsText.length + " 行）" : ""
             color: win.word_fill
-            font.pixelSize: 13
+            font.pixelSize: uiFont.px(13)
+            font.family: uiFont.family
             opacity: 0.75
         }
 
@@ -841,7 +1091,8 @@ Window {
                 anchors.margins: 10
                 text: win.guideText
                 color: win.word_fill
-                font.pixelSize: 13
+                font.pixelSize: uiFont.px(13)
+                font.family: uiFont.family
                 wrapMode: Text.Wrap
                 // 引导那句是**一整句**中文（一行动作说明的两倍长），中间省略会把「改了要重启」
                 // 那半句切掉，而那一半正是这一句要递的东西。折行，不省略。
@@ -869,7 +1120,8 @@ Window {
                     // 里「按「知道了」之后…」那一段是同一枚常量（见 `ackWordText` 头顶那段）。
                     text: win.ackWordText
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -919,7 +1171,8 @@ Window {
                             anchors.rightMargin: win.isSwitch(index) ? 54 : 10
                             text: String(modelData)
                             color: win.word_fill
-                            font.pixelSize: 13
+                            font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                             // 折行而不是中间省略。P158 之前这一行只有 `key=value`，中间省略省掉的是
                             // 值那一头（一长串保存路径），读的人还能把行认出来；自 P158 起动作行尾部
                             // 多了一句「 —— 名：说明」，同一把刀省的就是那句说明本身 —— 而 §5.21.2
@@ -985,7 +1238,8 @@ Window {
             text: "这一类没有可改的行"
             color: win.word_fill
             opacity: 0.6
-            font.pixelSize: 12
+            font.pixelSize: uiFont.px(12)
+            font.family: uiFont.family
         }
 
         Row {
@@ -995,7 +1249,8 @@ Window {
                 anchors.verticalCenter: parent.verticalCenter
                 text: "新值"
                 color: win.word_fill
-                font.pixelSize: 13
+                font.pixelSize: uiFont.px(13)
+                font.family: uiFont.family
                 visible: win.pick >= 0
             }
 
@@ -1021,7 +1276,8 @@ Window {
                     anchors.centerIn: parent
                     text: "保存"
                     color: "#FFFFFF"
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1046,13 +1302,95 @@ Window {
                     anchors.centerIn: parent
                     text: "取消"
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
                     onClicked: win.cancelDraft()
+                }
+            }
+        }
+
+        // ── §5.16.2 规则第二句那一枚「把当前前台程序加进来」，只在「快捷键」那一页 ──────────
+        //
+        // 页上 `hotkey.exclusions` 那一行仍然**写不动**（它是一串表，`Config::set_str` 到它那里就是
+        // `Err`，core 那枚 `hotkey_exclusions_keep_their_shape` 钉的正是这一句），而这一枚钮是它
+        // 唯一一副从产品里写得进的手：按下去问的是**此刻**在前台的那一个程序，添成一枚「这位跟前
+        // 一枚全局快捷键也不响」的规则。
+        //
+        // 窗一处也不判事：画不画这一块问的是桥（`settingsExclusionWord()` 空串 = 这一页压根不递），
+        // 钮上那几个字也是桥的原文；按下去说了什么，走的是 `Written::text` 那一整句 ——「添成了」
+        // 「已经有一位管着了」「说不上来谁在跟前」三臂里说哪一臂，由 Rust 那一头定，不由这里猜。
+        // `visible` 与 `height` 一起绑，与上面 `updateRow` 同一处理由：位置器对看不见的子项让不让位，
+        // 本仓库没有一份跑通过的读数可以引。
+        Row {
+            id: exclusionRow
+
+            spacing: 8
+            visible: win.exclusionWord !== ""
+            height: visible ? exclusionBtn.height : 0
+
+            Rectangle {
+                id: exclusionBtn
+
+                width: exclusionLabel.implicitWidth + 22
+                height: 30
+                radius: 6
+                color: win.card_fill
+                border.color: win.edge_fill
+                border.width: 1
+
+                Text {
+                    id: exclusionLabel
+
+                    anchors.centerIn: parent
+                    text: win.exclusionWord
+                    color: win.word_fill
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: win.addForeground()
+                }
+            }
+        }
+
+        // ── §8.4 第一句「显示冲突的组合键和相关功能」在「快捷键」那一页上的那一列 ──────────
+        //
+        // 屏幕上那一格（浮窗 `Session.status`）读的是一句话，最多原样引三枚，其余的那几行来这里：
+        // 页上这一列拿的是**全列**。整列的字都出自桥（`settingsConflicts()` 原文按 `RECORD` 切），
+        // 窗一处也不拼一句、也不数「哪几行该看一眼」—— 那一判住在 Rust 的 `hotkey::RowKind` 里，
+        // 写下那一句的当场就定了身份（#281、#453）。
+        //
+        // 空数组两种读法画法一样（这一页压根不是「快捷键」/ 这一趟一行也没什么要用户看），整块连
+        // 高度一起没有；`visible` 与 `height` 一起绑，与上面 `exclusionRow`、`updateRow` 同一处理由。
+        Column {
+            id: conflictBox
+
+            spacing: 4
+            visible: win.conflictLines.length > 0
+            height: visible ? implicitHeight : 0
+            width: parent.width
+
+            Repeater {
+                id: conflictList
+
+                model: win.conflictLines
+                delegate: Text {
+                    width: conflictBox.width
+                    // 每一行都是 `Row::said` 那一整串，中间不许省略：被系统挡下的那一枚与共用
+                    // 同一串键的那两枚动作，说得一半不剩就是没说（与上面 `guideWord` 同一理由）。
+                    text: modelData
+                    color: win.word_fill
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
+                    wrapMode: Text.Wrap
                 }
             }
         }
@@ -1091,11 +1429,16 @@ Window {
                     anchors.centerIn: parent
                     text: win.updateWords.length >= 1 ? String(win.updateWords[0]) : ""
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
                     anchors.fill: parent
+                    // 这一趟还在路上时不接第二下。桥那一臂（`start_update_check`）自己也拒 ——
+                    // 那里拒的是「两趟各取各的清单、后落地的盖掉先落地的」这一种坏，而页与托盘
+                    // 共用那一手；这里的 `enabled` 只是少让人按一次注定被拒的钮。
+                    enabled: !win.session.update_busy
                     cursorShape: Qt.PointingHandCursor
                     onClicked: win.askUpdate()
                 }
@@ -1116,7 +1459,8 @@ Window {
                     anchors.centerIn: parent
                     text: win.updateWords.length >= 2 ? String(win.updateWords[1]) : ""
                     color: "#FFFFFF"
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1127,12 +1471,198 @@ Window {
             }
         }
 
+        // ── §5.21.3 那四步，只在「关于与更新」那一页页脚 ────────────────────────────────
+        //
+        // 第 1 步那一枚钮在桥递得出那一列字的时候就画着；第 2、3、4 步在它被按过之后才摊开 ——
+        // 那四步是有先后的（先点、再生成、再填、再递），页把它们一次全摆出来就是替用户把第一步
+        // 省掉了，而第 2 步的那几行还没生成，那一格只会是空的。
+        //
+        // 窗一处也不判事：这一块画不画、上面写哪几枚字，全来自桥那一份原文；按下去说了什么也全
+        // 来自桥（空着那一格拒不拒、渠道配没配，页都不知道，也不该知道）。
+        //
+        // `>= 7` 是 `feedback_window::ON_PAGE` 的枚数：桥少递一枚就是名单与页分家，那一格宁可不
+        // 画也不画半块。`visible` 与 `height` 一起绑，与上面 `updateRow`、`exclusionRow` 同一处理
+        // 由（位置器对看不见的子项是否让位，本仓库没有一份跑通过的读数可以引）。
+        Column {
+            id: feedbackBox
+
+            spacing: 8
+            width: parent.width
+            visible: win.feedbackWords.length >= 7
+            height: visible ? implicitHeight : 0
+
+            Rectangle {
+                id: feedbackAskBtn
+
+                width: feedbackAskWord.implicitWidth + 22
+                height: 30
+                radius: 6
+                color: win.card_fill
+                border.color: win.edge_fill
+                border.width: 1
+
+                Text {
+                    id: feedbackAskWord
+
+                    anchors.centerIn: parent
+                    text: win.feedbackWord(0)
+                    color: win.word_fill
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: win.feedbackAsk()
+                }
+            }
+
+            Column {
+                id: feedbackSteps
+
+                spacing: 8
+                width: parent.width
+                visible: win.feedbackOpen
+                height: visible ? implicitHeight : 0
+
+                Text {
+                    width: parent.width
+                    text: win.feedbackWord(3)
+                    color: win.word_fill
+                    opacity: 0.7
+                    font.pixelSize: uiFont.px(12)
+                    font.family: uiFont.family
+                }
+
+                // 第 2 步的产物：桥现生成、现脱敏的那几行原文。窗不裁它 —— 用户要看清递的是
+                // 什么才有第 4 步那一次点头可言；太长的话由上面那一格折行显示，最多八行。
+                Text {
+                    width: parent.width
+                    text: win.feedbackDiag
+                    color: win.word_fill
+                    font.pixelSize: uiFont.px(12)
+                    font.family: uiFont.family
+                    wrapMode: Text.Wrap
+                    maximumLineCount: 8
+                    elide: Text.ElideRight
+                }
+
+                Row {
+                    spacing: 8
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: win.feedbackWord(1)
+                        color: win.word_fill
+                        font.pixelSize: uiFont.px(13)
+                        font.family: uiFont.family
+                    }
+
+                    TextField {
+                        id: feedDesc
+
+                        width: 420
+                        onTextChanged: win.feedbackRefresh()
+                    }
+                }
+
+                // 第 3 步那枚「决定」：它改的是**出去的那一段字**，不是屏幕上的一句装饰 ——
+                // 这一条由门 ⑤ 那一格判，页上这一枚只负责把它的样子递给桥。
+                CheckBox {
+                    id: feedbackLogs
+
+                    text: win.feedbackWord(2)
+                    onCheckedChanged: win.feedbackRefresh()
+                }
+
+                Text {
+                    width: parent.width
+                    text: win.feedbackWord(4)
+                    color: win.word_fill
+                    opacity: 0.7
+                    font.pixelSize: uiFont.px(12)
+                    font.family: uiFont.family
+                }
+
+                Text {
+                    width: parent.width
+                    text: win.feedbackText
+                    color: win.word_fill
+                    font.pixelSize: uiFont.px(12)
+                    font.family: uiFont.family
+                    wrapMode: Text.Wrap
+                    maximumLineCount: 10
+                    elide: Text.ElideRight
+                }
+
+                Row {
+                    id: feedbackSendRow
+
+                    spacing: 8
+
+                    Rectangle {
+                        id: feedbackSendBtn
+
+                        width: feedbackSendWord.implicitWidth + 22
+                        height: 30
+                        radius: 6
+                        color: win.accent_fill
+
+                        Text {
+                            id: feedbackSendWord
+
+                            anchors.centerIn: parent
+                            text: win.feedbackWord(5)
+                            color: "#FFFFFF"
+                            font.pixelSize: uiFont.px(13)
+                            font.family: uiFont.family
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: win.feedbackSend()
+                        }
+                    }
+
+                    Rectangle {
+                        id: feedbackCloseBtn
+
+                        width: feedbackCloseWord.implicitWidth + 22
+                        height: 30
+                        radius: 6
+                        color: win.card_fill
+                        border.color: win.edge_fill
+                        border.width: 1
+
+                        Text {
+                            id: feedbackCloseWord
+
+                            anchors.centerIn: parent
+                            text: win.feedbackWord(6)
+                            color: win.word_fill
+                            font.pixelSize: uiFont.px(13)
+                            font.family: uiFont.family
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: win.feedbackClose()
+                        }
+                    }
+                }
+            }
+        }
+
         Text {
             width: parent.width
             text: win.statusLine
             color: win.word_fill
             opacity: 0.85
-            font.pixelSize: 12
+            font.pixelSize: uiFont.px(12)
+            font.family: uiFont.family
             elide: Text.ElideRight
             maximumLineCount: 1
         }
@@ -1159,7 +1689,8 @@ Window {
                     anchors.centerIn: parent
                     text: "导出配置"
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 // 钮自己只开一张对话框：落到哪份档、写出几枚键，全在对话框与 Rust 那一头。
@@ -1184,7 +1715,8 @@ Window {
                     anchors.centerIn: parent
                     text: "导入配置"
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 // 选完档当场只做一件事：把「会盖掉哪几枚」问出来画在下面。「导入即写」在这里是
@@ -1202,7 +1734,8 @@ Window {
             text: win.ioNote
             color: win.word_fill
             opacity: 0.75
-            font.pixelSize: 12
+            font.pixelSize: uiFont.px(12)
+            font.family: uiFont.family
             elide: Text.ElideRight
             maximumLineCount: 1
         }
@@ -1244,7 +1777,8 @@ Window {
                             anchors.rightMargin: 8
                             text: String(modelData)
                             color: win.word_fill
-                            font.pixelSize: 12
+                            font.pixelSize: uiFont.px(12)
+                            font.family: uiFont.family
                             elide: Text.ElideMiddle
                         }
                     }
@@ -1268,7 +1802,8 @@ Window {
                     anchors.centerIn: parent
                     text: "确认应用"
                     color: "#FFFFFF"
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1292,7 +1827,8 @@ Window {
                     anchors.centerIn: parent
                     text: "不应用"
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1309,7 +1845,8 @@ Window {
             text: win.ioStatus
             color: win.word_fill
             opacity: 0.85
-            font.pixelSize: 12
+            font.pixelSize: uiFont.px(12)
+            font.family: uiFont.family
             elide: Text.ElideRight
             maximumLineCount: 1
         }
@@ -1318,11 +1855,12 @@ Window {
         //
         // 与上面那一节同一枚道理：这一格在产品会话里**一直看得见** —— PRD 那一条说的是设置页上的
         // 一双手，不是量具专用的一层皮。跑不跑腿由最下面那枚 Timer 决定，看得见看不见由配置决定。
-        // 抬头与那八枚钮写的字全来自 `settingsPaletteWords()`，本文件一处不抄第二份（#281）。
+        // 抬头与那十二枚钮写的字全来自 `settingsPaletteWords()`，本文件一处不抄第二份（#281）。
         Text {
             text: win.palWords.length > 0 ? String(win.palWords[0]) : ""
             color: win.word_fill
-            font.pixelSize: 14
+            font.pixelSize: uiFont.px(14)
+            font.family: uiFont.family
             font.bold: true
         }
 
@@ -1376,7 +1914,8 @@ Window {
                             Text {
                                 text: String(modelData)
                                 color: win.word_fill
-                                font.pixelSize: 12
+                                font.pixelSize: uiFont.px(12)
+                                font.family: uiFont.family
                                 elide: Text.ElideRight
                             }
                         }
@@ -1413,7 +1952,8 @@ Window {
                     anchors.centerIn: parent
                     text: win.palWords.length > 1 ? String(win.palWords[1]) : ""
                     color: "#FFFFFF"
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1438,7 +1978,8 @@ Window {
                     anchors.centerIn: parent
                     text: win.palWords.length > 2 ? String(win.palWords[2]) : ""
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1463,7 +2004,8 @@ Window {
                     anchors.centerIn: parent
                     text: win.palWords.length > 3 ? String(win.palWords[3]) : ""
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1488,7 +2030,8 @@ Window {
                     anchors.centerIn: parent
                     text: win.palWords.length > 4 ? String(win.palWords[4]) : ""
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1513,7 +2056,8 @@ Window {
                     anchors.centerIn: parent
                     text: win.palWords.length > 5 ? String(win.palWords[5]) : ""
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1558,7 +2102,8 @@ Window {
                             anchors.rightMargin: 8
                             text: String(modelData)
                             color: win.word_fill
-                            font.pixelSize: 12
+                            font.pixelSize: uiFont.px(12)
+                            font.family: uiFont.family
                             elide: Text.ElideMiddle
                         }
 
@@ -1595,7 +2140,8 @@ Window {
                     anchors.centerIn: parent
                     text: win.palWords.length > 6 ? String(win.palWords[6]) : ""
                     color: "#FFFFFF"
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1620,7 +2166,8 @@ Window {
                     anchors.centerIn: parent
                     text: win.palWords.length > 7 ? String(win.palWords[7]) : ""
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1645,7 +2192,8 @@ Window {
                     anchors.centerIn: parent
                     text: win.palWords.length > 8 ? String(win.palWords[8]) : ""
                     color: win.word_fill
-                    font.pixelSize: 13
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
                 }
 
                 MouseArea {
@@ -1656,13 +2204,186 @@ Window {
             }
         }
 
+        // ── §5.7.22 步骤 4 与 5：那一排的导出与导入 ─────────────────────────────
+        //
+        // 与上面配置那一节同一枚道理：这一格在产品会话里**一直看得见** —— PRD 那两条说的是设置页上的
+        // 两双手，不是量具专用的一层皮。跑不跑腿由最下面那枚 Timer 决定。四枚钮写的字全来自
+        // `settingsPaletteWords()`（#281），按下去调的是上面那四枚函数，与量具同一条路。
+        Row {
+            spacing: 8
+
+            Rectangle {
+                width: palExportWord.implicitWidth + 22
+                height: 30
+                radius: 6
+                color: win.card_fill
+                border.color: win.edge_fill
+                border.width: 1
+
+                Text {
+                    id: palExportWord
+
+                    anchors.centerIn: parent
+                    text: win.palWords.length > 9 ? String(win.palWords[9]) : ""
+                    color: win.word_fill
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
+                }
+
+                // 钮自己只开一张对话框：落到哪份档、写出几枚，全在对话框与 Rust 那一头。
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: palExportDialog.open()
+                }
+            }
+
+            Rectangle {
+                width: palImportWord.implicitWidth + 22
+                height: 30
+                radius: 6
+                color: win.card_fill
+                border.color: win.edge_fill
+                border.width: 1
+
+                Text {
+                    id: palImportWord
+
+                    anchors.centerIn: parent
+                    text: win.palWords.length > 10 ? String(win.palWords[10]) : ""
+                    color: win.word_fill
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
+                }
+
+                // 选完档当场只做一件事：把「会换成哪一排」问出来画在下面。「导入即写」在这里是没有
+                // 的 —— 换要下面那枚「确认应用这一份」按下去才发生（§5.7.22 步骤 5）。
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: palImportDialog.open()
+                }
+            }
+        }
+
+        Text {
+            visible: win.palIoNote !== ""
+            text: win.palIoNote
+            color: win.word_fill
+            opacity: 0.75
+            font.pixelSize: uiFont.px(12)
+            font.family: uiFont.family
+            elide: Text.ElideRight
+            maximumLineCount: 1
+        }
+
+        // 那份档「会换成的那一排」：一枚一行。抬头那句与这些行出自同一次 `settingsPaletteImportPreview`，
+        // 所以「画了几枚」这件事的对面是那份档自己说的话，不是本页写的一份名单（#281）。
+        Flickable {
+            visible: win.hasPalIoRows
+            width: parent.width
+            height: 84
+            contentHeight: palIoList.height
+            clip: true
+            boundsBehavior: Flickable.StopAtBounds
+
+            Column {
+                id: palIoList
+
+                width: parent.width
+                spacing: 3
+
+                Repeater {
+                    model: win.palIoRows
+
+                    Rectangle {
+                        width: palIoList.width
+                        height: palIoRowWord.implicitHeight + 8
+                        radius: 4
+                        color: win.card_fill
+                        border.color: win.edge_fill
+                        border.width: 1
+
+                        Text {
+                            id: palIoRowWord
+
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.left: parent.left
+                            anchors.leftMargin: 8
+                            anchors.right: parent.right
+                            anchors.rightMargin: 8
+                            text: String(modelData)
+                            color: win.word_fill
+                            font.pixelSize: uiFont.px(12)
+                            font.family: uiFont.family
+                            elide: Text.ElideMiddle
+                        }
+                    }
+                }
+            }
+        }
+
+        Row {
+            visible: win.hasPalIoRows
+            spacing: 8
+
+            Rectangle {
+                width: palIoApplyWord.implicitWidth + 22
+                height: 30
+                radius: 6
+                color: win.accent_fill
+
+                Text {
+                    id: palIoApplyWord
+
+                    anchors.centerIn: parent
+                    text: win.palWords.length > 11 ? String(win.palWords[11]) : ""
+                    color: "#FFFFFF"
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: win.doPalIoApply()
+                }
+            }
+
+            Rectangle {
+                width: palIoCancelWord.implicitWidth + 22
+                height: 30
+                radius: 6
+                color: win.card_fill
+                border.color: win.edge_fill
+                border.width: 1
+
+                Text {
+                    id: palIoCancelWord
+
+                    anchors.centerIn: parent
+                    text: win.palWords.length > 12 ? String(win.palWords[12]) : ""
+                    color: win.word_fill
+                    font.pixelSize: uiFont.px(13)
+                    font.family: uiFont.family
+                }
+
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: win.cancelPalIo()
+                }
+            }
+        }
+
         Text {
             visible: win.palStatus !== ""
             width: parent.width
             text: win.palStatus
             color: win.word_fill
             opacity: 0.85
-            font.pixelSize: 12
+            font.pixelSize: uiFont.px(12)
+            font.family: uiFont.family
             elide: Text.ElideRight
             maximumLineCount: 1
         }
@@ -1681,7 +2402,8 @@ Window {
                 anchors.centerIn: parent
                 text: "关闭"
                 color: win.word_fill
-                font.pixelSize: 13
+                font.pixelSize: uiFont.px(13)
+                font.family: uiFont.family
             }
 
             // 关窗那一枚写的是 `settings_open`，不是 `visible`：谁造这扇窗，销毁就归谁。
@@ -1695,12 +2417,25 @@ Window {
         }
     }
 
+    // 检查更新**落地**那一条腿。桥在工作线程上取那份清单，把结果投回 GUI 线程写进 `update_line`
+    // （那句判决 + 那枚地址），这一条只负责把落地那一句摆进状态行、把地址交给入口那枚钮。
+    //
+    // 为什么窗不直接绑 `status`：`status` 是全场共用的那一行，判决落地之前用户可能又按了别的键，
+    // 那一格已经是别的话，而入口那枚钮的可点性必须跟着**这一次判决**走（桥头顶记的是同一句）。
+    Connections {
+        target: win.session
+
+        function onUpdate_lineChanged() {
+            win.landUpdate(win.session.update_line)
+        }
+    }
+
     Component.onCompleted: {
         win.cats = win.splitLine(win.session.settingsCategories())
         win.plan = win.splitPlan(win.session.settingsGaugePlan())
         win.ioPlan = win.splitPlan(win.session.settingsIoPlan())
         // 第三副计划，与上面两副同一枚口径：只在出生时读一次，空串就是这一趟没有门要跑。
-        // 那八枚钮写的字**每一趟都读**：这一格在产品会话里也画，而页上不抄第二份措辞。
+        // 那十二枚钮写的字**每一趟都读**：这一格在产品会话里也画，而页上不抄第二份措辞。
         win.palPlan = win.splitPlan(win.session.settingsPalettePlan())
         win.palWords = win.splitLine(win.session.settingsPaletteWords())
         win.refreshPal()
@@ -1809,5 +2544,37 @@ Window {
         nameFilters: ["TOML 配置 (*.toml)", "所有文件 (*)"]
         onVisibleChanged: visible ? win.session.dialogOpened() : win.session.dialogClosed()
         onAccepted: win.doImportPreview(String(importDialog.selectedFile))
+    }
+
+    // 「导出调色板」那张对话框（§5.7.22 步骤 4）。落点由对话框决定，本页只把那串 URL 原样递过桥 ——
+    // 与上面 `exportDialog` 同一族（这一台 Qt 上 `selectedFile.toLocalFile()` 量到的是 `undefined`，
+    // P37；`save::local_path` 是全场唯一一处把 `file:///…` 读回路径的手）。
+    //
+    // 后缀是 txt 而不是 toml：步骤 4 递给人的是「一组色」，一枚一行、谁都能拿记事本改（写那份文件的
+    // [`crate::settings::palette_export`] 就是按这个形状写的，读它的是 `Palette::from_text`）。
+    //
+    // 联动那一格也照上面两枚同一条接：这一页现在有四张原生框，只接两张就是让同一件事有两种答法 ——
+    // `dialog_opened` 记的是层数，所以哪一张开着、开了几层，全在 `falcon_core::dialog_link` 那一头。
+    FileDialog {
+        id: palExportDialog
+
+        title: win.palWords.length > 9 ? String(win.palWords[9]) : ""
+        fileMode: FileDialog.SaveFile
+        nameFilters: ["调色板 (*.txt)", "所有文件 (*)"]
+        defaultSuffix: "txt"
+        onVisibleChanged: visible ? win.session.dialogOpened() : win.session.dialogClosed()
+        onAccepted: win.doPalIoExport(String(palExportDialog.selectedFile))
+    }
+
+    // 「导入调色板」那张对话框（§5.7.22 步骤 5 的第一步）：选完档当场只做「会换成哪一排」这一问，
+    // 换要下面那枚「确认应用这一份」按下去才发生。这里没有第二次 `open()`：真人的钮就是开这张对话框。
+    FileDialog {
+        id: palImportDialog
+
+        title: win.palWords.length > 10 ? String(win.palWords[10]) : ""
+        fileMode: FileDialog.OpenFile
+        nameFilters: ["调色板 (*.txt)", "所有文件 (*)"]
+        onVisibleChanged: visible ? win.session.dialogOpened() : win.session.dialogClosed()
+        onAccepted: win.doPalIoPreview(String(palImportDialog.selectedFile))
     }
 }

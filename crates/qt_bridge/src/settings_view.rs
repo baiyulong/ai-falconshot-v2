@@ -30,7 +30,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
-use falcon_core::config::{action_texts, needs_restart, Config, ImportScope, RESTART_KEYS};
+use falcon_core::config::{
+    action_texts, needs_restart, restart_marks, Config, ExclusionAdd, ImportScope, AUTOSTART_KEY,
+    EXCLUSION_KEY,
+};
 
 /// 页顶那排标签的**唯一**来源。前十一枚是 §5.20.1 那一列数字（1 常规 … 11 关于与更新），
 /// 逐字逐序照抄；第十二枚「托盘」是 §5.18.2 第一步（PRD 第 1,448 行）要的那一格，放在
@@ -57,11 +60,19 @@ use falcon_core::config::{action_texts, needs_restart, Config, ImportScope, REST
 /// `whiteboard` 归进「截图」是上面 `card` 那一条的同一个理由，且它比 `card` 更没有悬念：§5.4.4
 /// 第一步写的就是"从截图工具栏进入白板模式"，那一块板子是一张**像素由做而非抓出来的截图**，两枚
 /// 键调的正是它的底色与大小 —— 文档没有为它点过名，就不开。
+///
+/// `groups` 归进「贴图」也是同一条：§5.20.1 那一列里没有「分组」，而 `[groups]` 那一格装的是
+/// **贴图分组**（§5.12 那一族的组名、成员与次序，见 [`falcon_core::config::Groups`]）。它为什么
+/// 非归一类不可：`every_default_key_belongs_to_exactly_one_category` 判的是「档上有的每一枚键，
+/// 页上都有它的行」，无归属的那一枚就是「配置键在档上但没有读者」那一族在页上的形状。它这一行
+/// 的值是一串 `组名=编号 编号`，页上看得懂、也能打回去（`coerce` 按逗号拆数组，正是那一族的
+/// 形状），而「轮流切显」那件事仍归快捷键那一页的 `hotkey.actions.switch_group` —— 这里放的
+/// 是档，不是入口。
 pub const CATEGORIES: [(&str, &[&str]); 12] = [
     ("常规", &["general"]),
     ("截图", &["capture", "whiteboard"]),
     ("标注", &["annotation"]),
-    ("贴图", &["pin", "card"]),
+    ("贴图", &["pin", "card", "groups"]),
     ("输出", &["output"]),
     ("快捷键", &["hotkey"]),
     ("托盘", &["tray"]),
@@ -156,9 +167,14 @@ pub const UNWIRED_MARK: &str = "（未接线）";
 /// `pub(crate)` 是因为 `--selftest` 那一格要问同一件事：页上「该不该有这一句」由这里答一次，
 /// 量具去**反推页上那一串的长相**就是同一份判断的第二份实现。
 ///
-/// 同一页上两种形状，动作名的位置不一样，而**分头的地方只有这一处**：
+/// 同一页上三种形状，动作名的位置不一样，而**分头的地方只有这一处**：
 /// * `hotkey.actions.<id>` —— 名在**键的尾巴**上，值那一头是一枚组合键；
-/// * `tray.<哪一枚键>` —— 名在**值里**，键那一头是左键/双击/中键/右键。
+/// * `tray.<哪一枚键>` —— 名在**值里**，键那一头是左键/双击/中键/右键；
+/// * `hotkey.command` —— 名既不在键上也不在值里：这一枚键**就是** `custom_task` 那一枚动作要跑的
+///   那一串字（[`falcon_core::config::Hotkey::command`]），所以这里递的是名册里那一枚的中文名与
+///   说明，而不是替它另写一句「这里填命令行」。名册上一句「跑一条用户自己写好的命令行任务」已经
+///   是把这一格怎么说完了，页上再拼一句就是第二个作者（#281）—— 上面那两枚之所以能自动对上，靠的
+///   是同一个道理：页上不发明名，页上只指认这一行说的是名册里的哪一枚。
 ///
 /// 「接不接得住」现问归宿表，这里不抄第四份「哪几枚没接线」的名单：热键那一头问
 /// [`crate::hotkey::Work::of`]，托盘那一头问 [`crate::hotkey::tray_run_of`]。那两张表是装配
@@ -169,6 +185,12 @@ pub(crate) fn action_of(key: &str, value: &str) -> Option<(&'static str, &'stati
     if let Some(id) = key.strip_prefix("hotkey.actions.") {
         let (name, desc) = action_texts(id)?;
         return Some((name, desc, crate::hotkey::Work::of(id).is_some()));
+    }
+    if key == "hotkey.command" {
+        // 认的是**这一枚键**而不是它的值：值是用户写的一串命令，它不参与「这一行说明该不该有」。
+        // 值参与的话，一条恰好写着 `custom_task` 的命令就会让这一行多出一句它没问过的说明。
+        let (name, desc) = action_texts("custom_task")?;
+        return Some((name, desc, crate::hotkey::Work::of("custom_task").is_some()));
     }
     if key.starts_with("tray.") {
         let (name, desc) = action_texts(value)?;
@@ -240,6 +262,21 @@ pub fn update_words(which: usize) -> String {
     )
 }
 
+/// §5.21.3 那一块在页上要写的每一枚字：第 `which` 类该递的那一列，用 [`RECORD`] 连着交回；
+/// **不是**「关于与更新」那一页时空串 = 页上这一块压根不画。与 [`update_words`] 同一枚形状、同一枚
+/// 分工：这里只答「哪一页递哪几枚字」，字一枚也不在这里起 —— 名单唯一的作者住在
+/// [`crate::feedback_window::ON_PAGE`]（PRD 第 1694 行引起来的那一枚名是它的第一个，#455：措辞是读数）。
+///
+/// 它不并进 [`update_words`] 那两枚里，是因为那是两件事各有其主：§5.21.1 的检查与下载递的是**一次
+/// 查询的两端**，而反馈递的是**另一节的四步**。合成一段名单，页上就要自己数「第几枚是干什么的」，
+/// 而数出来的那个数没有作者（#281）。
+pub fn feedback_words(which: usize) -> String {
+    if index_of(ABOUT_PAGE) != Some(which) {
+        return String::new();
+    }
+    crate::feedback_window::ON_PAGE.join(RECORD)
+}
+
 /// 某一类的行，读的是**本进程手里那一份** config —— 页上显示的值必须是这一台机器正在跑的
 /// 那个值，而不是出厂默认，否则「即时生效」这句话在这一档里就没对象了。
 pub fn rows(which: usize) -> Vec<Row> {
@@ -279,6 +316,12 @@ pub struct Written {
     pub refused: Option<String>,
     /// 落盘那句拒。值留在内存里（§9.4 对失败保存定的规矩），但这一趟不许报成功（§5.17）。
     pub save_failed: Option<String>,
+    /// §5.1.2：这一枚键如果是**机器那一侧**的（[`AUTOSTART_KEY`]），这里是拧完之后机器自己说的
+    /// 那一句话（`platform_windows::autostart::Report::line`）。其余键是 `None` = 页上多不出这一句。
+    ///
+    /// 它**不**参与 [`Written::ok`]：机器拒了的那一趟走的是 [`Written::refused`]（档一个字也不写、
+    /// 内存退回原值），所以「成了但机器没说成」在这一格里没有位置。
+    pub system: Option<String>,
 }
 
 impl Written {
@@ -311,8 +354,14 @@ impl Written {
         } else {
             format!(" 被改成 {}", self.corrections.join(" / "))
         };
+        // 机器那一句话缀在本行尾部，与 [`Row::text`] 里那句动作说明同一个位置、同一枚分号：
+        // 页上那一行说的每一件事都出自这一行，不另起一格。
+        let system = match &self.system {
+            Some(line) => format!("{NOTE_SEP}{line}"),
+            None => String::new(),
+        };
         format!(
-            "[settings] {} = {} -> {value}（{mark}）落盘 {} ms{fixed}",
+            "[settings] {} = {} -> {value}（{mark}）落盘 {} ms{fixed}{system}",
             self.key, self.asked, self.save_ms
         )
     }
@@ -332,6 +381,7 @@ pub fn write_into(cfg: &mut Config, key: &str, asked: &str) -> Written {
         save_ms: 0,
         refused: None,
         save_failed: None,
+        system: None,
     };
     match cfg.set_str(key, asked) {
         Ok(corrections) => out.corrections = corrections,
@@ -345,18 +395,93 @@ pub fn write_into(cfg: &mut Config, key: &str, asked: &str) -> Written {
 ///
 /// 拒了的写**不**落盘：语法闸没过时内存里那一份也没动，此时写盘等于把别处的改动顺手带下
 /// 去，而这一趟用户只看见一次失败的点击。
+///
+/// §5.1.2 那一枚键多一条腿，而它的**次序**是全部新东西：先过语法闸（[`write_into`]）→ 再拧
+/// 机器（[`machine_leg`]）→ 都成了才落盘。理由是那一枚键说的不是档里的一行而是登录时会不会
+/// 有一个 falconshot 被启动：机器拒了（权限、被组策略锁住、写完再读还不是那个样子）的那一趟，
+/// 内存里那一格退回原值、档一个字也不写、`refused` 带着机器给的原因 —— 于是
+/// 「档里写着开而注册表里没有」这一族在这一档里没有一个可达的写法，而页上那一行说的是
+/// 「未写入（原因）」而不是「已开启」。
+///
+/// 反过来的那一趟（机器已经拧成、写盘失败）走的是 [`Written::save_failed`]：注册表改了而档里
+/// 还是旧的。这一种不一致不在这里补救 —— 在这里改注册表等于拿一次失败的保存去拧机器 —— 它由
+/// 启动那一腿收尾：`crate::settings::startup_autostart_banner` 每次开机都以机器为准回填档，
+/// 于是下一次登录跑的确实是页上那一枚此刻显示的位置。
 pub fn write(key: &str, asked: &str) -> Written {
     crate::settings::with(|s| {
+        // 先记住这一格此刻说什么：机器拒了的时候要把它放回原处，而那必须是**改之前**的那一枚。
+        let was = s.config.get_str(key);
         let mut out = write_into(&mut s.config, key, asked);
         if out.refused.is_none() {
-            let before = s.problems.len();
-            out.save_ms = s.save();
-            if s.problems.len() > before {
-                out.save_failed = Some(s.problems[before].clone());
+            // 拧机器拿的是**门留下的**那一枚值（`out.stored`）而不是 `asked`：与落盘那份同一个
+            // 读数，所以「用户打成别的形状、门改成 true」那一族校正与启动项之间不存在两份事实。
+            match machine_leg(key, &out.stored) {
+                Machine::NotAsked => out = persist(s, out),
+                Machine::Done(line) => {
+                    out.system = Some(line);
+                    out = persist(s, out);
+                }
+                Machine::Refused(why) => {
+                    if let Some(was) = &was {
+                        // 退回原值这一步不会失败：原值就是这一枚键刚才存着的那一枚，闸门认得它。
+                        let _ = s.config.set_str(key, was);
+                    }
+                    out.refused = Some(why);
+                    out.stored = s.config.get_str(key);
+                }
             }
         }
         out
     })
+}
+
+/// 落盘那一段，两条腿共用：不归机器管的键，与机器已经拧好了的键。
+///
+/// 只有一处写 [`Written::save_failed`]：「写盘失败但值留在内存里」这一形状不许有两个作者。
+fn persist(s: &mut crate::settings::Settings, mut out: Written) -> Written {
+    let before = s.problems.len();
+    out.save_ms = s.save();
+    if s.problems.len() > before {
+        out.save_failed = Some(s.problems[before].clone());
+    }
+    out
+}
+
+/// [`machine_leg`] 的三臂。
+enum Machine {
+    /// 这一枚键与启动项无关（页上绝大多数的行走这一臂）：一句也不多缀。
+    NotAsked,
+    /// 拧成了，机器自己说的那一句话。
+    Done(String),
+    /// 系统拒了，带着原因 —— §8 那一族的规矩是「提示原因」，不许 `let _ =` 吞掉。
+    Refused(String),
+}
+
+/// 这一枚键与这一枚值**会不会**惊动机器、惊动的是哪一头。纯的，所以量具能对着它跑而不碰注册表。
+///
+/// `None` = 与启动项无关；`Some(desired)` = 页上那一枚开关此刻该被拧到的位置。判断只住这一格：
+/// [`machine_leg`] 照着它去够机器，单测照着它断言「改一枚放大镜半径不会删掉谁的启动项」。
+fn machine_arm(key: &str, stored: &Option<String>) -> Option<bool> {
+    if key != AUTOSTART_KEY {
+        return None;
+    }
+    Some(stored.as_deref() == Some("true"))
+}
+
+/// §5.1.2 的那一腿：[`machine_arm`] 说会惊动机器时，把机器里的启动项拧到页上那一枚开关说的位置。
+///
+/// 判据「该写还是该删、要不要动手」住在 `platform_windows::autostart` 里（那里能对着假机器
+/// 跑一遍全套），这一格只负责把档里那一枚 bool 交过去、把结果那一句话或那句原因交回来。
+/// 值不是 `"true"` 就当作「不要开」：[`Config::set_str`] 的 bool 分支只会留下 `"true"`/`"false"`
+/// 两枚串，这里没有第三种形状需要发明读法。
+fn machine_leg(key: &str, stored: &Option<String>) -> Machine {
+    let Some(desired) = machine_arm(key, stored) else {
+        return Machine::NotAsked;
+    };
+    match platform_windows::autostart::sync(desired) {
+        Ok(report) => Machine::Done(report.line()),
+        Err(e) => Machine::Refused(e.to_string()),
+    }
 }
 
 /// 这一档自己钉的落点：写盘只准写到 `%TEMP%\\falconshot-settings-door\\pinned-config.toml`。
@@ -458,14 +583,18 @@ pub fn table() -> (bool, Vec<String>) {
         empty
     ));
 
-    // ③ 「需重启」这一标只许落在名单上那四枚，一枚不多一枚不少：多了页上就多一处「重启吧」，
+    // ③ 「需重启」这一标只许落在名单上那几枚，一枚不多一枚不少：多了页上就多一处「重启吧」，
     // 少了就是改完不动而用户不知道。热区那一类全不标——§5.15 的采样腿每秒重读一次配置。
+    //
+    // 问的是 [`restart_marks`] 按这份档数出来的那一列，不是 `RESTART_KEYS` 的行数：名单里有
+    // 一枚是**一整族**（`hotkey.actions.`），出厂九枚动作键各占页上一行、各该带着那三个字。
+    // 拿逐名的那份去比，用户每多配一枚动作，这一格就多一枚「多标了」，而页上一枚也没标错。
     let marked: Vec<String> = (0..CATEGORIES.len())
         .flat_map(|i| rows_of(&cfg, i))
         .filter(|r| r.restart)
         .map(|r| r.key.clone())
         .collect();
-    let mut want: Vec<String> = RESTART_KEYS.iter().map(|k| k.to_string()).collect();
+    let mut want: Vec<String> = restart_marks(&cfg);
     want.sort();
     let mut got = marked.clone();
     got.sort();
@@ -572,8 +701,13 @@ pub fn measure() -> (crate::state::Check, String) {
         .filter(|r| r.restart)
         .map(|r| r.key.clone())
         .collect();
-    let named_ok =
-        found.iter().all(|f| f.is_some()) && marked.len() == RESTART_KEYS.len() && total > 0;
+    let named_ok = found.iter().all(|f| f.is_some())
+        // 比的还是 `restart_marks` 那一列的行数，不是 `RESTART_KEYS` 的行数（理由见 [`table`]
+        // 里 ③ 那一格）：这一档读的是**这台机器手里**那份 config，用户自己多配的动作键越多，
+        // 页上该标的行数就越多。
+        && marked.len()
+            == crate::settings::with(|s| restart_marks(&s.config).len())
+        && total > 0;
     let cat_count = CATEGORIES.len();
     rep.row(
         "settings categories",
@@ -829,6 +963,7 @@ fn untouched(key: &str, asked: &str, why: String) -> Written {
         save_ms: 0,
         refused: Some(why),
         save_failed: None,
+        system: None,
     }
 }
 
@@ -2549,6 +2684,7 @@ fn pal_refused(key: &str, asked: &str, why: String) -> Written {
         save_ms: 0,
         refused: Some(why),
         save_failed: None,
+        system: None,
     }
 }
 
@@ -2628,6 +2764,48 @@ pub fn pal_drop_scheme(name: &str) -> Written {
     }
 }
 
+/// §5.7.22 步骤 4 在页上的那一只手。走的是 [`crate::settings::palette_export`] —— 与
+/// `--export-palette` **同一只手**，所以「页上按导出」与「命令行带 --export-palette」写出的两份
+/// 文件不可能不同，而这一族最容易长的坏正是那种不同。
+pub fn pal_io_export(target: &str) -> String {
+    let path = crate::save::local_path(target.trim());
+    match crate::settings::palette_export(Path::new(path.as_ref())) {
+        Ok(line) => line,
+        Err(e) => format!("[palette] 导出失败：{e}"),
+    }
+}
+
+/// 那份多行的读数切成页上那一列行：换行是分界，空行不算行。纯函数 ⇒ 「桥交回几段」这件事在
+/// 单测里就问得出来，不必开一扇窗（上面那几只纯手同一族规矩）。
+fn pal_io_rows(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// 步骤 5 的第一只钮：那份档会把这一排换成什么。抬头一句、其余每句一段，`RECORD` 连着交给界面
+/// （与 [`io_preview_line`] 同一形状，窗拿同一把刀切）。读不出那份档 —— 含「一行颜色也没读出来」
+/// 那一种，[`crate::settings::palette_import`] 钉着它不许被回填成出厂那十枚 —— 交回**一句**而没有
+/// 行：页上那一格因此是「一行也没画 + 那句话」，而不是「画了一张空表」。
+pub fn pal_io_preview_line(target: &str) -> String {
+    let path = crate::save::local_path(target.trim());
+    match crate::settings::palette_import_page(Path::new(path.as_ref()), false) {
+        Ok(text) => pal_io_rows(&text).join(RECORD),
+        Err(e) => format!("[palette] 读不出那份档：{e}"),
+    }
+}
+
+/// 步骤 5 的第二只钮：确认之后才真写。与 `--import-palette --confirm` 同一只手，页上没有第二条
+/// 落盘的路。
+pub fn pal_io_apply(target: &str) -> String {
+    let path = crate::save::local_path(target.trim());
+    match crate::settings::palette_import_page(Path::new(path.as_ref()), true) {
+        Ok(line) => line,
+        Err(e) => format!("[palette] 应用失败：{e}"),
+    }
+}
+
 pub const PAL_ADD_WORD: &str = "新增一枚";
 pub const PAL_DEL_WORD: &str = "删除";
 pub const PAL_UP_WORD: &str = "上移";
@@ -2637,10 +2815,18 @@ pub const PAL_SAVE_WORD: &str = "保存为方案";
 pub const PAL_APPLY_WORD: &str = "应用方案";
 pub const PAL_DROP_WORD: &str = "删方案";
 pub const PAL_TITLE: &str = "调色板管理";
+/// §5.7.22 步骤 4 与 5 在页上的那两只手。步骤 4 一直只有命令行那一副（`--export-palette`），
+/// 页上没有钮 ⇒ 普通用户走不到；这两枚字钉的是「页上按的这两个字，与命令行那两条说的是同一件
+/// 事」，措辞一改只改这里。
+pub const PAL_IO_EXPORT_WORD: &str = "导出调色板";
+pub const PAL_IO_IMPORT_WORD: &str = "导入调色板";
+/// 导入的第二步。名字里必须带着「这一份」：应用一枚没看清的名单，与按一枚「应用方案」是两种坏。
+pub const PAL_IO_APPLY_WORD: &str = "确认应用这一份";
+pub const PAL_IO_CANCEL_WORD: &str = "不应用";
 
-/// 这一格上的字：**一处作者**。第 0 枚是抬头，后面八枚是钮。窗拿 [`RECORD`] 切开照着画，
+/// 这一格上的字：**一处作者**。第 0 枚是抬头，后面十二枚是钮。窗拿 [`RECORD`] 切开照着画，
 /// 一枚也不自己写 —— 与 [`update_words`] 同一族理由（改一天措辞只需要动这里，页上抄第二份就会
-/// 分家），而这一格比那一族多一枚，因为调色板要的手有八只。
+/// 分家），而这一格比那一族多几枚，因为调色板要的手有十二只。
 pub fn pal_word_line() -> String {
     [
         PAL_TITLE,
@@ -2652,14 +2838,20 @@ pub fn pal_word_line() -> String {
         PAL_SAVE_WORD,
         PAL_APPLY_WORD,
         PAL_DROP_WORD,
+        PAL_IO_EXPORT_WORD,
+        PAL_IO_IMPORT_WORD,
+        PAL_IO_APPLY_WORD,
+        PAL_IO_CANCEL_WORD,
     ]
     .join(RECORD)
 }
 
 // ── `--settings-palette` 那一档 ────────────────────────────────────────────
 
-/// 这一档的地板：窗 + 六次真按 + 还原两次。每一按都碰盘，比 `MIN_IO_MS` 只宽不窄。
-pub const MIN_PAL_MS: i32 = 5_000;
+/// 这一档的地板：窗 + 九次真按 + 还原两次。每一按都碰盘，比 `MIN_IO_MS` 只宽不窄；P184 那三条
+/// （导出写一份文件、预览读它、确认再落一次盘）加的是**会碰盘**的三条，所以地板跟着抬一截 ——
+/// 腿跑不完的那一种坏，读出来是「某格一行也没递回来」，看起来像界面坏了。
+pub const MIN_PAL_MS: i32 = 7_000;
 
 /// 门要按的色从这一池里挑，挑的是**开工那一刻不在排里**的那一枚（[`pick`] 同一形状）。写死一池
 /// 而不是随机：门的读数要能被下一趟复算，而随机的那一排色明天就不是今天这一排。
@@ -2674,6 +2866,16 @@ pub const PAL_PLANT_COLORS: [&str; 3] = ["#FF0000", "#00FF00", "#0000FF"];
 
 /// 「保存为方案」那枚名字框用的名字：从这一池里挑一枚此刻还不是方案名的。
 pub const PAL_NAME_POOL: [&str; 4] = ["门试甲", "门试乙", "门试丙", "门试丁"];
+
+/// 页上那两枚 IO 钮的落点与读点，长在门自己的草稿纸上（[`door_dir`]）—— 与配置那两枚同一条
+/// 理由：门不许往 `%APPDATA%` 里用户那一枚上写东西。
+pub const PAL_IO_EXPORT_NAME: &str = "p184-palette-export.txt";
+pub const PAL_IO_IMPORT_NAME: &str = "p184-palette-import.txt";
+
+/// 「导入调色板」那一腿读的档里那两枚色。两条不同的理由：与门种的那三枚**必须不同**（应用方案
+/// 那一腿之后页上正是那三枚，导入再读出同一串就问不出动静），而枚数故意取 2 而不是 3 —— 排上
+/// 的**枚数**也变了，「换掉了」这件事才在读数上看得见。
+pub const PAL_IO_COLORS: [&str; 2] = ["#24C1E6", "#7A3E8F"];
 
 /// `--settings-palette` 在自己这一趟里看见过的东西。
 #[derive(Debug)]
@@ -2696,6 +2898,13 @@ struct PalDoor {
     edit_hex: String,
     save_name: String,
     saves_at_arm: u32,
+    /// 页上那两枚 IO 钮的落点与读点（门自己的草稿纸上）。计划最后两段递的就是这两条串，判据
+    /// 拿它们重新拼成 `Path` —— 存串而不存 `PathBuf`，因为这张表是 `const fn none()` 开出来的。
+    export_at: String,
+    import_at: String,
+    /// 开档那一刻现算的「这份档会交回几行」（抬头那一行不算在内）—— 导入那一腿的对面是窗画的那一列
+    /// 行，而分母是页上那一只手**自己**的读数：[`arm_pal`] 拿同一批纯函数把同一份文件算了一遍。
+    io_preview_rows: usize,
 }
 
 impl PalDoor {
@@ -2717,6 +2926,9 @@ impl PalDoor {
             edit_hex: String::new(),
             save_name: String::new(),
             saves_at_arm: 0,
+            export_at: String::new(),
+            import_at: String::new(),
+            io_preview_rows: 0,
         }
     }
 }
@@ -2739,12 +2951,14 @@ fn pal_reported(prefix: &str) -> Vec<String> {
     })
 }
 
-/// 计划十段：`腿等待 ms | 开在哪一类 | 新增那枚色 | 删的行号 | 移的行号 | 移的方向 | 改色的行号 |
-/// 改成的色 | 保存用的方案名 | 应用哪一枚方案`。
+/// 计划十二段：`腿等待 ms | 开在哪一类 | 新增那枚色 | 删的行号 | 移的行号 | 移的方向 | 改色的行号 |
+/// 改成的色 | 保存用的方案名 | 应用哪一枚方案 | 导出落到哪份档 | 导入读哪份档`。
 ///
 /// 行号全是 **0 起**的，与 [`crate::settings_view::arm`] 那四枚行号同一个口径（页上
 /// `settingsRowAt(which, i)` 收的也是这个），而段里的色与名字是门自己从上面那三池里挑的 —— 窗
-/// 一处也不猜「按下去该写什么」，指错一枚色去按新增是比不按更坏的那一种。
+/// 一处也不猜「按下去该写什么」，指错一枚色去按新增是比不按更坏的那一种。最后两段是裸路径，与
+/// `--settings-io` 那两枚同一条口径（真人从 `FileDialog` 拿到的是 `file:///…`，`save::local_path`
+/// 两种都认，所以桥上不必分岔）。
 pub fn pal_plan_line() -> String {
     with_pal(|p| p.plan.clone())
 }
@@ -2844,8 +3058,61 @@ pub fn arm_pal() -> String {
         ));
     }
 
+    // 页上那两枚 IO 钮的对面：导入那一腿读的是一份**盘上真有**的文件，不是本模块手里的一串色
+    // （`arm_io` 种那份 config 档同一条理由）。枚数故意与门种的那三枚不同 —— 应用方案那一腿之后
+    // 页上正是那三枚，导入再读出同一串，「换掉了」这一问就没有对面。
+    let dir = door_dir();
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        return refuse_pal(format!("{} 造不出来：{e}", dir.display()));
+    }
+    let mut export_at = dir.clone();
+    export_at.push(PAL_IO_EXPORT_NAME);
+    let mut import_at = dir.clone();
+    import_at.push(PAL_IO_IMPORT_NAME);
+    let io_text = PAL_IO_COLORS
+        .iter()
+        .map(|c| format!("{c}\n"))
+        .collect::<String>();
+    if let Err(e) = std::fs::write(&import_at, io_text.as_bytes()) {
+        return refuse_pal(format!("{} 写不下去：{e}", import_at.display()));
+    }
+    // 导出那一份先删掉：腿里那一手会真写它。留着上一趟的那份，「那份文件读回来是不是这一排」这一格
+    // 就先绿了 —— 与 [`arm_io`] 里同一枚删除同一条理由（#433：上一趟的读数不能当本趟的对面）。
+    let _ = std::fs::remove_file(&export_at);
+    // 开档那一刻把「这份档会交回几行」按页上那一只手**原样算一遍**（同一批纯函数、同一句未应用
+    // 的措辞），于是导入那一腿的对面有一枚分母。行数与本机那一排是什么无关：那份文本里每一句
+    // 都固定成行，所以腿里再算一次与此刻算的必然是同一个数 —— 这一句是本格能用行数当判据的前提。
+    //
+    // 数的是**抬头之外**的那几行：页上把抬头画在单独那一格（`palIoNote`），下面那一列行
+    // （`palIoRows`）画的才是这份档交回的读数，而窗报回来的正是那一列的数目。分母与读数必须
+    // 是同一枚东西，否则这一格量的就成了「差一行」而不是「那份档说了几句」。
+    let preview_at_arm = format!(
+        "{}{}\n",
+        crate::settings::render_palette_preview(
+            &import_at,
+            &crate::settings::palette_read_text(&io_text),
+            &band_at_arm
+        ),
+        crate::settings::PALETTE_UNAPPLIED_PAGE
+    );
+    let mut preview_at_arm_rows = pal_io_rows(&preview_at_arm);
+    if !preview_at_arm_rows
+        .first()
+        .is_some_and(|h| h.starts_with("[palette] 读到"))
+    {
+        return refuse_pal(format!(
+            "{} 交回的抬头不是「[palette] 读到 …」，那一格就没有分母：{preview_at_arm_rows:?}",
+            import_at.display()
+        ));
+    }
+    preview_at_arm_rows.remove(0);
+    let io_preview_rows = preview_at_arm_rows.len();
+    let export_at = export_at.display().to_string();
+    let import_at = import_at.display().to_string();
+
     let plan = format!(
-        "{LEG_MS}|{page}|{add_hex}|{del_at}|{move_at}|{move_delta}|{edit_at}|{edit_hex}|{save_name}|{PAL_PLANT_NAME}"
+        "{LEG_MS}|{page}|{add_hex}|{del_at}|{move_at}|{move_delta}|{edit_at}|{edit_hex}|{save_name}|{PAL_PLANT_NAME}\
+         |{export_at}|{import_at}"
     );
     with_pal(|p| {
         p.armed = true;
@@ -2863,10 +3130,14 @@ pub fn arm_pal() -> String {
         p.edit_hex = edit_hex.to_string();
         p.save_name = save_name.to_string();
         p.saves_at_arm = saves_at_arm;
+        p.export_at = export_at.clone();
+        p.import_at = import_at.clone();
+        p.io_preview_rows = io_preview_rows;
     });
     format!(
         "计划 {plan}；开在 {ANNOT_PAGE}#{page}；开工时那一排 {count} 枚（原文 {} 枚）、方案 {} 条；\
-         新增 {:?} 改 {:?} 存名为 {:?} 应用 {:?}；落盘次数 {saves_at_arm}（种方案那一次在它之后）",
+         新增 {:?} 改 {:?} 存名为 {:?} 应用 {:?}；导出落到 {export_at:?} 从 {import_at:?} 导入\
+         （那份档交回 {io_preview_rows} 行，抬头另算）；落盘次数 {saves_at_arm}（种方案那一次在它之后）",
         band_at_arm.len(),
         schemes_at_arm.len(),
         add_hex,
@@ -2876,8 +3147,8 @@ pub fn arm_pal() -> String {
     )
 }
 
-/// `--settings-palette` 的那扇门。八格，每格对面是**这一趟真开着的那扇窗**递回来的行，加本档
-/// 自己现读的档。
+/// `--settings-palette` 的那扇门。十一格，每格对面是**这一趟真开着的那扇窗**递回来的行，加本档
+/// 自己现读的档与盘上那两份文件。
 pub fn pal_measure(want_ms: i32) -> (crate::state::Check, String) {
     use crate::r13::Report;
     use crate::state::Check;
@@ -2900,6 +3171,9 @@ pub fn pal_measure(want_ms: i32) -> (crate::state::Check, String) {
         edit_hex,
         save_name,
         saves_at_arm,
+        export_at,
+        import_at,
+        io_preview_rows,
     ) = with_pal(|p| {
         (
             p.armed,
@@ -2916,6 +3190,9 @@ pub fn pal_measure(want_ms: i32) -> (crate::state::Check, String) {
             p.edit_hex.clone(),
             p.save_name.clone(),
             p.saves_at_arm,
+            p.export_at.clone(),
+            p.import_at.clone(),
+            p.io_preview_rows,
         )
     });
     if !armed {
@@ -3056,10 +3333,10 @@ pub fn pal_measure(want_ms: i32) -> (crate::state::Check, String) {
     );
     let applied_band = pal_scheme_colors(&planted_list, PAL_PLANT_NAME).unwrap_or_default();
     let want_band_after = pal_band_flat_of(&applied_band);
-    // 「按之前」那一串**不是**开工那一排：应用那一腿排在四按之后，页上此刻那一排已经被加、挪、删、
-    // 改过。本档不重新读屏幕，也不猜——它用页上那四只手同一批**纯函数**把这一趟点名的四次按下
-    // 复算一遍（`pal_*_list` 就是桥那四枚 invokable 里面调的那一枚）。复算不出来（任何一手该被
-    // 拒）就交回空串，那一格当场判红而不是放行。
+    // 「按之前」那一串**不是**开工那一排：应用那一腿排在加、挪、删、改、存与**导入那份档**之后，
+    // 页上此刻那一排已经被那四只手改过、又被导入换成了文件里那两枚。本档不重新读屏幕，也不猜——
+    // 它用页上那几只手同一批**纯函数**把这一趟点名的每一次按下复算一遍（`pal_*_list` 就是桥那几枚
+    // invokable 里面调的那一枚）。复算不出来（任何一手该被拒）就交回空串，那一格当场判红而不是放行。
     let want_band_before = pal_replay(
         &band_at_arm,
         &add_hex,
@@ -3070,17 +3347,21 @@ pub fn pal_measure(want_ms: i32) -> (crate::state::Check, String) {
         &edit_hex,
     )
     .unwrap_or_default();
+    // 导入那一腿留在应用方案之前的那一串：这一格的对面因此是「上一腿真的改了排」，而不是门自己
+    // 手里的一份常量。枚数是 2 而不是 3 —— 排上的枚数也变了，这一串与上面那两串才不会撞在一起。
+    let want_io_roster =
+        pal_band_flat_of(&PAL_IO_COLORS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
     rep.row(
         "palette apply",
         Check::from(
             af.len() == 3
                 && af[0] == PAL_PLANT_NAME
-                && af[1] == want_band_before
+                && af[1] == want_io_roster
                 && af[2] == want_band_after,
         ),
         format!(
-            "窗那侧 {:?}；门种的那一枚方案该把排从 {want_band_before} 改成 {want_band_after}\
-             （按之前不是这一串才算应用到了）",
+            "窗那侧 {:?}；门种的那一枚方案该把排从 {want_io_roster}（导入那一腿留下的）改成 \
+             {want_band_after}（按之前不是这一串才算应用到了）；四按复算出来的是 {want_band_before}",
             applied.first()
         ),
     );
@@ -3105,8 +3386,81 @@ pub fn pal_measure(want_ms: i32) -> (crate::state::Check, String) {
         ),
     );
 
-    // ⑦ 还原：本档把两枚名单改回开工时的原文，改完再问一次桥。落盘次数要的是 9（种 1 + 按 6 +
-    //    还原 2 —— 排与方案各一次）。
+    // ⑦ 步骤 4 在页上的那一只钮写出去的那一份文件。判的是**盘上那份**：窗报回来的路径与句子只对
+    //    得上「按的是计划里那一份档」，而「导出真的把此刻这一排带出去了」的对面是文件自己的内容 ——
+    //    读它用的是页上同一只手背后的 `palette_read_text`，不是本档另拼的一份。此刻这一排该是四按
+    //    复算出来的那一串（导入那一腿排在它之后、应用方案之前，所以这里还没被换掉）。
+    let exports: Vec<String> = pal_reported("pal-export");
+    let xf: Vec<&str> = exports
+        .first()
+        .map(|l| l.split('|').collect())
+        .unwrap_or_default();
+    let export_named = xf.first().copied().unwrap_or("");
+    let written = std::fs::read_to_string(&export_at).unwrap_or_default();
+    let roster = pal_band_flat_of(&written.lines().map(str::to_string).collect::<Vec<_>>());
+    rep.row(
+        "palette file export",
+        Check::from(
+            exports.len() == 1 && export_named == export_at && roster == want_band_before,
+        ),
+        format!(
+            "窗那侧 {:?}（一次）；计划里落的是 {export_at:?}，那份文件读回来是 {roster:?}（该等于\
+             四按之后那一排 {want_band_before}）",
+            exports.first()
+        ),
+    );
+
+    // ⑧ 步骤 5 的第一只钮：那份档「会换成哪一排」在页上画成了几行。分母是开档那一刻按页上那一只
+    //    手算出来的行数（`arm_pal` 里那一句，**抬头那一行不算在内** —— 页上把抬头画在单独那一格），
+    //    判的是窗**画**的那一列的行数：一行也没画与「画了别的数」在这一格里都是红，而抬头那句必须
+    //    真是那份档自己说的那一句（读不出那份档时桥交回的是 `[palette] 读不出那份档：…` 而**没有行**，
+    //    那一趟页上一行也不画、对不上这一枚分母，正是这里要的坏）。
+    let previews: Vec<String> = pal_reported("pal-preview");
+    let pf: Vec<&str> = previews
+        .first()
+        .map(|l| l.split('|').collect())
+        .unwrap_or_default();
+    rep.row(
+        "palette preview rows",
+        Check::from(
+            previews.len() == 1
+                && pf.first().and_then(|v| v.parse::<usize>().ok()) == Some(io_preview_rows)
+                && pf.get(1).is_some_and(|h| h.starts_with("[palette] 读到")),
+        ),
+        format!(
+            "窗画了 {:?} 行；开档那一只手算到 {io_preview_rows} 行（抬头另算）；抬头 {:?}",
+            pf.first().copied(),
+            pf.get(1)
+        ),
+    );
+
+    // ⑨ 步骤 5 的第二只钮：确认之后排真的成了那份文件里的两枚。`before` 是四按复算那一串（导入
+    //    之前页上就是它），`after` 是文件里那两枚 —— 两串都是**桥现读**的（`settingsPaletteBandFlat`），
+    //    不是窗自己数的，所以「页上画了但没落盘」在这一格里过不去。它必须排在 ⑥ 与上面那一格之后：
+    //    那两格读的是盘上「门种的那三枚」，被这一腿换掉就对不上号了。
+    let imports: Vec<String> = pal_reported("pal-import");
+    let inf: Vec<&str> = imports
+        .first()
+        .map(|l| l.split('|').collect())
+        .unwrap_or_default();
+    rep.row(
+        "palette file import",
+        Check::from(
+            imports.len() == 1
+                && inf.len() == 3
+                && inf[0] == import_at
+                && inf[1] == want_band_before
+                && inf[2] == want_io_roster,
+        ),
+        format!(
+            "窗那侧 {:?}（一次）；计划里读的是 {import_at:?}；这一腿该把排从 {want_band_before} \
+             换成 {want_io_roster}",
+            imports.first()
+        ),
+    );
+
+    // ⑩ 还原：本档把两枚名单改回开工时的原文，改完再问一次桥。落盘次数要的是 10（种 1 + 按 6 +
+    //    导入应用 1 + 还原 2 —— 排与方案各一次）。
     let back_band = pal_write_list(PAL_BAND_KEY, &band_at_arm);
     let back_schemes = pal_write_list(PAL_SCHEME_KEY, &schemes_at_arm);
     let now = pal_now();
@@ -3119,11 +3473,11 @@ pub fn pal_measure(want_ms: i32) -> (crate::state::Check, String) {
                 && back_schemes.refused.is_none()
                 && now.0 == band_at_arm
                 && now.1 == schemes_at_arm
-                && landed == 9,
+                && landed == 10,
         ),
         format!(
-            "排：开工 {:?} -> 此刻 {:?}；方案：开工 {} 条 -> 此刻 {} 条；落盘次数 {} -> {}（要的是 9：\
-             种方案 1 + 六按 6 + 还原 2，钉的落点 {}）",
+            "排：开工 {:?} -> 此刻 {:?}；方案：开工 {} 条 -> 此刻 {} 条；落盘次数 {} -> {}（要的是 10：\
+             种方案 1 + 六按 6 + 导入应用 1 + 还原 2，钉的落点 {}）",
             band_at_arm,
             now.0,
             schemes_at_arm.len(),
@@ -3205,10 +3559,191 @@ pub fn pal_band_flat_now() -> String {
     crate::settings::with(|s| pal_band_flat(&s.config))
 }
 
+// ── §5.16.2 规则第二句「应提供当前前台程序快速添加功能」在设置页上的那一只手 ──────────────
+//
+// 快捷键那一页上 `hotkey.exclusions` 那一行一直**看得见、写不动**：它是一串表，
+// `Config::set_str` 到它那里就是 `Err`（core 那枚 `hotkey_exclusions_keep_their_shape` 钉的正是
+// 这一句），所以「从产品里添一枚规则」这件事此前只有手改 config.toml 那一副。这一格补的是产品
+// 那一副，而**落盘的一条腿没有多开**：
+//
+// * 形状那一问交给 core 新那枚同类型的门 [`falcon_core::config::Config::add_exclusion`] —— 数组表
+//   只有那里知道怎么拼，本模块递过去的只是一个名字、听回来的是**事实**（添成了 / 已经在了）；
+// * 落盘走的仍是 [`persist`]，与 [`write`]、与托盘那一枚开关、与调色板那几只手同一个
+//   `Settings::save()`，而 `Written::save_failed` 也仍然只在那一格被写一次（#281）；
+// * 「要不要重启」仍由 [`falcon_core::config::needs_restart`] 说了算，这里不第二次判 ——
+//   `hotkey.exclusions` 不在那份名单上，而且**不该**在：`crate::hotkey::silenced` 每一次按下键
+//   都现读 `settings::with(|s| s.config.hotkey.exclusions)`，所以页上按完下一枚键就静音了，即时。
+//
+// 拒的那几臂走的是 [`Written::refused`] —— 与「语法闸拒了就不落盘」同一条规矩：一枚也没添的那一趟
+// 档里一个字没动，此时写盘等于把别处的改动顺手带下去。
+
+/// 这一枚钮上此刻该写的字。与 [`PAL_ADD_WORD`] 那一族同一个分工：**字住在这里**，「哪一页递它」
+/// 住 [`exclusion_word`] —— 窗里一旦自己拼这几个字，改一天措辞就要开两处，而那一处永远是屏幕。
+pub const EXCLUSION_ADD_WORD: &str = "把当前前台程序加进来";
+
+/// 第 `which` 类该不该递这一枚钮：只有「快捷键」那一页递，其余页交回空串 = 窗把整块连高度一起
+/// 不画。与 [`update_words`] 同一枚形状（那里问的是「哪一页带那两枚更新钮」，这里问的是「哪一页
+/// 带这一枚添加钮」），类号读的也是同一份 [`CATEGORIES`]，不数下标。
+pub fn exclusion_word(which: usize) -> String {
+    match index_of("快捷键") {
+        Some(i) if i == which => EXCLUSION_ADD_WORD.to_string(),
+        _ => String::new(),
+    }
+}
+
+/// 「已经有一位管着了」那一句。`matched` 是档里此刻管住这一位前台的那一枚规则写的样子。
+///
+/// 句子住在这里、不住在 [`add_exclusion_into`] 那一只手里，是因为页上要能在没有屏幕、也没有
+/// 桌面的地方把它读一遍（[`crate::hotkey`] 那一路 `no_pin_selected_said` / `already_on_said` /
+/// `click_through_said` 立的同一族规矩）；而它**只**在这里出现一次，`--settings-window` 那扇门
+/// 报回来的与真人看见的是同一串。
+fn exclusion_already_said(app: &str, matched: &str) -> String {
+    format!("{app} 已经在忽略名单里，此刻管住它的那一枚规则写着 {matched}")
+}
+
+/// 「说不上来此刻是谁在跟前」那一句。
+///
+/// 这一臂必须由钮自己说一句、不许退成「没匹配上就算成了」：[`platform_windows::proc::foreground_app`]
+/// 对提权进程与受保护的进程交回 `None`，而 [`crate::hotkey::silenced`] 那里把「说不上来」读成
+/// **放行**（那一份档上写的理由：不肯回答「谁在跟前」不等于用户要求这一枚键停下）。同一件
+/// `None` 在这一枚钮上说的是另一件事：**一枚规则也没有添**，所以那句话必须照实这么说 ——
+/// 把「读不到」印成「已加入」就是让页上撒一句只有屏幕能拆穿的谎。
+fn exclusion_unnamed_said() -> String {
+    "说不上来此刻在前台的是哪一个程序（受保护或别人的进程不肯把名字交出来），所以一枚规则也没添"
+        .to_string()
+}
+
+/// 「跟前这一位就是本程序自己」那一句。
+///
+/// 这是这一枚钮**自己造出来**的那一形坏，不是文档点过名的一臂：钮要按下去，设置窗就得是前台，
+/// 于是 `foreground_app()` 十有八九交回来的就是 `falconshot.exe`。照字面添进去的那一枚规则会把
+/// 「本程序的窗在跟前时每一枚全局快捷键都不响」写进档 —— 而按 `Ctrl+Shift+A` 截一张图恰恰就是
+/// 这一页上的人下一秒要做的事，且**这一页上还没有把它拿出来的那一只手**（只能添不能删）。一句话
+/// 说清「一枚也没添、为什么」，比一句「已加入」配上一次再也唤不醒的截图强。
+fn exclusion_self_said(name: &str) -> String {
+    format!("{name} 就是本程序自己：挡进去之后本程序的窗在跟前时它自己每一枚快捷键都不响，而这一页上还没有把它拿出来的那一只手")
+}
+
+/// 本程序自己叫什么（可执行文件名）。`None` = 操作系统连这条路都说不出来，那一趟就**不**拦
+/// 「跟前这一位是不是我们自己」那一臂 —— 认不出自己不等于拦得住自己。
+///
+/// 与 [`crate::settings::startup_autostart_banner`] 同一位读者：那一头要的是注册表里指向的那条
+/// 命令，这一头要的只是那个文件名，两样都是 `current_exe` 自己说的那一句，这里不第二遍拼。
+fn own_exe_name() -> Option<String> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// 只动传进来的那一份 config 的那一腿：问 core 那道闸、回读、不碰盘。与 [`write_into`] 同族，
+/// 所以量具与单测能在既没有桌面、也没有文件的同一条腿上问出那几句同样的话。
+///
+/// 两枚参数都是**机器那一侧的读数**：`foreground` 是此刻在前的那一个程序的名字（`None` = 它
+/// 说不上来），`own` 是本程序自己的名字。把它们做成参数而不是在这一格里现读桌面与 `current_exe`，
+/// 为的就是这一格：真机上按一次钮与单测里递一枚 `None` 进去，走的是同一只手、说的是同一句话，
+/// 而那一句在两边都读得回。
+pub fn add_exclusion_into(
+    cfg: &mut Config,
+    foreground: Option<&str>,
+    own: Option<&str>,
+) -> Written {
+    let asked = foreground.unwrap_or_default().to_string();
+    let mut out = Written {
+        key: EXCLUSION_KEY.to_string(),
+        asked,
+        stored: None,
+        corrections: Vec::new(),
+        restart: needs_restart(EXCLUSION_KEY),
+        save_ms: 0,
+        refused: None,
+        save_failed: None,
+        system: None,
+    };
+    let said = match foreground {
+        None => exclusion_unnamed_said(),
+        // 「是不是我们自己」用的是 core 那一枚 `app_matches` —— 与运行时静音判断「这一位管不管得
+        // 着」读的是同一位作者，大小写与分隔符的两形在这里同样不需要第二次拼。
+        Some(app) if own.is_some_and(|o| falcon_core::hotkeys::app_matches(o, app)) => {
+            exclusion_self_said(app)
+        }
+        // core 那道闸自己那句「没有名字」不在这里另起一句：它是**坏在参数上**的一趟（页上没有
+        // 名字可递），而 `Written::text` 那一格本来就说得出「未写入（原因）」。
+        Some(app) => match cfg.add_exclusion(app) {
+            Ok(ExclusionAdd::Added(corrections)) => {
+                out.corrections = corrections;
+                out.stored = cfg.get_str(EXCLUSION_KEY);
+                return out;
+            }
+            Ok(ExclusionAdd::Already { matched }) => exclusion_already_said(app, &matched),
+            Err(e) => e.to_string(),
+        },
+    };
+    // 拒的那几臂都没动档：回读读到的仍是**改之前**的那一串，页上因此说的是内存里此刻真的那一份。
+    out.refused = Some(said);
+    out.stored = cfg.get_str(EXCLUSION_KEY);
+    out
+}
+
+/// 页上那枚钮按下的一次：问机器谁在跟前，把那一枚名字交进 core 那道闸，成了才落盘。
+///
+/// 次序与 [`write`] 一模一样（过闸 → 成了才 [`persist`]），差别只有一处：**机器那一问在锁外面**。
+/// 读前台是一问系统，不是拧系统 —— 它不动档、也不动注册表（[`machine_arm`] 对
+/// [`EXCLUSION_KEY`] 交回 `None`，那一格有单测钉着），所以这里既不占「该写还是该删」那一臂，
+/// 也不给 `Written::system` 那一个字段加第二种意思。放在锁外面还有一半理由是它压根不需要档。
+pub fn add_foreground_exclusion() -> Written {
+    let found = platform_windows::proc::foreground_app();
+    // 递进闸的是**名字**那一枚（`notepad.exe`），不是整条路径：存进档的那一枚规则由 core 那一格
+    // 定，而「快速添加」要的读法是「这个程序」而不是「这个程序装在哪个盘」。
+    let name = found.as_ref().map(|(name, _)| name.as_str());
+    let own = own_exe_name();
+    crate::settings::with(|s| {
+        let mut out = add_exclusion_into(&mut s.config, name, own.as_deref());
+        if out.refused.is_none() {
+            out = persist(s, out);
+        }
+        out
+    })
+}
+
+// ── §8.4 第一句「显示冲突的组合键和相关功能」在「快捷键」那一页上的那一列 ──────────────────
+//
+// 屏幕上那一格（`Session.status` → [`crate::hotkey`] 拼的那一句）读的是一句话，最多原样引
+// [`crate::hotkey`] 里 `SAID_MAX` 枚，多的那句说的是「其余几行见「快捷键」设置页」—— 指的就是
+// 下面这一列。此前那句话指着的是运行历史，而运行历史只有门读得到：一句「去哪里看」指一个用户
+// 打不开的地方，等于让那几行没有去处（#433）。
+//
+// 这一列**不判事**：哪几行该让用户看一眼，是 [`crate::hotkey::RowKind`] 在写下那一句的当场定的，
+// 本模块只把已经记下的那一串原样搬上页，一行也不重打（#281）、也不按措辞再挑一遍（#453）。
+
+/// 第 `which` 类该不该递这一列：只有「快捷键」那一页递，其余页交回空串 = 窗把整块连高度一起不画。
+/// 与 [`exclusion_word`]、[`update_words`] 同一枚形状，类号读的也是同一份 [`CATEGORIES`]，不数下标。
+///
+/// `lines` 是**递进来的**而不是这里现读的：为的是量具与单测能在既没有桌面、也没有启动过监听线程的
+/// 同一条腿上问出这一格（与 [`add_exclusion_into`] 把前台名字做成参数同一道理）。
+pub fn conflict_block(lines: &[String], which: usize) -> String {
+    match index_of("快捷键") {
+        Some(i) if i == which => lines.join(RECORD),
+        _ => String::new(),
+    }
+}
+
+/// 页上此刻的那一列：全列读的是本次启动记下的那几行（[`crate::hotkey::watched`]），逐字交回。
+///
+/// 这是一份**本次启动的快照**，不是「此刻档里写着什么」：`hotkey.actions.` 在
+/// [`falcon_core::config::RESTART_PREFIXES`] 里，用户改完那一串键要重启才换 —— §8.4 第二句「不覆盖
+/// 现有配置，直到用户完成修改」要的就是这一形：页上说的是这一趟真的注册了什么、哪一枚被系统挡了、
+/// 哪两枚共用一串键，而「替他改档」这件事本模块一处也不做。
+pub fn conflicts(which: usize) -> String {
+    conflict_block(&crate::hotkey::watched(), which)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::Check;
+    // 逐名那一份名单只有这一格的「每一枚都真在页上成了行」要读；页上的标记与门里那一格读的
+    // 都是 [`restart_marks`] 按档数出来的那一列，所以本模块的 `use` 里不带它。
+    use falcon_core::config::RESTART_KEYS;
 
     /// 三档门（窗 / io / 调色板）在**同一进程里**共用的那一把排他锁。理由不是「稳妥」，是这两件
     /// 事实：① `pin()` 钉的落点是**一个路径**，两档各自往它写整份档，后写的那一份就是前一份的
@@ -3257,6 +3792,185 @@ mod tests {
             }
         }
         assert_eq!(update_words(usize::MAX), "");
+    }
+
+    /// §5.16.2 规则第二句那一枚钮**只**长在「快捷键」那一页上，与上面那枚「只有关于与更新递更新
+    /// 那两枚钮」同一形：判「哪一页递」的作者是本模块（[`exclusion_word`]），窗里那一块画不画读的
+    /// 就是它交回的空串与否。类号越界与 `usize::MAX` 都交回空串 —— 窗不该为一枚不可能的号停机。
+    #[test]
+    fn only_the_hotkey_page_offers_the_foreground_exclusion_button() {
+        let hotkey = index_of("快捷键").expect("名单里必须有「快捷键」");
+        assert_eq!(exclusion_word(hotkey), EXCLUSION_ADD_WORD);
+        for i in 0..CATEGORIES.len() {
+            if i != hotkey {
+                assert_eq!(exclusion_word(i), "", "第 {i} 类递了那一枚添加钮");
+            }
+        }
+        assert_eq!(exclusion_word(usize::MAX), "");
+        // 那几个字在整个 crate 里只有本模块这一个出处：窗抄一份，改一天措辞就要开两处，而
+        // 那一处只在屏幕上露出来。读的是**去掉注释行以后**的窗原文 —— 与本模块头部为
+        // `RESTART_KEYS` 记过的那一枚坏同一形，也与 [`crate::settings`] 那枚外观普查同一把刀：
+        // 散文里提一次那几个字不算抄写，那正是上面那一段注释在做的事。
+        const QML: &str = include_str!("../qml/SettingsWindow.qml");
+        let drawn: Vec<&str> = QML
+            .lines()
+            .map(str::trim)
+            .filter(|t| !t.starts_with("//"))
+            .collect();
+        assert!(
+            drawn.iter().any(|l| l.contains("win.exclusionWord")),
+            "页上没把桥交回的那几个字接过来"
+        );
+        assert!(
+            !drawn.iter().any(|l| l.contains(EXCLUSION_ADD_WORD)),
+            "页上抄走了那几个字：改一天措辞就得开两处"
+        );
+    }
+
+    /// §8.4 那一列「要用户看一眼」的行**只**长在「快捷键」那一页上，与上面两格「哪一页递它」同一
+    /// 形：作者是本模块（[`conflict_block`]），窗画不画读的是空串与否。空列交回空串而不是
+    /// 一句「一切正常」—— §8 整章判的是出了问题时说什么，出厂那九枚全成时页上不该挂着一块红字。
+    #[test]
+    fn only_the_hotkey_page_lists_the_rows_that_need_a_look() {
+        let hotkey = index_of("快捷键").expect("名单里必须有「快捷键」");
+        let lines = vec![
+            "冲突 Ctrl+Shift+A：capture + solo 都在用这一串键".to_string(),
+            "capture Ctrl+Shift+A 是系统保留组合：已被占用（不注册）".to_string(),
+        ];
+        // 逐字、按序、一枚不增删：页上那一列与 `Row::said` 之间没有任何第二次拼写（#281）。
+        let shown = conflict_block(&lines, hotkey);
+        assert_eq!(
+            shown.split(RECORD).collect::<Vec<&str>>(),
+            vec![lines[0].as_str(), lines[1].as_str()],
+            "那一列被改写了：{shown}"
+        );
+        for i in 0..CATEGORIES.len() {
+            if i != hotkey {
+                assert_eq!(conflict_block(&lines, i), "", "第 {i} 类递了那一列");
+            }
+        }
+        assert_eq!(conflict_block(&lines, usize::MAX), "");
+        assert_eq!(conflict_block(&[], hotkey), "", "一行也没有时页上该是不画那一块");
+        // 窗那一侧只接线、不抄字：整列的字都从桥来（读的是**去掉注释行以后**的窗原文，同一把刀
+        // 见上面那格与 [`restart_marks`] 头顶记的那一枚坏）。
+        const QML: &str = include_str!("../qml/SettingsWindow.qml");
+        let drawn: Vec<&str> = QML
+            .lines()
+            .map(str::trim)
+            .filter(|t| !t.starts_with("//"))
+            .collect();
+        assert!(
+            drawn.iter().any(|l| l.contains("win.conflictLines")),
+            "页上没把桥交回的那一列接过来"
+        );
+        assert!(
+            !drawn.iter().any(|l| l.contains("系统保留组合")),
+            "页上自己拼了一行冲突的话：那一行有两个作者"
+        );
+    }
+
+    /// 那一枚钮按下去的几臂，各自说的那一句话。
+    ///
+    /// 全跑在 [`add_exclusion_into`] 那一腿（纯的：动的是递进来的那一份档，一次盘也不落、一次桌面
+    /// 也不问），所以这一格既不需要屏幕也不需要 `tempdir`，而它读到的那几串字与真机上页上印的是
+    /// **同一函数交回的同一串** —— 这就是本仓那一族 `..._said()` 存在的理由（#433：不许静默，
+    /// 也不许把「没做事」印成「做了」）。
+    #[test]
+    fn the_foreground_exclusion_button_says_which_of_four_things_happened() {
+        // 本程序自己叫什么，在这一格里是**递进去的参数**而不是现读 `current_exe`：真机上那一枚
+        // 读数由操作系统给，而这一格要给的是「跟前站着的就是我们自己」那一形，两边都得能钉。
+        const OWN: &str = "falconshot.exe";
+        // ① 添成了。
+        let mut cfg = Config::default();
+        let added = add_exclusion_into(&mut cfg, Some("notepad.exe"), Some(OWN));
+        assert!(added.ok(), "{:?}", added.refused);
+        assert_eq!(added.key, EXCLUSION_KEY);
+        assert_eq!(added.asked, "notepad.exe");
+        assert_eq!(cfg.hotkey.exclusions.len(), 1);
+        assert!(added
+            .stored
+            .as_deref()
+            .is_some_and(|v| v.contains("notepad.exe")));
+        assert!(added.corrections.is_empty(), "{:?}", added.corrections);
+        // 「要不要重启」读的还是名单那一位作者，而这一枚键不在它上面：`silenced` 每一次按下键都
+        // 现读档里那一串，所以页上按完、下一枚键就静音。这里不第二次判，只核对它说的是同一件事。
+        assert!(!added.restart);
+        assert!(added.text().contains("即时"), "{}", added.text());
+        // 落盘那一腿在这一格里一次也没走（`save_ms` 是 0 而 `save_failed` 是 `None`）：页上的写
+        // 与门里的写走的是同一条路，而这一格递进去的是一份内存里的档。
+        assert_eq!(added.save_ms, 0);
+        assert!(added.save_failed.is_none());
+        // 这一枚钮既不碰注册表、也不给 `Written::system` 那一个字段加第二种意思。
+        assert_eq!(machine_arm(EXCLUSION_KEY, &added.stored), None);
+        assert!(added.system.is_none());
+
+        // ② 已经在了。档里那一枚一个字也不许被这一趟改动。
+        let again = add_exclusion_into(&mut cfg, Some("notepad.exe"), Some(OWN));
+        assert!(!again.ok());
+        assert_eq!(
+            again.refused.as_deref(),
+            Some(exclusion_already_said("notepad.exe", "notepad.exe").as_str())
+        );
+        assert!(
+            again.text().contains("已经在忽略名单里"),
+            "{}",
+            again.text()
+        );
+        assert!(again.text().contains("未落盘"), "{}", again.text());
+        assert_eq!(cfg.hotkey.exclusions.len(), 1, "重复的那一趟多添了一枚");
+
+        // ③ 说不上来谁在跟前。这一臂连档都不必递进去问：`None` 就是「一枚也没添」，而那句话必须
+        // 这么写 —— 把它印成「已加入」就是一句只有屏幕能拆穿的谎。
+        let mut blank = Config::default();
+        let unnamed = add_exclusion_into(&mut blank, None, Some(OWN));
+        assert!(!unnamed.ok());
+        assert_eq!(
+            unnamed.refused.as_deref(),
+            Some(exclusion_unnamed_said().as_str())
+        );
+        assert!(unnamed.text().contains("一枚规则也没添"), "{}", unnamed.text());
+        assert_eq!(blank.hotkey.exclusions.len(), 0, "读不到前台的那一趟动了档");
+
+        // ④ 跟前这一位就是本程序自己。这一臂是这一枚钮**自己造出来**的那一形坏（要按钮就得让
+        // 设置窗在跟前），文档没点它的名，所以它必须在这里钉住：添下去的那一枚规则管的是本程序
+        // 自己的每一枚快捷键，而这一页上没有把它拿出来的那一只手。
+        let myself = add_exclusion_into(&mut blank, Some(OWN), Some(OWN));
+        assert!(!myself.ok());
+        assert_eq!(
+            myself.refused.as_deref(),
+            Some(exclusion_self_said(OWN).as_str())
+        );
+        assert!(myself.text().contains("本程序自己"), "{}", myself.text());
+        assert_eq!(blank.hotkey.exclusions.len(), 0, "拦不住自己的那一趟动了档");
+        // 大小写与路径两形认得同一件事，用的是 core 那一枚 `app_matches`，这里不第二次拼。
+        let upper = add_exclusion_into(&mut blank, Some("FALCONSHOT.EXE"), Some(OWN));
+        assert!(!upper.ok(), "{:?}", upper.stored);
+        assert_eq!(blank.hotkey.exclusions.len(), 0);
+        // 「认不出自己」不等于「拦得住自己」：`own` 是 `None` 时那一臂不拦，照旧交给 core 那道闸。
+        let blind = add_exclusion_into(&mut blank, Some(OWN), None);
+        assert!(blind.ok(), "{:?}", blind.refused);
+        assert_eq!(blank.hotkey.exclusions.len(), 1, "那一趟本该添进档里");
+
+        // 四句是四种事，一处也不许重叠成一句：重叠了就等于页上有两件事共用一个说法。
+        let said = added.text();
+        let both = [
+            again.text(),
+            unnamed.text(),
+            myself.text(),
+            blind.text(),
+        ];
+        for line in both {
+            assert_ne!(line, said);
+        }
+        assert_ne!(again.refused, unnamed.refused);
+        assert_ne!(again.refused, myself.refused);
+        assert_ne!(unnamed.refused, myself.refused);
+
+        // ⑤ 页上那一行**仍然**写不动，而这一枚钮是它唯一的写路：`set_str` 到数组表那里就是 `Err`
+        // （core 那枚 `hotkey_exclusions_keep_their_shape` 钉的同一句）。这一格把它钉在页侧，是因为
+        // 「只能添、不能从页上删或改」这件事只有报出来一次才算数。
+        let scribbled = write_into(&mut blank, EXCLUSION_KEY, "notepad.exe");
+        assert!(scribbled.refused.is_some(), "那一行竟然能被文本框写进去");
     }
 
     /// 名单的下限是文档的：§5.20.1 那十一类逐字、逐序一枚不许动；第十二类「托盘」是 §5.18.2
@@ -3326,7 +4040,9 @@ mod tests {
         assert_eq!(rows_of(&cfg, CATEGORIES.len()).len(), 0);
     }
 
-    /// 「需重启」标记只许来自 [`RESTART_KEYS`]。这一条同时盯着两件事：页上标的枚数，和热区
+    /// 「需重启」标记只许来自名单，而名单由 [`restart_marks`] 按这份档数出来 —— 逐名那几枚加
+    /// `hotkey.actions` 那一族，页上是一枚动作一行、也就是一枚一行该标。这一条同时盯着两件事：
+    /// 页上标的枚数，和热区
     /// 那一类一枚也不标 —— 后者是 §5.20.2 第一条在热区这一页上的对面（采样腿每秒重读配置）。
     #[test]
     fn the_restart_marks_are_the_restart_list_and_nothing_else() {
@@ -3337,9 +4053,17 @@ mod tests {
             .map(|r| r.key)
             .collect();
         marked.sort();
-        let mut want: Vec<String> = RESTART_KEYS.iter().map(|k| k.to_string()).collect();
+        let mut want: Vec<String> = restart_marks(&cfg);
         want.sort();
         assert_eq!(marked, want);
+        // 名单里每一枚都真在页上成了行：一枚标在档上而页上没有它的行，就是「改了要重启而用户
+        // 看不见那一行」；这一格与上面那一句合起来才是「页上标的 = 名单盖住的」。
+        for key in RESTART_KEYS {
+            assert!(
+                marked.iter().any(|m| m == key),
+                "{key} 在名单上却没在页上成行"
+            );
+        }
         assert!(
             rows_of(&cfg, CORNER)
                 .iter()
@@ -3349,6 +4073,93 @@ mod tests {
         assert!(needs_restart("general.language"));
         assert!(!needs_restart("hot_corner.dwell_ms"));
         assert!(!needs_restart(""));
+    }
+
+    /// §5.1.2 的写腿：页上**只有**那一枚开机启动的键会惊动机器。这一格钉的是反面的事 —— 别的
+    /// 键一次注册表也不开（[`machine_arm`] 里那句 `key != AUTOSTART_KEY` 写反，改一枚放大镜半径
+    /// 就会去删用户的启动项）。量的是纯判据那一手，真注册表一个字也不动。
+    #[test]
+    fn only_the_autostart_key_ever_reaches_for_the_machine() {
+        for (key, stored) in [
+            ("capture.magnifier_radius", Some("9")),
+            ("general.close_to_tray", Some("true")),
+            ("advanced.data_dir", Some("D:\\shots")),
+            ("nope.nope", None),
+        ] {
+            assert_eq!(
+                machine_arm(key, &stored.map(String::from)),
+                None,
+                "{key} 那一趟伸手开了注册表"
+            );
+        }
+        for (stored, want) in [(Some("true"), true), (Some("false"), false), (None, false)] {
+            assert_eq!(
+                machine_arm(AUTOSTART_KEY, &stored.map(String::from)),
+                Some(want),
+                "页上那一枚开关读错了"
+            );
+        }
+        // 拿的是**门留下的**那一枚值而不是用户打进来的串。两半都在这一格里：
+        // ① `on` 过得了闸（`coerce` 认 `1/true/yes/on`），留在档里的是 `"true"` —— 机器听到的
+        //    必须是那一枚，不是页上打过来的 `"on"`；② 闸拒了的趟次 `out.stored` 是**上一趟**的
+        //    读数，而 `write` 在 `refused` 那一臂根本不调 [`machine_leg`]：机器听不到半个字。
+        let mut cfg = Config::default();
+        let out = write_into(&mut cfg, AUTOSTART_KEY, "on");
+        assert!(out.ok(), "闸拒了 `on`：{:?}", out.refused);
+        assert_eq!(
+            out.stored.as_deref(),
+            Some("true"),
+            "档里存的不是门归好那一枚"
+        );
+        assert_eq!(
+            machine_arm(&out.key, &out.stored),
+            Some(true),
+            "`on` 归成 `true` 之后机器被拧去了另一头"
+        );
+        let out = write_into(&mut cfg, AUTOSTART_KEY, "nope");
+        assert!(
+            out.refused.is_some() && !out.ok(),
+            "闸放行了 `nope`：{:?}",
+            out.refused
+        );
+        assert_eq!(
+            out.stored.as_deref(),
+            Some("true"),
+            "被拒的写动了档里那一枚值"
+        );
+    }
+
+    /// 机器那一句话缀在页上那一行的尾部，与动作说明同一个位置、同一枚分号；而 `system` 是
+    /// `None` 的行（页上绝大多数）一个字也不多 —— 「窗不许自己拼一句」在这一腿上的对面是
+    /// 「Rust 说一句、页上原样一行」。
+    #[test]
+    fn the_machine_speaks_on_the_row_and_only_on_its_own_row() {
+        let mut wrote = write_into(&mut Config::default(), "capture.magnifier_radius", "12");
+        assert!(wrote.system.is_none());
+        let plain = wrote.text();
+        assert!(!plain.contains(NOTE_SEP), "{plain}");
+
+        wrote.key = AUTOSTART_KEY.to_string();
+        wrote.asked = "true".to_string();
+        wrote.stored = Some("true".to_string());
+        wrote.system =
+            Some("写入启动项 —— 已指向本程序；ai-falconshot = 本程序现在这一条命令".to_string());
+        let said = wrote.text();
+        assert!(said.contains("写入启动项"), "{said}");
+        assert!(said.ends_with("命令"), "{said}");
+        assert!(said.contains(NOTE_SEP), "{said}");
+
+        // 机器拒了的那一趟走的是 `refused`：那一行说的是「未写入（原因）」，不许同时说「已开启」。
+        let refused = untouched(
+            AUTOSTART_KEY,
+            "true",
+            "写不进启动项：系统返回 0x00000005（权限被拒）".to_string(),
+        );
+        let said = refused.text();
+        assert!(said.contains("未写入"), "{said}");
+        assert!(said.contains("0x00000005"), "{said}");
+        assert!(said.contains("未落盘"), "{said}");
+        assert!(!refused.ok());
     }
 
     #[test]
@@ -3531,6 +4342,68 @@ mod tests {
         assert!(cfg.output.hide_pins_on_dialog, "被拒的写把值改了");
     }
 
+    /// §5.9.17 步 1 的那一枚开关在页上同样有它自己的对面：`output.copy_as_file` 是「输出」那一类
+    /// 里的一行、画得出一枚开关、翻两头交回的是**存下来的那一枚**而不是字面 `"true"`、且不挂
+    /// 「需重启」。
+    ///
+    /// **本轮没有为这一格新画一件控件**：那一页是 [`Config::flat()`] 生成的，落一枚持久键就是落
+    /// 一行，`SettingsWindow.qml` 一字未改。所以「这枚开关没有作者」那句旧账量的从来不是缺接线
+    /// —— 缺的是这一格的证：页上那一行真画得出开关、写进去的就是三扇门（`copy_out` /
+    /// `auto_copy_out` / `copy_pin`）**现读**的那一枚 bool。翻完不挂「需重启」也是同一问的另一面：
+    /// 那三扇每扇都按一次读一次，页上改完、下一次复制就按新的来。
+    #[test]
+    fn the_copy_as_file_switch_is_a_row_the_page_can_flip() {
+        let key = "output.copy_as_file";
+        let out = index_of("输出").expect("输出那一类反查不到类号");
+        let cfg = Config::default();
+        let rows = rows_of(&cfg, out);
+        assert!(rows.iter().any(|r| r.key == key), "{key} 不在输出那一页上");
+        assert_eq!(
+            rows.iter().filter(|r| r.key == key).count(),
+            1,
+            "{key} 在输出那一页上不止一行：两处点面会各改一次"
+        );
+        assert_eq!(owners(key), vec![out], "{key} 的归属不是输出那一类");
+        let row = rows.iter().find(|r| r.key == key).unwrap();
+        assert!(!row.restart, "{key} 被标成需重启：下一次复制本就现读档");
+
+        // 出厂那一头是「关」：PRD 把这一句写在「用户在设置中开启」下面，所以页上亮着的不能是开着。
+        assert!(
+            !cfg.output.copy_as_file,
+            "`Default` 里那一枚是开的：§5.9.16 的读法被替用户改了"
+        );
+        assert_eq!(
+            kind_of(&cfg, key),
+            Kind::Switch(false),
+            "{key} 在页上画不出开关：那一行只是一段文本"
+        );
+        assert_eq!(flip_to(&cfg, key), Some("true"));
+
+        let mut cfg = Config::default();
+        let on = write_into(&mut cfg, key, "true");
+        assert!(on.ok(), "{:?}", on.refused);
+        assert_eq!(on.stored.as_deref(), Some("true"));
+        assert!(on.corrections.is_empty(), "{:?}", on.corrections);
+        assert!(cfg.output.copy_as_file, "页上写进去了而内存里那一枚没翻");
+        assert_eq!(kind_of(&cfg, key), Kind::Switch(true));
+        assert_eq!(
+            flip_to(&cfg, key),
+            Some("false"),
+            "开着那一头没有可翻回去的对面"
+        );
+
+        let off = write_into(&mut cfg, key, "false");
+        assert!(off.ok(), "{:?}", off.refused);
+        assert!(!cfg.output.copy_as_file);
+
+        // 打成名单外的字时原值一格也不动，与上面那枚同一族：「当场说」比「下次开机才发现存不下」
+        // 便宜（§5.20.2 反面那一臂）。
+        let bogus = write_into(&mut cfg, key, "nope");
+        assert!(bogus.refused.is_some(), "{:?}", bogus.stored);
+        assert!(bogus.text().contains("未写入"));
+        assert!(!cfg.output.copy_as_file, "被拒的写把值改了");
+    }
+
     /// §5.3.7 第一步那句「用户在截图设置…选择单位」自此在页上有一行：`capture.size_unit`
     /// 是「截图」那一类里的一行、画成一格文本框（它存的是一枚枚举，不是 bool）、不挂「需重启」
     /// —— 读它的那一手是 `MaskState::open()`，每按一次热键现取一次快照，所以页上改完、
@@ -3651,8 +4524,9 @@ mod tests {
             total += dialogs;
         }
         assert_eq!(
-            total, 4,
-            "P155 数到四枚：设置页导出/导入各一、贴图 saveAs 一、标注栏一。对不上就先看这一格"
+            total, 6,
+            "P184 数到六枚：设置页配置导出/导入各一、调色板导出/导入各一、贴图 saveAs 一、\
+             标注栏一。对不上就先看这一格"
         );
     }
 
@@ -3718,30 +4592,32 @@ mod tests {
                 }
             }
         }
-        // 出厂默认这两页上点了名的是十三行：快捷键那一页九枚热键绑定、托盘那一页四枚鼠标动作。
-        // 名单外那一行只有 `hotkey.exclusions`（它点的是一串动作，不是一枚动作名），所以两页合
-        // 起来十四行、其中十三行点名——搬家前后的枚数一枚没变，变的只是它们站在哪一页上。
-        assert_eq!(naming, 13, "九枚热键动作加四枚托盘键，一枚不多一枚不少");
-        assert_eq!(page.len(), 14, "两页合起来的行数不是搬家前那十四行");
+        // 出厂默认这两页上点了名的是十四行：快捷键那一页九枚热键绑定加一枚「自定义命令」、托盘那
+        // 一页四枚鼠标动作。名单外那一行只剩 `hotkey.exclusions`（它点的是一串动作，不是一枚动作
+        // 名），所以两页合起来十五行——`hotkey.command` 自这一轮起在页上有一格，而它那一格递出的
+        // 名与说明读的仍是名册里 `custom_task` 那一枚，不是页上另写的一句（见 `action_of`）。
+        assert_eq!(
+            naming, 14,
+            "九枚热键动作加一枚命令加四枚托盘键，一枚不多一枚不少"
+        );
+        assert_eq!(page.len(), 15, "两页合起来的行数不是那一十五行");
         assert_eq!(
             rows_of(&cfg, hotkey_page).len(),
-            10,
-            "快捷键那一页不是九枚绑定加一枚排除"
+            11,
+            "快捷键那一页不是九枚绑定加一枚命令加一枚排除"
         );
         assert_eq!(
             quiet,
             vec!["hotkey.exclusions"],
             "页上没点名动作的行不止排除那一枚"
         );
-        // 还没一只手接得住的那两枚：§5.16.1 的表里 `custom_task` 压根没有默认绑定，所以它
-        // 此刻不成行，剩下两枚成行、各带一个标记。`capture_custom` 自 P166 起不在这两枚里了 ——
-        // 它的那只手是 `hotkey::Work::CustomCapture`，落点是 §5.3.5 那扇对话框窗，而这一格读的
-        // 正是归宿表，不是页上的写法。
-        assert_eq!(
-            marked,
-            vec!["hotkey.actions.pin_edit", "hotkey.actions.switch_group"],
-            "标了「未接线」的行不是那两枚"
-        );
+        // 自此**没有**一行带着「未接线」那两个字：`pin_edit` 的那一手是 [`crate::hotkey::Work::
+        // PinEdit`]（把洞交回选中的那几枚占的那一块），`custom_task` 的那一手是
+        // [`crate::hotkey::Work::CustomTask`]（判归 `falcon_core::task`、跑归 `open::dispatch`）。
+        // 这一格读的是归宿表而不是页上的写法，所以它反过来说的是同一件事——名册上那十三枚此刻每
+        // 一枚都接得住，逐枚判的那一格长在 `hotkey::every_named_action_has_a_hand` 里，因为那张
+        // 表的主人住在那一个模块。
+        assert!(marked.is_empty(), "页上还有一行标着未接线：{marked:?}");
 
         // 假红那一族：`menu` 与 `settings` 没有 `Work`（`Work::of` 认不得它们），可它们一按
         // 就有对面。这一格就是 `tray_run_of` 头部那句话的证人。
@@ -3785,6 +4661,10 @@ mod tests {
     /// config 给的，两趟之间可以不同——它钉的是「同一趟里两条腿一样多，且逐字相同」。
     #[test]
     fn the_page_hands_the_window_one_piece_per_row() {
+        // 这一格读的是**活的那一份** config（`rows` / `page_line` 都走 [`crate::settings::with`]），
+        // 而三档门会把整份档（连同「门种的那一枚」方案）钉进同一个落点：不排队就会拿到
+        // 「模型是种过的、页上是没种的」那一枚撕裂读数（P187 第一趟红的正是这一处）。
+        let _serial = door_serial();
         let cats_line = category_line();
         let cats: Vec<&str> = cats_line.split(RECORD).collect();
         assert_eq!(cats.len(), CATEGORIES.len(), "{cats:?}");
@@ -3878,8 +4758,9 @@ mod tests {
     const IO_PLAN_ROLES: [&str; 3] = ["leg_ms", "export_file", "import_file"];
 
     /// P183 那第三副计划，顺序对着 [`arm_pal`] 那句 `format!`。行号三段全是 **0 起**的排行号，
-    /// 名字两枚是方案名 —— 名单里写清这一件事，窗里那九处 `win.palPlan[N]` 才有对面可对齐。
-    const PAL_PLAN_ROLES: [&str; 10] = [
+    /// 名字两枚是方案名，最后两段是那两枚 IO 钮的落点与读点 —— 名单里写清这一件事，窗里那十一处
+    /// `win.palPlan[N]` 才有对面可对齐。
+    const PAL_PLAN_ROLES: [&str; 12] = [
         "leg_ms",
         "page",
         "add_hex",
@@ -3890,6 +4771,8 @@ mod tests {
         "edit_hex",
         "save_name",
         "apply_name",
+        "export_file",
+        "import_file",
     ];
 
     /// `arm()` 此刻拼出来的那一串：第 i 段必须真是 `PLAN_ROLES[i]` 那一件事。拼串的顺序改了而
@@ -4059,9 +4942,9 @@ mod tests {
             ("doImportPreview(win.ioPlan[", &["import_file"]),
             ("\"apply|\" + win.ioPlan[", &["import_file"]),
         ];
-        // P183 那第三副计划：九行、十段一枚不缺。`doPalMove` 那一行一次读两段（行号与方向），
-        // 所以是九行而不是十行——「哪一行读了哪几段」由这枚名单钉，不由窗自己数。
-        let pal_cases: [(&str, &[&str]); 9] = [
+        // P183 那第三副计划：十一行、十二段一枚不缺。`doPalMove` 那一行一次读两段（行号与方向），
+        // 所以是十一行而不是十二行——「哪一行读了哪几段」由这枚名单钉，不由窗自己数。
+        let pal_cases: [(&str, &[&str]); 11] = [
             ("interval: Number(win.palPlan[", &["leg_ms"]),
             ("win.which = Number(win.palPlan[", &["page"]),
             ("doPalAdd(String(win.palPlan[", &["add_hex"]),
@@ -4071,6 +4954,8 @@ mod tests {
             ("const editWant = String(win.palPlan[", &["edit_hex"]),
             ("const saveName = String(win.palPlan[", &["save_name"]),
             ("const applyName = String(win.palPlan[", &["apply_name"]),
+            ("const exportAt = String(win.palPlan[", &["export_file"]),
+            ("const importAt = String(win.palPlan[", &["import_file"]),
         ];
 
         let mut accounted: Vec<(usize, usize)> = Vec::new();
@@ -4435,8 +5320,8 @@ mod tests {
         assert!(!io_wanted());
     }
 
-    /// §5.7.22 那一档开出来的是**一扇窗里的第三副计划**与一枚真种进档的方案，五件事得当面成立：
-    /// ① 计划十段、`palArmed` 数的正是十段（P179 那一形：段数没对齐，整趟腿一条也不跑）；
+    /// §5.7.22 那一档开出来的是**一扇窗里的第三副计划**与一枚真种进档的方案，六件事得当面成立：
+    /// ① 计划十二段、`palArmed` 数的正是十二段（P179 那一形：段数没对齐，整趟腿一条也不跑）；
     /// ② 门挑的**两枚色都不在开工那一排里** —— 否则新增与改色那两腿当场被模型的规矩挡下，
     ///    「按下去动没动」就成了一枚恒红的尺（#433 的反面：恒绿也是这一形）；
     /// ③ 三枚行号按页上那条腿的次序走，走完那一排**回到开工时的长度**（加一枚、挪一枚、删一枚），
@@ -4445,7 +5330,9 @@ mod tests {
     /// ④ 种下去的那一枚方案**在盘上**（走的是唯一那条写路，不是本模块手写的串），而排一字未动、
     ///    落盘次数恰好 +1 —— 这一条与上面 io 那一档相反：io 种的是门自己的档，这一档种的是
     ///    **设置里那一枚键**，所以它必须落一次盘，也必须只落一次；
-    /// ⑤ 保存用的名字此刻还不是任何一枚方案的名字（否则「多一行」那一腿永远读不出动静）。
+    /// ⑤ 保存用的名字此刻还不是任何一枚方案的名字（否则「多一行」那一腿永远读不出动静）；
+    /// ⑥ 页上那两枚 IO 手的对面在盘上：要导入的那份档**在**、导出的那份**不在**（留着上一趟那份，
+    ///    「导出写了」这一格就先绿），而导入那一腿的分母是开档时按页上**同一只手**算出的段数。
     #[test]
     fn the_palette_door_plants_a_scheme_the_page_can_actually_apply() {
         let _serial = door_serial();
@@ -4472,7 +5359,7 @@ mod tests {
 
         let plan = pal_plan_line();
         let p: Vec<&str> = plan.split('|').collect();
-        assert_eq!(p.len(), 10, "计划 {plan:?} 不是十段：{said}");
+        assert_eq!(p.len(), 12, "计划 {plan:?} 不是十二段：{said}");
         assert_eq!(
             qml_plan_guard("palArmed"),
             p.len(),
@@ -4574,6 +5461,56 @@ mod tests {
             "开档这一手应当只落一次盘（种方案那一次）"
         );
 
+        // ⑥ 页上那两枚 IO 钮的两份对面。导入那一腿读的那份档必须**在盘上**（门不许拿自己手里的一串
+        //    色当「那份档」），导出那一落点必须**不在**（上一趟留下的那份会让「读回来是不是这一排」
+        //    先绿）。段数那一问走的是腿里那**同一只手**，所以「窗画了几段」这件事有一枚与本机那一排
+        //    无关的分母 —— 少这一枚，那一格量的就成了窗自己数的数（#433）。
+        let pal_export_at = Path::new(p[10]);
+        let pal_import_at = Path::new(p[11]);
+        assert_eq!(
+            pal_export_at.file_name().and_then(|n| n.to_str()),
+            Some(PAL_IO_EXPORT_NAME),
+            "计划第十段不是门草稿纸上那一份导出：{:?}",
+            p[10]
+        );
+        assert_eq!(
+            pal_import_at.file_name().and_then(|n| n.to_str()),
+            Some(PAL_IO_IMPORT_NAME),
+            "计划第十一段不是门草稿纸上那一份导入：{:?}",
+            p[11]
+        );
+        assert!(
+            !pal_export_at.exists(),
+            "导出那一份还带着上一趟的字：{}（{said}）",
+            pal_export_at.display()
+        );
+        assert!(
+            pal_import_at.exists(),
+            "计划第十一段那份档不在盘上，导入那一腿没有对面：{:?}",
+            p[11]
+        );
+        // 腿里那一只手交回的是 `RECORD` 连着的一串 —— 窗拿的正是这一把刀（`splitLine`），所以
+        // 「窗画了几段」在这一枚纯问里也数得出来，而它必须与开档算的那枚分母是同一个数。
+        let preview_line = pal_io_preview_line(p[11]);
+        let preview: Vec<&str> = preview_line.split(RECORD).collect();
+        assert_eq!(
+            preview[1..].len(),
+            with_pal(|d| d.io_preview_rows),
+            "开档算的那枚行数（抬头另算）与腿里同一只手再算一次不是同一个数：{preview:?}"
+        );
+        assert!(
+            preview
+                .first()
+                .is_some_and(|h| h.starts_with("[palette] 读到")),
+            "抬头那一句不是那份档自己说的：{preview:?}"
+        );
+        assert!(
+            preview
+                .last()
+                .is_some_and(|t| *t == crate::settings::PALETTE_UNAPPLIED_PAGE),
+            "预览那一句里没有「按「确认应用」才会写入」—— 页上那一格就成了「已经换好了」：{preview:?}"
+        );
+
         // 收尾：把档还原、把这趟的读数从静态里清掉，下一枚读到的才是它自己那一趟。
         let back = pal_write_list(PAL_SCHEME_KEY, &schemes_at_arm);
         assert!(back.ok(), "还原种的那一枚没写成：{}", back.text());
@@ -4586,6 +5523,43 @@ mod tests {
         // 还原的这一次写**也在钉的那一头**走完，才把写回落点交还给本进程原来那一份：早一步交还，
         // 收尾这一写就落在用户活的 config 上 —— 那正是上面那一段要拦的事。
         crate::settings::pin_writes(&before_write_to);
+    }
+
+    /// 页上那两枚 IO 钮背后的两枚**纯**读数：段数与字数。前者是导入那一腿的分母 —— 门不许拿窗自己
+    /// 数的数当对面，所以「桥交回几段」这件事必须在不开窗的前提下也问得出来（[`pal_io_rows`] 与
+    /// [`io_preview_line`] 同一族规矩：纯函数进单测，碰 `with(...)` 的手进门）。后者钉的是「桥多说
+    /// 一枚字，页上就得有一枚钮画它」：多一枚是没人说的字，少一枚是空白钮。
+    #[test]
+    fn the_palette_io_hands_count_rows_and_words_without_a_window() {
+        let text = format!(
+            "[palette] 读到 2 枚\n\n  （没有读不出的行）\n{}\n",
+            crate::settings::PALETTE_UNAPPLIED_PAGE
+        );
+        let rows = pal_io_rows(&text);
+        assert_eq!(rows.len(), 3, "空行不算一行，末尾那枚换行也不多算一行：{rows:?}");
+        assert_eq!(rows[0], "[palette] 读到 2 枚");
+        assert_eq!(rows[2], crate::settings::PALETTE_UNAPPLIED_PAGE);
+        assert!(pal_io_rows("").is_empty(), "一句也没有时页上不该画出一行空白");
+
+        let word_line = pal_word_line();
+        let words: Vec<&str> = word_line.split(RECORD).collect();
+        assert_eq!(words.len(), 13, "抬头一枚 + 十二枚钮：{words:?}");
+        assert_eq!(words[0], PAL_TITLE);
+        assert_eq!(words[9], PAL_IO_EXPORT_WORD);
+        assert_eq!(words[10], PAL_IO_IMPORT_WORD);
+        assert_eq!(words[11], PAL_IO_APPLY_WORD);
+        assert_eq!(words[12], PAL_IO_CANCEL_WORD);
+
+        const QML: &str = include_str!("../qml/SettingsWindow.qml");
+        let drawn: Vec<usize> = (0..words.len())
+            .filter(|at| QML.contains(&format!("win.palWords[{at}]")))
+            .collect();
+        assert_eq!(
+            drawn.len(),
+            words.len(),
+            "桥交回 {} 枚字，页上画了这些枚：{drawn:?}",
+            words.len()
+        );
     }
 
     /// 开关的分岔本体：**档里存着 bool 才算开关**。这一枚判错的坏不是「少画一格」，而是

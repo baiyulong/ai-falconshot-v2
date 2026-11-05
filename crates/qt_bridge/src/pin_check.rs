@@ -6183,6 +6183,95 @@ mod tests {
         );
     }
 
+    /// 「钉成一枚贴图」与「屏幕上长出一扇窗」是两件事，中间那一手就是本格的判据：规矩本身写在
+    /// [`crate::session::qobject::Session::history_pin`] 头顶那段注释里（名册自己不会说话），这里
+    /// 只加一枚尺，量每一条**真叫过那四扇门**的腿，自己的身体里有没有跟着搬读数那一句。
+    ///
+    /// 为什么由源码扫描来判，而不是由一趟真机判：搬读数走的是 `CxxQtThread::queue`，notify 落在
+    /// **下一拍**，页上任何一腿在同一次 JS turn 里问 `session.count` 只能问到自己那一份旧数 ——
+    /// 量具读不到「窗后来长出来了」，能看见那一幕的只有 `main.qml` 的 `syncPins`，而它不归本档点名。
+    ///
+    /// 只扫桥那一侧的四只文件。`main.rs` 的 `--paste` 与量具那一族的 `add_from_file` 都跑在
+    /// `app.exec()` 之前（或压根不造窗），那一侧的窗由 `Component.onCompleted` 那一次 `refresh`
+    /// 统一带来；把它们算进来，这一格就会红在一件不需要红的事上。`drop_in.rs` 是第四只：§5.8.4
+    /// 那一支的钉图**不在**那三只里，而在一条自己起的工作线程投回 GUI 的那一手里，那一趟没有
+    /// `Component.onCompleted` 可以等 —— 它落地的此刻，桌上可能已经有一扇窗了。
+    #[test]
+    fn every_leg_that_makes_a_pin_republishes_the_roster() {
+        let code = |l: &str| -> String {
+            let t = l.trim_start();
+            if t.starts_with("//") {
+                String::new()
+            } else {
+                t.to_string()
+            }
+        };
+        // 六扇「真会多出一枚贴图」的门。文档里提一次不算，所以注释先抹掉 —— 留着的话，任何一段
+        // 提到这些名字的注释都会被读成一条没搬读数的腿。`land_drop(` 是 §5.8.4 那一支：拖进来的
+        // 每一格都可能钉成一枚新贴图，而它落在 `drop_in.rs` 里（那只文件也在下面名单里），不在
+        // 这一整个程序其余任何一处。
+        //
+        // 最后那一名带上了 `m.` 那一位读者，因为只有它带：§5.8.1 那一枚钮的桥侧腿与 mask 侧的档
+        // **同名**（`pin_selection`），于是它在 `mask_view.rs` 的声明块里也长了一行 —— 那一行只是
+        // 签名，背后没有一次调用，把它读成"一条没搬读数的腿"就是这把尺自己报错。
+        const MAKERS: [&str; 6] = [
+            "pin_history_row(",
+            "save_then_pin(",
+            "paste_from_clipboard(",
+            "pin_pictures(",
+            "land_drop(",
+            "m.pin_selection(",
+        ];
+        const BRIDGE: [&str; 2] = ["refresh()", "republish_roster()"];
+        // 搬读数那一句就在调用之后（夹着的多半是注释，已被抹掉），十来行之外才出现的就不算它了：
+        // 隔着十几行的两句话，谁先谁后由不了这一格判。
+        const WINDOW: usize = 10;
+        let audit = |file: &str, src: &str, drop: &str| -> Vec<String> {
+            let lines: Vec<String> = src
+                .lines()
+                .map(code)
+                .filter(|l| !l.trim().is_empty())
+                .filter(|l| drop.is_empty() || !l.contains(drop))
+                .collect();
+            let mut out = Vec::new();
+            for (i, line) in lines.iter().enumerate() {
+                let Some(maker) = MAKERS.iter().find(|m| line.contains(*m)) else {
+                    continue;
+                };
+                let ahead = lines[i..lines.len().min(i + WINDOW)]
+                    .iter()
+                    .any(|n| BRIDGE.iter().any(|b| n.contains(*b)));
+                if !ahead {
+                    out.push(format!(
+                        "{file} 第 {} 行叫过「{maker}」，之后 {WINDOW} 行内没有搬读数那一句",
+                        i + 1
+                    ));
+                }
+            }
+            out
+        };
+        let mut missed = Vec::new();
+        for (file, src) in [
+            ("session.rs", include_str!("session.rs")),
+            ("mask_view.rs", include_str!("mask_view.rs")),
+            ("hotkey.rs", include_str!("hotkey.rs")),
+            ("drop_in.rs", include_str!("drop_in.rs")),
+        ] {
+            missed.extend(audit(file, src, ""));
+        }
+        assert!(
+            missed.is_empty(),
+            "钉成了贴图却没把名册搬过桥：名册里多一枚、屏幕上少一扇窗，而产品那句说的是「也钉成了贴图」\n{}",
+            missed.join("\n")
+        );
+        // 反证（#274）：把 `refresh()` 那一类句子全抠掉，这把尺必须读得出一排没搬读数的腿。
+        let hole = audit("session.rs", include_str!("session.rs"), "refresh()");
+        assert!(
+            !hole.is_empty(),
+            "这一格的尺抓不到「钉成了但没搬读数」那一形：抠掉每一句 `refresh()` 之后仍读成干净"
+        );
+    }
+
     /// §5.10.2 那五枚行各自的十三面（#274/#440/#461）：判据一枚也不并，所以坏法一枚也只红一枚。
     ///
     /// 十三面：全好、批量被那只手偷偷降成单枚、空手也发号、搬动顺手换走一张纹理、反手四枚各自
@@ -7717,8 +7806,8 @@ mod tests {
                 "`{id}` 不许是 ApplicationShortcut：那会把 {cap} 从别的窗带走：{text}"
             );
             assert!(
-                text.contains("enabled: !groupField.activeFocus"),
-                "`{id}` 少了格栅窗那处退让：用户打「{cap}」就成了一次手势：{text}"
+                text.contains("enabled: !win.typing"),
+                "`{id}` 少了键盘那一处退让：框开着时用户打「{cap}」是在填框，不是手势：{text}"
             );
             assert!(
                 text.contains(&format!("onActivated: {action}.trigger()")),
@@ -7726,13 +7815,39 @@ mod tests {
             );
         }
         // 退让那一枚数数的是**代码行**而不是裸词：上面那封信里就引用了同一串字面（带反引号），
-        // 拿裸词数会数出四枚而产品只有三枚——这一族在 `translate_selection` 那一枚反证里记过同一课。
+        // 拿裸词数会数出多枚而产品只有五枚——这一族在 `translate_selection` 那一枚反证里记过同一课。
+        //
+        // 五枚而不三枚：`+`/`-` 那两枚缩放键带着同一处退让，而它们是 §5.9.2 步骤 2 明写给的手
+        // （「滚动鼠标滚轮，或使用 `+`、`-`」），不是这一层自己长出来的。这一枚数的是「谁身上长了
+        // 这处退让」，所以它既读得出漏（新键忘了退让 = 打一个字成一次手势），也读得出多。
+        //
+        // 前缀带换行与缩进，为的是把旋转灰度那三枚（`!win.typing` 就是行的全部）与缩放那两枚
+        // （后面还接 `&& !win.cropMode`）一起收进同一枚数：五枚键读的是同一格，这一枚就只问这一格。
         assert_eq!(
-            src.matches("\n        enabled: !groupField.activeFocus")
-                .count(),
-            3,
-            "这处退让只该长在那三枚键上，读到不同"
+            src.matches("\n        enabled: !win.typing").count(),
+            5,
+            "这处退让该长在旋转、灰度与缩放那五枚键上，读到不同"
         );
+        // 退让的那一格只有一名作者：窗上「谁在吃键盘」的名单只写一遍。抄第二遍的地方一旦与第一遍
+        // 走散（新立一扇框忘了补进某一处），名单就不再是同一件事的两种说法了。
+        assert_eq!(
+            src.matches("readonly property bool typing").count(),
+            1,
+            "`win.typing` 的声明该只有一处，读到不同"
+        );
+
+        // ②b 裁剪那一层的两枚键同样不许趁框开着说话；Enter/ Esc 的落点各只有一处。
+        for id in ["cropEnterKey", "cropEscapeKey"] {
+            let text = block(&format!("id: {id}"));
+            assert!(
+                text.contains("enabled: win.cropMode && !win.typing"),
+                "`{id}` 该只在裁剪层里听，且让开正在填框的手：{text}"
+            );
+            assert!(
+                text.contains("context: Qt.WindowShortcut"),
+                "`{id}` 不许是 ApplicationShortcut：那会把裁剪层的键从别的窗带走：{text}"
+            );
+        }
 
         // ③ 反证两面：PRD 没写过的词不许进窗；PRD 没给键的那三只手不许自己长出一枚键来
         // （§5.9.6 只说「选择水平翻转或垂直翻转」、§5.9.8 只说「选择"颜色反转"」，两句都没有键）。

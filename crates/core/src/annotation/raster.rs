@@ -29,7 +29,7 @@ use super::model::{
 use crate::frame::Frame;
 use crate::frame::FrameError;
 use crate::geometry::PhysRect;
-use crate::imageops;
+use crate::imageops::{self, Shape};
 use std::f64::consts::TAU;
 
 /// One straight stroke: a start and an end point, in picture coordinates.
@@ -635,14 +635,32 @@ fn runs(pts: &[(f64, f64)], closed: bool, dash: Dash, width: f64) -> Vec<Run> {
 }
 
 /// Paint a stroked set of runs into the plane.
+///
+/// The round pen: what a line, a box outline, an arrow head and §5.7.13's frame are
+/// drawn with. A tool that carries a brush goes through [`paint_brush_stroke`] so its
+/// §5.7.8 形状 setting is read by something.
 fn paint_stroke(plane: &mut Plane, stroke: &[Run], half: f64, feather: f64, color: [u8; 4]) {
-    stroke_into(plane, stroke, half, feather, color, false);
+    stroke_into(plane, stroke, half, feather, Shape::Circle, color, false);
 }
 
 /// The same stroke landing on top of what the plane already holds. A frame drawn
 /// over §5.7.13's enlarged copy is a second ink, not a second pass of one pen.
 fn stroke_on_top(plane: &mut Plane, stroke: &[Run], half: f64, feather: f64, color: [u8; 4]) {
-    stroke_into(plane, stroke, half, feather, color, true);
+    stroke_into(plane, stroke, half, feather, Shape::Circle, color, true);
+}
+
+/// A stroke from one of the tools that drag a brush (§5.7.7, §5.7.8, §5.7.9,
+/// §5.7.10, §5.7.14): its size, feather **and shape** all come from the element.
+fn paint_brush_stroke(plane: &mut Plane, stroke: &[Run], e: &Element, color: [u8; 4]) {
+    stroke_into(
+        plane,
+        stroke,
+        half_of(e),
+        feather_of(e),
+        e.style.brush.shape,
+        color,
+        false,
+    );
 }
 
 fn stroke_into(
@@ -650,6 +668,7 @@ fn stroke_into(
     stroke: &[Run],
     half: f64,
     feather: f64,
+    shape: Shape,
     color: [u8; 4],
     top: bool,
 ) {
@@ -662,7 +681,7 @@ fn stroke_into(
             );
             let mut best = f64::INFINITY;
             for (a, b) in stroke {
-                let d = dist_to_seg(p, *a, *b);
+                let d = brush_dist(shape, p, *a, *b);
                 if d < best {
                     best = d;
                 }
@@ -676,6 +695,72 @@ fn stroke_into(
             }
         }
     }
+}
+
+/// How far a pixel sits outside a pen of the given shape swept along `a`-`b`.
+fn brush_dist(shape: Shape, p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    match shape {
+        Shape::Circle => dist_to_seg(p, a, b),
+        Shape::Rect => box_pen_dist(p, a, b),
+        Shape::Ellipse => ellipse_pen_dist(p, a, b),
+    }
+}
+
+/// Distance to an elliptical pen swept along a run: the same Euclidean distance measured
+/// in the space where the axis **across the run** is squeezed by
+/// [`Shape::Ellipse`]'s [`imageops::ELLIPSE_RATIO`], so the swept stamp is the Minkowski
+/// sum of the run and an ellipse whose long axis lies across the direction of travel -
+/// what a flat marker tip leaves behind.
+///
+/// Two readings this shape owes. A run with no length has no "across" to ask about, and
+/// falls back to a horizontal long axis: that is the limit of a horizontal run, and the
+/// only dab the page can get (`b == a` is a press that never moved). And the number handed
+/// back is not a Euclidean distance, so [`ramp`]'s feather band comes out wider along the
+/// long axis than the short one - an edge that softens unevenly is what a flat tip looks
+/// like, and evening it out would mean solving a quartic per pixel.
+fn ellipse_pen_dist(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (vx, vy) = (b.0 - a.0, b.1 - a.1);
+    let (px, py) = (p.0 - a.0, p.1 - a.1);
+    let len = vx.hypot(vy);
+    if len == 0.0 {
+        return px.hypot(py / imageops::ELLIPSE_RATIO);
+    }
+    let (ux, uy) = (vx / len, vy / len);
+    let along = px * ux + py * uy;
+    let across = px * uy - py * ux;
+    (along - along.clamp(0.0, len)).hypot(across.abs() / imageops::ELLIPSE_RATIO)
+}
+
+/// Distance to a square pen swept along a run — the Chebyshev distance to the
+/// segment, which is the Minkowski sum of the run and a square of the brush size.
+///
+/// The `max` of two absolute linear functions is convex and piecewise linear, so its
+/// minimum over `t` sits at an end of the run or at one of the four kinks: where a
+/// component reaches zero or where the two components cross. Testing those five is
+/// exact, and cheaper than marching the run.
+fn box_pen_dist(p: (f64, f64), a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (px, py) = (p.0 - a.0, p.1 - a.1);
+    let (vx, vy) = (b.0 - a.0, b.1 - a.1);
+    let f = |t: f64| (px - vx * t).abs().max((py - vy * t).abs());
+    let mut best = f(0.0).min(f(1.0));
+    let mut consider = |t: f64| {
+        if t.is_finite() {
+            best = best.min(f(t.clamp(0.0, 1.0)));
+        }
+    };
+    if vx != 0.0 {
+        consider(px / vx);
+    }
+    if vy != 0.0 {
+        consider(py / vy);
+    }
+    if vx != vy {
+        consider((px - py) / (vx - vy));
+    }
+    if vx != -vy {
+        consider((px + py) / (vx + vy));
+    }
+    best
 }
 
 /// Paint the inside of a box shape: analytic for the solid case.
@@ -862,20 +947,27 @@ fn draw(
         Kind::Pencil | Kind::Marker => {
             let pts = path_pts(&e.geom);
             let segs = runs(&pts, false, Dash::Solid, e.style.brush.size as f64);
-            paint_stroke(plane, &segs, half, feather, e.style.color);
+            paint_brush_stroke(plane, &segs, e, e.style.color);
         }
         Kind::Mosaic | Kind::Blur => {
             let crop = base.crop(local)?;
-            let patch = match e.style.effect {
+            // The element's kind picks the effect, not the style: a 模糊 element whose
+            // style still carried a mosaic used to paint a mosaic (§5.7.10).
+            let patch = match e.style.effect_for(e.kind) {
                 imageops::Effect::Mosaic { block } => imageops::mosaic(&crop, block)?,
                 imageops::Effect::Blur { radius } => imageops::blur(&crop, radius)?,
             };
+            // The mask is not ink, so its colour is irrelevant — but its alpha is the
+            // §5.7.21 transparency, which is what decides how much of the untouched
+            // picture shows back through the patch once `tint_with` has replaced the
+            // pixels. A hard 255 here is why a see-through pen still hid the screen.
+            let mask = [0, 0, 0, e.style.color[3]];
             match box_r {
-                Some(r) => paint_box_fill(plane, &r, e.kind, e.style.corner_radius, [0, 0, 0, 255]),
+                Some(r) => paint_box_fill(plane, &r, e.kind, e.style.corner_radius, mask),
                 None => {
                     let pts = path_pts(&e.geom);
                     let segs = runs(&pts, false, Dash::Solid, e.style.brush.size as f64);
-                    paint_stroke(plane, &segs, half, feather, [0, 0, 0, 255]);
+                    paint_brush_stroke(plane, &segs, e, mask);
                 }
             }
             plane.tint_with(&patch, local);
@@ -886,7 +978,7 @@ fn draw(
                 None => {
                     let pts = path_pts(&e.geom);
                     let segs = runs(&pts, false, Dash::Solid, e.style.brush.size as f64);
-                    paint_stroke(plane, &segs, half, feather, [0, 0, 0, 255]);
+                    paint_brush_stroke(plane, &segs, e, [0, 0, 0, 255]);
                 }
             }
             if !e.style.erase_to_transparent {
@@ -985,8 +1077,9 @@ fn draw(
                     }
                 }
             }
-            if let Some((color, width)) = e.style.text_outline {
-                let ring = dilate(&cov, local.w, local.h, width.max(1).div_ceil(2));
+            if e.style.text_outline {
+                let (color, width) = e.style.outline_for();
+                let ring = dilate(&cov, local.w, local.h, width.div_ceil(2));
                 for i in 0..cov.len() {
                     let v = ring[i].saturating_sub(cov[i]);
                     if v > 0 {
@@ -1299,6 +1392,226 @@ mod tests {
         // the effect reading the half-painted overlay instead of the screenshot.
         assert_eq!(out.get(18, 18), BASE, "mosaic over the red fill");
         assert_eq!(out.get(30, 30), RED, "the fill the mosaic did not cover");
+    }
+
+    /// A picture with one hard edge in it, at x=28.
+    ///
+    /// 28 is deliberately not a multiple of the block size the tests use: a mosaic of a
+    /// picture whose blocks each hold one colour is that picture again, and then there
+    /// is nothing to tell a mosaic from a blur from. With the edge inside a block, the
+    /// two tools turn it into two different pictures and one pixel says which ran.
+    fn edged() -> Frame {
+        let mut f = Frame::filled(64, 48, RED).unwrap();
+        for y in 0..48 {
+            for x in 28..64 {
+                f.set(x, y, BLUE);
+            }
+        }
+        f
+    }
+
+    fn effect_over_all(kind: Kind, style: Style) -> Frame {
+        render(
+            &edged(),
+            &doc1(kind, Geom::Rect(PhysRect::new(0, 0, 64, 48)), style),
+            &NoGlyphs,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_blur_element_blurs_even_while_its_style_carries_a_mosaic() {
+        // §5.7.10: 模糊 drew a mosaic, because the rasteriser asked the style which tool
+        // had made the element and the style had never been told.
+        let out = effect_over_all(
+            Kind::Blur,
+            Style {
+                effect: Effect::Mosaic { block: 8 },
+                ..Style::default()
+            },
+        );
+        // A block of 8 aligned on the picture cannot reach across the edge from x=32, so
+        // a mosaic leaves that pixel pure blue; a radius-8 blur pulls the red onto it.
+        assert_ne!(
+            out.get(32, 24),
+            BLUE,
+            "an element made by 模糊 has to be blurred, whatever its style says"
+        );
+    }
+
+    #[test]
+    fn a_mosaic_element_mosaics_even_while_its_style_carries_a_blur() {
+        // The other half of the same rule, and the one that keeps §5.7.9's tool honest:
+        // switching from 模糊 to 马赛克 must not leave a blur in the picture.
+        let out = effect_over_all(
+            Kind::Mosaic,
+            Style {
+                effect: Effect::Blur { radius: 8 },
+                ..Style::default()
+            },
+        );
+        assert_eq!(out.get(32, 24), BLUE, "block 32..39 is one flat colour");
+        assert_eq!(out.get(36, 24), BLUE, "and so is its neighbour");
+    }
+
+    #[test]
+    fn the_transparency_knob_reaches_the_effect_tools_too() {
+        let at = |alpha: u8| {
+            effect_over_all(
+                Kind::Mosaic,
+                Style {
+                    color: [255, 0, 0, alpha],
+                    effect: Effect::Mosaic { block: 8 },
+                    ..Style::default()
+                },
+            )
+        };
+        let opaque = at(255);
+        let half = at(128);
+        // Inside the block the mosaic averages across the edge, so the patch is not the
+        // picture and the difference between the two is the alpha's doing.
+        assert_ne!(opaque.get(24, 24), RED, "block 24..31 straddles the edge");
+        assert_ne!(
+            half.get(24, 24),
+            opaque.get(24, 24),
+            "§5.7.21 step 3's 透明度 has to reach 马赛克 and 模糊 as well as ink"
+        );
+        assert!(
+            half.get(24, 24)[0] > opaque.get(24, 24)[0],
+            "a see-through patch lets more of the picture under it back through"
+        );
+    }
+
+    #[test]
+    fn the_same_colour_at_two_alphas_paints_two_different_pixels() {
+        let at = |alpha: u8| {
+            render1(
+                Kind::Rect,
+                Geom::Rect(PhysRect::new(8, 8, 16, 12)),
+                Style {
+                    color: [255, 0, 0, alpha],
+                    fill: Some([255, 0, 0, alpha]),
+                    width: 4,
+                    ..Style::default()
+                },
+            )
+        };
+        let solid = at(255);
+        let half = at(128);
+        assert_eq!(
+            solid.get(16, 14),
+            RED,
+            "an opaque pen covers what is under it"
+        );
+        let p = half.get(16, 14);
+        assert_ne!(
+            p, RED,
+            "§5.7.2 step 2's 透明度 is not thrown away on the way"
+        );
+        assert_ne!(p, BASE, "and it is not thrown away the other way either");
+        assert!(
+            p[0] > BASE[0] && p[0] < 255,
+            "the red is only partly red: {p:?}"
+        );
+        assert!(
+            p[2] > 0 && p[2] < BASE[2],
+            "the blue is only partly gone: {p:?}"
+        );
+    }
+
+    #[test]
+    fn a_square_brush_lays_a_square_and_a_round_one_a_disc() {
+        // §5.7.8/§5.7.9's 形状 was a setting nothing read; the two pens are the same pen
+        // until a corner is asked for.
+        let at = |shape: Shape| {
+            render1(
+                Kind::Pencil,
+                Geom::Path(vec![PhysPoint::new(20, 20)]),
+                Style {
+                    color: RED,
+                    brush: Brush {
+                        size: 10,
+                        shape,
+                        feather: 0,
+                    },
+                    ..Style::default()
+                },
+            )
+        };
+        let round = at(Shape::Circle);
+        let square = at(Shape::Rect);
+        assert_eq!(round.get(22, 20), RED);
+        assert_eq!(
+            square.get(22, 20),
+            RED,
+            "straight out of the dot they agree"
+        );
+        // (24,24) is 4.5 pixels away in each direction: the corner of a 10 px square
+        // reaches it, the rim of a 10 px disc is a quarter of a pixel short.
+        assert_eq!(square.get(24, 24), RED, "a square brush has corners");
+        assert_eq!(round.get(24, 24), BASE, "a disc has none to reach with");
+    }
+
+    #[test]
+    fn an_elliptical_brush_widens_the_band_across_travel_and_not_the_cap() {
+        // §5.7.8 规则「支持圆形或椭圆形笔刷」的第三档。量的是**同一枚 size** 下两支点各盖到
+        // 多远：长轴是笔头扁出来的那一个方向，不是把整支笔放大 —— 所以垂直于走笔方向的那一侧
+        // 该宽出一倍，而末端伸出去的那一截仍是半枚笔头。用 铅笔 而不是 荧光笔 下这一档，是
+        // 邻居那枚测试的同一口径：荧光笔的默认半透明会把 `== RED` 变成另一问，而那一问早有
+        // 它自己的证人。
+        let at = |shape: Shape| {
+            render1(
+                Kind::Pencil,
+                Geom::Path(vec![PhysPoint::new(20, 20), PhysPoint::new(30, 20)]),
+                Style {
+                    color: RED,
+                    brush: Brush {
+                        size: 10,
+                        shape,
+                        feather: 0,
+                    },
+                    ..Style::default()
+                },
+            )
+        };
+        let round = at(Shape::Circle);
+        let flat = at(Shape::Ellipse);
+        // 一支横着走的笔：带宽是上下方向的事。几何那一头的点是整数、像素自己带 0.5，所以这里
+        // 挑的每一枚都离两侧的边缘至少一枚整像素。size 10 ⇒ 圆的 ±5（到 y=24 为止），椭圆的
+        // ±10。y=28 那枚像素中心离轴线 8.0，除以 2 得 4.0 —— 在椭圆的带里、在圆的带外三格。
+        assert_eq!(round.get(25, 24), RED, "两支点共用的那一截");
+        assert_eq!(flat.get(25, 24), RED);
+        assert_eq!(round.get(25, 28), BASE, "圆的那一支到这里已经出了带");
+        assert_eq!(flat.get(25, 28), RED, "扁出来的那一倍没有落到带里");
+        // 末端：越过那一段轴线的距离原样参与比较，所以两支点伸出去的都是 5。
+        assert_eq!(flat.get(33, 20), RED, "末端那一截两支点走到同一格");
+        assert_eq!(flat.get(36, 20), BASE, "而那一截到底还是半枚笔头");
+        assert_eq!(round.get(33, 20), RED, "圆的是同一个数");
+    }
+
+    #[test]
+    fn a_dab_with_no_direction_takes_the_long_axis_where_a_horizontal_run_leaves_it() {
+        // 一枚没动过的按下没有"垂直于走笔方向"可问，那一枚点于是取横着走的那一支笔的极限：
+        // 长轴上下。这一档把那条极限钉住，因为它是上面那条规则在页上唯一看得见的另一种形状。
+        let at = |shape: Shape| {
+            render1(
+                Kind::Pencil,
+                Geom::Path(vec![PhysPoint::new(20, 20)]),
+                Style {
+                    color: RED,
+                    brush: Brush {
+                        size: 10,
+                        shape,
+                        feather: 0,
+                    },
+                    ..Style::default()
+                },
+            )
+        };
+        let flat = at(Shape::Ellipse);
+        assert_eq!(flat.get(20, 28), RED, "上下那一侧扁出了一倍");
+        assert_eq!(flat.get(28, 20), BASE, "左右那一侧没有跟着变宽");
+        assert_eq!(at(Shape::Circle).get(20, 28), BASE, "圆的那一支上下也只有 ±5");
     }
 
     fn erase_doc(transparent: bool) -> Document {
@@ -1972,11 +2285,14 @@ mod tests {
                 } else {
                     None
                 };
-                s.text_outline = if v.is_multiple_of(3) {
-                    Some((GREEN, 2))
-                } else {
-                    None
-                };
+                s.text_outline = v.is_multiple_of(3);
+                if v.is_multiple_of(3) {
+                    // 开关之外那两格也随着变，这样这台机器既走到「配过的描边」那一臂，也走到
+                    // 「没人配过、由 `outline_for` 替笔色让位」那一臂（关着时两格原样留着，正是
+                    // [`Style::text_outline`] 头顶那句的读数）。
+                    s.set_outline_colour([GREEN[0], GREEN[1], GREEN[2]]);
+                    s.set_outline_width(2);
+                }
             }
             Kind::Zoom => {
                 s.connection_line = v.is_multiple_of(2);

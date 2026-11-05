@@ -132,6 +132,16 @@
 - 全局快捷键注册失败时，应显示冲突提示。
 - 配置文件损坏时，应使用默认配置启动，并保留损坏文件用于恢复。
 
+> **实现口径（2026-11-04）**  
+>
+> **驻留的是「系统托盘」那一臂**：本程序只有 Windows 一条腿（`crates/` 下就 `core`、`platform-windows`、`qt_bridge` 三枚 crate），菜单栏那一臂（`NSStatusItem` / `statusBar`）没有任何代码，搜出来是零 —— 句子里那个「或」按前一支结案。托盘挂不挂由 `[general] show_tray` 现读现判（`src/hotkey.rs:1130 tray_from`）：关着 ⇒ `Pump::start` 第二枚参数交 `None`，`Shell_NotifyIcon` 那一头不上，而热键那一支照旧注册。  
+>
+> **「正确反映应用运行状态」这一句由 tooltip 承担，图标本体一动不动**：`nid.hIcon` 用的是外壳自己的那枚通用应用图标（`crates/platform-windows/src/hotkey.rs:926 LoadIconW(None, IDI_APPLICATION)`，`NIM_ADD` 那一刻填进 `:931`），此后全仓库只有一枚 `NIM_MODIFY` —— `hotkey.rs:1203 apply_tip`，而它的 `uFlags` 只带 `NIF_TIP`（`:1215`）。所以运行状态读得到的是**字**：「Falconshot 正在运行（N 个全局热键待命，菜单里有截图）」，N 是外壳真收下的枚数而不是本进程问过的枚数（`src/hotkey.rs:1164`，整句唯一作者 `hotkey.rs:2429 tip_line`），§5.11 规则③ 之后独显期间还是同一只手把它改成「独显中：留着 N 枚」。  
+>
+> 不覆盖：图标不随状态换图、不加角标、不变色 —— 正在识别、有更新可装、崩溃恢复了几枚贴图这几档在图标上是同一枚通用图；`show_tray = false` 时这一臂整个没有，那一刻屏幕上反映运行状态的地方只剩浮窗那一句 `Session.status`（§8.4 那一档说的是「要用户看一眼的行」，与这句的「运行状态」不是一件事）。  
+>
+> 证人：`cargo test -p qt_bridge` 的 `tray_honours_the_general_switch`（`show_tray` 的分岔本体，纯函数）与 `the_tip_sentence_has_one_author`（那一句的作者，含 `szTip` 127 单元上限那一格 —— 句子写胖了会被 `write_wide` 静默截断，所以钉在单测里）。真机那一半本轮没有门：本机桌面锁定，托盘那几扇门跑不动。
+
 ### 5.1.2 开机启动
 
 **操作步骤**
@@ -164,6 +174,16 @@
 - 当前前台应用不应失去不必要的内容状态。
 - 鼠标所在界面元素可被自动识别。
 
+> **实现口径（2026-11-04）**  
+>
+> **步 1 成，但出厂那枚键不是文档举例的 `F1`**：`hotkey.actions.capture` 的出厂值是 `ctrl+shift+a`（`crates/core/src/config.rs:1545`，证人 `:4255` 与 `:4073`），`F1` 只是页上那一行填得进去的一串。注册只发生一次（`qt_bridge::hotkey::install` → `Pump::start`），所以页上拨完这一行不改本进程——它因此在重启名单的那一族里（`config.rs:66 RESTART_PREFIXES`，对照表那一行 `:145`）。  
+>
+> **步 2「应用冻结或捕获当前屏幕画面」成的是前半支，而后半支现在会说**：一场遮罩读的是 `open` 那一刻的**一张** `ScreenSnapshot`，`[capture] freeze_frame` 与 `[capture] default_mode` 各只有一次读数（`mask.rs:1538 apply_opening`，调用点 `mask.rs:1329-1330`，读的是 `open` 开头那枚快照）。进场落在哪一块由 `default_mode` 现判现落地（`mask.rs:1392 opening_hole` 四臂：`region`⇒自由、`fullscreen`⇒虚拟桌面并集、`window`⇒既有的 `capture::window_under_cursor`、`repeat`⇒`capture::last_region`，四臂都经 `set_hole` 这一位作者出去）；`freeze_frame` 关着时交回的是 `mask.rs:1437 freeze_notice` 那一句「这一枚键这一版产品做不到」，**不是**把画面改成看起来像活的——实时背景那一臂仍欠着，另记一条账。`element` 那一臂同一枚理由：`mask.rs:1421` 明写做不到，因为 `element_chain` 三家全交空表（`core/src/capture.rs:198`、`platform-windows/src/win.rs:95` 与 `:228`）。两枚键说的话都进 `say`（屏幕上看得见）而不进 `problems`：一枚用户自己拨过的开关不该把 `--mask` 那扇门红在他的决定上。  
+>
+> **步 3 的三件都在屏幕上，而且键盘挪框之后放大镜跟着重铺**：放大镜那一格是 `qml/CaptureMask.qml`，桥侧那族 qproperty 在 `mask_view.rs:310-342`（唯一的写处 `:1846 apply_magnifier`），坐标与颜色各由 `mask.rs:2299` 拿 `ScreenSnapshot::color_label` 按 `[capture] magnifier_color_format` 拼（HEX/RGB/HSL 三族一台解析器），页侧 `CaptureMask.qml:1148-1149` 画那一句。本轮补的是第 4 步那一手：`mask.rs:2189 magnifier_at_point` / `:2361 nudge_magnified` → `mask_view.rs:1384 nudge`，页侧 `CaptureMask.qml:73 step()` 每挪一格 emit `grabbed()`，锚点不再由页面自己抄一份，改绑 `view.magnifier_anchor_x/y`（`mask_view.rs:328-329`）。  
+>
+> **预期结果三句按各自那一手结案，一句也不并**。「当前前台应用不应失去不必要的内容状态」——全仓 `SetForegroundWindow` 只有一处（`platform-windows/src/hotkey.rs:1177`，弹托盘菜单前的惯常让位），截图这一路既不改前台也不最小化任何窗。「鼠标所在界面元素可被自动识别」**不成**，它与 §5.3.3/§5.3.4 的 UIA 是同一件事，那一件还等用户点头。「截图界面应快速出现」这一句本仓没有任何门槛数——没有一只钟断言过从按下到遮罩出现的延迟，所以它按「无证人」记，不按「成」记。
+
 ### 5.2.2 通过托盘菜单启动截图
 
 **操作步骤**
@@ -190,6 +210,11 @@
 - 应允许用户关闭此功能。
 - 应避免覆盖操作系统保留手势。
 - 触发冲突时应提醒用户更换按键。
+
+> **实现范围（2026-11-02 决定：不做）**  
+> 本节要求的「按住功能键 + 鼠标拖动」直接截图，实现它需要常驻的全局低级键盘钩子（`WH_KEYBOARD_LL`）逐键拦截，代价是全系统输入变慢；而 Windows 键的组合属操作系统保留手势，第三方进程无法可靠接管——这正是本节“规则”第二条要避开的那一件事。  
+> 因此本产品不提供超级截图：首选项、托盘菜单与全局快捷键名册中都不出现“超级截图”这一项，也不为它设置开关。  
+> 本节原文照留，仅作审计记录。
 
 ### 5.2.4 延时截图
 
@@ -232,6 +257,13 @@
 
 - 可按设置决定是否包含窗口阴影、圆角和鼠标指针。
 - 最小化窗口不可作为活动窗口截图对象。
+
+> **实现口径（2026-11-04）**  
+> 规则第一句那三项自本轮起**跟着设置走**，不再是硬编码的「DWM 可见边、不含指针」。三枚键：`[capture] window_shadow`、`window_corner`、`window_corner_radius`，指针那一枚复用既有的 `include_cursor`（§5.4.3 同一枚，不再造第二个名字）；出厂 `false / false / 0`，也就是今天那张图。  
+> **判定与画法只有一个作者**：core `capture::window_picture`（`crates/core/src/capture.rs`，顺序 = 指针先落进画面 → 再切圆角 → 再长阴影圈，与 §5.5.7 `Decoration::apply` 头顶那句同源），边距由 `window_shadow_margin` 算「窗口自己量出的带 / 用户为阴影配过的宽度 / 常数下界」三者取最宽，半径由 `resolved_corner_radius` 分岔。桥接层唯一的读者是 `qt_bridge::capture::window_frame`（`decorate_window` 只负责**问哪几格**与**递什么**，一个画法也不在那里写），它的两个 presenter 是 `pin_window`（贴图）与 `active_frame`（§5.17 的剪贴板/文件那一腿），所以同一枚键对三条路都成立。三枚键都关着时当场原样交回，一次 `GetWindowRect`、一次 `DWMWA_WINDOW_CORNER_PREFERENCE`、一次指针问数都不发——出厂那一侧的开销必须是零。  
+> **§5.5.6 步骤 3「或使用系统窗口原始圆角」这一句整条已落**，走的是 `window_corner_radius = 0` 那一读法：0 表示去问这扇窗**自己**被系统切成多大（`crates/platform-windows/src/win.rs` 的 `DWMWA_WINDOW_CORNER_PREFERENCE` 按该窗 DPI 换算）；系统答不出（非 Windows、或 DWM 不肯说）就读成**不切**，不猜一个数——`Some(0)` 是答案（那扇窗本来就方角），`None` 才是缺答。写过数（`> 0`）是第一种读法，此时那一问一次也不发。切下来的四格里头是透明还是填色仍归 `[output] corner_fill`，本节不新增第二份口径。  
+> 页上的入口不需要新代码：`[capture]` 整段的行由 `Config::flat()` 经 `settings_view::owners` 自动归到「截图」那一类，三枚键因此天生在页上；三枚都是每次按下现问（不在 `RESTART_KEYS`），改档之后下一张图就是新一身。  
+> **仍欠的那一半写在这里，不留白**：「键开着时真窗口的图上真的有那一圈阴影」这一句，本轮没有真桌面读数（门关着的那趟判 BLOCKED）。单测各自钉住了两半——core 钉画法（六条断言，含「全关时一个像素不动、矩形一字不改」），桥接层钉问数（`the_window_leg_asks_only_the_settings_that_are_on`：每一枚键只问自己对面那一格，关着的键一次也不问）——两半在同一次真观察里同时对上仍欠。
 
 ---
 
@@ -291,6 +323,11 @@
 - 达到最上级或最下级时，应停止切换。
 - 在不支持的平台或应用中，功能应自动退化，不应阻塞截图。
 
+> **实现口径（2026-11-04，§5.3.3 与 §5.3.4 同一条决定）**  
+> **今天跑的是这两段自己写的那一条退化**：控件级那一半（读元素边界 → 高亮 → 单击选中 → 滚轮在父子之间换层）**没有落**，而场上跑的截图选区因此恒停在**窗口检测**那一层——§5.3.2 的四步与两条规则已整条接通（`core/src/capture.rs` 的 `window_is_shootable` 与 `window_at_in` 各是一个作者，遮罩里 hover 出候选表、点一下整窗、`[capture] snap_to_window` 是真开关），自由选区那一条也在。§5.3.3 的「无法读取控件信息时，应退化为窗口检测或自由选区」与 §5.3.4 的「在不支持的平台或应用中，功能应自动退化，不应阻塞截图」**都是真满足**，不是遮丑：接口层 `WindowExtras::element_chain` 交回空表就是那条退化的开关本身（`crates/platform-windows/src/win.rs` 那一格写着 "Not answered yet, and deliberately not guessed at"），截图路径一次也不会因为它而停下。  
+> **本轮决定不加 UIA 那个依赖**，三条理由记在这里，不留白：① `crates/platform-windows/Cargo.toml` 的 windows features 名单里没有 `Win32_UI_Automation`，加它等于往一次 hover 的热路径上引入一个 COM 客户端；② UIA 交回的是**一个矩形**，而错的矩形会静默选中错的区域——这正是上面那句注释拒绝的事，而本轮这台机器从早到晚都在锁屏上（LockApp/LogonUI 在场），门关着，没有任何真读数能给这一格当供应商；③ 线程前提没量过：本仓的读桌面动作分布在 GUI 线程与按键泵线程上（§5.19.1 那一格记的就是这个分布），UIA 要在自己的 apartment 里问，每次 hover 一问的开销也没人证过。  
+> 真做的时候，第一步不是写 `ElementFromPoint`，而是先把**上界**定下来：链深多少层封顶、一次问最多花多少毫秒、拿到的矩形不被包含在所属窗口的 DWM 可见边内时一律丢弃（这一句是让「错矩形」不可能静默选中区域的那道闸），以及 §5.3.4 步骤 3-4 那一枚滚轮在 `qml/CaptureMask.qml` 里今天**没有对面**（没有 `onWheel`，也没有元素高亮那一条）。层级反馈与「到达最上/最下级停止」两条规则一并落在同一处。
+
 ### 5.3.5 自定义位置、尺寸和延时
 
 **操作步骤**
@@ -307,6 +344,12 @@
 - 宽度和高度必须大于 0。
 - 坐标超出屏幕时应提示或自动修正。
 - 应支持键盘方向键微调数值。
+
+> **实现口径（2026-11-02）**  
+> 「宽度和高度必须大于 0」：判它的是 `crates/qt_bridge/src/capture.rs` 的 `size_guard`——`w <= 0 || h <= 0` 即整次拒绝并点名给了什么数，不钳成 1×1、也不改成合法值。对话框这一路在 `crates/qt_bridge/src/custom.rs` 的 `read` 里调用它，把自己的窗名递进去当主语，所以页上那句拒绝与命令行 `--region` 那句是同一句话而不是它的译文。  
+> 「坐标超出屏幕时应提示或自动修正」：实现取的是**自动修正，并同时说一句提示**这一支。裁由 `crates/core/src/geometry.rs` 的 `PhysRect::clamp_to` 完成，读者是 `crates/core/src/capture.rs` 的 `ScreenSnapshot::capture`，它把“裁没裁”记在 `Captured::clipped` 上；这一路那句提示的作者是 `capture.rs` 的 `clip_note`（“你要的是 ……，出桌面的那几边已裁掉”），由 `region_line` 拼进结果行（§5.2.5 与 §5.5.8 那一读“重取上次区域”走的是 `re_read` 自己的另一句措辞，不在本节这一路上）。与桌面完全不相交的那一块不裁、直接拒（`CaptureError::OutsideAllMonitors`），不假装成功。  
+> 「应支持键盘方向键微调数值」：这一条在对话框里成立。挪一枚的算术在 `custom.rs` 的 `nudge`（上为 +1、下为 -1；空着的那格从 0 起步；写着非整数的格原样交回，不替用户抹掉他还没改对的那一格），`crates/qt_bridge/qml/CustomCaptureWindow.qml` 的 `Keys.onUpPressed` / `Keys.onDownPressed` 只做“叫 `nudge`、回填文本”两件事，页上没有第二份算术。  
+> 一处要照直写的差：本仓没有键盘输入注入器，门里“custom 方向键微调”那一格（`custom.rs` 的 `measure`）叫的是同一只 `nudge` 手，真按键到那两枚 handler 的接线在页上可读，但至今未经端到端实测。
 
 ### 5.3.6 截图过程中输入尺寸
 
@@ -362,6 +405,11 @@
 
 - 每次调整均应实时更新坐标和尺寸。
 - 不允许选区超出有效截图区域。
+
+> **实现口径（2026-11-04）**  
+> **步 4「放大镜同步显示边缘像素」欠的是键盘那一路，补法是把「采哪一点」收成一个作者**：方向键挪框走 `crates/qt_bridge/src/mask.rs:2331 nudge_by`，本轮起它交回 `Option<PhysPoint>`——「挪成了，以及放大镜该采哪一点」。那一点的唯一作者是 core `crates/core/src/geometry.rs:538 nudge_sample`，它读的是**被夹过之后的那一枚框**，所以撞到桌面边缘被夹住的那一次说的是屏幕上真动到的那一边（证人 `mask.rs:8499 a_keyboard_nudge_pinned_at_the_desktop_edge_names_the_clamped_edge`）；`dx == dy == 0` 那一臂交回光标本身，鼠标那一路的读数一字未动（`mask.rs:8522 the_pointer_leg_still_samples_the_pointer`）。装配只在一处：`mask.rs:2189 magnifier_at_point`（`magnifier_at` `:2138` 退化成一枚 DIP→桌面 的适配器，两条腿共用这一枚，`mask_view.rs:2101` 那一问扫的就是这一句），键盘的产品入口是 `mask.rs:2361 nudge_magnified`；桥侧 `mask_view.rs:1384 nudge` 在**同一把锁**里 nudge → `reload` → `apply_magnifier`（`:1852`，那一排放大镜格子的唯一写者，本轮多了 `magnifier_anchor_x/y` 两枚 qproperty，`:328-329`），页上 `qml/CaptureMask.qml:1011` 的 `atX` 绑的就是这一格，而页上自己那两枚 `cursorX/cursorY` 已经删掉——一份读数没有第二份抄本。步 2/3 的四条边与 `Alt` 那一臂各有证人：`mask.rs:8428 a_keyboard_nudge_re_anchors_the_magnifier_to_the_moved_edge`、`:8455 every_keyboard_arrow_moves_the_panel_onto_the_edge_that_moved`、`:8484 the_alt_arm_grows_one_edge_and_the_panel_follows_that_edge_only`、`:8542 a_nudge_with_no_selection_leaves_the_panel_alone`、`:8561 a_nudge_onto_the_other_screen_anchors_on_this_screens_nearest_column`；另有三问扫的是**源码本身**（`mask_view.rs` 的 `mod tests` 自 `:1972`：`:2028` 问页上 `step()` 递的是哪几枚、`:2039` 问桥里 `nudge` 的身体、`:2065` 问 `apply_magnifier` 写了锚点），所以「函数存在」这一句话过不了这一档。  
+> **两处不算这一句过关**：放大倍数与颜色格式是配置驱动的既有两格，不随这一步改，只是跟着同一个采样点走；**没有跟上的窗口**是不接键盘的那些遮罩窗——它们只随 `qml/CaptureMask.qml:73 step()` 现在发出的那枚 `grabbed()`（与鼠标处理器同一枚信号）重铺暗角与选区，放大镜仍是自己最后一次采的那一格（这一形鼠标那一路本来就是这样，不是本档新欠的）。真机那一眼（屏幕上放大镜有没有换像素）这台机器给不出证人：桌面锁着、`--mask` 门跑不成，所以本档的判据全在以上那些无头证人上（§9.1 第十条）。  
+> **预期结果两句都成立**：「实时更新坐标和尺寸」由 `nudge_by` 的返回值与同一把锁里的 `reload` 一起走，那两格读的是文档里的框而不是页上的猜测；「不允许选区超出有效截图区域」由 `nudge_sample` 读的 `after` 说——被夹住的是它，被放大镜说的也是它。
 
 ### 5.3.10 跨屏截图
 
@@ -520,6 +568,9 @@
 - 圆角外部区域应透明，或按配置填充背景色。
 - 输出为 JPG 时应提示透明区域会被填充。
 
+> **实现口径（2026-11-04）**  
+> 步骤 3 那两读法（自己写半径 / 用系统窗口原始圆角）**都通了**，但它的读者在窗口截图那一腿上，所以口径整段写在 **§5.2.6 下面的「实现口径（2026-11-04）」**那一格里，这里不重抄一遍（#281：一个事实一个作者）。导出图片那一侧的半径一直是另一枚键（`[output] corner_radius` + `[output] corner_fill`，规则那一两句的主人），与窗口那一枚同名不同事，两者互不顶替。
+
 ### 5.5.7 保存阴影和边框
 
 **操作步骤**
@@ -558,6 +609,19 @@
 **异常处理**
 
 - 操作系统不支持原生分享时，应隐藏入口或提供复制、保存替代方案。
+
+> **实现范围（2026-11-02 决定：不做）**  
+> Windows 的原生分享面板由 WinRT 的 `DataTransferManager` 提供，它要求应用以包身份（MSIX 或打包）运行；本产品当前是未打包的桌面 exe，调用会直接失败，落进本节“异常处理”预设的那一种“操作系统不支持原生分享”。  
+> 因此本产品不提供原生分享面板，按该条的替代分支走：分享改由“用系统默认程序打开”承担（`ShellExecute` 语义，可复用的两只手已在 `crates/platform-windows/src/open.rs` 的 `browser` 与 `dispatch` 里，后者当前服务于 §5.5.10 的“发送到应用”）。  
+> 现状要说准：标注栏上分享那一行目前只把 `[output] share_targets` 的名单摆出来，尚不是按得动的入口；本节原文照留。（此句是 2026-11-02 那一刻的读数，替代分支于 2026-11-04 落地，此刻以【实现口径】那一段为准。）
+
+> **实现口径（2026-11-04）**  
+> 上面那条「隐藏入口或提供复制、保存替代方案」走的是**替代**那一支，而且它落成了按得动的一枚钮：标注栏「保存」那一排、紧挨 快速保存 处新添 **打开方式**（`AnnotationToolbar.qml` 的 `Cell` → `bar.shareOut()` → `mask_view.rs` 的 `shareOut` → `MaskState::share_out`）。不选「隐藏入口」那一支，是因为 `[output] share_targets` 那一排正是本节的键（`config.rs` 里它标着 §5.5.11，那一处错号记在计划第 175 项的账上、真号即 §5.5.9），它已经有解析 / 白名单 / 显示串 / 跨桥四段读者，把入口藏掉等于把这一整段设置的唯一可见读者一起关掉——那是比「按不动」更坏的一种读法。  
+> `share_out` 只有三道梯，每一道只答自己那一问：落盘整套复用 `quick_out`（`[output] naming_template` / `collision` / `format` 三条规则不在这里第二次拼），**每一次按都新写一份**而不复用 `landed`（`landed` 可能是用户改标注之前的画面，递一张旧图给对面程序比多留一枚文件坏得多，与 `send_to_target` 每次派发都现写一张同一读法），话是**接**在 `quick_out` 那句之后而不是替换掉它——那句「已保存到 …（选区 W×H 像素）」是这份文件存在的证据，而 shell 收下请求之后本进程举不到对面那一扇窗，能交给用户的只剩这一行。递给 shell 的那只手是 `platform_windows::open::file`，它本轮之前是**零 caller** 的一只手。  
+> 名字取「打开方式」而不是「分享」，是因为这一枚按下去**不认目标**：它把文件交给 shell 的关联表，最后开在哪一扇由那台机器说了算；而下面那一排写着 slack / teams 这些**具体目标**的名字，把它叫「分享」会让人以为自己递给了那一枚目标。那一排仍是 `Text`，仍是一份名单而不是入口。  
+> `[output] reveal_after_save` 开着时，这一次按会同时亮出目录与打开图片。那句「每次保存后揭示文件」是用户对**每一次保存**立的规矩，分享走的正是保存那一腿，本轮不给它开例外——一柄设置被两枚钮各自解释，就是那枚键再也不说话的那天。  
+> 量具两支：`a_share_refuses_on_every_rung_before_it_touches_the_shell` 只判 shell **之前**的三道拒绝（没有选区 / 拼不出图 / 目录写不进去，第三臂把 `save_dir` 指到一枚文件上，`create_dir_all` 当场回 183），并断言每一臂都没有「交给系统」那半句、`landed` 都没有被写出来；`the_toolbar_wires_the_share_exit_without_retelling_it` 读 QML 那份源码，判接线在、而 Rust 那两句原话没有被在页上重打一遍。正面那一臂（真的把文件递给默认程序）**不在单测里**，守的是 `open.rs::browser` 头顶写死的同一条规矩：一次真的 `open::file` 会在用户桌面上开出一枚别的进程的窗，而单测跑完关不掉它。工具栏那枚 hint 计数闸的分母自此是 42（40 枚 `Cell` + 2 枚 `Swatch`）。  
+> 没落的两件：这一臂的真实读数（哪一看图程序接了、什么时候接）本轮拿不到——跑真机门那扇的桌面自始至终是锁着的（`LockApp.exe` 在 Console 会话上），而 `open::file` 一旦递出去就会在用户桌面上开出一扇本进程关不掉的窗，不是可以在锁屏后补的一格；按**具体目标**派发（slack / teams / wecom / dingtalk / feishu 那五枚）仍缺最后一手——`settings::share_scheme_for`（P86）已把 scheme 串拼好了，它头顶明写「本轮只到"拼串"这一步，不 ShellExecute」，缺的是把那一串递出去的一手与一次真机读数。本节这一枚「打开方式」不认目标，因此与那一族互不复用。
 
 ### 5.5.10 发送到其他应用
 
@@ -669,6 +733,9 @@
 3. 拖动创建图形。
 4. 通过控制点调整尺寸或圆角。
 
+> **实现口径（2026-11-04）**  
+> 这一句的两半里尺寸那一半早就在（选中之后那八格把手走 `resize_grip_command`），补上的是**圆角**那一枚：谁有这一枚把手由 core 的 `Grip::grips_for` 说（只有 圆角矩形，且框的宽与高都不小于 `RADIUS_GRIP_INSET * 2`），它画在哪由 `grip_point` 说，页上那一枚白点是「画出来、不给点」的——命中仍只在 Rust 一处判。拖它改的是 `style.corner_radius` 而不是几何，走 `radius_grip_command`：行程只取把手那一根轴，上限是 `max(drawn_corner(64, 框), 握住那一刻的半径)`，所以框不够大时拧不出一个画不出来的角。撤销那一头额外按住了一份**按下那一刻**的半径——预览写的是 `style`，而拖拽的快照只按回几何与转向，少这一步的话一趟两次鼠标移动会把第一次的预览当成原始值，一次 Ctrl+Z 退回的是拖到一半的角。
+
 ### 5.7.4 椭圆与圆形
 
 **操作步骤**
@@ -718,6 +785,9 @@
 - 默认使用半透明颜色。
 - 支持圆形或椭圆形笔刷。
 
+> **实现口径（2026-11-04）**  
+> 代码原本只有这一句的一半（圆头 / 方头），所以这一轮补的是第三枚笔头 `Shape::Ellipse`，不是回写这一句。椭圆那一支的**长轴垂直于走笔方向**、短轴的一倍由 `ELLIPSE_RATIO` = 2 说：同一枚「笔刷大小」下带子宽出一倍，而末端伸出去的还是半枚笔头（`ellipse_pen_dist` 算的是把垂直于笔划那一根坐标除以这个倍数之后的欧氏距离，所以末端不动）。一笔按下没拖动的那一枚点没有方向可问，取横着走那一支的极限，长轴上下。这一支的命中与重画范围跟着长轴放大（`Style::reach_for` 是那个数唯一的作者），不放大就会被裁在原来那圈圆的框里。页上那一枚钮的标签是「扁头」而不是「椭圆」——「椭圆」是工具排上画椭圆那一格的名字，`annotate_check` 里那条「不许在 QML 重打工具名」的闸正是为这一对撞响的。方头留着：§5.7.9 与 §5.7.10 步骤 2 那句「形状」没点名是哪两种，而这一排只有方头能给出硬边。
+
 ### 5.7.9 马赛克
 
 **操作步骤**
@@ -752,6 +822,17 @@
 - 文本描边支持颜色和宽度设置。
 - 文本框应支持换行、缩放、移动和旋转。
 
+> **实现口径（2026-11-04）**  
+> 步骤 4 那一串里最后落下来的是「字体」：工具栏「文本」那一排多一枚可输入的字段，屏上当下那一支字体由 `placeholderText` 绑 Rust 读回来的 `pen_family`——页面从不把 `text` 绑在一个事实上，第一枚键就毁掉那条绑定，之后屏上显示的是页面对别人文本的猜测（尺寸条那一记同一个坑）。回车走 `setFamily` → `Layer::set_font_family`，随即清空文本框，让留在屏上的仍是 Rust 的那一句；空白输入是不动笔（trim 之后为空即返回），所以按一枚空的回车说的是「没改」而不是「改成默认」。它管两头：这一档的笔（下一段文本用它），以及选中的已有文本（§5.7.16 步 3）。字号 / 字体 / 对齐 / 背景 / 描边 这五枚旋钮一起跟着工具的记忆走，证人叫 `the_five_knobs_travel_with_the_tool_that_learned_them`。就地编辑那一头的输入框也绑同一枚 `pen_family`，所以打字打在其中一边，另一边跟着变。  
+>
+> **2026-11-05 订正这一句的最后一件**：「就地编辑那一头的输入框也绑同一枚 `pen_family`」自 §5.7.16 那几轮起不再成立——那只字段现在读的是**对象自己**的三格（`text_font`/`text_family`/`text_rgb`，作者都是 `annotate.rs:2284 box_style`），工具栏这一排才照旧是笔的答案（`font_px`/`pen_family`/`pen_rgb`）。这一句剩下的半句仍真：字号/字体/对齐/背景/描边这五枚旋钮一起跟着工具的记忆走。  
+>
+> **规则三「文本框应支持换行」的四件里，量到的是尺子那一半**：`crates/core/src/annotation/raster.rs:106 text_extent` 取的是**最宽那一段**、并把各行的高度相加（`raster.rs:1148 layout` 也是按段落分开的同一句话），`crates/qt_bridge/src/annotate.rs:2242 box_at` 的无字体兜底同样按换行符分行 —— 于是「一段一行、往下长」在文档、在框、在落笔三处是同一枚读数。证人叫 `a_newline_grows_the_box_downward_and_draws_the_second_line`（`annotate.rs` 的文本那一档），它用**同一枚开着的框**测三趟，那两个数都不是新造的：两行的宽 == 最长那单独一行量出来的宽、高 == 两行各按一行量出来的高之和、两行的先后倒过来写读数全等、锚点不动；再证提交之后文档里那枚串的换行符还在，以及**一行的下沿以下真数得出这一笔的绿**（measure 与 paint 两路各占一趟；没有字体那一档什么都不画，所以整条 gate 在 windows 上）。  
+>
+> **写字进去的那一只手没有**：`qml/CaptureMask.qml:629` 的 `field` 是 `TextInput`，`:654` 明写 `wrapMode: TextInput.NoWrap`（它上面那三行注释讲的是同一件事：会折行的字段比落进文档的那一枚多几行），而 `:681` 的 `Keys.onReturnPressed` 与 `:686` 的 `onEnterPressed` 两路都直接 `win.view.finishInk()`。`annotate.rs:2268 type_text` 是整串照收、不挑字符，缺的是把换行递进来的那个人。要成这一条得把那一格换成 `TextEdit`（可编辑的多行字段；`selectByMouse`、`clip`、`font.pixelSize`、`onTextChanged` 都还在，也没有任何 Rust 测试钉住 `TextInput` 这个类型），让 Shift+回车写下换行、单回车仍收笔 —— 框的高本来就是 Rust 递过去的 `text_h`，所以字段自己会跟着长，不需要第二把尺。这一条记在待办里，不算这一句过关。  
+>
+> **这一句是四件一起写的**（「换行、缩放、移动和旋转」），所以它不因这一档结案；另外三件在别处各有口径，此处不重判：旋转见 §5.7.15，移动与改尺寸见 §5.7.16 那一串。
+
 ### 5.7.12 自动编号
 
 **操作步骤**
@@ -761,6 +842,8 @@
 3. 在截图上依次点击。
 4. 系统自动生成连续编号。
 5. 删除中间编号时，可选择是否自动重排后续编号。
+
+> **实现口径（2026-11-03）**：第 5 步那一枚选择键摆在标注工具栏「对象」那一排的**删除**旁边（`重排`），不摆在编号那一排——它改的就是「删除」怎么被记，而按删除的那一刻手里是箭头工具。亮着时被删的那几枚与腾出来的空档由 `delete_and_renumber_command` 合成**一条** `Command::Compound`，所以一次 Ctrl+Z 退回复的是那一次编辑、不是它的两半；灭着时就是第 5.7.17 步那条「删除」本身，空档留着。四条落点：重排的起点是删过之后屏幕上第一枚还戴着的号（不是常量 1，否则设过起始编号 7 的人删一枚会被整排拉回 1）；这一趟删的**不是编号**就不重排（删一枚矩形没资格替编号那一排说话）；计数器永不回退，重排改的是屏幕上已有的号；默认灭着——亮着的那一次会挪动用户没碰过的那几枚。
 
 ### 5.7.13 局部放大
 
@@ -807,6 +890,30 @@
 3. 修改位置、大小、颜色、线宽、透明度或文字内容。
 4. 点击空白区域完成编辑。
 
+> **实现口径（2026-11-04）**  
+>
+> **六臂里成的是五臂**：位置（`src/annotate.rs:1500 select_press` 的 `SelMode::Move` → core `src/annotation/select.rs:812 move_by`）、大小（`annotate.rs:1533 resize_grip_command`，圆角 `:1532 radius_grip_command`）、颜色（`annotate.rs:722 set_color` → `src/annotation/command.rs:492 colour_command`）、线宽（`annotate.rs:774 set_width` → `command.rs:462 patch_style_command`）、透明度（`annotate.rs:740 set_alpha_percent` → `command.rs:485 alpha_command`，滚轮 `annotate.rs:763 step_alpha`）。五臂都从同一枚 `Layer::apply_edit`（`annotate.rs:1258`）走 —— 这一枚与「工具栏那一格定的是下一笔的样式」分家，它改的是**此刻选中的那些对象**，所以步 2 那一下单击不是装饰而是这一条的前提。  
+>
+> **第六臂自此有了读者（2026-11-05）**：就地改字的入口是裸 F2 —— 双击与 Enter 早被「收尾」那条梯子占去（§5.7.11 步 3、§5.7.5、§5.7.13 共用那两个事件），裸按别的字母又各有其人（C 是取色，`Ctrl+…` 那一族每枚都要求 Ctrl），所以**起**编辑取这一枚（`qml/CaptureMask.qml:627`，与裸 C 同一规：Ctrl/Shift/Alt 任一枚在，这一下就不是本程序的）。页上那一手只递问题、不写第二套判据：`view.editText()` → `mask_view.rs:1414 edit_text` → `mask.rs:4273 MaskState::edit_text` → `annotate.rs:2372 Layer::edit_selected_text`，摊开的是**同一只** `Typing`、页上是同一枚 `TextEdit`、收尾是同一个 `finishInk`、Esc 阶梯上夺的是同一格 `abandon_typing`。core 那一头补的是 `command.rs:91` 那枚 `Command::Text(Vec<(u64, String, String)>)`（改前改后两串都记下，所以一次 Ctrl+Z 退回来的是「那一次改字」，正是 §5.7.19 那句的口径）与建它的 `command.rs:579 text_command`；它不是 `Style` 的第五格，因为 §5.7.21 的吸管复制的是样式而那句话不是样式。  
+>
+> **门不开的那五种各是各的**（#494 说不能只有会拒的控制，可拒要有名）：①手里是那一支笔而不是「选择」——笔底下点哪都先落新的一枚；②那只框已经开着——不许叠第二只，`typing_text` 全档只有一份；③串里不恰好一枚——空的多的是「没有这一枚的字」，多的多的是页上只有一只框；④那一枚不接字（`model.rs:75 Kind::takes_text`：编号也带 `text`，可画它的是 `Element::number`，重打那串改的是没人看得见的一行像素）；⑤锁着的——选中不等于许可（`Document::can_edit`）。后两问在**开门之前**问一遍：门开了、框也亮了，到提交时才说「改不了」，屏幕上就没有任何一句话会说这件事。拒门必有一句话（`mask.rs:4273` 写 `message`），四种拦法共用那一句——这一层分不清是哪一条拦的，硬要分就得在这里重问一遍上面那位作者的问题。  
+>
+> **框里预先放着的是对象自己那句话**：`MaskViewData` 是 `Copy` 的一份几何样本，装不动一串字，所以 `mask_view.rs:212` 的 `text_seed` 与 `:213` 的 `text_family` 走的是 `reload()` 里 ink 那一份 tuple、与 `pen_family` 同一待遇（同一把锁就是同一个时刻），并且两格都必须在 `set_text_editing` **之前**写下——页上那枚字段是在可见性翻过去的那一刻 imperative 地读它的（`CaptureMask.qml:701`），反过来写就是「框开了、里面没字、交回的那一句说不建条」。字号与字体这两格也换了作者：框按 `annotate.rs:2284 box_style` 量（改字时是对象自己的 `Style`，落新框时是画笔的），于是 `font_dip` 读 `annotate.rs:2260 typing_font_px`，而工具栏那一排照旧读 `font_px`/`pen_family`——屏幕上那一圈字与亮着的那一枚不会各答一枚（#281）。  
+>
+> **字段那一格的色换了第三位同一个人的读者（2026-11-05）**：那一行 `color:` 过去解的是 `pen_rgb`，于是改字改到一半时，屏幕上刚刚看着自己编辑的那一串显的是画笔此刻的颜色，而回车之后对象带着**自己的**那一枚色重画——同一个时刻两处各答一枚。现在它读 `mask_view.rs:219` 的 `text_rgb`（0xRRGGBB，与 `pen_rgb` 同规），作者只有一处：`annotate.rs:2420 typing_colour` 走的是字号与字体同一只梯子 `annotate.rs:2284 box_style`，改字时是对象自己的 `Style.color`、落新框时是画笔的那一枚，所以 `CaptureMask.qml` 里 `view.pen_rgb` 一名读者也没有了，而工具栏那一排的色板照旧读它。与上面那两串不同：这一格是**声明式**绑的（页上那三行 `Qt.rgba` 在字段一亮自己会重读），因此它不必挤在 `set_text_editing` 之前，写在 `mask_view.rs:1348` 那一手上就够。  
+>
+> **两件事本轮没动，记在这里而不是静默**：`Style.color` 的第四格（alpha）在这颗数里没有位置，页上仍按 `1.0` 铺，半透明的对象在字段里是实心的——工具栏那几枚色板与 `pen_rgb` 一直是这一规，本轮改的是「读谁的三通道」而不是「铺几层」；描边与背景那两格在字段里也没有（页上那只框只有这一行字色）。  
+>
+> **证人**：`annotate::tests::the_retype_field_shows_the_objects_own_colour_not_the_pens`（笔与对象各一枚色时字段读的是对象那一枚、落新框那一只仍是画笔的、交字之后对象自己的色没被顺手改掉）与 `mask_view.rs:2293` 那支源码扫描里新增的一段（页上解的是 `text_rgb` 且不再解 `pen_rgb`，桥的面孔与 `MaskViewRust` 那一格都在，`reload()` 写了它）。反证真做过：把 `typing_colour` 的返回值从 `box_style()` 换成画笔那一格，`annotate.rs:6847` 那一判即红，再从备份原样回来。桥 `cargo test -p qt_bridge --bin falconshot --all-targets` **641 全绿**是本轮跑的那一份；core 本轮一个字没动，598 那一读数是上一轮的、本轮未重跑。页→桥那一跳仍只有源码扫描，真按键那一路照旧没证到，跑级那几档本轮一票也没跑（桌面在用户手里）。  
+>
+> **只撑不缩**：交回的那一手把 `text_command` 与 `resize_to_rect` 拼成一枚 `Command::Compound`（`delete_and_renumber_command` 早就是这么办的），但**只在新字比原盒子宽或高时**才拼——改短了不缩回去，因为那条边可能是 §5.7.11 步 4「调整大小」手工拉宽的，收回量出来的宽度会把框从还站在里面的字上挪走。交回空白或一个字没改 ⇒ 什么也不建、框照关（`text_command` 对同一串的答案是 `None`），与 §5.7.11 那一枚空框同一契约；Esc 与换工具收走的也只是那只框，原来那一串一个像素没动过（§9.1 的⑦）。  
+>
+> 「修改位置、大小、颜色、线宽、透明度**或**文字内容」写的是「或」，本来五臂真成就能结案；现在六臂都真，这一句结案不靠那一枚「或」。步 4「点击空白区域完成编辑」在改字这一臂上是先交字、然后**这一枚按下照常往下走**（把手、单枚选中与空白那三臂还在原地等它，「改完就走」不该以吃掉这一次点击为代价）；那一判与 §5.10.1 的「空白区域或 Esc」仍是两回事（那一处判的是贴图多选），这一格不重判。  
+>
+> **证人**：core 那两格 `command::tests::retyping_an_object_is_one_undoable_step_and_a_locked_one_refuses_it`（改前改后往返、脏区只一格、同一串/锁着/陌生 id/编号四种各拒一遍）与 `..._a_retype_with_a_bigger_box_undoes_both_halves_at_once`（一次 `invert` 把字与盒子两件一起退回），`cargo test -p falcon-core --all-targets` 598 全绿；桥那六格在 `annotate::tests`（门与读数、五种拒门、字体两位作者、只撑不缩、空白与没改动、点击空白那一次按下）、`mask::tests::f2_at_the_mask_reopens_the_field_on_the_object_and_divides_its_own_font`（200% 屏上那一次除法跟着对象而不是画笔）、`mask_view::tests::the_f2_door_walks_from_the_page_to_the_layer_and_back_as_two_strings`（页→桥→状态→层那四手名字成对、两串写在亮字段之前、qproperty 与结构体那一格都在、每位作者一处），`cargo test -p qt_bridge --bin falconshot --all-targets` 633 全绿。  
+>
+> **没证到的是真按键那一路**：这一档不能合成一次 F2——注入的键会落进当时有焦点的那个应用，而跑级时焦点在谁的窗口里产品说不出（`CaptureMask.qml` 的 `chord()` 头上记的正是这条理由），跑级那几档本轮一票也没跑（桌面在用户手里）。于是 Qt 把 WM_KEYDOWN 翻成 `event.key`/`event.modifiers` 那半截、以及「字段有焦点时它的 `Keys.on*` 先吃掉事件、所以 F2 到不了 surface」这一条分工，都是**源码扫描判的**而不是判到的行为；页上那条 handler 到 `editText` 那一步本轮没有判定行，写在这里而不是留在日志里。
+
 ### 5.7.17 自由选择
 
 **操作步骤**
@@ -816,6 +923,14 @@
 3. 系统选中范围内的一个或多个标注对象。
 4. 用户可执行移动、复制、删除或样式调整。
 
+> **实现口径（2026-11-04）**  
+>
+> **这一句的两臂里成的是「矩形框」**：橡皮筋那一格由 `src/annotate.rs:1644 marquee_band` 画（画进 `draft`，所以它自己不占一步撤销 —— `annotate.rs:1525 sel_command` 对 `SelMode::Marquee` 交回 `None`），松手那一下 `annotate.rs:1665 finish_marquee` 把框递给 core `src/annotation/select.rs:777 marquee` → `:778 of(&doc.in_region(r))`，**范围内多枚同时选中**是真的（证人 `select.rs:1286`）。进到这一格有两只门：工具栏第一枚「选择」（`annotate.rs:182 TOOLS[0]`）与 `qml/AnnotationToolbar.qml:1645` 那枚框选开关（→ `src/mask_view.rs:1561 applyMarquee` → `annotate.rs:1683 set_marquee`）。  
+>
+> **套索那一臂没有实现**：搜过 `lasso`、`套索`、`freehand`、`polygon_hit`、`contains_point`，命中的只有铅笔那一笔自己的轨迹（`annotate.rs:397`、`select.rs:319`）；而 `marquee` 与 `Document::in_region`（`crates/core/src/model.rs:955`）两枚接口都只收一枚 `PhysRect`，没有任何一只手收得下一条自由轮廓 —— 这不是「没接线」那一族，是接口形状就没有那一格。  
+>
+> 「拖动矩形框**或**套索范围」按「或」结案：前一支真选得到多枚，后一支留作未做，写在这里而不是让「自由选择」这一节读起来两臂齐。步 4 那四件里「移动」与「样式调整」的口径见 §5.7.16 那一段（走的是同一枚 `apply_edit`），「复制」那一件见 §5.7.18 —— 那一节的两臂到 2026-11-05 成一臂（工具栏那一枚克隆钮与按住 Ctrl 拖都是），快捷键那一臂仍不成，理由写在这一节自己的口径里。
+
 ### 5.7.18 复制与克隆标注
 
 **操作步骤**
@@ -824,6 +939,22 @@
 2. 使用复制和粘贴快捷键，或按住 Ctrl 拖动。
 3. 系统创建标注副本。
 4. 用户移动副本到目标位置。
+
+> **实现口径（2026-11-05）**  
+>
+> **「按住 Ctrl 拖动」那一臂今天成了**，走的是一条腿：`crates/qt_bridge/qml/CaptureMask.qml:500` 在 `view.pressAt` **之前**把 `mouse.modifiers` 里那枚 Ctrl 递进桥（`holdClone`）→ `crates/qt_bridge/src/mask_view.rs:421` 那张面孔与 `:1404` 那一手 → `crates/qt_bridge/src/annotate.rs:1932 hold_clone` 写 `clone_hold`（那一格在 `:421`）→ `:1938 press` 在 `:1946` 用一次 `std::mem::replace` 读它就立即归位 → `:1504 select_press(_, ctrl)` 里**只有「按中了某一枚对象」那一臂**（`:1542`）递给 `:1567 clone_press`。  
+>
+> 副本在按下这一刻由 core `crates/core/src/annotation/select.rs:849 clone_by`（→ `command.rs:600 clone_command` → `model.rs:1027 clone_elements`）摆进文档、摆在与原处**同一格**（`dx`/`dy` 取 0），于是整趟拖拽仍能走移动那一套现成机器（`annotate.rs:1657 sel_command` 的 `SelMode::Clone` 臂问的还是同一位作者 `Selection::move_by`，只是那一串 id 由手势自己带着）；松手由 `:1766 select_release` 递给 `:1620 finish_clone_drag` 落**一枚** `Command::Add` —— 一次 `Ctrl+Z` 收回整趟手势，`Ctrl+Y` 回到的是落点而不是按下点，而副本接着成为这一串（与工具栏那枚克隆钮 `:1905 clone_selected` / `CLONE_STEP = 16`（`:119`）同一口径）。  
+>
+> **三条边界各判过一遍**。握住把手那一臂（`:1524`）不看这枚键 ⇒ 按着 Ctrl 拖角还是改尺寸、不多出一枚；四条没交出去的路（换工具 `:653`、开框选 `:1823`、点空白那一臂、Esc 把选区清掉那一臂 `:597 set_hole`）都从 `:1583 drop_sel_drag` 那一格把预览的副本摘回去（`:1600 take_clone_preview`），一次没做完的手势不留对象；按下又立刻松手（没拖）⇒ 栈上不多出一条，画布上也没留下预览的像素。  
+>
+> `clone_by` 交回 `None` 只有「这一串里没有一枚还在场」那一种（`command.rs:602` 的空表分支；锁着的那一枚照旧被复制 —— `select.rs:1397` 那句钉的是「锁住禁止的是改它本身，不是把整串复制一份」），而这一臂在生产路径上落不到它：按下先由 `topmost_at` 点中一枚在场才走到这里。留着那一支是为了「克隆没成」与「没按 Ctrl」在屏幕上得是同一张脸，而它不是一条判据 —— 下面那五格里没有它的证人（#261）。**被复制出来的那一枚带着 `locked`**（`clone_elements` 整枚 `clone`），于是它拖不动（`move_command` 跳过不可改的那几枚）；这一格钮与拖两臂本轮都没写证人，写在这里而不是默认它成。  
+>
+> **「使用复制和粘贴快捷键」那一臂没成，而且不是「没接线」那一族**。`Ctrl+C` 今天已经是 §5.5.2 的那一枚：`CaptureMask.qml:122-191 chord()` 把它派给 `AnnotationToolbar.qml:364 copy()` → `src/mask.rs MaskState::copy_out`，写进系统剪贴板的是**拼好的那张图**；把它改派成「复制标注对象」就是在整场流程里最常按的那一枚键上换主人，而「刚标完想复制这张图」正是它今天的主顾。`Ctrl+V` 更没有作者：产品里没有「标注对象的剪贴板」这一格 —— `clone_by` 只在同一串选中的**内部**复制（`dx`/`dy` 是偏移，不是外来的一份），跨不出这一场，要做就先要新添一格和它的读法。所以这一节按「或」结案：**后一支（按住 Ctrl 拖）此刻在屏上，前一支（快捷键）留作未做**，写在这里而不是让「复制与克隆」读起来两臂齐。  
+>
+> **证人**：桥那五格在 `annotate::tests` —— `:3782 a_ctrl_drag_lands_a_copy_where_the_pointer_stops_and_files_one_step`（副本落在指针停下的那一格、一趟一条撤销、原物不动、`redo` 回落点）、`:3836 a_ctrl_click_that_never_dragged_files_nothing_and_leaves_no_second_object`（没拖就什么也不落，而那一枚键在下一枚按下之前已被用掉）、`:3871 a_ctrl_drag_over_a_group_clones_every_member_as_one_step`（框住两枚时整组一次复制）、`:3909 ctrl_on_a_grip_resizes_the_one_it_grabbed_and_invents_no_copy`、`:3931 dropping_a_clone_gesture_before_it_lands_takes_the_copies_back`；`mask::tests:9678 a_ctrl_drag_at_the_mask_lands_a_copy_twice_as_far_as_the_pointer_walked` 在 200% 屏上读画布的字节 —— 指针在 DIP 上走 (10,10) 而副本的角落在桌面 (20,20) 那一格、(250,150) 那一格是空的（除法没被跳过），且选区一动不动（遮罩没把这趟按住自己接走）；`mask_view::tests:2412 the_ctrl_clone_leg_walks_from_the_page_to_the_layer_in_one_order` 钉的是名字成对与三处次序（那一枚键在页上只写一次、写在 `pressAt` 之前、桥那一手不跟 `reload`、`self.clone_hold` 全文只有两枚作者），不重判第二遍行为。`cargo test -p qt_bridge --bin falconshot --all-targets` 640 全绿；core 本轮一字未动，`cargo test -p falcon-core --all-targets` 仍是 598 全绿（1 档 ignored）。  
+>
+> **没证到的是真机那一路**：这一档不能合成「另一只手按着 Ctrl 的同时按下左键并拖」，注入的键会落进当时有焦点的那个应用（`chord()` 头上记的正是这条理由），而跑级那几档本轮一票也没跑（桌面在用户手里）。于是 Qt 把 `mouse.modifiers` 翻成 `Qt.ControlModifier` 那一半、以及「页→`holdClone`→`pressAt` 这一跳真的按这个次序发生」，都是**源码扫描判的**而不是判到的行为；「预览的那一枚到落下的那一枚之间没有一次闪烁」也只由画布字节证过（同一格在松手前后读到的都是非零），不是判到的手感。
 
 ### 5.7.19 撤销与重做
 
@@ -855,6 +986,14 @@
 3. 在主颜色按钮上滚动调整透明度。
 4. 每种标注工具独立记忆最近使用的颜色。
 
+> **实现口径（2026-11-04）**  
+> 第 1 步（点色块换笔色）、第 3 步（在色带上滚轮调透明度，读数由 `pen_alpha` 那一格跟着报）、第 4 步（每枚工具自己的最近色）此前已落地。  
+> **第 2 步「拖动颜色按钮调整排列顺序」本轮接成屏幕上的一只手**：按住一枚色块拖到别的色块那一格松手，那一排就换成那个顺序，并当场写进 `[annotation] palette`。判据是**松手那一格是不是按下那一格**，不是「按过而且动过」——指针滑回自己那一格、或松在任何一枚色块之外，仍然是一次点选，第 1 步那颗色块不会被一次没走成的拖吞掉。「哪一格」由页上按 Repeater 自己的几何逐格问出来（第 i 枚在哪、多宽），不抄一份 `18 + 2` 的格宽当尺子；横轴算格、纵轴不算，指针往上往下飘一点不该作废一次拖。  
+> **页与设置页之间只有一只手**：拖出去的是**两个格号之差**（`to - from`），落到 `settings_view::pal_move` —— 与设置页「上一格／下一格」那两只钮用的同一只，换算、拒绝与落盘都在它那里，所以「页上拖成了而档里那一排没改」这一族没有出口。落进第几格的算术在 core 的 `Palette::move_to`（取出再插回，那一枚正落在目标格上）；拖出界那一侧它自己拒，拒的那一句话留在 `band_last` 那一格里而不是混进「已保存到 …」那句。  
+> **拖完立刻看得见**：`bandColors()` 是一枚函数，QML 的绑定不为一次函数调用重发，所以 Rust 每被这只手按一次就把 `band_revision` 加一格，页上那一行绑定绑的就是那一枚钟——不必重截一张，屏幕上的色带跟着换。（这一枚钟第一次跑时被按驼峰名 `bandRevision` 读过，于是**静默绑不上**、读回 `undefined`：门当场红了，红得对；单测 `the_band_clock_and_its_sentence_are_read_by_their_real_names` 自此钉着 qproperty 走下划线名、门把手走 `cxx_name` 驼峰名这两族相反的方向。）  
+> **验到的是哪一半、没验到的是哪一半**：`--ink` 那扇门新加的一格 `mask band reorder via qml` 走的是「挪过去、再挪回来」两次真落盘（所以一趟跑完档里那一排与出发时一字不差，`band` 那一格的期待值也不被它挪走），判六件事：拖过去那份名单真是头两枚对调、Repeater 前后都造出十枚、拖回来页上与档里都与出发时一字不差、那枚钟按一次走一格、两次返回值与各自那一刻窗上 `band_last` 是同一句话、那两句话里没有「未写入」「写盘失败」。2026-11-04 真机这一格 PASS（钟 0→1→2、落盘 28 ms / 15 ms）。**它不说「一次真的指针拖动会走到这只手」**：页上那段 `slotOf` 换算要靠一只合成拖动才量得到，而本仓连一枚输入注入器也没有（`SendInput` 零命中），欠的是 §10 第 35 项 ⑤ 那一族同一只手。整扇 `--ink` 此刻仍判 BLOCKED，来源是那四格屏幕取样在本机太暗（160/165 太暗），与本步无关。  
+> 一句相邻的欠账，记在这里不留白：导出的那份共享档是一行一枚 `#RRGGBB`，**装不下透明度**，所以拖完顺序再导出、别人导入回来之后，第 3 步那点 alpha 不在那份文件里（见 §5.7.22 同一格）。
+
 ### 5.7.22 调色板自定义与共享
 
 **操作步骤**
@@ -864,6 +1003,14 @@
 3. 保存为调色板方案。
 4. 导出调色板文件用于共享。
 5. 其他用户导入文件后应用相同配置。
+
+> **实现口径（2026-11-04）**  
+> 步骤 1/2/3 早已是设置页上那一栏：新增、挪位、删除、改色、保存五按，外加一枚把档里那一排换成某个方案的真按（`crates/qt_bridge/qml/SettingsWindow.qml` 的 `runPalGauge` 里那几条腿，方案落在 `annotation.palette`）。  
+> **步骤 4 与 5 本轮接成了页上会动的东西**。「导出调色板」把本机那一排写成一份一档一色的文本档（`settings::palette_export` 走 `Palette::to_text`、`#RRGGBB` 一枚一行、末尾补一枚换行给记事本看；报出的枚数取自写出去那份文本自己的行数，不是页自报）；「导入调色板」先只报「这份会盖掉本机哪一排」——抬头一句 + 逐枚旧→新的行——页上画成一张可滚的名单，底下两枚钮「确认应用这一份」/「不应用」，不应用那一枚色不动、档不写。两枚钮开的是真 `FileDialog`，标题绑的就是那两枚钮自己那一句。  
+> **页与命令行之间因此只有一双手**：`palette_import_at` 是共用的那只手，`palette_import`（`--import-palette` 那扇门）与 `palette_import_page`（页上这扇门）只有「还没写」那一句的措辞按门换——命令行说「加 `--confirm`」，页上说「按『确认应用』」，因为页上没有 `--confirm` 可加。落盘码因此不存在两套。  
+> 这一手拦下两件事，都不许悄悄过去：① **一份读不出任何颜色的档不许把出厂那十枚带回来**——`Config::validate` 对空名单的做法是回填默认色而**不记一句警告**，所以「这档是空的」与「这档写了十枚出厂色」落盘后完全同一副样子，空档当 Err 退回、本机一枚不动；② **写失败不许报成功**——`Settings::save` 把失败记进 `problems` 而自己只返回耗时，所以看的是 save 前后 `problems` 长没长。  
+> **透明度在这一手仍是丢弃的**：`to_text` 用 `ColorFormat::HexUpper`，一份共享档里没有 alpha 的位置。那是 §5.7.21 第 3 步那只手欠着的同一件事，本档不替它编一个已落地的说法。  
+> 判据：`--settings-palette` 那扇门现在十五格、九按（加、挪、删、改、存、导出、预览、确认应用、应用方案），导出那一格的分母是开档那一只手自己数出来的行数、且开档时先删掉那份计划要落的档（「导出落到哪份档」这一格因此不可能被上一轮的旧档蒙过去），窗画的行数与那只手数的行数在这一格里都是红得起来的；最小预算 7000 ms。2026-11-03 真机 `--settings-palette 9000` PASS（十五格全绿、窗交回 16 行），同一晚 `--settings-io`、`--settings-window` 亦 PASS，`cargo test -p qt_bridge --all-targets` 553 通过。
 
 ---
 
@@ -877,6 +1024,13 @@
 2. 点击“贴图”按钮。
 3. 系统将截图创建为独立悬浮窗口。
 4. 用户拖动贴图到合适位置。
+
+> **实现口径（2026-11-04）**  
+> **步 2 那一枚「贴图」钮在屏幕上，走的是 `pin_selection` 那一格**：`MaskState::pin_selection`（`crates/qt_bridge/src/mask.rs:4153`）读的是 `delivered()`（`mask.rs:3510`）那一张——也就是 复制 / 保存 / 快速保存 / 存完再钉图 一直在读的那一格，五扇门对同一块选区答同一张画面。路径是 `qml/AnnotationToolbar.qml:1949` 那枚 `Cell` → 同档 `:442` 的 `pin()` → `mask_view.rs:1807` 的 `pinSelection` → 上面那一格：「有没有选区」「拼不拼得出画面」两句都由档回答，页上一处也不自己判。落盘一步也没有，证人是 `mask.rs:7497` 的 `the_toolbar_pin_cell_floats_the_selection_and_writes_no_file`——它按完两趟之后读 `[output] directory` 那一枚目录，那里仍是零个文件。  
+> **步 3 的「独立悬浮窗口」落在用户拖出来的那块矩形上**：坐标算术与 `save_then_pin` 同一份（对照 `mask.rs:4114` 与 `:4162`），§5.5.7 的阴影把画布往**外**长 `Decoration::extra`，所以图片自己那一角要往外挪同样的数画面才不漂，并且卡在桌面左上角为止。两臂都被钉住：选区 (30,40,120,90) 带 12 px 阴影 ⇒ 贴图矩形 (18,28,144,114)；选区贴到 (3,5) ⇒ 落点被桌面截在 (0,0)。屏幕上那一张判的是 `PinState::with_rendered` 里那一格与 `delivered()` 的逐像素相等，桥不另存一份副本。  
+> **走的是 `add` 而不是 `add_captured`，这一格是这一档唯一不能顺手的地方**：`add_captured`（`crates/qt_bridge/src/state.rs:429`）是 `falcon_core::pin::PinItem::captured_at` 唯一的写入者，那一格认的是「这些像素是从屏幕上这一块读回来的」，而这里递进去的是标注拼出来的那一张，它没有从任何一块桌面上被读过。认下那块原坐标，§5.5.8 的「刷新」（`state.rs:511`）下一次就会拿当下的活屏幕盖掉用户刚画的箭头与文字。留 `None` 时同一枚键交回的是 `crates/core/src/refresh.rs:51` 那句「不是从屏幕上截下来的：请重新截一次」——真话，而且照样一条路；上面那一位证人钉的正是 `captured_of(id)` 为空。于是这一枚贴图是易逝的那一种：没有文件可回去，也没有原坐标可重读，要留就贴完之后走贴图窗自己那一扇另存为。  
+> **钉成了才把名册的读数搬过桥**：`mask_view.rs:1811` 的 `republish_roster()`，它自此进了 `pin_check.rs:6217` 那份「真会多出一枚贴图」的名单（名单如今六扇，`:6223` 就是这一枚），而 `annotate_check` 的 `every_toolbar_button_is_handed_a_hint` 分母自这一档起是 43（41 枚 `Cell` + 2 枚 `Swatch`）。  
+> **两处没落，写在这里而不是抹平**：⚠️  ① 这一枚钮只有屏幕上那一处入口——本节第二步写的是「点击"贴图"按钮」，没有点名任何一枚快捷键，于是本轮也没往 `hotkey.actions` 里加名字；`--ink` 那台量规本轮也没为它排行，它的证人是进程内那一只单测，而它叫的是 `pin_selection()` 本体，所以「页上那枚 `Cell` 真按得动」这一格记的是源码里那句 `onTapped: bar.pin()`、那只单测的第四格（页上递的名字对上 `#[cxx_name = "pinSelection"]`）与 hint 那道分母，不是记于一趟真机。② 步 4「用户拖动贴图到合适位置」本轮一步也没动——那一手自 §5.9 那一族起就归贴图层自己，本档不另造第二只手。
 
 ### 5.8.2 从剪贴板贴图
 
@@ -909,6 +1063,13 @@
 - 支持 PNG、JPG、BMP、TGA、ICO、TIFF 和 GIF。
 - 文件损坏或格式不支持时应显示错误信息。
 
+> **实现口径（2026-11-04）**  
+> **三步各有各的对面**：第 1 步是托盘上那一行，标签用的就是这一节那七个字「打开图片并贴图」（`Work::OpenPicturePins`——#455：措辞在这一档里是读数，不把它顺成「打开图片」或「贴图文件」），路由在 `hotkey.rs` 的 `Work::OpenPicturePins => open_picture_pins(…)`，跑在 GUI 线程上；第 2 步是原生选择对话框（`platform_windows::pick::pick`，**可多选**），标题递给它的就是那七个字；第 3 步是 `state::pin_pictures` → core `pin::read_picture_batch`，逐枚读、逐枚记账，**贴出几扇窗读的是 `FilePinBatch::pinned` 的长度**，不写在任何一句散文里。  
+> **那一列七种只有一个作者**：`encode::IMPORT_FORMATS`（PNG、JPG、BMP、TGA、ICO、TIFF、GIF，与这一列逐枚对上）。对话框的过滤器由 `pin::picture_filter_patterns()` 把那七枚各自的 `ext()` 拼出来、**不另列清单**，拒绝句里那句「用 png、jpg、…」读的也是同一份，所以将来加一种要改的地方只有一处，而对话框、过滤器、错误话三处一起改口。  
+> **第 2 条格式要求（损坏或不支持都要显示错误信息）落的是四因不重叠**：打不开（已被移走 / 正被占用 / 没有权限）、太大读不进来（带 `宽×高`）、不是本程序会读的图片（后缀就不在那七种里）、**后缀认得却解不出 ⇒ 说「文件可能已损坏」而不是「不支持」**。每一枚没有成图的文件都带**它自己的完整路径**（`FilePinFailure{path, why}`），§8.2 那两行「显示文件名称和读取失败原因」「不影响其他贴图」要的就是这一形状；而 `read_picture_batch` 那条硬规则写在代码里而不是注释里等有人去读：`read` 交回 `Err` 时**只记那一句、接着读下一枚**，一枚坏档吃不掉它后面那几枚好档（§7.2 同一件）。  
+> **一次挑多枚时三件事各自有判据**：落位点按**挑的顺序**排开（`pin::cascade_at`，坏掉的那一枚也占一格阶梯）——否则对话框是模态的、指针那几趟根本不会动，三枚挑的文件会叠成一扇窗，名册上是三格而屏幕上是一格；超出 `FILE_PIN_MAX` 的那些**挡在读盘之前**，所以不会先建出窗来再当着用户收回，那一枚说的是「这批太大，再挑少一点」；取消也有话——`FilePinBatch::said()` 三格各有说法（一枚也没挑 / 全成了 / 成了几枚又坏了几枚），而**「对话框开不起来」与「用户没挑」也是两件事**、各自一条腿，前者那句由 `PickError` 自己说、本层不替它编第二句；每一枚没成的都单独落一行运行历史，屏幕上最多引 `FILE_PIN_SAID_MAX` 句原因，多出来的逐行记进运行历史，因为一行提示到第四句就不像提示、像日志。GIF 在这条路上到手就动（`attach_clip`，§5.9.14），与 §5.8.4 那一支共用同一手读文件。  
+> **两处没落，都写在这里而不是抹平**：① 第 1 步的后半「或将文件拖到应用图标」**没有**——全仓零 `WM_DROPFILES`、零 `RegisterDragDrop`，而托盘图标本来就不是一扇收得到拖放的窗（`Shell_NotifyIcon` 没有放文件的目标接口），要做得在托盘那一块地上盖一枚跟踪窗，本轮不为一支「或」发明那种写法；这一节第 1 步是「或」，前一支（托盘菜单）已通，故按前一支结案、后一支记为未落。② 这一枚**不绑快捷键**：`Work::action()` 对它回 `None`，而 §5.16.1 那张「可绑定范围」十行里没有「从图片文件贴图」——名册外再添一枚键就是替用户决定他要按什么。  
+
 ### 5.8.4 从网页复制或拖入图片
 
 **操作步骤**
@@ -930,6 +1091,14 @@
 - 网络不可用时应提示无法获取远程图片。
 - 获取失败时，不得用低质量占位图静默替代。
 - 应遵守目标网站和浏览器可提供的数据范围。
+
+> **实现口径（2026-11-04）**  
+> **方式二那三步各有各的对面**：第 1 步是 `PinWindow.qml` 里那一块 `DropArea`——`onDropped: (drop)` 取 `drop.mimeData.urls`，把**整句 URL** 用 `String.fromCharCode(0x1d)` 连成一串递给 `win.session.pinDrop(win.pinId, …)`；桥那一格（`Session::pin_drop`）既不分格也不判落点，原样交给 `drop_in::start`，页上不判文件／地址、也不判换不换。第 2 步分两只手：归堆与判类在 core（`drop::sort` + `Dropped::classify`，判据与 `link` 那道闸同一个作者），取字节在 `platform_windows::fetch::bytes`——与 `[about] release_feed` 那份清单**同一只手**，所以「这一句地址取不取得回」在整个程序里只有一个答案；只有要去取的那几格起一条名为 `falconshot-drop` 的线程，结果**投回** GUI 线程再装，读盘与译像素留在 GUI 线程（与 §5.8.3 同一形状，不做两套线程模型）。第 3 步是 `state::PinState::land_drop` → `land` / core `pin::adopt_source`，与 §7.2 崩溃恢复共用同一只手，桥侧不自己夹第二遍。  
+> **第 3 步那句「具体行为由设置决定」是一枚真的开关**：`pin.drop_replaces_current`，出厂默认 false（保守那一头：拖进来的每一张都另钉一枚，原本那一张不动），页上在「贴图」那一类里有它自己的一行、`kind_of` 答 `off` 所以是枚开关而不是数字格。它在**按下那一刻现读**——`drop_in.rs` 里 `settings::drop_replaces()` 一处，位置在 `fn start(` 之内、`.spawn(` 之前、`drop::sort(` 之后（落点要数得出这一批有几格可用），且不读整段 `[pin]` 的快照：快照说的是**新贴图长什么样**，这一枚说的是**这一趟落到哪一格**。落点整趟只问一次且问在发起取回之前：取回之后那一数只会变小（一句 404 就少一格），事后再问一遍，屏幕上说的与真做的就成了两件事。开关开着而这一批有 ≥2 格可用 ⇒ 各钉一枚，因为「换这一枚」一次只换得起一枚、换一枚就得把其余的咽下去。  
+> **规则 1「网络不可用时应提示无法获取远程图片」落的是四因不重叠**：连不上／超时、那边答的状态码（404 那一句带得出数字）、那一份比这一趟允许的大小还大、取回来的不是本程序会读的图片——四句各由 `FetchError` 与桥侧的 `read_refusal` 各自说，这一层不合并成一句「拖入失败」（#453），也不引一份假数据顶上。屏幕上那一行最多引 `FILE_PIN_SAID_MAX`（3）句原因，多出来的逐行记进运行历史，因为一行提示到第四句就不像提示、像日志（与 §5.8.3 同一条规矩，#433 不许静默）。线程起不动、结果投不进 Qt 的事件环，也各有一句：那一格当场放下来并把「已到手几格、另有几句没取回」写进 stderr，绝不让那枚贴图从此不再接受落下。  
+> **规则 2「获取失败时不得用低质量占位图静默替代」的形状是这一条路上压根没有占位图那一格**：`read_picture` 只有「真的译出来的一张」与「一句拒绝」两种答，所以对面答 `text/plain` 时那枚贴图的源矩形与来历一个字没动，而那一行同时说了那台服务器答了什么与本枚此刻还是哪一张（「…没被换掉：这一趟没有取回可以装的东西，屏幕上还是它原来那一张」）。超限那一支同理，**不拿一半的内容当成整份**：`drop::IMAGE_LIMIT`（33,554,432 字节）递在 `fetch::bytes` 那一手、写进结果之前判掉。整批的大小也在归堆那一步就判（`FILE_PIN_MAX`＝32，与 §5.8.3 那一批对话框同一枚数，两批挡的是同一件事），超出那些连读都不读、连网络都不走——让 33 句地址各付一次网络的代价再逐句退回，是最贵的那一种坏法。  
+> **规则 3「应遵守目标网站和浏览器可提供的数据范围」在这一条路上是「只取交来的那一串」**：页交来的是浏览器肯给的那几格整句 URL（本机这代 Qt 给 JS 的只有整句 URL，`toLocalFile` 在运行时是 `undefined`，P37 量过，所以页只能把那一串字递过桥），这一层不改写它去猜「原图」地址、不带 cookie 或登录态、不进 DOM、不为看起来像路径的那串文本（`C:\图\a.png`）开第二条读盘的路——判据交给一串没被引起来的文本就是替网站替浏览器决定它能给什么。域名里带非 ASCII 字符的那一句由 `link` 那道闸挡下（同形字那一族不替用户点头取它），带 userinfo 的地址要去取的是 host 与端口、userinfo 不进域名。§6.3 那句「应明确提示网络请求」在请求**发起之前**出口，说的是这一趟要去取几句、向哪些机器取，而列出的域名与端口就是真会被去取的那一枚（一台时原样引 `update::web_notice` 那一个作者，多台时「向 N 台机器取」是另一件事、有它自己的一句，第五枚之后折成「等」而数目照说）；盘上那一份文件那趟一个字也不说，因为它不走网络。  
+> **四处没落，写在这里而不是抹平**：① **一次真的拖放没有跑过**——那要鼠标按住浏览器里的一张图挪到窗上再松手，而 `--drop-in` 那一档跑在 `engine.load()` 之前、拿不到那一扇窗，所以它发 BLOCKED（退出码 3）而不是 PASS。② **`drop_in::start` 本体没有跑过**——它第一枚参数是 `Pin<&mut Session>`，那枚把手只有 QML 线程拿得到；那一份报告里前面那十七格量的是它**调用的**那三手（`pieces`／`one`／`running_line`）与它**交给的**那两手（`drop::sort`、`state::land_drop`），而 ⑧⑨⑩⑪ 那四行对着门自己起的本机 HTTP 服务器真跑了一次取回、一次 404、一次超限、一次非图片。这两格欠账的正文只有一个作者（`the_unmeasured_leg`）。③ **穿透模式那一支收不到落下**（§5.9.12 那枚 `Qt.WindowTransparentForInput` 让整扇窗对输入透明），本层不为透明窗另开一条输入路，PRD 给的出口是 §5.9.13 那一枚「关掉穿透」。④ 「改完那枚开关立刻拖一次」的**即时生效**那一半由 `--settings-window` 那一族量，这一档只钉「现读、不快照」的源码形状。方式一（浏览器里右键复制图片 → 按贴图快捷键）不在本节新增：它走的是 §5.8.2 那一条 `Work::PastePin` / `paste_pin`，真机读数在 `--hotkeys` 那一档。
 
 ### 5.8.5 文本卡片
 
@@ -1135,6 +1304,13 @@
 - 临时文件在剪贴板失效前不得删除。
 - 文件名应遵守预设命名规则。
 
+> **实现口径（2026-11-05）**  
+> **步 2 那句「在贴图或截图中执行复制」自此是三扇门**：贴图那一只（`crates/qt_bridge/src/session.rs:2341` 的 `copy_pin`，菜单「复制图片」与贴图上的 `Ctrl+C` 都从这儿进）、遮罩工具条「复制」那一只（`mask.rs:3546` 的 `copy_out`，§5.5.2 步 3 那一按）、以及 §5.5.1 步 3 的默认行为那一次（`mask.rs:3607` 的 `auto_copy_out`）。开关是同一枚 `[output] copy_as_file`，三只手各读各的当下、读的都是 `settings::output_cfg()` 那一枚函数，所以「按下去那一刻生效的那一枚」不会在两只门上分家。开着 ⇒ 三只都走 `state.rs:1695` 那架 `PinState::clip_ladder`：先落盘、后承诺，一次 `OpenClipboard`/`EmptyClipboard` 交易里同时递出 `CF_DIB`+PNG 与 `CF_HDROP`；关着 ⇒ 逐字仍是 §5.9.16 那一句，一格也不多。本轮之前只有贴图那一扇跟着开关，而这一节的名字写的是「复制图片」不是「复制贴图」，所以遮罩那两只不是附带赠品。  
+> **三扇门三套中文，作者只有一处**：`state.rs:315` 那枚 `ClipDoor` 只说「是哪一扇」，话说在梯子里 —— `subject()`（落不下去那张图在 `save::quick_to` 的句子里叫什么）与 `retry()`（什么东西还在）。默认行为那一扇的 `retry()` **不许**说「可以再复制一次」：那一趟没人按过复制，替用户安排一次他没做的手指比少说一句更贵。钉它的是 `state::tests::the_three_clipboard_doors_word_their_own_refusal`（三句互不相同、只有该说的那两扇说「可以再复制一次」，并且整个 `state.rs` 里递 `CF_HDROP` 的那一手只许出现两处：梯子与 `clip_file_check` 那一次拿空列表换拒绝读数的）和 `mask_view::tests::every_door_that_copies_a_picture_dispatches_on_the_file_switch`（三只手各读那枚键一次、开着那一侧只经由梯子、关着那一侧还留着 §5.9.16 的原句、而 `mask.rs` 整档一次都不自己递文件列表）。  
+> **规则第一条自此有板子上的读数**：梯子进门前先把自己那角（`%TEMP%\falconshot-clip`）扫一遍，写完回读一次 `CF_HDROP` —— 板子答得出而里面没有我们这一枚 ⇒ 有人抢在后面，那已经是死引用，文件当场收回、话照实说；板子答不出 ⇒ 那是「不知道」而不是「没有」，文件留在原处等着被贴。三扇门共用一份登记（`clip_pending_files`）与同一枚序号（`clip_seq`）：它们写同一个目录、用同一个前缀，各自从 1 数起的两串会在第二次撞名。真机那几格 —— 截图那一臂是 `--annotate` 新增的 `clipboard file ref`（话里点名、在产品自己那角之下、此刻真在盘上，而板上写着的就是它；反证是关着那一侧：话里不出现「文件引用」、板上也不许多出一列），默认行为那一臂是 `--autosave` 的 `confirmation copied as the switch says`（只在 `auto_copy` 开着那一支判），贴图那一臂一直是 `--pins` 的 `pin copy file`。单元档与 `--selftest` 一律不写用户的剪贴板（§10 第 51 项 ②），所以 `copy can hand a file too` 那一腿只判拒绝那一面：没画过的贴图 ⇒ 那句「还没有画过」照原样，序号与登记一格不动。  
+> **规则第二条**：文件名走 `[output] naming_template` / `naming_prefix` / `collision` 那条既有的路，唯一作者是 `save::quick_to`，差别只在落点是临时目录、`%i` 数的是这一趟复制而不是快速保存的 presses；`%m` 与 `%t` 在这一架梯子里一律留空。至于页上那一枚开关：**本轮之前那条「设置页的开关无作者」是误账** —— 「输出」那一页是 `settings_view::rows_of` 从 `Config::flat()` 生成的，落一枚持久键就是落一行，`copy_as_file` 自 P130 起就在页上、`--settings` 那条横幅也两头都报；本轮补的是那一格的证（`settings_view::tests::the_copy_as_file_switch_is_a_row_the_page_can_flip`：那一行在页上只出现一次、画成 `Switch(false)`（出厂是关，因为本节的步 1 写的是「用户在设置中开启」）、翻得过去也翻得回来、名单外的字当场被拦且原值一格不动、不挂「需重启」—— 三只手都按一次读一次，页上改完下一次复制就按新的来）。  
+> **两处没落**：① 步 4-5（在 Explorer 里 `Ctrl+V`、系统创建实际图片文件）至今只证到「活板子上确实写着这一枚路径」那一层，脚本没有第三个进程的对面，Explorer 认不认这枚 `CF_HDROP` 不在任何一档的读数里。② §6.2 那句「临时文件应按策略自动清理」在这一族里只有「下一趟复制进梯子时扫一次」这一只手：没有退出钩子，所以最后一次复制承诺的那一枚，要么被剪贴板一直点名而**不该**删（正是本条第一条规则），要么得等下一趟复制才扫得掉。真机门里那一趟跑完之后 `put_back` 交还给用户原来那份、把承诺顶成死引用，那枚文件因此会活到下一趟复制 —— 本档不替被测的规则动手删，写清了。
+
 ### 5.9.18 关闭与销毁贴图
 
 **操作步骤**
@@ -1161,6 +1337,15 @@
 3. 被选中的贴图显示统一选中状态。
 4. 点击空白区域或按 Esc 退出多选。
 
+> **实现口径（2026-11-04）**  
+> **第 4 步那两只门此刻通的是一枚**：「按 Esc」那一支从头到尾是活的——`qml/PinWindow.qml:1749-1756` 那枚 `Shortcut`（`sequences: [StandardKey.Cancel]`、`context: Qt.WindowShortcut`、`enabled: !win.cropMode`）→ `clearSelectionAction`（同文件 `:1739-1744`）→ `src/session.rs:2238 Session::clear_selection` → `src/state.rs:783 PinState::clear_selection` → core `crates/core/src/pin.rs:1738 PinSet::clear_selection`。落点只有一处，这一件是钉过的：`src/pin_check.rs:6095 the_qml_gives_selection_one_landing_and_two_doors_out` 判 `win.session.clearSelection(` 在窗里只出现一次、Esc 的 handler 只有一枚，而那只 Action 在场上一共有六枚读者——两扇门各一枚，另外四枚是 `PinWindow.qml:488/580/638/652` 那四段量规腿，它们不是第三、第四扇门，这一件由那枚尺逐枚点名（同一枚尺另有一问专门数「注释里被抄出来的那枚字面串」，抄一次就多一枚假读者）。  
+> **「点击空白区域」只交付了窗内那一半**：`PinWindow.qml:1421-1432` 的 `onPressed` 里，左键被 `takesClick`（`:1416-1419`）拒掉时才轮到那句 `clearSelectionAction.trigger()`。那只手问的是 `src/pin_view.rs:700 hit_at`——它先把窗内坐标加上 `pos_x/pos_y` 换成物理全局点（所以不是一枚恒假的读数），再交 `src/state.rs:707` → core `pin.rs:1483 PinItem::hit`：**四档里只有 `AlphaBg::Transparent` 按像素答**（`alpha_at(…) > 0`），`Pseudo | CheckerDark | CheckerLight` 三档恒真（名册 `crates/core/src/config.rs:453`）。于是 `PinWindow.qml:1427-1429` 那句自评——其余三档整窗都吃点击、窗内压根没有空白可点——**此刻仍然成立**，还要替它补一句它自己没说的：连透明那一档也要那张图自己真有洞，一张不透明的贴图钉上去之后本窗一个洞也没有，那一臂在这扇窗上根本不出现（洞在不在场上的读数是 `win.view.has_transparent_pixels`，窗上第一处在 `:1097`）。  
+> **桌面与别的窗那一边，这一臂一位读者也没有**：点桌面、点贴图以外的一切，本进程收不到那一击——全仓（含本档与 spike）读不到 `WH_MOUSE`/`SetWindowsHookEx` 任何一处，唯一那枚桌面级的输入读数是 `crates/platform-windows/src/proc.rs:138-147` 的 `GetAsyncKeyState`，而它只答 Ctrl/Shift/Alt/Win 四枚修饰键（§5.15 热区那一问用的）；贴图窗是一张张贴图自己的顶层窗（`PinWindow.qml:119 flags: Qt.Window | Qt.FramelessWindowHint | Qt.Tool`），铺满屏幕的那一扇只在一次截取期间存在；`src/hotkey.rs` 整档里 `clear_selection`/`clearSelection` 零命中，没有任何一枚全局键走到这一手。  
+> **欠的那只手其实早就写好了，缺的是一位读者**：core `pin.rs:1692 PinSet::click_at` 头顶那句 “A click that lands on nothing clears the selection (§5.10.1 点击空白区域)” 说的正是本步的第一臂，可它与它下面的 `stack_at` 在生产代码里一位读者也没有（全仓只读到 `pin.rs` 自己那几处单测调用）。所以这一臂要补的不是「清名单」（`clear_selection` 有手、有数、有发号），而是「这一下落在桌面上哪一点」那一读：一枚全局鼠标读数，或一扇盖住桌面的窗，外加一处把点交给 `click_at` 的装配。这两样都不便宜：前者的代价是这台机器上每一次左键都先过本进程一遍，后者的代价是一扇永远压在最前的透明窗——§5.9.13 为一枚「鼠标穿透」都要专门开一枚开关并写一句撤销的话，反过来常驻吃掉桌面点击更得先有口径可写。本轮**没有**去补它，本节按「或」的第二臂交付。  
+> **窗此刻对这一手一句也不说**：`Session::clear_selection` 只写 `selection_epoch` 与 `selection_count`（`src/session.rs:2244-2245`），没有任何一条腿写 `status`；`src/state.rs:768` 那句注释里描出来的「取消了 N 张贴图的选中状态」在产品里**没有一个作者**（全仓读不到那串中文）。于是按下 Esc 之后屏幕上只剩描边消失这一件事（步骤 3 那句「统一选中状态」绑的是 `PinWindow.qml:1350` 那一格 `win.view.selected`）。Action 自己带着 `text: "取消选中"` 而不挂进任何菜单——`:1733-1738` 那封信记的就是这个决定：批量那几枚入口早就在这扇窗的右键菜单上，退出多选这一枚不进去，因为步骤 4 点名的出口只有空白与 Esc 两只门。  
+> **一处没落，记在这里**：`PinWindow.qml:1754` 那枚 `enabled` 只让 `cropMode`，**没**让 `win.typing`（`:1281` 那一格读的是 `groupPrompt.visible || sizeDialog.visible`），而下面那枚 `cropEscapeKey` 头顶的信（约 `:1907-1911`）写的是「两支都再让一让 `win.typing`」——此刻读到的只有裁剪那一支真的带了它（`:1920`）。于是「新建分组/改尺寸那格框开着时按 Esc，名单到底清没清」这一问，码上没有答案、注释里有一个可能对不上的答案；谁赢取决于 Qt 自己的按键投递，本档不替它猜，欠的是一次读数或一枚 `!win.typing`。  
+> **本节此前一句口径也没有**：这一块是 §5.10 全节第一次落字。步骤 1/2/3 与 §5.10.2/3/4 的批量那一臂在窗上早有对面（`dragTarget`/`resetTarget`/`destroyTarget` 与量规 `mov-*`/`rst-batch-*`/`des-*` 那些读数），本块量的只有第 4 步那两只门——第一臂只结了窗内那一半，桌面那一半是欠的。
+
 ### 5.10.2 批量移动
 
 **操作步骤**
@@ -1168,6 +1353,10 @@
 1. 用户选中多张贴图。
 2. 拖动任意选中贴图。
 3. 所有选中贴图按相同位移移动。
+
+> **实现口径（2026-11-04）**  
+> **三步是一条路的三段，分岔只有一名册**：拖动那只手里唯一的判断是 `crates/qt_bridge/src/state.rs:839 batch_hand`（全仓只此一份），它问的是「这一枚在名册上**且**名单多于一枚」；两样同时成立才交给 core `crates/core/src/pin.rs:1855 PinSet::translate_selection`（逐枚走 `move_by` 自己那份夹），否则走单枚那一臂（`state.rs:831`）。步 3「按相同位移移动」的证人是 `state.rs:5685 a_batch_drag_moves_every_selected_pin_and_the_wall_stops_only_the_one_it_reached`：两枚一起拖，撞到屏幕边那一枚停在 1576 而**不把另一枚一起夹住** —— 相同的是位移，不是各自被夹之后的落点。进场只有一处落点：`qml/PinWindow.qml:1490-1513 dragArea.onPositionChanged` → `:211 dragTarget` → `session.rs` 的 `dragPin`，跨窗重画走 `qml/main.qml:52-53` 那两枚 `moveTick`；数这一件事的证人叫 `pin_check.rs:6519 the_drag_fans_out_through_a_binding_and_the_batch_is_counted_once`，它一并问「一处落点 + 一枚 handler + `translate_selection` 只有一位桥读者」。  
+> **本步没问、不写出来就会被读成已答的三件**：拖的那一枚**不在名册上**时只动它自己（设计如此，同一枚测的另一问在 `state.rs:5726`），所以「选中多张」之后拖一张没选中的不算批量手势；被 Solo 或分组藏起来的那几枚照旧跟着走（`translate_selection` 不筛可见，与 `pin.rs:1832 selected_bounds` 那一手不同）；批量移动**没有撤销**——量规 `PinWindow.qml:538-539` 是先清名单、再两下单拖拖回去，不是一条 Ctrl+Z，而 §5.7.19 那句「应覆盖绘制、移动、删除、样式修改和裁剪」说的是标注对象那一族，贴图这一族的撤销只有销毁那一条（见 §5.10.4）。名册本身只由窗上 Ctrl+单击长大（`PinWindow.qml:1530`），没有框选；步 1 那一句在 §5.10.1 已有自己的口径，此处不重判。
 
 ### 5.10.3 批量透明度调整
 
@@ -1177,6 +1366,11 @@
 2. 执行透明度调整。
 3. 所有选中贴图同步更新透明度。
 
+> **实现口径（2026-11-04）**  
+> **「执行透明度调整」有两只手、四个入口，两只手问的是同一枚 `batch_hand`**：定值 `state.rs:853 set_pin_opacity` → core `pin.rs:1868`，步进 `state.rs:875 step_pin_opacity` → `pin.rs:1886`。入口是右键菜单那三行（`qml/PinWindow.qml:2172` 起那一段：更透明 / 更实 / 不透明度 100%）、`Ctrl`+滚轮（`:1569` 递 `wheel.angleDelta.y > 0` 的方向）、以及改尺寸那一格对话框里的一条（`:2476`）—— 页上落点各只有两处：`:218 opacityStepTarget` 与 `:222 opacitySetTarget`，证人 `pin_check.rs:6750 the_qml_gives_the_opacity_two_landings_and_eleven_named_readers`，批量只数一次那一问叫 `pin_check.rs:6847`。  
+> **步 3 的「同步更新」读的是同一手势，不是同一个数**：`pin.rs:4729 a_batch_opacity_step_keeps_each_pin_on_its_own_rung` 判的是 30% 的那一枚步进到 20%、80% 的那一枚步进到 70%、没选中的纹丝不动；定值那一臂由 `pin.rs:4718 a_batch_opacity_change_only_touches_the_selection` 判。alpha 是每枚各有一份、且留得住的：`pin_view.rs:39 qproperty opacity` 由 `state.rs` 的 view_data 递，窗上 `PinWindow.qml:172` 读成 `view.opacity / 100.0`，落盘在 core 的 `PersistedPin.opacity`（§7.2 崩溃重建读的就是这一格）。  
+> **不覆盖的两件，都记在账上**：透明度**没有撤销**，代价与 §5.10.2 移动同一句；`opacity` 故意不进取舍的 `content_key`，拨它不重编那张 PNG（量规 `op-rev-set` 记的就是这一判），菜单第三行那句「不透明度 100%」是写死的字面、不说当前值 —— 那是页面上的一句话，不是一只缺的手。
+
 ### 5.10.4 批量重置、关闭和销毁
 
 **操作步骤**
@@ -1185,6 +1379,11 @@
 2. 打开批量操作菜单。
 3. 选择重置、关闭或销毁。
 4. 系统对所有选中对象执行操作。
+
+> **实现口径（2026-11-04）**  
+> **步 2「打开批量操作菜单」交付的是每扇窗自己的右键菜单，不是一枚独立的批量面板**：`qml/PinWindow.qml:1969 pinMenu`（在 `:1542` 弹出）里那几行就是步 3 点名的三件——重置视图（`:2190`）、关闭（`:2212`）、销毁（`:2218-2220`，字面带着 `destroyCountFor` 现算的「影响 N 枚」，N 在 `onAboutToShow` `:1979` 刷新），其后还有第四行「撤销刚才销毁的 N 枚」（`:2224-2227`，`visible: trashed > 0`）。`:1781-1782` 那封信写的就是这个决定。四只手与一名册：`state.rs:901 reset_pin` → `pin.rs:1899`、`state.rs:945 close_pin` → `state.rs:1404 close` → `pin.rs:1913`、`state.rs:980 destroy_pin` → `pin.rs:1925`、给菜单数那一格的 `state.rs:962 destroy_answer` → `pin.rs:1955`、撤销 `state.rs:1013 restore_pins`；四只问的都是同一枚 `state.rs:927 hand_targets`（名册的唯一作者，#281），桥侧名字 `resetPin` / `closePin` / `destroyPin` / `destroyCountFor` / `undoDestroy` 全在 `session.rs` 的 `#[cxx_name]` 上。  
+> **关闭与销毁分别是「能不能回头」，不是「藏与删」**：两枚都把那几枚从集合里拿走（core `pin.rs` 里 `retain` 那一家），区别只在销毁把像素停进 `trash_*`（`state.rs:990-1001`）所以 `undoDestroy` 还得回来，关闭没有那条路——「藏」是另一件事（§5.15 的 `hide_all_pins`）。撤销**只有一步**：`destroy_pin` 进门先清空 trash（`state.rs:987-989`），量规 `des-undo-again`（`PinWindow.qml:613`）第二次按读回 0；这一句 PRD 没要求，写在这里是为了「撤销刚才销毁的」不被读成一条历史。证人：`state.rs:6266 the_reset_and_retire_hands_answer_the_same_roster_and_the_trash_keeps_the_pixels`（重置答 2 而名册不动，`:360-367` 那句「重置不是退役」就是它）、`pin.rs:4762 the_dialog_counts_what_the_gesture_would_touch`（在册 / 不在册 / 死 id 三档答 2/1/0）、`pin.rs:4642 destroying_and_restoring_returns_the_pile_exactly_as_it_was`、`pin.rs:4656 destroying_a_pin_leaves_the_group_it_belonged_to_alone`（分组名册跟着缩的是 `pins_in_group`，不是 `after_removal`）、`pin_check.rs:7049 the_five_destroy_rows_answer_apart_for_each_way_the_ledger_can_fail`、`pin_check.rs:7413 the_four_view_hands_have_one_landing_each_and_no_second_judgement`。  
+> **一句没落，记在这里**：销毁前**没有确认对话框**，`:2215-2217` 写明是故意的——本步点名的是「选择重置、关闭或销毁」那三个动作，而「提示影响数量」由菜单那一枚字面数答（窗自己不数名单，那是 `batch_hand` 的第二份，`:254-255` 记的就是这一判），所以这一句按点名的入口结案，确认那一环算欠的。
 
 ---
 
@@ -1206,6 +1405,18 @@
 - 应记录进入 Solo 前各贴图的显示状态。
 - 退出后应恢复原状态，而不是无条件显示全部。
 - 应在托盘图标或屏幕提示中显示当前处于 Solo 状态。
+
+> **实现口径（2026-11-04）**  
+>
+> **这一句挑的是「托盘图标」那一支**：进入与退出独显那一刻，`src/state.rs:1071 solo_pin` 的两支尾巴各改写一次托盘 tooltip（`crate::hotkey::replay_tip`，`src/hotkey.rs:2446`），图标上读得到「独显中：留着 N 枚，其余已隐藏」。句子只有一个作者（`src/hotkey.rs:2429 tip_line`）——§5.1.1 那句「N 个全局热键待命」与独显这一截由同一只手拼进同一枚图标，「退出独显时把热键那一档抹了」就是这么挡掉的（#281）。  
+>
+> **它不是第二份 solo 真相**：递下去的两枚读数现读自 core 那张表（`solo_active` 与 `solo_keeps`，`crates/core/src/pin.rs:1992`、`:1996`），桥侧没有新存一枚布尔、也不另数 `items`。两条入口（贴图右键菜单那一支与 `Ctrl+Shift+S` 那一支）本来就汇进 `solo_pin` 这一只手，所以尾巴上那一条改写覆盖两支。  
+>
+> 屏幕那一支仍是两样**非常驻**的读数：进入/退出各一枚吐司（`qml/HintWindow.qml`，几秒后自隐）与贴图右键菜单里那一行「退出独显」（`qml/PinWindow.qml:2153`，要用户先知道去开那扇菜单）。规则写的是「或」，两臂如今都在，而「常驻」这一件事靠的是图标那一句。  
+>
+> 不覆盖：`[general] show_tray = false` 时图标压根没挂（`src/hotkey.rs:1130 tray_from` 交 `None`），那一档独显期间屏幕上没有任何常驻读数；`Pump::set_tip` 只把消息投给泵线程，图标那一刻真改没改归泵线程的 `apply_tip` 判、本层读不回来（`src/hotkey.rs:2410 TIP_LAST` 记的是「本层写出去的那一句」，不是屏幕上那一句）；独显期间新贴或删贴图不会改写 tip（solo 名单没动，读数还是那一枚）；崩溃恢复不恢复独显（持久化只恢复位置/尺寸/透明度），重启后图标说的是原句。  
+>
+> 证人：`cargo test -p qt_bridge` 的 `the_tip_sentence_has_one_author`（含 `szTip` 127 单元那一格——句子胖了 `write_wide` 会静默截断，所以由单测钉住）与 `the_solo_hand_is_the_only_writer_of_the_tip`（两支各一次改写、递的是 core 的读数、泵不在时账上说的是「泵不在」）。真机那一半本轮没有门：本机桌面锁定，托盘那几扇门跑不动。
 
 ---
 
@@ -1244,6 +1455,16 @@
 - 分组名称不能为空，同级名称是否允许重复应统一定义。
 - 排序变化应同步反映到快捷切换菜单。
 
+> **实现口径（2026-11-04）**  
+> **第 3 步那句「拖动排序」落成的是一对手，不是一种手势**：场上没有拖动——分组窗那一列每一行的 `MouseArea`（`qml/GroupWindow.qml:395-398`）只有一句 `onClicked: win.focus(modelData.id)`，没有 `Drag`、没有 `onPressed`、也没有可拖的把手；排序由那两枚钮供：`group_window.rs:69` 那六枚名字里的「上移」「下移」（index 2、3）在 `GroupWindow.qml:457/459` 各递一次 `win.doMove(id, ∓1)` → `:210` → `src/session.rs:2103 Session::move_group` → `src/state.rs:1214` → core `crates/core/src/pin.rs:2113 PinSet::move_group`（±1、core 自己饱和夹边，`to == from` 时一动不动而仍交 `Ok(())`）。贴图窗那一路同一形状，逐组一行：`qml/PinWindow.qml:2260-2273` 那两个 `Repeater`（「上移 X」「下移 X」）。  
+> **「或」那一句按两支读**：第 3 步写的是「执行删除、重命名**或**拖动排序」，三臂各有对面即合格，而那一格的语义是**换相邻两格**——core 那一手头顶的信自己写着 “§5.12.3 拖动排序: the order of `groups` *is* the quick-switch order, so moving an entry is the whole feature”（`pin.rs:2111-2112`），±1 与"按住一行拽到别处"改的是同一格 vec 的次序，换到的地方也一样。真拖动**没做**，也没半途冒充：页上那六枚钮的名单唯一作者是 `BUTTONS`，门 `--group-window` 数的是页上真造出几枚（`GroupWindow.qml:440-467` 那一圈 `Repeater`），窗上那两行字面写的也是「上移/下移」而不是「拖动」。  
+> **规则 1「删除非空分组时应询问贴图如何处理」：已过，两臂各有一问，归宿各有说法**：分组窗那一臂，「删除」那一枚钮**一次也不删**——`GroupWindow.qml:235-240 askDelete` 只把问亮起来并记住问的是哪一组，答完才轮到产品（`:250-256 confirmAsk(destroy)` → `doDelete` → `src/session.rs:2054 Session::delete_group`）；问句与两枚答的字唯一作者是 `group_window.rs:83-85`（「这一组里还有贴图，删除时它们怎么处理？」/「退回未分组」/「随组销毁」），第三枚是取消（`:503-516` 那一圈），取消那一臂产品一次也没被叫到——门里 `"the ask comes before the cut"`（`group_window.rs:730`）判的就是「按了删除而一次也没答」之后清单少没少一行。归宿那一半在 core：`pin.rs:2063 delete_group(id, fate)`——`GroupFate::Ungroup` 走 `assign_group(&pins, None)`（`:2080`：贴图留在场上、`group_id` 归 `None`，成员不变 ⇒ 桥侧不 `sync`，`src/state.rs:1170-1186`），`GroupFate::Destroy` 走 `self.destroy(&pins)`（`:2071`：贴图随组走 ⇒ 成员变，`state.rs:1180-1184` 让每一扇窗重读），两臂之后都 `self.groups.retain(…)`（`:2074`）把组摘掉；交回的枚数就是产品那句话里的数（`session.rs:2066-2070`「已删除分组：N 枚贴图随组销毁/退回未分组」，空组另有一句「已删除分组（组里没有贴图）」）。贴图窗那一臂把同一问落成**两行显式选择**，并把枚数印在行上：`PinWindow.qml:2277-2293`，其中「并销毁 N 枚」那一行 `visible: modelData.count > 0`——非空才递出销毁那一枚，这一格比面板那一臂更贴着规则那句话。  
+> **规则 1 的一处不干净也记在这里**：面板那一问**不问空不空**（`askDelete` 只查那一行在不在场），空组上照旧亮出「这一组里还有贴图」这一句，而答完之后产品说的是「组里没有贴图」——同一屏幕上两句互相打脸。规则只要求非空那一支有问，所以这一格不推翻 已过，但那是措辞对着一枚它自己没问过的态说话，欠的是「空组时换一句问、或干脆不亮问」。  
+> **规则 3「排序变化应同步反映到快捷切换菜单」：已过，写的与读的是同一格**：读者一手不重排——`src/state.rs:1133 PinState::group_rows` 按 `pin.rs:2162 PinSet::groups()` 那枚 vec 本体逐行映射；`src/session.rs:1651 group_encode` 头顶明写「顺序就是那张表本身的顺序…排序在这里是**透传**」，而 `Session::refresh` 在每一只手之后重写那一串（`session.rs:1696`）；两处界面消费者都绑**值**、不另存名单：`GroupWindow.qml:143 readRows`（那五只手每叫完一次就叫它，`:196-232`）与 `PinWindow.qml:242 groupList = decodeGroups(session.groups)`。快捷键那一臂才是这一句最要紧的对面：`src/hotkey.rs:1730 switch_group` 每次按下**现读** `state::group_rows()`（`:1731`），交纯函数 `hotkey.rs:1019 group_cycle` 定轮到第几格，那一手只按 `(cursor + 1) % rows.len()` 取后继、**一格也不重排**（`:1011-1013` 那封信点名的就是 PRD 这一句）。钉它的是门 `--group-window` 第⑤格 `"the order moves together"`（`group_window.rs:643-671`）：页上挪完那一拍的次序与同一拍抄下的 core `Snap::order` **逐位相同**，另加「挪之前 ≠ 挪之后」与「挪的必须是 ② 新建那枚编号」两问——第二问专门堵 `move_group` 越界仍交 `Ok(())` 那一臂，少了它「下移最后一格」也会绿。  
+> **托盘那一列此刻没有对象可问**：§5.12.4 那块口径记的决定没变——`hotkey.rs:772-851 tray_menu` 装配的是一层平铺的 `Vec<(u32, String)>`，与分组有关的只有 `Work::Groups` 一行（名唯一作者 `group_window.rs:63 TRAY_WORD`「图片分组」），点开的是那扇面板；`platform-windows` 那侧一枚 `MF_POPUP` 也不建，所以「托盘的逐组行跟不跟同一个序」这一问今天要答成「托盘里没有逐组行」，不是「有而次序不同」。  
+> **两处读数记着，不留白**：① `group_cycle` 记的是**位置**而不是身份——`GROUP_CURSOR`（`hotkey.rs:1006`）全场只有三处碰它（声明、读 `:1732`、写 `:1739`），删组与挪序都**不**清它，只有 `last < rows.len()` 那一枚越界闸会把它放回第一格（`:1025-1028`）。于是 `hotkey.rs:1005` 那句「删了组、换了序，下一按从第一组重新开始」此刻只对「删到越界」成立：**换了序而没越界时，下一按落的是新次序里的第 cursor+1 格**——这与规则 3 不冲突（后继本来就是由当下的次序当场算的），但「上一按切到的是哪一组」这个记忆在挪序之后指的是一个位置而不是那一组。② `hotkey.rs:174` 那封信写 `group_cycle` 「纯函数、有单测」，而全仓读到的只有定义、`:1733` 那一处调用与四处 doc 引用——**一位测试读者也没有**；「轮流」这一判此刻没有单测钉着，能钉住次序那一半的只有上面第⑤格。欠的一枚：要么给 `group_cycle` 补上那格单测（把 cursor 的位置语义与越界那一臂各问一遍），要么改那封信。  
+> **第 4 步「保存设置」保存的是哪一格**：次序与成员此刻住在**贴图档**那一侧而不是 config.toml——`src/state.rs:1449 snapshot_pass` → `PinSet::write_state` 把 `groups: self.groups.clone()` 原样落进 `StateFile.groups`（`pin.rs:2307`，写 `:2412`、读回 `:2444`），而回读只在上一趟被打断时才发生（`pin.rs:2627 plan_startup`：`Crashed ⇒ read_state`、`Clean ⇒ clear_state`），一次干净退出之后组连同它们的次序与贴图一起没了——这是 §7.2 已有的口径，不是本节新缺的一格。config.toml 那一侧的 `[groups]` 数组（`crates/core/src/config.rs:904-906`，头顶 `:887` 明写「排序 = 数组的次序本身…也是快捷切换菜单的次序」）**今天两头都没有生产读者**：`Config::set_roster`（`:2502`）与 `sync_store_groups`（`:1241`）的调用全在 `mod tests`（`:3907` 之后）里，桥侧没有一手在启动时把 `[groups]` 灌进 `PinSet`，也没有一手把 `PinSet` 的次序写回 `[groups]`，而导出走的是内存里那一份（`src/settings.rs:2093 cfg.export_text()`）——那一格此刻装的是档上读回来的、不是机器上挪过的那一串。这一条不是规则 3 的对面（那一句问的是快捷切换菜单，而它读的是 vec 本体），但它决定 §5.20.3 第六枚「分组配置」带过去的究竟是不是用户此刻看见的那一串，欠的是一枚代码任务：**给 `sync_store_groups` 找一个生产读者**。
+
 ### 5.12.4 分组显示与隐藏
 
 **操作步骤**
@@ -1251,6 +1472,10 @@
 1. 用户从托盘菜单、分组面板或快捷键选择分组。
 2. 执行显示、隐藏或切换。
 3. 系统统一更新该分组内贴图的可见状态。
+
+> **实现口径（2026-11-04）**  
+> 步骤 1 那句写的是「托盘菜单**、**分组面板**或**快捷键」——三个入口任一即合格，本节今天通的有两枚，另加托盘那一枚的**间接形态**：分组面板里逐组点那一枚显示/隐藏（`qml/GroupWindow.qml` → `session.rs` 的 `toggleGroupShown` → `state.rs::toggle_group_shown`），快捷键 `switch_group`（出厂 `Ctrl+Shift+G`，名册说明就是「在贴图分组之间轮流切换显示哪一组」），而托盘上那一枚「图片分组」打开的正是前面那扇面板。步骤 2 的「显示、隐藏或切换」三臂与步骤 3 的「统一更新该分组内贴图的可见状态」都由同一枚 `toggle_group_shown` 供，面板页顶那行「显示中 / 已隐藏」是它的读数。  
+> **托盘里再展开一层「逐组显隐」子菜单，本轮决定不做**，理由记在这里：它不是加一行菜单，而是改托盘那枚结构——`TraySpec.items` 今天是一层平铺的 `Vec<(u32, String)>`，只有 `show_menu` 那一圈 `AppendMenuW` 读它，全仓没有 `MF_POPUP`，也没有任何「菜单重建」的把手（托盘只有 `set_tip`），而它的消费者有十处（`Plan.menu`、`tray_menu`、`tray_from`、`Launch.menu`、`click_through_exits`、`tray_labels`、`tray_routes` 与几处判据测试）。拿这一次结构改造去补一条「或」已经答过的句子，代价与收益不成比例；真要做，先定的是「分组改了名或删了之后那一层子菜单什么时候重画」，而不是 `AppendMenuW` 那几行。
 
 ---
 
@@ -1268,6 +1493,11 @@
 - 虚拟桌面被删除时，应将相关贴图迁移到当前桌面或默认桌面。
 - 操作系统不提供接口时，应隐藏此功能。
 
+> **实现范围（2026-11-02 决定：不做）**  
+> Windows 公开的 `IVirtualDesktopManager` 只有三个方法，既不把某个窗口移到指定桌面，也不提供桌面切换的通知；微软亦注明该接口限于探索用途。本节“操作步骤”第 2 步的“仅当前桌面 / 所有桌面”与“规则”第一条的删除迁移，因此没有可用的系统调用可对接。  
+> 本产品据此走本节“规则”第二条那一支：不承诺任何虚拟桌面行为——不写桌面归属、不监听切换、不做迁移，贴图按系统默认留在它创建时所在的那个桌面；设置页与贴图菜单里都不出现这两个开关。  
+> 本节原文照留，仅作审计记录。
+
 ---
 
 ## 5.14 截图历史
@@ -1284,6 +1514,12 @@
 - 历史记录应包含时间、屏幕、位置、尺寸和截图内容。
 - 应允许配置记录数量、保留时间和最大磁盘占用。
 
+> **实现口径（2026-11-04）**  
+> **第一句「成功截图应写入历史记录」成**：`crates/qt_bridge/src/mask.rs:2430 MaskState::record_history(rect, false)` 由确认那一路（`mask.rs:3349`）调用，落库是 core `crates/core/src/history.rs:256 History::record`，闸是 `[history] enabled`（`settings.rs:579 history_open_in`）。证人两枚，一正一反：`mask.rs:5762 a_headless_confirmation_writes_no_history_row` 判的是无头确认那一趟**不该**留行，写的那一路由 `history.rs:842 a_record_comes_back_with_its_geometry_and_source` 判。  
+> **第二句的开关是一枚现读的键，不是页上的一枚控件**：`[history] save_all`（`config.rs:1938`，默认 `false` 在 `:1955`）在产品里只有一处读者——`MaskState::escape` 里那句 `esc_owes_row(cfg.history.save_all, had_selection)`（`mask.rs:2394`，谓词本体 `mask.rs:261`），证人 `mask.rs:5809 an_escaped_selection_lands_in_history_only_when_save_all_is_on`。设置页没有为它单开一行，它按通用那一族出现在「历史记录」档里（`settings_view.rs:287 rows_of`，类别名册 `:81`）——「用户可开启」这一句交付的是**能开启**（改得动、读得到、当场分岔），不是一枚专门命名的开关。  
+> **第三句五样全在库里、也全在屏上**：`history.rs:99 Record` 带着 `captured_at`、`monitor_id`、`rect`、`path`、`thumb`，建表 `:222`、写入 `:297`。清单那一行的作者是 `settings.rs:1673 history_rows_joined`，它印的是 id · 时间 · 位置 x,y · 宽×高 · 屏幕 · 来源（那一串格式在 `:1680`）——「在哪一块」那两个数与「有多大」那两个数同源于 `rec.rect`，只从 `.x`/`.y` 来：界面上、量具里都不许拿尺寸或屏名再推一次起点，推出来的那一份与 SQLite 里那一列没有任何东西保证相等（#281）。位置摆在尺寸**之前**是有意的两件事：两者同属「那一块地方」，读的人先看在哪、再看多大。证人 `settings.rs:3808 the_history_list_names_where_the_selection_was`，它把 `位置 0,0` 单拎出来问「选区从原点开始时不许少写一节」——那一档正是拿 `if x != 0` 拼串的人最容易漏的一档。  
+> **第四句三枚上限各有范围、各只有一位读者**：`max_items` / `max_age_days` / `max_size_mb`（`config.rs:1940-1942`）由 `Config::validate`（`:2924-2944`）夹范围，产品读者只有一处——每次写入之后那一次 `history.cleanup(&Retention::from(&cfg))`（`mask.rs:2490`，换算本体 `history.rs:140`）。三档分别有证人：`history.rs:1098 the_count_limit_keeps_the_newest_and_spares_the_locked`（数量）、`:1139 an_over_aged_record_goes_even_when_the_list_is_short`（保留时间）、`:1164 the_byte_budget_never_trades_a_newer_record_for_an_older_one`（最大磁盘占用，判的是「不许拿新的一枚换旧的一枚」）。同一族的 `keep_originals`（`history.rs:286`）、`thumb_px`（`:262`）、`exempt_locked`（`:499`）也各只有一处读者：一枚键一位读者，没有第二份实现。
+
 ### 5.14.2 历史回放
 
 **操作步骤**
@@ -1293,6 +1529,11 @@
 3. 系统显示历史截图及其原始选区。
 4. 用户可重新复制、保存、标注或贴图。
 
+> **实现口径（2026-11-04）**  
+> **步 1 两只门都在场**：截图状态里那一格是遮罩自己（下面那两条快捷键就长在这扇窗上），历史窗由 `qml/main.qml:533 App.syncHistory()` 建、组件在 `:295`。步 2「上一条、下一条快捷键」成的是**快捷键**那一路：`qml/CaptureMask.qml:147-148` 那两条裸 `Ctrl+↑ / Ctrl+↓` → `:180 session.historyFlip(older)` → `session.rs:2638 history_flip` → `settings.rs:1981 neighbor_id_for` → core `history.rs:359 prev` / `:364 next`。第二入口是窗上那两枚钮 `FLIP_BACK` / `FLIP_FWD`（`history_window.rs:240-241` → `qml/HistoryWindow.qml:298 doFlip()`），走的仍是同一只手——两枚证人是 `settings.rs:3933 neighbor_id_for_answers_the_row_to_land_on`（该落到哪一行由函数答，页上不猜序号）与 `mask.rs:6850 a_flip_counts_itself_apart_from_the_restore_it_reused`（翻页与重进选区各记各的账，合起来就说不清「用户翻了几页」）。  
+> **步 3「显示历史截图及其原始选区」成**：`mask.rs:2629 MaskState::replay_history` 取图（core `history.rs:560 History::frame`），`mask.rs:2944 restore_history_selection` 把那一枚记录自己的 `rect` 交 `set_hole`（`:2982`）——选区是读回来的，不是按当下屏幕重算的。证人 `history.rs:1451 replaying_a_row_leaves_the_record_exactly_as_it_was`。  
+> **步 4 点名的四件都有腿，名字摆在同一张表上**：`history_window.rs:234 ACTIONS = ["复制","保存","贴图","标注","重进选区"]`，腿是 `mask.rs:3035 copy_history_content`、`:3153 pin_history_row`、`:3195 annotate_history_row`（存盘那一路是既有那一枚，本节不重判），桥名在 `session.rs:2537 / :2546 / :2562`。证人 `mask.rs:7113 copying_answers_with_a_sentence_before_it_opens_the_clipboard`。
+
 ### 5.14.3 恢复取消的截图
 
 **操作步骤**
@@ -1301,6 +1542,11 @@
 2. 打开截图历史。
 3. 找到标记为“已取消”的记录。
 4. 恢复该截图内容或重新进入原选区。
+
+> **实现口径（2026-11-04）**  
+> **步 1/2/4 成，步 3 的两半也成：标得出来、也筛得出来**。误按 Esc 那一路是 `mask.rs:2386 MaskState::escape`（证人 `mask.rs:5513 escape_clears_the_selection_before_it_asks_to_cancel`：先把选区清掉再问要不要收场），`[history] save_all` 开着时落的那一行带着 `cancelled` 那一列（建表 `history.rs:233`）。字样在清单里读得到：`settings.rs:1697` 给那一行末尾接「 · 已取消」，页上渲染成淡色（`qml/HistoryWindow.qml:539`），而**这一行取消没取消**问的是桥（`:319 cancelledOf()` → `history_window.rs:352 row_cancelled`，按 ` · ` 分节之后整段相等，不是 `contains`：`monitor_id` 是从系统读回来的自由文本，一块叫「已取消的屏」的显示器会把没取消过的一行标成取消过的，而用户点的那一枚正是「重进选区」）。  
+> **筛那一半住在查询里，不住在读完之后**：core `history.rs:373 cancelled_page` 与上面两条读腿共用**同一条 SELECT**（`:383 page`——游标与筛两枚子句都在那里拼，次序与筛法因此只有一位作者 #281），那一枚 `LIMIT` 数的是**筛过之后**的行，于是「这一页比页宽短」当场等于「筛过的清单到底了」，而不是「这一页恰好全被我筛掉了」；页上因此可以在筛着的时候停下不再问，不必一记一记翻下去找那些永远数不满一页的空档。产品腿是 `mask.rs:2561 list_history(limit, cancelled_only)` 与 `:2622 list_history_older(cursor, limit, cancelled_only)`，底下都走 `settings.rs:1740 history_rows_at` / `:1783 history_rows_older_at`；三句不同的话各说各的——筛着有行、筛着零行、没筛（#453）——第二句不许说成「库里没有行」：库里可能有五十行，只是没一行被取消过，而「一共几行」这一问它没问过、也不替谁猜。桥名 `session.rs:853 historyRowsFiltered`、`:996 historyOlderRows`；页上那枚勾是 `qml/HistoryWindow.qml:76 cancelledOnly`，`:490` 那枚 CheckBox 一翻就重读第一页（`:168 readRows()` 顺手把「到底了」清掉，删过一行之后手里那句不再作数），两记读清单递的是**同一枚**（`:170`、`:192`）——换着口径读，屏上那条清单就一半筛过、一半全量，而下面那句「到底了」随之成了一句猜。两处字样的作者各一枚：`history_window.rs:254 CANCELLED_WORD`（挂在行尾的那两个字）与 `:265 CANCELLED_FILTER_WORD`（用户手里那枚问句），框上的字经 `session.rs:955 historyWindowCancelledWord` 读回来，产品那句「读了 …（只看已取消）」插的也是同一枚常量。证人四枚：core `history.rs:1186`、桥 `settings.rs:3879` 与 `:3980`、产品那句话 `mask.rs:6233`。  
+> **步 4 的两臂走的是同一只手，而且真的重进选区**：`mask.rs:3043 restore_history_selection` 既把图放回遮罩、也把那一行自己的 `rect` 交 `set_hole`（`:3081`）回到当初那一块；框为空的那一枚它拒（`:3075`——交回一枚空框不是"恢复"，是把用户此刻的选区清掉），`session.rs:2638 history_reenter` 先开一扇遮罩再走同一路。它**不**按 `cancelled` 分岔——任何一行都能这么回，PRD 没要求反过来那一半（「只有已取消的才可恢复」），写在此处免得被读成一枚闸门。证人 `mask.rs:6726 a_cancelled_history_row_can_take_its_selection_back`。
 
 ### 5.14.4 清理历史
 
@@ -1315,6 +1561,15 @@
 
 - 清空全部历史前应二次确认。
 - 自动清理不得删除用户明确收藏或锁定的记录。
+
+> **实现口径（2026-11-04）**  
+> **步 1–4 的落点**：「历史记录管理」就是历史窗本体（托盘那一路 `history_window::TRAY_WORD`，`hotkey.rs:335`）；步 2 三档成——逐行 `qml/HistoryWindow.qml:193 toggle()`、全选 `:206 selectAll()`、删除 `:222 doDelete()`、整库 `:235 askClear()`；步 3 的点击落在 `session.rs:2491 history_delete` → `mask.rs:2836 delete_history`（两枚前置各挡在开库之前：这一场没有目录名那一格 `:2837`、用户一行也没选中 `:2847`——后者不许答成一次"成功的零行"，「没点名」与「点名的都删成了」在盘上长得一样，在话里必须长得不一样 #453）。  
+> **「系统释放相应磁盘空间」两半都成，两半各是数出来的**：core `history.rs:489 History::delete` 经 `unlink`（`:778` → `std::fs::remove_file`）删掉那张原图，`prune_days`（`:788`）把空掉的当日目录 `remove_dir`，缩略图随 `DELETE FROM captures` 那枚 BLOB 一起走；证人 `history.rs:1279 deleting_a_record_takes_its_file_and_its_empty_day` 与 `mask.rs:6358 deleting_a_named_history_row_gives_its_picture_and_its_bytes_back`。交回的 `Freed.bytes` 说的是那些文件；`history.db` **这枚文件自己**归下面那一格。  
+> **那一枚文件的空洞现在也还回去了**：SQLite 删行只是把页挂进 freelist、主文件一寸不让，所以 `delete` 之后（`history.rs:501`）与自动清理之后（`:701`）各问一次 `compact()`（`:555`，`VACUUM;` 在 `:571`）。门只有一位作者（#281）：`page_count` / `freelist_count` / `page_size` 三枚 pragma 当场问（`:588`——不数条目、不猜页数 #455），要**同时**过两条才动手搬：空洞字节 ≥ `:216` 那枚 `COMPACT_MIN_FREE_BYTES`（1 MiB），且空洞 ≥ 整本的 1/`:219` `COMPACT_FREE_SHARE`。为什么攒够了才搬：代价按重写的那本文件算，一次删一行就整本搬的话，用户等的那一下就从"改一行"变成"搬一本几十 MB 的库"。为什么不是 `PRAGMA auto_vacuum=INCREMENTAL`：改那一枚本身就得整本 VACUUM 一次才生效，而它把归还空洞的代价摊到**每一次写**上面，比在这里攒够再搬一次贵得多，何况现有用户的库已经躺在 `auto_vacuum=NONE` 上。三条删除腿都从这两处过：`clear_all`（`:508`）在 `:515` 走的就是 `delete`，手动删、清空、自动清理因此共用同一扇门，「什么时候压实」因此只写在 core。  
+> **压实失败既不冒领一次失败、也不静默**（#433/#453）：`Compacted`（`:185`）三臂 `Done{free_bytes, reclaimed}` / `Skipped{free_bytes}` / `Refused{reason}` 包在 `Freed.compacted` 里交回——删除本身已经成了，§5.14.4 那一步的判据是行与那些文件已经没了，这一步失败不能把它读成一次失败的删除。产品那一腿把三臂接成三句话（`mask.rs:2802 compaction_said`，唯一作者）：`Done` 添「并按 §6.2 压实了 history.db，那本文件省下 N 字节」、`Refused` 添「但 §6.2 那一步 history.db 没压实：{原因}」、`Skipped` 与 `None` 一个字也不添；三条腿各在 `:2504`（写完之后的自动清理）、`:2885`（手动删）、`:2951`（清空）那一句后面接话，`Refused` 只添话、**不动返回值**。  
+> **WAL 那两枚 checkpoint 是当场验过的，不是想当然**：`open` 起的是 `PRAGMA journal_mode=WAL`（`history.rs:259`），VACUUM 写回来的那本新库先进 `-wal`、主文件要等一次 checkpoint 才真的变小；反方向更阴——写进去的那本旧库此刻也挂在 `-wal` 上，而 `usage` 那一格读的是 `std::fs::metadata(history.db)`，于是它报的是一个还没落地的、偏小的主文件。所以 `compact()` 前后各一枚 `PRAGMA wal_checkpoint(TRUNCATE)`（`history.rs:605`）：前一枚把主文件落到真话，`reclaimed` 才是用户在目录里看得见的字节（不设这一手，量出来的数会是 0 甚至是负的）；后一枚把新库写回主文件并把 `-wal` 截成零字节，不留一份比库还胖的 WAL 让下一个读者去猜。那一枚 pragma **不报错也不等**：有别的读事务在场（产品里就是同时开着的那张历史页）它答 `busy`，此时页还挂着没落地，本臂说成 `Refused` 而不是"压实成功"。`Skipped` 那一臂不 checkpoint——那是 SQLite 本来就会自己做的两件事，在这里替它多做一次是白花一趟写。证人四枚：`history.rs:1356 deleting_fat_rows_shrinks_the_database_file_itself`、`:1407 an_ordinary_small_delete_leaves_the_database_file_alone`（门挡着时那本文件一字也不动，「删一行就搬整本」不许在测试里悄悄成立）、`:1433 the_policy_cleaner_shrinks_the_file_it_emptied`、`:1467 a_compaction_blocked_by_another_reader_still_delivers_the_delete`。  
+> **规则第一句「清空全部前应二次确认」成，两头都在**：页侧那枚状态是 `HistoryWindow.qml:78 asking`，`confirmClear()`（`:249`）递 `true`、`cancelClear()`（`:240`）递 `false`，那几句话的唯一作者是 `history_window.rs:62-64`；产品侧 `mask.rs:2813 clear_history(confirmed)` 在没点头那一臂**连库都不开**（`:2818-2821`，那句注释写的就是「根本没开库」比「看起来没删」可数）。证人 `mask.rs:6326 clearing_history_waits_for_confirmation_and_spares_locked_rows`。  
+> **规则第二句只有一枚锁，「收藏」没有对面**：全仓搜过 `favourite|favorite|starred|pinned|bookmark|收藏`，字段只有一个——`Record.locked`（`history.rs:108`）、`set_locked`（`:393`）、索引（`:212`）。页上那一枚「锁上 / 解开」叫的是同一只手 `historyLock`（`HistoryWindow.qml:259 toggleLock` → `session.rs:2466`，桥名 `:868`），清单读回「 · 已锁定」（`settings.rs:1690` + `HistoryWindow.qml:329 lockedShown()`），锁与解不另记序号（`:30` 那封信写的就是这个）。自动清理放过它：`history.rs:499` + `[history] exempt_locked`（`config.rs:1948`）各一处读者；证人 `history.rs:1082 clearing_keeps_locked_records_until_told_otherwise`、`history.rs:1098`、`mask.rs:6921 locking_a_named_history_row_writes_the_lock_and_nothing_else`。两处**相反的口径是刻意的**，不是漏：手动清空全部也绕开锁定项（`mask.rs:2842 clear_all(false)`，那句 `:2811-2813` 写的是「想连锁定项一起清掉的那个决定，本条不替用户做」，交回的话在 `:2850`），而用户点名删单条**不看锁**（`history.rs:418` 头顶与 `mask.rs:2738` 都写明故意不判）——规则第二句禁的是「删掉用户明确锁定的那几枚」自动发生，点名删除不在它禁的那件事里。
 
 ---
 
@@ -1371,6 +1626,15 @@
 - 贴图编辑操作。
 - 自定义命令行任务。
 
+> **实现口径（2026-11-04）**  
+> **这一列十行自此全有一只手**：名册（core `config::ACTIONS`）里的每一枚都能被 `hotkey::Work::of` 认出来，`hotkey::every_named_action_has_a_hand` 那一格两头都判——名册上的每一枚都接得住、接得住的每一枚都在名册上——所以"有名无实"在这一档里是量得出来的，不靠注释里那份名单。名册另有三枚不在这一列（`show_all_pins` / `hide_all_pins` / `release_click_through`）：它们有归宿，只是出厂不替它们占一枚键，要用时由用户自己配。  
+> **出厂带键的是九行**：截图 `Ctrl+Shift+A`、自定义截图 `Ctrl+Shift+F`、重复上次截图 `Ctrl+Shift+X`、活动窗口截图 `Print`、从剪贴板贴图 `Ctrl+Shift+V`、显示或隐藏贴图 `Ctrl+Shift+P`、切换分组 `Ctrl+Shift+G`、Solo 模式 `Ctrl+Shift+S`、贴图编辑 `Ctrl+Shift+E`。页上那一行标着"需重启"：`hotkey.actions.` 在 `RESTART_PREFIXES` 里，注册是在进程起手那一刻。  
+> **"贴图编辑操作"落成的事**：把此刻**选中的那几枚贴图**在桌面上合占的那一块原样框成选区并开遮罩（core `pin::PinSet::selected_bounds` 只问每一枚的 `window_rect`；缩放、旋转、缩略图三条改尺寸的路尽头都写着同一句 `sync_size`，所以洞跟着用户眼前那一枚走，藏起来的那些枚不参与，全被选中又全被收起时是"一枚也没选中"那一句拒绝）。**不重铺像素**：贴图本身就是一扇窗，冻结那一帧里已经有它此刻画在屏幕上的那一身，替它再铺一遍等于给同一张图造第二个作者。  
+> **"自定义命令行任务"落成的事**：命令住在档上 `[hotkey] command` 那一格，出厂**空着**（替用户写一条示例就是让一枚出厂动作对着别人机器上的程序）。它是 `String` 而不是数组——命令行里最不缺的就是逗号，而这一族的读法是"进去一串字、出来一串字"。分工只有一刀：**判**在 core `tasks::plan`（只在第一处空白切一刀，左边是程序、右边整段原样当参数块，不重排、不补引号、不折叠空格；越界、混进换行、看不见字符、程序名被引号包住、程序名里夹引号、开关当程序、定位不到，八句拒绝各有各的一句话），**跑**在 `platform_windows::open::dispatch`（`ShellExecuteW("open", 程序, 参数块)`，与 §5.5.10 同一只手，中间没有 `cmd`）。"这个名字在这台机器上吗"用的还是 `sendto::locate`，本仓库不留第二个 PATH 遍历器。两条代价写在拒绝的话里而不是藏起来：**路径里带空格的程序本轮没有写法**（`"C:\Program Files\X\tool.exe" /p` 以引号开头 ⇒ 拒，不去猜那对引在哪一格合上）；这一族比 shell 自己更严，App Paths 与关联表能找到而 PATH 找不到的那些一并拒，请写成完整路径——§7.5"外部应用调用和文件路径应经过校验"要的就是这种宁拒勿猜。  
+> **第 4 步"系统检查冲突"落在两处**，都不是"替用户挑一个赢家"：`validate` 报出同一份档里 `is bound twice` 与 `reserved by Windows` 那两类（§8.4 只报不改），真注册时 `RegisterHotKey` 当场回绝的那一枚由报告说出它自己那句原因。坏掉的那一串键（`parse_bindable` 认不得的）不落盘，被清空并当场说明。  
+> **真机门 `--hotkeys` 自此有六条腿**：`paste_pin`、`capture_repeat`、`capture_active_window`、`pin_edit`、`custom_task`、`capture`（另加排在它们之前的一发 `settings` 菜单，那一格证的是 §5.1.1）。**次序是读数的一部分**，不是排版：`pin_edit` 做得成事时把遮罩开起来，而门里那道「遮罩已经开着，这一次不动手」的闸会把排在它后面每一枚要冻画面的键原地挡掉，那一格的读数就此从 Pass 变 Fail —— 所以这两枚新臂排在 `capture` **之前**。门**不**替 `pin_edit` 把场上的贴图选中：模型里选中只有一只手（`state::select_pin`，屏幕上点中谁就是谁），替它写一次就等于让这一趟真开一屏遮罩，而那一半账要还给一只真的手指；于是那一格读 Blocked 配 `hotkey::object_of` 那句现读（"贴图编辑要的是「选中的那一枚」：场上 N 枚、被选中 0 枚"），`custom_task` 报的是 core `tasks::plan` 对档上 `[hotkey] command` 那一串的答复。**这一枚 `object_of` 存在的原因是一格坏读数**：那两臂的拒绝句与成功句在形向上完全同款（都是 `GUI 线程 {动作}：…` 一行、都不带 `press_verdict` 认的那两个记号），光读链路的门会把一次拒绝判成 Pass；给门补一张"拒绝长什么样"的字面名单就是给每一句话造第二个作者，而漂移只会出在最不像的那一句上 —— 所以这里原样再问一次产品自己的那一判，`object_cap` 只负责把"对象缺席时的那一次成功读数"压成 Blocked，`Fail` 与 `Blocked` 一律原样过（拿一次缺席去盖住"链路吞了这条消息"就是给缺陷找体面的借口）。门自己铺的两件（剪贴板、上一次区域）各有 `Clip::plant` / `Region::plant` 的现读，`setup_ok` 说的就是它们；每一行 `press {动作}` 都把"按下那一刻的对象"那句话印在读数里，判据本身看得见。  
+> **这一趟本轮没跑**：桌面在门锁着（`LockApp.exe` 与 `LogonUI.exe` 在跟前），`tmp_door.cmd --hotkeys 6000` 交回来的仍是环境那句答复。上面那一段写的是代码里那六条腿、它们的次序、以及缺席时那两句现读**应该**长成什么样 —— 它由 `only_wired_actions_are_asked_for` 与 `object_cap` 那几格钉着，不冒充真机读数。  
+
 ### 5.16.2 指定应用忽略快捷键
 
 **操作步骤**
@@ -1384,6 +1648,13 @@
 
 - 可对全部快捷键生效，也可只对指定快捷键生效。
 - 应提供当前前台程序快速添加功能。
+
+> **实现口径（2026-11-04）**  
+> **第 4 步（匹配的应用在活动状态时不响应指定全局快捷键）已经接成真读者**：派发之前现读一次前台进程（`platform_windows::proc::foreground_app`），交给 core `hotkeys::is_suppressed`——`app` 按大小写不敏感匹配可执行文件名或完整路径，`actions` 空 = 静默全部键、非空 = 只静默点名的那几枚，命中就一枚也不派发。**问不出前台是谁**时放行而不是静默：这一档要的是"用户点名让这枚键停下"，而不是"我们猜他想要停"；提权进程与受保护的进程举不到名字，不构成一句他许过的话。规则第一句"可对全部快捷键生效，也可只对指定快捷键生效"落的就是 `actions` 那一枚 `Vec`，`exclusions_silence_the_action_they_name` 那一格两样都对着测。**托盘那张菜单不受这一档管**：`Work::Quit` 这类没有动作名的键，一枚排除规则也碰不到它——游戏在前台时菜单照样点得动。  
+> **第 2 步"添加规则"自此有页上的一只手**：「快捷键」那一页上多了一枚钮，字是 `settings_view::EXCLUSION_ADD_WORD`（"把当前前台程序加进来"）—— 那串字在整个 crate 里只有这一个出处，窗只接桥交回的那一串、并按它非不非空决定画不画那一块（抄一份就是改一天措辞要开两处，而多出那一处永远在屏幕上）。按下的一腿：`platform_windows::proc::foreground_app()` 问此刻在前台的是谁，把**名字**那一枚（`notepad.exe`，不是整条路径）递进 core 那道闸 `Config::add_exclusion`，成了才走与 [`write`] 同一条 `persist`。形状只在 core 那一处知道：页递过去的只是一个名字、听回来的是**事实**（`ExclusionAdd::Added` / `Already`），与 `[groups]` 那枚 `set_roster` 同一族；`hotkey.exclusions` 那一行**仍然**写不动（`set_str` 到一段数组就是 `Err`，`hotkey_exclusions_keep_their_shape` 钉的正是这一句），而"只能添、不能从页上删或改"这一件事也一并钉在页侧。规则第二句"应提供当前前台程序快速添加功能"自此落地。  
+> **四臂四句、一处也不许重叠**（`the_foreground_exclusion_button_says_which_of_four_things_happened`）：① 添成了；② 已经在了——档里一个字没动，报的是此刻管住这一位的那一枚规则写着的样子；③ 说不上来谁在跟前——提权进程与受保护的进程举不出名字 ⇒ 拒，绝不印成"已加入"（把"读不到"印成"成功"就是一句只有屏幕能拆穿的谎）；④ 跟前这一位就是**本程序自己**——钮要按得下，设置窗就必然在跟前，照字面添进去会把"本程序的窗在跟前时它自己每一枚快捷键都不响"写进档，而这一页上还没有把它拿出来的那一只手；这一形坏是这枚钮自己造出来的、文档没点它的名，所以它钉在测试里而不是注释里。**不需重启、即时生效**：`hotkey.exclusions` 不在 `RESTART_KEYS` 上而且不该在 —— `hotkey::silenced` 每一次按下键都现读档里那一串，页上按完下一枚键就静音。  
+> **规则第一句的后半"也可只对指定快捷键生效"在页上还没有递它的格子**：`add_exclusion` 添进去的那一枚规则 `actions` 是**空的**，按 `AppExclusion` 的读法那就是"这一位在跟前时一枚全局快捷键也不响"——正是"指定应用忽略快捷键"最短的一条；"只忽略其中几枚"要的是动作那一列，今天唯一的写法仍是手改档里那一段的 `actions`。这一枚钮因此是"快速添加全部静音"的那一只手，不是一条规则的全套编辑面。判据那一头不受这一格影响：`exclusions_silence_the_action_they_name` 两样都对着测。  
+> **第 3 步"保存配置"在这一档的含义只是不落坏值**：`validate` 会丢掉一条 `app` 空着的规则，并把丢了几条说出口。
 
 ---
 
@@ -1421,6 +1692,18 @@ snip --last -o clipboard
 - 成功与失败必须返回明确状态码。
 - 参数错误时应输出帮助信息。
 - 文件写入失败时不得返回成功状态。
+
+> **实现口径（2026-11-04）**  
+>
+> **§5.17 的语法只有一位作者**：`cli.rs:381 classify` 读的是 token 表，而那张表只写在 `cli.rs:96 PARAM_DOC`（16 行）一处，`verbs()` / `outputs()` / `help_flags()` / `snap_flags()`（`:184` / `:189` / `:194` / `:205`）全从它读回——帮助文本与语法不可能各旧一半。`main.rs:945-956` 那三只手（`flag()` / `after()` / `path_after()`）读的是量规门与贴图那一族（`--snap` / `--snap-window` / `--rect`，处理在 `main.rs:1357-1370`），与 §5.17 不是同一张表。**没有** `--out` / `--save` / `--mode` 这三枚拼法，也没有子命令形态；示例里那枚命令名 `snip` 也不是本产品的名字（真名 `falconshot`，`cli.rs:138`）。  
+>
+> **七条典型能力七条都有 argv 形**：`--new`→`Select::New`（`cli.rs:455`）→自由区域进场（`main.rs:1162`）；`--region x,y,w,h`（`cli.rs:433-449`，解析 `capture.rs:746`）；`--last`（`cli.rs:450`→`capture::last_frame`，跨进程那张档在 `main.rs:1083` 才开）；`--active`（`cli.rs:452`→`capture::active_frame`）；`-o clipboard`（`cli.rs:461`→`clip::write_image` `main.rs:1106`）；`-o file <路径>`（`cli.rs:463-470`→`save::write` `main.rs:1130`）；`-o pin` 与不写 `-o` 的默认（`cli.rs:458` / `:462`→`cli_capture_to_pin` `main.rs:1173`）。  
+>
+> **规则一：号码只有三枚，而决定号码的只有三处**——`EXIT_OK=0` / `EXIT_FAIL=1` / `EXIT_USAGE=3`（`cli.rs:31` / `:34` / `:37`），映射由 `code_of`（`:499`，Help⇒0、Error⇒3）、`run_code`（`:526`，只有「截到了**且**那一处输出落地」才 0）、`snap_code`（`:552`）三只纯函数决定，`main.rs` 只调不判（`:1089`、`:1094`、`:1104`、`:1117`、`:1127`、`:1150`、`:1177`）。§5.17 之外另有第二份手写的号码（`main.rs:942` 的 2、`:976` 的 3、`:1007-1042` 的文件命令族、`main.rs:132 verdict_code` 的 1/3）：那一族是量规门，不是命令行接口，两笔账分开记。  
+>
+> **规则二与规则三各有证人**。参数错同时说两件事：`main.rs:1092` 打印点名错在哪一句，`:1093` 打印整篇帮助（`cli.rs:601 help()`，由 `PARAM_DOC` + `DOC_SECTIONS` + `DOC_TITLE` 拼），而 `:606-610` 那三行状态码解释是从三枚常量插值出来的，所以帮助里的号码与代码里的号码不会分家；点名错处的句子在 `cli.rs:441`（`--region` 缺值）、`:467`（`-o file` 缺路径）、`:473`（`-o 只认 clipboard / pin / file，收到 …`）、`:477`（`-o` 要值）、`:418`（两枚动词）。写失败绝不报成功：`save.rs:353` 把编码器/磁盘那一错收成 `Refusal::Write`，`main.rs:1143-1145` 交给 `run_code(true, false)` ⇒ 1，`:1150` 退出；而且文件这一腿把两种失败分成两颗数，不并（#453）——编码器认不出的名字是参数错误，走规则二那一枚 3 并附帮助（`main.rs:1138-1141`），真跑起来却没落地的写才是规则三那一枚 1。证人 `cli.rs:1143 a_failed_write_is_never_reported_as_success`（其中一枚断言写的就是「§5.17 规则 3 被写反了」）与 `save.rs:776`。  
+>
+> **三条不覆盖，一句也不并**。① 贴图那一臂（`-o pin` 与默认）从不进 `run_code`：`main.rs:2003` 把 `code` 初始化成 0、`:2386` 退出，所以「贴成了没有」在状态码上读不出来——PRD 这条交的是动作而不是回执。② `fn main` 对 `cargo test` 不可见（`cli.rs:16-19` 自己写明），上面那些 `main.rs` 的行号是真机 argv→rc 的那一手，本仓 `scripts/` 里搜不到一把跑过它，所以这一半按「映射有证人、落地无证人」记。③ `advanced.cli_enabled` 出厂是 **false**（`config.rs:1971` / `:1987`），唯一的读者是 `main.rs:1072` → `cli_gate`（`:695`）：关着时交回一句点名 `cli_enabled` 的拒绝并退 1（`:1073-1074`），而不是静默退 0；它只拦 `Decision::Run`，`NotCli` / `Help` / `Error` 三臂原样过（`:702`）。也就是说今天任何 §5.17 参数都要先在页上把那枚键拨开。证人 `main.rs:3189 the_cli_switch_gates_only_the_capture_arm`。
 
 ---
 
@@ -1496,6 +1779,10 @@ snip --last -o clipboard
 - 支持高分辨率屏幕清晰显示。
 - 所有主题下均应满足基本可读性和对比度要求。
 
+> **实现口径（2026-11-03）**  
+> **位置**那一半已接成真读者：闭集 `auto`/`top`/`bottom`/`left`/`right` 只有一个出处（core `config::TOOLBAR_PLACEMENTS`），`auto` 的「长边优先」算术在 core `config::toolbar_edge`，页上现问 `Session.toolbarEdge(选区宽, 选区高)` 再按四臂各自定位并夹在窗内（`crates/qt_bridge/qml/AnnotationToolbar.qml` 的 `edge` / `x` / `y`），改档之后即时生效走 `Session.refreshAppearance`。  
+> **方向**那一半本轮**决定不实现**，理由记在这一格，不留白：`left`/`right` ⇒ 一列这一句（core `config::toolbar_side` 早已答得出）落到本面板上不是"换一根轴"而是"换一个形状"。面板此刻是 12 排，一趟真正亮着的钮约四十五枚（工具那一排按 Rust `TOOLS` 造出 16 枚、色块那一排按档里的调色板造出 10 枚、线宽 3 枚，加页上其余 `Cell` 定义），铺成一列就是约 45 × (24 + 2) ≈ 1170 px 高——比 1080 那一档桌面的整屏高度还高，而这一栏是夹在同块屏的遮罩窗里的。机械地翻轴只是把「盖住选区」换成「跑出屏幕」。真做这一半，先要定的不是 QML 里 `Row` 换 `Column`，而是**哪几枚进那一列、其余的从哪里出来**（折叠、二级面板、还是按工具现出），那是本句没有答的产品决定，所以它作为独立一项留在任务表里，而不是被一次布局重写顺带做掉。
+
 ---
 
 ## 5.20 设置管理
@@ -1516,11 +1803,27 @@ snip --last -o clipboard
 10. 高级与命令行。
 11. 关于与更新。
 
+> **实现口径（2026-11-04）**  
+>
+> **十一类一枚不少、顺序不乱，而产品里是十二类**：`settings_view.rs:71-84` 那张 `CATEGORIES: [(&str, &[&str]); 12]` 依次是 常规 / 截图 / 标注 / 贴图 / 输出 / 快捷键 / **托盘** / 热区 / 外观 / 历史记录 / 高级与命令行 / 关于与更新。多出来的一类是 `[tray]`（`config.rs:2126`，页号常量 `TRAY_PAGE = 6` 在 `settings_view.rs:100`），于是文档第 7–11 项在产品里坐在第 8–12 格上——这一偏移写在这里，免得日后被读成「漏了一类」。  
+>
+> **页的形态是一张 Rust 供出来的类名条，不是一叠硬编码的 tab**：`category_line()`（`:847`）→ `session.rs:2729 settingsCategories()` → `SettingsWindow.qml:2434 win.cats` → `:1013-1055` 那一格 `Flow { Repeater { model: win.cats } }`；`:1037 text: String(modelData)` 就是「页上不自己拼类名」的根据，页头 `:1059` 那句「类名（N 行）」里的 N 与行文本同出一手（`page_line(which)` `:857`）。  
+>
+> **「新增一枚键自动出现在页上」是机制而不是巧合**：`owners()`（`:231`）拿键的第一段去对 `CATEGORIES` 每类底下的表名，`rows_of`（`:287`）在 `Config::flat()`（`config.rs:2235`）上过一遍，所以 core 里多一枚 `[history]` 键，历史那一页就多一行，QML 与桥一个字节都不改。这一条不是被信任的，是被两枚门钉着的：任何一枚**无主**或**多主**的键让门红（`settings_view.rs:552-559`），任何一类**空类**也让门红（`no_category_is_an_empty_entry_on_the_page`，`:4033`）。12 类底下的表名并集与 `config.rs:3506 FAMILIES`（15 名）恰好相等，这就是「没有一族到不了页」的根据。  
+>
+> **「关于与更新」既是第 12 类、也是托盘里的一行**：类名取自名单自己（`ABOUT_PAGE = CATEGORIES[11].0`，`:90`——写成常量而不是各处数一遍「第 11 类」），页脚那两枚钮只在它那一页出现（`update_words()` `:254-263`，话的作者 `core/src/update.rs:29 TRAY_WORD = "检查更新"` 与 `:37 DOWNLOAD_WORD = "打开下载入口"`，页侧 `SettingsWindow.qml:1398` / `:1474`）；同一枚 `TRAY_WORD` 也是托盘菜单那一行的唯一作者，`help_menu.rs:125-138` 断言「首选项 / 帮助 / 检查更新」相邻。  
+>
+> 不覆盖：本轮没有真机跑 `--settings` 逐类数过行数（桌面锁着，窗门一跑就挂，这一句读的是代码路径加那枚 unit 门）；PRD 这一节只列类名、没规定每类该有哪些行，所以「类别齐全」到此为止，行级的覆盖归各节自己的口径。
+
 ### 5.20.2 设置即时生效
 
 - 无需重启的设置应即时生效。
 - 需要重启的设置应明确标记。
 - 用户离开设置页时自动保存，或提供明确的保存与取消按钮。
+
+> **实现口径（2026-11-04）**  
+> 三条都通了，第三条走的是句子里「或」的**后一支**：页上有明确的**保存**与**取消**两枚钮（`crates/qt_bridge/qml/SettingsWindow.qml` 的 `saveDraft` / `cancelDraft`，取消那句「取消：草稿未写入」就是这一支的对面——草稿一个字节也不递过桥），导入/调色板方案那两处同形（`cancelImport` / 方案应用前也不落）。**没有**做「离页自动 flush」，理由是这一支已经答了用户要答的那件事（改错了能整页丢掉），再加一支自动保存会把「取消」变成半句话：草稿已经自己写进档了，取消还剩什么。这一条读法记在这里，不是留白。  
+> 第一条的对面是「每一次动作/每一趟现问一次」那一族读者（`crates/qt_bridge/src/settings.rs` 的各段 `*_cfg()` 快照，改档之后下一张图、下一次按下就是新一身），第二条的对面是 `settings_view::needs_restart`（唯一作者，前缀表 `RESTART_PREFIXES` 只有一族：`hotkey.actions.`），页上每一行带自己的 `restart` 标，行的形状由 `Config::flat()` → `settings_view::owners` 供，所以「新增一枚键自动出现在页上」不是巧合而是这一条的机制。
 
 ### 5.20.3 配置导入与导出
 
@@ -1541,6 +1844,10 @@ snip --last -o clipboard
 - 输出目录和命名规则。
 - 分组配置。
 
+> **实现口径（2026-11-04）**  
+> 范围建议那六枚**全部**在「建议范围」这一份名单里，名单的唯一作者是 core `config::SUGGESTED_PREFIXES`（`hotkey.` / `annotation.`（含调色板与方案）/ `appearance.`（含主题）/ `pin.` / `groups.` / `output.save_dir|naming_template|naming_prefix|collision|format`），判据是 `ImportScope::covers`，页上「导入配置」先 `preview_import` 递一张「将被覆盖的项目」清单再 `apply_import`（步骤 4→5 那一序）。  
+> 第六枚「分组配置」今天**走的是同一趟管线**而不是另开一条路：它就是 `Config` 上的一格 `Config::groups`，所以 `flat()` / `export_text` / `preview_import` / `apply_import` 一件也不必改口径，只有分组那张 diff 换成 `Config::diff_groups`。钉它的两条断言是 `the_group_family_round_trips_byte_for_byte` 与 `the_preview_names_which_groups_a_file_would_overwrite`（`crates/core/src/config.rs`）。步骤 1-2 的对面是页上「导出配置」那枚钮与 `Config::export_text`；`ImportScope::All` 是明说的逃生口，不在建议范围里的那些（如 `history.max_items`、`general.show_tray`）默认不带，这一条由同一枚 `covers` 的反面断言钉着。
+
 ---
 
 ## 5.21 更新、帮助与反馈
@@ -1553,6 +1860,14 @@ snip --last -o clipboard
 2. 点击“检查更新”。
 3. 系统获取版本信息。
 4. 有新版本时显示版本号、更新说明和下载入口。
+
+> **实现口径（2026-11-04）**  
+> **第 1 步**的两个入口都在：托盘那一枚「检查更新」的原名唯一作者是 core `update::TRAY_WORD`（`hotkey::Work::label` 里 `Work::Update` 那一臂与 `--update-check` 门问的是同一枚名，#281）；“关于”那一页今天叫「关于与更新」，`settings_view::ABOUT_PAGE` 就是名单 `CATEGORIES[11]` 自己，页脚那两枚钮（`qml/SettingsWindow.qml` 的 `updateRow`：`checkBtn` 与 `dlBtn`）上写的字来自 `settings_view::update_words`，窗不抄第二份措辞。  
+> **第 2 步**那一次点击，两只入口走的是**同一只手**：页 → `session::update_ask`（tag `页`），托盘 → `hotkey::Work::Update`（tag `检查更新`），两者都只调 `SessionRust::start_update_check`。「不接第二趟」那道闸写在桥里、不写在钮的 `enabled` 上（页上那枚 `enabled` 只少让人按一次注定被拒的钮），因为「两趟各取各的清单、后落地的把先落地的盖掉」恰好要两头都点一下才发生。交回的第一句是 core `update::running_line`——「这一趟在跑」＋§6.3 那句网络请求提示，提示只在 `release_feed` 真会被去取时才跟上来。GUI 线程只**起**这一趟：取回排在 `falconshot-update` 那条工作线程上，结果由 `CxxQtThread::queue` 投回 GUI 线程，一次写定 `status`、`update_line`、忙三格。  
+> **第 3 步**自此真的联网：`session::check_with` 把档上那两枚键**现问一次**（`about_keys`，一次读数 = 一趟检查）后递给 core 唯一的判决函数 `update::check(feed, channel, env!("CARGO_PKG_VERSION"), &fetch_feed)`；`fetch_feed` 就是 `platform_windows::fetch::text`（wininet，上限 `update::FEED_LIMIT = 1 MiB`，**超限算失败**而不是拿前一段做判决）。三种失败各说各的话（#453）：没配清单 ≠ 取不回 ≠ 读不出，后两句里带着它试的那一句地址／那一个文件名，不冒充一句「找不到文件」。  
+> **第 4 步**那三样出自同一次判决：`Answer::sentence()` 一句给版本号与更新说明，`Answer::download_url()` 交回可点的那一枚地址；页脚那枚 `dlBtn` 的 `visible` 绑的是**这一次**问交回来的地址（`askUpdate` 起趟时先把它作废，窗不另数一份「有没有新版本」），按下去是 `session::update_open` → `session::open_web`——与条码那一行共用同一道闸，开掉的正是屏幕上那一句，不再第二次取清单。  
+> 四步之外，`[about]` 那两枚原先没人读的键自此有了读者：`auto_check_updates` 与 `check_every_days`（`config` 那侧校验 1..=365）由 `crates/qt_bridge/src/update_auto.rs` 现问（唯一一处是 `session::about_auto`），而判据本身住在 core `update::auto_plan`——它读的是盘上 `last_auto_check.txt` 里那枚**纪元日**（`update_auto::today`，钟被往回拨过／那一行读不出天数／那一天还在未来，三种都算「没有记录」而不是「今天刚查过」），交回 `Auto{wanted, why}` 那句四选一的话。只有 tag 为 `自动` 的那一支消费这个间隔（`stamped_by` 与 `should_stamp`）：把这一格做成一枚布尔参数，就等于允许调用方递进一句「页，但请按掉后面七天」。戳只在三格落地**之后**才点，判决是 `FetchFailed` 时不点（一次网络中断不该替用户按掉往后几天），而 `NoFeed`／`Unreadable`／`NoChannel` 照点（一份配错的清单不该每次启动都联网）。接它的只有产品本体那一趟：`main.rs` 里 `if plain { update_auto::startup() }`，排在 `hotkey::install` 之后，判决投进 `app.exec()` 的那个环；落点跟随 `FALCONSHOT_UPDATE_STAMP_DIR`，否则问 `advanced.data_dir` 那一位主人，与 `config.toml`、`history.db` 同一个落点。  
+> 还没取到的证（`--update-check` 门把这句话写在自己报告里，不只写在注释里）：⑪ 那一格发 **Blocked** —— 这一档没有跑着的泵，也一次也没往托盘那枚项投过真 `WM_TRAY`，「真人点中它走的是不是 `Work::Update` 这一臂」由手指与 `--hotkeys` 那一条腿各自作证；同档 ⑨ 那一格只量到**递出去的字与地址**，没量过「窗上真画出来了一枚钮、真有人按了它」。⑯–㉑ 那六格量的是自动那一支的判决、戳的形状、点不点戳的规则、以及**接线位置本身**（㉑ 读的是 `main.rs` 的原文）；门**不**跑 `update_auto::startup()` 本体，因为那会让别的格子依赖这台机器此刻通不通。于是「真启动一次、屏幕上读到那句自动判决」这一腿至今没有真机读数，这一档不声称它已了。
 
 ### 5.21.2 帮助文档
 
@@ -1574,6 +1889,17 @@ snip --last -o clipboard
 
 - 未经用户确认不得上传截图内容。
 - 日志中应移除密码、令牌和其他敏感信息。
+
+> **实现口径（2026-11-04）**  
+> **四步自此各有一位作者，页只是显示器**：第 1 步那枚钮长在设置窗「关于与更新」那一页的页脚（`qml/SettingsWindow.qml` 的 `feedbackBox`），而「反馈问题」四字唯一的作者是 `qt_bridge/src/feedback_window.rs::WORD`；页拿到的七枚字（钮名、两格门牌、诊断与预览的抬头、两枚钮）由 `settings_view::feedback_words(which)` 用 `RECORD` 连成一串递出，不是那一类就递空串 = 整块连高度也没有。第 2 步是 `feedback_window::diagnostics()`：**按下那一刻**现读的几行（版本与 build 行、`startup`/`about`/`output`/`appearance` 四枚横幅各由其主人交回原句、配置被校正或被拒的 `settings::notes()`、`roster=`/`history_rows=` 两枚计数），不缓存、不放样例。第 3 步那格填的字逐字带走，而那枚「附加日志」的勾选框是**一枚真有后果的开关**：它写进 `falcon_core::feedback::Consent::logs`，改的是出去的那一段字，而不是屏幕上的一句装饰。第 4 步一次按下把两半都办了——包写成文本进剪贴板（`Payload::text()` 是「包落成文本」唯一的写法），渠道读 `about.feedback_channel` 过 `session::open_web` 那道闸（与条码那一行、与 §5.21.1 那枚下载入口共用同一只手）。  
+> **不另开第五扇窗**：这一块内联在设置页里，没走 `#[qproperty(i32, *_open)]` + `main.qml` 的 tick/sync + `build.rs` 的 `qml_file` 那一族（历史记录窗、分组窗、自定义截图窗、白板窗用的 apparatus）。理由是分工而非省事：这四步读的只有配置模型与那张路由表，页上更新那两枚钮、导入导出、调色板管理都是同一形状——一扇窗要为新的一格可见性付四处的价，而这里没有那一格。  
+> **不进托盘菜单**：§5.18.1 那十行没有「反馈问题」，而本节第 1 步只说「用户点击」，没像 §5.8.3 / §5.9.13 / §5.4.4 那样点名「托盘菜单」那一枚入口。两处不一致时按点得着的那一节办，但本节没点名的地方不替那张表决定它自己没决定的事——#494 的反面：不造一枚无处可寻的菜单名。  
+> **两条隐私规则各自的形状**：第一条落在类型上——`Draft` 三个字段全是文本、一个字节字段也没有，所以一张图**没法**被夹带进包，不必等出口再查；门 `--feedback` 第⑧格扫的是 core 源码里那个结构体，判「装得下原图的那种类型一种也没有」，不是「这里没往里塞」。第二条落在 `redact_line` 上：机器生成的每一行都先过一遍刀（键名在 `SENSITIVE_KEYS` 表上的值、`Authorization: Bearer <tok>` 里那枚令牌本身、`\Users\<账号名>` 那一枚账号名），而**脱敏只在 `payload` 一处发生**——预览与实际出去的东西用的是同一只手（`feedback_window::build`），所以「预览与所递分家」这一种坏没有发生的余地，也不第二遍过刀（那会把「谁藏了几枚」变成两处各说各话，#281）。用户自己那句按本节逐字带走：规则写的是「日志中应移除」，不是「用户的话里应移除」——这是择一实现，在此记名。  
+> **「决定是否附加日志」不由配置代理**：诊断那一半要 `about.send_diagnostics`（§5.16 那枚「允许收集诊断信息」）**与**用户这一次点下头，两把都在才带；日志那一半只由用户自己那枚勾选框与点下头决定。拿配置那枚开关去闸日志，用户看到的是一句「我勾了，却没带」而说不出为什么，所以两把闸是四臂、各有自己的说法（门④：省略句数 2/1/1/0）。本 build 里**没有日志子系统**（`advanced.log_level` 至今只有横幅那一位读者），故「日志」在这里只能是 `state::PinState::problems`——本进程这一趟真发生过的行；造一枚假的日志文件去填那一格，就是让第 3 步的勾选框勾上一件不存在的东西。  
+> **机器那一半在包里有三种说法**：闸关着 ⇒ `…=omitted send_diagnostics=… logs_box=… confirmed=…`（说的是**谁把它关掉的**）；闸开着而有行 ⇒ 逐行 `diag=`/`log=`；闸开着而这一行也没有 ⇒ `…=none rows=0`。第三态是本轮新加的：省掉它，「用户没让带」与「用户让带而这台机器没什么可带」在收件人眼里就成了同一句。  
+> **第 4 步的「或」按两半都办解**，而两半各说各的话（#453）：「还没配反馈渠道（`[about] feedback_channel` 空着）」与「这一串字里读不出主机名，不是可以打开的链接」是两句（门⑩），剪贴板写成了而渠道红着也不冒充整趟不成；`send` 的两枚计数就是分开记的。描述空着在碰到剪贴板之前就被拒（门⑨：那一问之后 `asked` 与 `sent` 一步没动，只有 `refused` +1），因为一句不填就递出去，收到的那一位无从回话。  
+> **量具与它的读数**：`--feedback` 是 `EXIT_DOORS` 第 7 枚（与 `--settings`、`--tray`、`--whiteboard`、`--update-check`、`--help-menu`、`--drop-in` 同族：不开遮罩、不写用户的档、报告打完就退）。本机这一趟 ①-⑩ 全 PASS，末了三格是 `Check::Blocked` ⇒ SKIP，于是门发 **BLOCKED（退出码 3）** 而不是 PASS：⑫ 真指头在真页上把这一块点开、⑬ 包真的落到剪贴板、⑭ 渠道真的在浏览器里开起来——前一条要跑的泵与用户的手（与 `--help-menu` 的①、`--update-check` 的⑪同一处结转），后两条门不替用户改他的桌面。判据的分母全部是本档明写的布尔与明写的行，不读这台机器此刻的勾（门不许因为用户动过的东西而变绿变红）；那一份档此刻的 `send_diagnostics=false` / `feedback_channel=""` 只作旁证印出来，不进任何一格判定。半证记在这里：`--settings-window` 的 `legUpdate` 第二行会把页换到「关于与更新」并 `refreshPage()`，本轮那一趟 `qml_loaded=true`、桥递给页 7 枚字、无 QML 报错——这一块在真窗上被创建、被画出来了，只是那一次没有人按下它。  
+> **代价**：`SettingsWindow.qml` 的 `height` 1040 → 1300（那一块展开时约 260 px：诊断那几行、填字的那一格、那枚勾选框、预览那一段、两枚钮；页上没有滚动，不抬高就是把导出/导入两枚钮顶到窗外）。窗高不进任何一格读数，与前面 300→700→760→1040 那三枚改动同一个口径。
 
 ---
 
@@ -1600,6 +1926,20 @@ snip --last -o clipboard
 - 临时文件应按策略自动清理。
 - 应避免在退出时删除仍被剪贴板引用的文件。
 
+> **实现口径（2026-11-04）**  
+>
+> **第一条的默认落点与覆盖它的那枚键各只有一处作者**：`config_path()`（`core/src/config.rs:3885`）——非空 `advanced.data_dir` ⇒ 那底下的 `config.toml`，否则 `directories::BaseDirs::config_dir()/ai-falconshot/config.toml`，最后一档退回裸文件名（`:3889-3891`）；`data_dir()`（`:3898`）是同一条规则不带文件名。**没有**一处手拼 `%APPDATA%`（那一串只出现在文档话里），默认路径全靠 `directories`。不覆盖：**没有任何一枚测试断言推出来的那一条默认路径本身**，最接近的两枚说的是话与重定向（`settings.rs:2836 banner_names_platform_default_only_when_data_dir_is_empty`、`:2669 the_file_decides_where_the_next_write_goes`）。  
+>
+> **第二条里「历史记录目录」这一枚键在产品里其实不存在**：历史跟着 `advanced.data_dir` 走（`config.rs:1974` 写明「空 = 平台默认」；读者 `settings.rs:1649 history_data_dir`、`capture.rs:341`、`guide.rs:230`、`update_auto.rs:47`、`mask.rs:1268` / `:3123`），图落在 `data_dir()/history/<日期>/`（`core/src/history.rs:208` / `:833`）；`[history]` 那张表没有 `dir` 这一枚（`config.rs:1930-1950` 的字段只有 enabled / save_all / max_items / max_age_days / max_size_mb / keep_originals / thumb_px / exempt_locked）。自动保存那一枚是 `[output] save_dir`（`config.rs:1397`），读者 `settings.rs:274 Naming::from` → `:292 directory()`，空 ⇒ 退 `config.rs:3879 pictures_dir()`；认不出来的目录把原话交回而不是编一句（`mask.rs:3625` 让用户去填那一枚）。`advanced.data_dir` 在重启名单上（`config.rs:52`），对照表那一行（`:151-157`）明写「部分现读」：现读的是下一张图的落点，不换的是已经开着的 `history.db` 句柄与本场会话的贴图落点。页上**没有**为这两枚键造的专门控件——它们只是 `flat()` 出来的通用行，改值走 `SettingsWindow.qml:1257` 那枚 TextField。  
+>
+> **第三条有读者，而且两扇都在读**：算术在 core（`history.rs:709 usage()`——逐行 `LENGTH(thumb)`（`:712`）+ 原图的 `file_bytes` + `history.db`，磁盘那一手是 `:722` 的 `file_bytes(&self.dir.join(DB_FILE))`；`total_bytes()` 在 `:176`），话的唯一作者是 `settings.rs:1826 history_usage_line`：`:1834` 那一串五列 `history records=… original=…B thumb=…B db=…B total=…B`，而 `:1844-1846` 明写不许第二个单位作者——**只有字节带 `B`，没有 KB/MB 的换算**。两扇：启动 banner（`startup_history_usage_banner` `:1874` → `main.rs:923` 打 `[history usage] …`）与历史窗那一行（`history_window.rs:369 usage_line` → `session.rs:966 historyWindowUsage` → `qml/HistoryWindow.qml:173` 拿、`:425` 画）。证人 `settings.rs:4102` / `:4138`、`history_window.rs:1093 the_usage_line_is_counted_not_guessed`。  
+>
+> **第四条「按策略自动清理」是四把扫，而没有一把在定时器或退出上**：① 历史那一把 `Retention`（`history.rs:132`，`from(&Settings)` `:140` 把天数与 MB 换成 ms 与字节）由 `cleanup()`（`:633`）执行，新→旧前缀走，产品里唯一的触发点是 `mask.rs:2495`——**每落一行之后**；这一把扫如今连那枚文件的空洞一起还：`cleanup` 与 `delete` 的末尾各问一次 §5.14.4 那条口径里的 `compact()`（`history.rs:555`，门在 `:588`）；② `[advanced] privacy_no_temp_files`（`config.rs:1981`，出厂 true `:1992`）扫 `%TEMP%\falconshot-sendto`（`sweep_stale_temp` `mask.rs:1467`，`TempSweep` `:1112`），调用点 `sweep_temp_at_open`（`:1582`）挂在 `open`（`:1330`）——**开新遮罩那一刻**，时刻选在这里有一条硬理由写在 `mask.rs:1575-1577`：`--sendto` 那扇门在开完遮罩之后才普查（`sendto_check.rs:422 start_left` ← `census()` `:130-141`），收回必须先于普查，否则门会把刚递出去的那一张数成自己留下的垃圾；③ 复制为文件那一格 `sweep_clip_files`（`state.rs:1728`，目录 `clip_dir()` `:1764` = `%TEMP%\falconshot-clip`）挂在 `copy_image_with_files`（`:1626`）——**每一次手势**，`:1622-1625` 自己写明「这是这一手势的一轮，不是我们还没有的退出钩子」；④ 用户自己点的 `delete_history`（`mask.rs:2836`）与 `clear_history`（`:2910`）。全仓搜不到 `aboutToQuit` 那一族，命中的 `QTimer` 都是动画与延时。  
+>
+> **第五条问的是真剪贴板**：`state.rs:1740` 调 `platform_windows::clip::read_files()`（`clip.rs:310`，里面是 `OpenClipboard(None)` `:199` + `GetClipboardData(CF_HDROP)` `:224` / `:294` / `:313`，路径解析 `:320-411`）而不是 `IsClipboardFormatAvailable`；开不动剪贴板**不等于**没人引用（`state.rs:1742` 的 `Err ⇒ return (0, on_disk)`，`:1721-1724` 那句原话），命中按 `held.contains`（`:1747`），登记表跟着剪掉（`:1755`），并且只碰自己那枚带标签的目录（`:1720`）。遮罩那一把刻意不问剪贴板，因为它扫的是另一枚目录（`mask.rs:1572-1577`）——两处各按各自那一问执行。  
+>
+> 不覆盖只剩一件，其余两件本轮各补上了自己那一半。**`Retention::at_cap`（`history.rs:160`）现在有 core 自己的 unit test**：`history.rs:1961 the_cap_question_reads_the_same_zeros_the_cleaner_does` 六臂各问一次（两枚都顶到、只有条数顶到、只有字节顶到、一枚上限也没设、只设条数、只设天数），判的是「`0` 在 `History::cleanup` 与这里是同一枚意思——那一枚上限没设」，所以没设限不许问出一句「该清理了」；它的读者仍是话（`history_window.rs:402 advice_line`、`settings.rs:1850 history_pressure_line`，证人 `settings.rs:4115 the_pressure_line_offers_both_exits_and_spares_locked_rows` 量的也是那句话，两回事不混为一谈）。**`history.db` 删了行也不缩那一半补上了**：`compact()`（`history.rs:555`）连同它门前那两枚 pragma 与 `Freed.compacted` 交回的三臂，写在 §5.14.4 那条口径里，不再记在这一栏。**仍没 unit test 的只剩第五条那一臂**：只有量具 `state.rs:4616 clip_file_check`，它自己的注释（`:4613-4615`）承认「剪贴板点名的那一支在 `--selftest` 下证不动」，留给 `--clipboard`。
+
 ## 6.3 隐私要求
 
 - 截图、OCR 结果和贴图默认保存在本地。
@@ -1618,6 +1958,20 @@ snip --last -o clipboard
 - 多张贴图同时显示时，应控制内存和 GPU 占用。
 - GIF 不可见或最小化时，可降低刷新频率以节省资源。
 - 历史记录加载应支持分页或虚拟列表。
+
+> **实现口径（2026-11-04）**  
+>
+> **两臂如今都在**：虚拟列表那一臂是历史窗清单那枚 `ListView`（`qml/HistoryWindow.qml` 里 `clip: true` 的那一格，行随 delegate 造、离开视野就毁），本轮补的是分页那一臂——每页 200 行，页宽只有一个作者（`src/history_window.rs:85 PAGE_ROWS`），第一页由 `readRows()`（`qml/HistoryWindow.qml:158`）拿它问一次 `session.historyRows(pageSize)`，页上不出现 200 这个数字本身。  
+>
+> **翻旧页走的是游标而不是偏移**：清单滚到底（`qml/HistoryWindow.qml:487 onAtYEndChanged`）⇒ `fetchMore()`（`:175`）取当前最后那一行的行号，递给 `session.historyOlderRows(cursor, pageSize)`（`src/session.rs:966`）→ `src/mask.rs:2161 list_history_older` → `src/settings.rs:1732 history_rows_older_at` → core `src/history.rs:337 older_than`。游标是 `(captured_at, id)` 那一对而不是 `id` 一枚：同一毫秒落库的两行，只按 id 走会漏也会重，而 `history_rows_older_at` 先用 `get(cursor)`（`:317`）把那一行问回来正是为了拿到它的时间。  
+>
+> 三种不覆盖分开说，一句也不合（#453）：更旧的一页是空的 ⇒ 累计行数那句后面跟「清单到底了」，并把这一场钉住不再问（`win.tailed`）；游标那枚行号已被删除或清理 ⇒ `Err` 点名「没有第 N 行」；`[history] enabled` 关着 ⇒ `Err` 点「没开」。三句的作者都在 `MaskState`（`list_history_older` 写 `history_list_last`），页上叫 `session.historyWindowListSentence()`（`src/session.rs:973`）把那句原样画在 `listLineBox`（`qml/HistoryWindow.qml:452`）那一格——空串时那一格连高度一起没有，页上不自己拼一句「到底了」。  
+>
+> 不覆盖：这一臂是**追加**不是窗口，翻过 20 页仍是 4000 枚 delegate 挂在模型上（虚拟列表省的是绘制，不是模型）；没有往回翻、没有跳日期、没有按屏幕/来源筛；量具门 `--history-window` 种的是固定 5 行种子，它读的还是第一页，所以真机上「滚到底再问一次」这一半本轮没有证人——证人是 `cargo test -p qt_bridge` 的 `the_older_page_walks_the_cursor_pair_not_the_clock`（游标那一对、`limit` 真的进 SQL、空页与关着各答各的）与 `the_older_page_is_wired_from_the_page_to_core`（页→桥→mask→settings→core 五层各有一处读者，页上不出现 `historyRows(200)` 那种自己填的宽度）。
+>
+> **同一节那句「GIF 不可见或最小化时，可降低刷新频率」本轮落地，两档间隔与判据只有一个作者**：`core/src/pin.rs:75 GIF_POLL_MS` / `:80 GIF_HIDDEN_POLL_MS = 1_000` / `:84 GIF_HIDDEN_POLL_MAX_MS = 10_000`，判据是 `:109 gif_interval(visible, frame_delay_ms)`；什么时候换帧仍由 `PlayState::delay_ms` 一处说（`:561 frame_delay_ms` 是它的公开读数，窗不乘第二遍 delay）。窗侧只交回可见性：`qml/PinWindow.qml:138 gifWatched` = `visible` **且** `visibility` 不是 `Minimized` 也不是 `Hidden`（6.10 上最小化时 `visible` 仍为真，只看 `visible` 会漏掉半句话，而 `Minimized` 不带 `Window.` 前缀是 ReferenceError），`:1269 interval: win.gifWatched ? win.gifPollMs : win.gifHiddenPollMs`，交给 Rust 的永远是**真正等过的那一段**，没有第二枚钟。降频而不是停钟，所以回到台前那一帧是「花掉不欠着」：接着走它走开那一刻站着的那一帧。证人 `pin.rs:4255` / `:4277` / `:4297` / `:4330`，加上一枚读源档的 `:4375 the_pin_qml_gif_gate_really_reads_the_window_s_own_visibility`——它只认代码行，一句写在注释里的 `interval: …` 不算接线，窗上抄的那两个数与 core 漂一格当场红。  
+>
+> **不覆盖：被别的窗盖住那一档没有读数**——Qt 在顶层窗上不暴露 occlusion（盖着仍 exposed），所以本臂只认「隐藏 + 最小化」，没把这两档说成「看不见」；现成的 Win32 那把 `platform-windows/src/proc.rs:240 is_minimized`（`IsIconic`）要贴图自己的 HWND，那是 `cpp/pin_shim.cpp` 与 `pin_view.rs` 的活，本档不假造第二枚读数。慢片跟随那一臂也留了一条写在码里的限制：`gif_interval` 的 clamp 让 1 Hz 之下的片子按自己的步子走、之上的一律 1 秒，而窗今天用的是**下界** 1000——要真按帧延时走，得给 `state.rs:70-73` / `:746-749` 与 `pin_view.rs:48-51` / `:333-336` / `:421` 加一枚 `gif_frame_delay` 读数，并把 `PinWindow.qml:1269` 改成 `Math.max(win.gifHiddenPollMs, win.view.gif_frame_delay)`。
 
 ## 7.2 稳定性
 
@@ -1647,6 +2001,18 @@ snip --last -o clipboard
 - 命令行参数应避免命令注入和路径注入。
 - 外部应用调用和文件路径应经过校验。
 
+> **实现口径（2026-11-04）**  
+>
+> **第一条成，而且「显示域名」与「打开」之间隔着一次点头**：解码在 `core/src/barcode.rs:34 read()`，域名由 `link::Web::display_host()`（`core/src/link.rs:52`）算，与要取的那一句地址同出一次分类；它落进码表那一行的第 4 列（`session.rs:3533-3536`，布局 `序号|类型|内容|域名|能不能开|为什么` 在 `:3551`，`sanitize` `:3562` 把外来的 0x1C/0x1D/NUL 挡在展示形外面）。页侧 `CodesPanel.qml:212` 那一行带着 `format · host`，确认块 `:272` 只在 `openable` 时出现，`:289` 那一句是「将在默认浏览器打开：{host}」，`:298` 再摆完整内容；**全仓 QML 里唯一一次 `openCodeAt` 调用在 `:312`**，只有那一枚「确认打开」够得着它，其后才是 `session.rs:3299 open_code_at` → `:3346` `open::browser` → `platform-windows/src/open.rs:123 ShellExecuteW`。IDN 那一类直接拒（`session.rs:3353-3356`、`open.rs:101-105`），`user@evil.com` 想冒充域名被 `link.rs:282 the_host_is_the_one_after_the_last_at` 钉住；端口那一手也说过（`:311-316`：非默认端口带着 `:8443` 一起给）。证人 `session.rs:3749` / `:3774`、`open.rs:238`。  
+>
+> **第二条成的是「读取上限」那一支，不是 Content-Length 提前中止**：`platform-windows/src/fetch.rs:135 bytes(url, limit)` 在累加处判 `body.len() + took > limit` ⇒ `Err(FetchError::TooLarge(limit))`（`:269-272`），一个字节也不交回；里面那枚 `HttpQueryInfoW` 问的是状态码不是长度（`:232-234`）。两枚上限各有主人：网页图 `drop::IMAGE_LIMIT = 32 MiB`（`core/src/drop.rs:34`，用在 `qt_bridge/src/drop_in.rs:101`），更新源 `update::FEED_LIMIT = 1 MiB`（`core/src/update.rs:273`，用在 `session.rs:3402`），两档的大小不是一档（`drop.rs:346 the_image_ceiling_is_its_own_size_class`）。字节数封顶之后还有像素封顶：`encode::DECODE_MAX_PIXELS = 64_000_000` 像素（`core/src/encode.rs:244`，判在 `:257`）、`frame::MAX_DIM = 16_384`（`core/src/frame.rs:26` / `:31`）、GIF 各帧合计另有一枚 `gif::GIF_MAX_TOTAL_PIXELS`（`core/src/gif.rs:35`，判在 `:133`）。证人 `fetch.rs:371 the_size_cap_reports_the_number_it_used`、门 `drop_check.rs:683`（超上限）与 `update_check.rs:203`。  
+>
+> **第三条成，而且成的方式是「没有一只手能拼 shell 串」**：运行时 `std::process::Command` 全仓为零，唯一的命中是 `qt_bridge/build.rs:92-95` 的构建期 qmlcachegen 调用（argv 元素式，不是命令行字符串）。三次启动都是 `ShellExecuteW` 加**分开的**宽字符串（`open.rs:123` browser / `:164` dispatch / `:200` file，browser 的 parameters 与目录都是 `PCWSTR::null()` `:127-128`），不走 `start` / `cmd.exe /C` 的理由写在 `open.rs:9-11`。用户自配的 `hotkey.cfg.command` 只在第一个空格处切一刀、余下原样递出去（`core/src/tasks.rs:228-230` → `hotkey.rs:1873` / `:1876`），程序名那一枚有六重守卫（`:222` 前引号、`:232` 串内引号、`:212` 不可见字符、`:239` 只有开关、`:205`/`:51` 32767 上限、`:245` 认不出就拒）。路径进参数那一手 `sendto.rs:116` 加引号，而**带引号的路径是拒不是补引号**（`:110-114`）。证人 `tasks.rs:340` / `:439 a_refused_line_never_reaches_the_resolver` / `:502` / `:547`、`sendto.rs:231` / `:254` / `:311`、门 `sendto_check.rs:456`（接收侧回显 `%*` 与 `[%2]`，读回的是整串）。  
+>
+> **第四条半成：名单是校验过的，落点不是**。递出去用的是**下标**而不是文本（`mask.rs:3798 send_to_target` 读 `:3810 final_ok.get(index)`），而那张名单过两道手：`settings.rs:1140-1157 parse_send_to`（`name|exe`，空的一侧拒）与 `:1248-1260 validate_exe_paths`（`:1249 OK_EXTS = [".exe", ".cmd", ".bat"]`），存在性在 `sendto.rs:81 Path::is_file()` / PATH 扫 `:83-86`，找不到交回「重新设置路径」（`:148-152`，面在 `mask.rs:3893-3896`，顺手把那张临时图收回）。要递给应用的那张图是程序自己造的，不是 argv 也不是配置（`mask.rs:3772-3775 sendto_dir()` = `%TEMP%\falconshot-sendto` + `:3840 save::quick_to`）。  
+>
+> 不覆盖：名单不要求那枚 exe 落在任何应用或数据目录里（`sendto.rs:79-81` 只问存在与后缀）；`.cmd` / `.bat` 在白名单里，所以递出去的脚本内容没人看过；`link.rs` 的分类对 `http` 与 `https` 一视同仁，明文链接确认之后就开；`open::dispatch`（`:154`）与 `open::file`（`:191`）刻意不复查存在性（`:146-149` / `:187-189`，#281 单一作者），所以 `--reveal` / 分享那一手（`mask.rs:3737`）在调用点没有校验；`open::browser` / `open::dispatch` 的正向臂没有 unit test（`open.rs:91-92` 自己写明），只有 `--sendto` 与 `--update-check` 两扇门跑过它们。
+
 ---
 
 # 8. 异常场景与处理规则
@@ -1667,15 +2033,44 @@ snip --last -o clipboard
 - 保留当前截图，不得直接关闭截图界面。
 - 提供“更换目录”和“复制到剪贴板”选项。
 
+> **实现口径（2026-11-04）**  
+> **第一句自此真的报得出这三枚名字**：写不进去的那一句由 [`crate::save::write_refusal`] 当场翻译成「权限不足…」「磁盘空间不足…」「路径无效…」三枚开头之一，系统那枚错误码留在括号里当证据（`（系统返回 183）`——那是一枚数，换一台机器的显示语言也不会变成半句英文）。此前这一格交回的是 `EncodeError` 自己的壳：`io: Cannot create a file when that file already exists. (os error 183)。截图还在，可以再保存一次。`——非空、有英文壳、三枚名字一枚没有，而 `a_write_the_machine_refuses_is_not_reported_as_a_bad_name` 只判 `!said.is_empty()`，所以它一直是绿的。这一档把那格改成三问（类别名在场、`annotate_check` 第 37 项 ① 早就在禁的那五枚英文壳一枚不许在场、仍说的是写而不是名字），另加 `the_three_causes_prd_names_are_three_different_reads` 逐枚问 `ErrorKind` 分不分得出这五枚（`PermissionDenied`/`StorageFull`/`NotFound`/`AlreadyExists`+`NotADirectory`/`InvalidFilename`），认不出的一枚说「写不进那个文件」而不硬套进那三类（#453：坏得不同，说的话就不同）。  
+> **第二句是返回值的形状而不是措辞**：`save_out`/`quick_out`/`saveAndPin` 失败时只写 `MaskState::message` 再交回 `false`，销毁遮罩的是 `endMask` 那一枚手柄，没有任何一条拒绝腿走到它；贴图那一路同理（`save_image` 交 `Err`，窗仍在）。工具栏 `onAccepted` 那一格里唯一被赋值的是 `bar.delivered` 与 `bar.gauge`，与 [`crate::mask::MaskState::copy_out`] 头顶那句 “It does not close the mask, whatever the outcome” 是同一条规矩的两个方向。  
+> **第三句的两条退路自此在同一处**：`crate::save::SAVE_EXITS` 是唯一作者，接在四枚遮罩门（另存为、快速保存两腿、存完再钉图）与贴图门各自己那半句「截图还在」/「贴图还在」后面——「可以换一处目录再存一次，也可以把这张图复制进剪贴板。」两条都不是空头话，`a_failed_write_hands_back_both_exits_that_are_reachable` 因此读两次：一次读产品那句里两个名字都在场，一次读 `qml/AnnotationToolbar.qml` 里 `label: "保存"` 与 `label: "复制"` 那两枚 `Cell` 此刻真在（指一处按不动的钮就是 #433 说的那种指针）。三扇门共一条句子而不各抄一遍，理由与 P35 同一条。  
+> **两支拒绝仍各说各的**：「选区的画面拼不出来」那一支不接这两条退路——一张拼不出像素的图既存不出去也复制不出去，给它递「换一处目录」是 #494 那种只会拒绝的控件；`BadName`（扩展名不是本程序会写的、`keep_both` 不让覆盖）那一支仍只说名字这一件事，也不接。  
+> **一处没落**：本轮没有真机读数——桌面持续锁定（`LockApp.exe` 仍在 Console 上）。`annotate_check` 的 `pre-save` 那一条腿量的仍是 `BadName` 那一支，选它的理由是 `encode::save` 会替不存在的路径把目录造出来（造路径那一条压根走不到磁盘回绝），不是因为磁盘那句带着英文；所以「磁盘回绝那一支屏幕上真说什么」仍欠一次真人读数，单测钉的是这台机器当场回的类别名，码（183）不钉——另一台 Windows 可能在同一件事上回 2 或 3。§5.5.3 第 506 行那句「保存失败时应提示原因」与这里同一只手，口径不重抄（#281）。
+
 ## 8.4 快捷键冲突
 
 - 显示冲突的组合键和相关功能。
 - 不覆盖现有配置，直到用户完成修改。
 
+> **实现口径（2026-11-04）**  
+> **第一句自此有两处屏幕，各放得下多少不一样**：启动那一趟把 `Launch.rows` 里「要用户看一眼」的那几行——`RowKind::Trouble`（注册不了、系统保留组合、未接线、递不出注册）与 `RowKind::Conflict`（同一份档里两枚动作共用一串键）两族——交给 ① 浮窗那一句（`Session.status` → `qml/HintWindow.qml`）与 ② 「快捷键」那一页的**整列**（`settingsConflicts()` → `qml/SettingsWindow.qml` 的 `conflictBox`）。浮窗那一格读的是一句话，最多原样引三枚（`SAID_MAX`），过上限的那一句说的是「其余几行见「快捷键」设置页」：指的是一个用户真能打开的地方，而不是只有门读得到的运行历史（此前那一句指的正是那里，那几行因此没有去处）。两行字都出同一枚 `Row::said`，一个字也不重打（#281）。  
+> **一行也没成时不闪一句**：出厂那九枚键全注册上 ⇒ 那一列是空的、`status` 一个字也不写——§8 整章判的是出了问题时说什么，不是为「一切正常」亮一下浮窗。这一格与托盘 tooltip 上那句「N 个全局热键待命」各说各的：一枚数待命的键，一列说要看一眼的行。  
+> **行的身份写在行自己身上，不靠数措辞**：此前「每个动作一行」那个分母靠的是 `starts_with("冲突")`——同一句话的第二个作者，改一天措辞普查当场少数一枚。现在每枚 `Row` 带着 `kind` 出生，分母（`per_action`）与「给用户看的那一列」（`to_be_seen`）读的都是写下那一句的同一手当场定的那一枚身份；`… 已注册` 与 `未绑定` 都不进那一列。钉它的是 `the_census_counts_rows_not_verdicts`、`every_action_gets_exactly_one_row` 与 `the_notice_line_counts_rows_and_caps_the_quotes` 三格。  
+> **第二句「不覆盖现有配置，直到用户完成修改」= 只报不改**：`validate` 报出同一份档里 `is bound twice` 与 `reserved by Windows` 那两类，真注册时 `RegisterHotKey` 当场回绝的那一枚由它自己那句原因说话，两处都不替用户挑赢家、也不动档上任何一串键。页上那一列是**本次启动的快照**（`hotkey.actions.` 在 `RESTART_PREFIXES` 里），用户改完那一串键要重启才换——这与 §5.16.1 第 4 步记的是同一处，那份措辞仍在那一节，这里不第二次写。  
+> **三处没落、不冒充已成**：① 页上那一列没有删、改或跳到那一枚键的手，它只把行摆出来，改键仍走页上原有的输入框（选中一行、改、保存）；② 屏幕上那两处本轮**没有真机读数**：桌面持续锁定（`LogonUI.exe` 与 `LockApp.exe` 都在），`--hotkeys` 那扇门本轮没跑，单测钉的是「Rust 交回了什么」，「屏幕上真有什么」仍欠一次真人读数；③ `--settings-window` 那扇门本轮**没加**读那一列的腿——量具那一趟压根不写那份快照（只有产品本体那一趟写它，替门写就等于给量具造一份页上此刻没有的内容），所以门里那一列永远是空的。
+
 ## 8.5 显示器变化
 
 - 显示器断开时，将不可见贴图移动到主显示器可见区域。
 - 分辨率变化时，尽量保持贴图相对位置。
+
+> **实现口径（2026-11-05）**  
+> **第一句的两半各有其人**：「不可见」这一问此前只有一条直边答过——并集那一夹（`crates/core/src/pin.rs:637 keep_visible`）把贴图夹回**盒子里**，而盒子是外接出来的矩形：拔掉三块屏里中间那一块，剩下的两块上下错开时并集仍是一只完整的框，框里有一条谁也没有在放的横带。此刻问「有没有一台显示器真在放它」的是 `pin.rs:645 covered`（判据沿用同一枚 `MIN_VISIBLE_PX`，一屏只给它 10 px 不算有人放），答「那该去哪」的是 `pin.rs:661 rescue_onto_primary`，落点用的还是同一只算术 `pin.rs:624 slide_into`，只是把尺从并集换成主屏那一块。搬的是位置：一个像素也不重编，一张纹理也不多推。  
+>
+> **「主显示器」读的是枚举的第一枚，不是坐标上的第一枚**：`CaptureService::monitors` 把 primary 排在最前，`Desktop::monitors[0]` 就是它（`pin.rs:599` 记的正是这条约定）。所以拔掉的那一块**就是**主屏时，交回的是此刻的主屏——§4.3 那一句「移动到当前可用显示区域」与这一节「主显示器可见区域」由此是同一只手、同一落点，不必有两种读法。没有表的时候（枚举交回空、且 Qt 也答不出主屏）`rescue_onto_primary` 原样交回：没有任何一枚坐标是「哪一块是主屏」的证人，替用户编一个是 #261 那一族。  
+>
+> **触发不在 Rust 里，这一条本轮没改**：`qml/main.qml:428` 的 `onScreensChanged`（QScreen 自己的信号，加 app 的 screenAdded/Removed 两枚，两半一起盖住「分辨率」与「插拔」）→ `main.qml:587 refitPins()` → `session.rs:2437 desktopChanged` → `state.rs:2676 desktop_changed`：先重新枚举此刻真的在场的桌面（`state.rs:2632 desktop_from_platform`，不取缓存——缓存正是错的那一件），再逐枚走 `state.rs:1477 refit_onto` → `pin.rs:1186 PinItem::refit`，最后才说一句人话（`state.rs:2657 refit_notice` 是唯一作者，一枚也没搬动时 `state.rs:2667 notice` 交回空串）。不另补第二枚 `WM_DISPLAYCHANGE` 读者，理由写在 `main.qml` 那段话头上：热键泵那枚窗是 message-only，平台的广播到不了它，而替别的窗投广播不是本程序该干的事。  
+>
+> **拖拽那一臂一个字没动**：§5.9.1 允许用户把一枚拖过两块屏之间的缝，所以「停在死角里」本身不是错——屏幕没变，就没有第二只手替他决定该去哪。`move_to`/`move_by` 仍只走并集那一夹，那一手新加的 `refit` 只在「桌面换了」那一趟走；这一分界由桥那枚测的第三问钉着（用户把一枚拖进死角后它就留在死角里，直到下一趟屏幕变化）。  
+>
+> **第二句按读数写成这样**：这只手不改比例、不重排——每枚贴图保留自己那份**物理**坐标，只有夹不住的那几枚被动（`pin.rs:690 refits` 问的就是「这一枚要不要动」，它与 `refit` 现在同答一问，过去它只答并集那一半）。换 DPI 时物理像素不动、DIP 跟着重除（`pin.rs:680 dpr_at`，落在两台屏之间那条缝里的点由主屏代答）。没有另立一枚「相对位置」按比例把整桌重铺——「尽量保持相对位置」由「一枚也不重排」来满足，而这是场上一切别的手势（§5.9.1 拖、§5.10.2 批量、§6.3 快照）正在用的同一种说法。  
+>
+> **证人**：core `pin::tests::a_pin_the_unions_dead_space_left_behind_comes_back_onto_the_primary`（死角里那一枚落到主屏右缘留 24 px 的那一格 976,100；整枚在屏上的与只被一块屏托住的那一枚都不动；`Desktop::default()` 原样交回；`refit_all` 只数一枚）与桥 `state::tests::a_pin_on_no_monitor_after_a_screen_change_lands_on_the_primary`（搬了一枚、`moved` 数一枚、页上那句话也说一枚；主屏正在放的那枚留在原地；拖进死角的不搬）。期望落点是写死的数而不是 `rescue_onto_primary` 的回声（#274）。反证真做过：把 `PinItem::refit` 里那一手退回并集夹，两枚各红（`crates/core/src/pin.rs:3502` 与 `crates/qt_bridge/src/state.rs:6026`），随后原样回来。读数：桥 `cargo test -p qt_bridge --bin falconshot --all-targets` **642 全绿**、core `cargo test -p falcon-core --all-targets` **599 全绿 / 1 ignored**，两份都是本轮跑的。  
+>
+> **没证到的是真拔屏那一路**：桌面在用户手里，跑级那几档本轮一票也没跑——「Qt 什么时候把 QScreen 的信号送进来」「拔屏之后枚举的第一枚是不是真的此刻主屏」这两条只能等一次真的拔掉一块屏；`--refresh` 那扇门里 `gone`/`half` 两行此刻走的是同一只手，可它们红与绿本轮没有读数。另有一格写在码里而不藏在话里：`MIN_VISIBLE_PX` 那一档以下算「没人放」，一条 24 px 窄边托着的贴图会被搬走，这一格按那枚既有的数判、本轮没为它新造判据。
 
 ## 8.6 OCR 或网络图片获取失败
 
@@ -1688,6 +2083,13 @@ snip --last -o clipboard
 - 提示用户清理历史或调整存储上限。
 - 优先清理未锁定的最旧记录。
 - 不得静默删除收藏或锁定记录。
+
+> **实现口径（2026-11-04）**  
+> **第一句自此有一行字**：历史窗顶栏那一行占用（§6.2）下面多了一格「已到存储上限」的提示（`history_window::advice_line` → `Session.historyWindowAdvice()` → `qml/HistoryWindow.qml` 的 `adviceBox`）。它只在占用真的顶到某一枚上限时才亮：那一问住的是 core `history::Retention::at_cap`，与自动清理走读的是**同一份**上限语义——`0` 在两边都是「这一枚上限没设」，两处各判一次就是给同一个数字两种读法（#281）。措辞的唯一作者是 `settings::history_pressure_line`，那一句把 PRD 给的两条路都写全（要么把上限调大、要么删掉不要的那几行），并当场说清「自动清理只动未锁定的最旧记录，锁着的行不会被动」。那一问与占用同一次 `readRows`，所以删过一行、腾出地方之后它会自己消失，不会停在「删之前那一趟」的读数上。没顶到 ⇒ 空串 ⇒ 页上那一格连高度也没有：一切正常不该有一句提示。  
+> **两形上限说两形话**：设了条数上限 ⇒ 「此刻 N 条、上限 M 条」；条数那一枚没设（`0`）⇒ 「此刻 N 条（条数没设上限，顶到的是字节那一枚）」——把没设的东西报成一个 `0` 是一句反话。这一族一处也不做单位换算：占用那一行本来就是 `B`，把字节除以 1048576 去凑档上那枚 `max_size_mb` 是给同一道算术第二个作者，四舍五入还会替用户编出「0 MB 已到上限」。钉它的三格是 `the_pressure_line_offers_both_exits_and_spares_locked_rows`（说了什么）、`the_cap_question_reads_the_same_zeros_the_cleaner_does`（顶到没有）与 `the_advice_line_is_drawn_from_the_bridge_not_retyped`（页上接线、窗里不抄一份中文）。  
+> **四臂一律不提示，而那不是漏话**：「这一场没有历史」「开关关着」「库打不开」「`usage` 读不回」都交回空串——问不出占用就判不了上限，判不了就不替用户猜一句「该清理了」；那四臂各有各的一句话，写在**上面那一行**里（§6.2 的 `records=?` / `(开关关着)` / `(打不开: …)`），不必在提示这一格第二次说。  
+> **第二、三条不在本轮这一格**：「优先清理未锁定的最旧记录」与「不得静默删除收藏或锁定记录」落的是自动清理本体（`History::cleanup` 走的是新→旧、交出去时反序 ⇒ 去的确实是最旧的），口径写在 §5.14.4 那一节；「收藏」那一半至今界面递不出「收藏这一行」这个动作，那条没落也记在同一处，这里不第二次写。  
+> **两处没落**：① 天数那一枚上限（`[history] max_age_days`）不构成这一问——`Usage` 里没有时刻，问它就是替用户猜；顶到天数上限的行照样被自动清理收走，只是页上不会为它说一句。② 这一格本轮**没有真机读数、也没有门里的腿**：桌面持续锁定，而那扇窗的计划是七段（`armed: win.plan.length === 7`），加一条腿要一并改现有六条腿的算术——加腿留到能跑真机那趟，此刻钉住的只是「桥交回什么、页接不接」。
 
 ---
 
@@ -1712,11 +2114,13 @@ snip --last -o clipboard
 - 支持图片、文本、HTML、颜色值和图片文件贴图。
 - 缩放、旋转、翻转、透明度、裁剪、灰度和反色正确。
 - 多选、分组、Solo、置顶、穿透和虚拟桌面行为符合预期。
+  - （2026-11-02：这一行里的“虚拟桌面行为”已划出范围，见 §5.13；验收本行时只查多选、分组、Solo、置顶、穿透五项。）
 - GIF 可播放、暂停、调速和逐帧查看。
 
 ## 9.4 输出与历史
 
 - 复制、自动保存、快速保存、另存为和分享流程可用。
+  - （2026-11-02：这一行里的“分享”按 §5.5.9 的划界读——原生分享面板已划出范围，验收的是“用系统默认程序打开”那一条替代路径。）
 - 保存失败时不丢失内容。
 - 历史记录可浏览、恢复、删除并受空间上限控制。
 - 被取消的截图可在启用相应选项后恢复。

@@ -3,6 +3,13 @@
 #[cfg(windows)]
 pub mod clip;
 
+/// §5.1.2 开机启动那一枚开关在机器一侧的手。像 [`theme`] 一样无条件声明：判据（该写、该删、
+/// 不必动；命令串；什么算一致）在一台没有注册表的机器上也要能被问一遍，只有 [`Registry`]
+/// 那一格是 Windows 的。
+///
+/// [`Registry`]: autostart::Registry
+pub mod autostart;
+
 pub mod cursor;
 
 #[cfg(windows)]
@@ -10,9 +17,16 @@ pub mod glyphs;
 
 pub mod clock;
 pub mod desktop;
+/// §5.21.1 第 3 步「系统获取版本信息」里的那一只手：把一句 http(s) 地址取回成一段字。像
+/// [`pick`] 一样无条件声明 —— 「这一台没有取回地址的那只手」也是一个答（[`fetch::FetchError::Unsupported`]），
+/// 而不是一句没有声明；判「取回来的那串该怎么算版本」始终在 `falcon_core::update`。
+pub mod fetch;
 pub mod hotkey;
 pub mod ocr;
 pub mod open;
+/// §5.8.3 第 1–2 步那一扇门：一扇真的 Windows 文件对话框，交回的是路径而不是像素。
+/// 像 [`ocr`] 一样无条件声明 —— 「这一台没有文件对话框」也是一个答，而不是一句没有声明。
+pub mod pick;
 pub mod print;
 pub mod proc;
 pub mod reveal;

@@ -398,22 +398,37 @@ pub fn show_dimensions() -> bool {
     with(|s| s.config.capture.show_dimensions)
 }
 
-/// §5.5.4–14 那一整段 `[pin]` —— `default_topmost` / `default_opacity` / `default_zoom` /
-/// `default_click_through` / `alpha_bg` / `wheel_resizes` / `cycle_on_click` /
-/// `state_save_seconds` / `solo_dim_opacity`。P64 之前这一族在 `crates/core/src/config.rs` 里
-/// 每枚都有键、每枚都有 `Default`，但 [`crate::state::PinState::new`] 用 `..Default::default()`
-/// 把整段 `[pin]` 挡在运行期之外 —— 也就是**每一枚都没有读者**。
+/// §5.5.4–14 那一整段 `[pin]` —— [`falcon_core::config::Pin`] 上的**每一枚**键。P64 之前这一族在
+/// `crates/core/src/config.rs` 里每枚都有键、每枚都有 `Default`，但 [`crate::state::PinState::new`]
+/// 用 `..Default::default()` 把整段 `[pin]` 挡在运行期之外 —— 也就是**每一枚都没有读者**。
 ///
-/// 这一枚读者一次性把九枚键接进 [`crate::state::PinState::cfg`]：`PinState::new()` 从这里取一次
+/// 这一枚读者一次性把整段键接进 [`crate::state::PinState::cfg`]：`PinState::new()` 从这里取一次
 /// 快照，之后 `spawn(... &self.cfg)` 用它建新 pin（`crates/core/src/pin.rs:459`
 /// `topmost: cfg.default_topmost` 那一行自此真的会读到用户写的值而不是硬编码 `true`）。
 ///
+/// 那一串枚数不在这里点名：名单的唯一作者是 [`falcon_core::config::Pin`] 那个 struct 自己，而这一
+/// 层每加一枚键都要来改写一句散文，就是 #455 拦的那件事（那份清单只会比真相旧一天）。
+///
 /// 只取一次快照而不是每枚键单独走一次 `with`：`PinState::new()` 只在 STATE OnceLock 初始化时
-/// 跑一次，取整段 clone 比取九次单字段更贴合"这一场进程看到的 [pin] 段"这个语义 —— 若中途
+/// 跑一次，取整段 clone 比逐枚取更贴合"这一场进程看到的 [pin] 段"这个语义 —— 若中途
 /// 有人 `write_back` 改了 [pin] 段，进程已经在跑的那些 pin 也不会跟着抖，和 PRD §5.5 里
 /// "默认"两字的直觉一致（默认是**新**贴图的默认，不是**所有**贴图的当前）。
 pub fn pin_cfg() -> falcon_core::config::Pin {
     with(|s| s.config.pin.clone())
+}
+
+/// §5.8.4 方式二第 3 步那枚「具体行为由设置决定」的**现读**：`[pin] drop_replaces_current`。
+///
+/// 为什么这一枚不像 [`pin_cfg`] 那样吃启动快照：那一枚快照说的是「新贴图的默认长相」——它属于
+/// **一枚贴图**，贴图一旦建出来，那几格就归它自己了，中途改设置不该让桌上已有的窗抖一下。这一枚
+/// 说的却是「**这一趟**落下往哪儿装」，它属于一个正要发生的事件：用户在设置页把那一格扳过去，
+/// 下一次拖进来就该按新的那一格走（§5.20.2「修改后即时生效」在那一节里的形状）。让新拖进来的
+/// 那一批还读三分钟前那次启动的快照，就是让用户反复试那一枚看着坏掉的开关。
+///
+/// 落点本身怎么算不在这里判：那一张表只有一个作者（[`falcon_core::drop::Landing::plan`]，由
+/// [`crate::state::Decision::at`] 问一次），这一手只交回那一枚开关的读数。
+pub fn drop_replaces() -> bool {
+    with(|s| s.config.pin.drop_replaces_current)
 }
 
 /// §5.2–5.4：整段 `[capture]` 由这一枚 reader 一次性送进运行期 —— P64 之前 12 枚键里
@@ -430,7 +445,18 @@ pub fn pin_cfg() -> falcon_core::config::Pin {
 ///
 /// `delay_seconds` 自 P108 起**不在这一枚快照里被消费**：它决定的是 open **之前**等多久，而
 /// "之前"意味着遮罩还不存在、本枚快照也还没取。它的行为读者是 [`crate::delay::arm_from_config`]，
-/// 每次按下开始重新问一遍 —— 于是上面那句"11 枚停在键在档里没人读"到今天只剩 10 枚成立。
+/// 每次按下开始重新问一遍 —— 于是上面那句"11 枚停在键在档里没人读"到今天只剩一枚成立：
+/// `highlight_element`。其余各枚都问得出读者 —— `include_cursor` 在
+/// [`crate::capture::cursor_overlay`]（每次贴指针现问）、`magnifier_*` 五枚在
+/// [`falcon_core::capture`] 拼放大镜参数那一手、`snap_to_window` 在 [`crate::mask::MaskState::release`]、
+/// `delay_seconds` 与 `size_unit` 各在 [`crate::delay::arm_from_config`] 与本文件的
+/// [`crate::mask::MaskState::open`] 那一行。
+///
+/// `default_mode` 与 `freeze_frame` 自本轮起也有行为读者了：[`crate::mask::MaskState::apply_opening`]
+/// 在**每场 `open` 现读一次**这枚快照（前者定遮罩进场那一刻选区停在哪一块，判的本体是
+/// [`crate::mask::MaskState::opening_hole`]；后者答的是「这一版产品没有实时取景那一路」，本体是
+/// [`crate::mask::MaskState::freeze_notice`]）。与 `include_cursor` / `size_unit` 同一族口径：改完档，
+/// 下一次按下热键就用新的，而已经开着的这一场不动（§5.20.2「设置应即时生效」在遮罩这一路的形状）。
 pub fn capture_cfg() -> falcon_core::config::Capture {
     with(|s| s.config.capture.clone())
 }
@@ -440,12 +466,22 @@ pub fn capture_cfg() -> falcon_core::config::Capture {
 /// "键在档里没人读"：`crates/qt_bridge/src/hotkey.rs:352` 那一句 `Some(TraySpec { ... })` 是
 /// P50 落 tray 那轮的硬编码，用户把 `[general] show_tray = false` 写进档里也不会让托盘消失。
 /// P66 把 `show_tray` 接进 `Pump::start` 的 tray 参数（`Some` ↔ `None` 由这一枚 clone 出来
-/// 的 `general.show_tray` 决定），其余 5 枚键（`launch_at_startup` 需要注册表 / 任务计划、
-/// `start_minimized` 需要 main window 初始化时机、`close_to_tray` 需要窗口关闭拦截、
-/// `confirm_exit` 需要对话框、`language` 需要 i18n 装填）本轮**由快照字段而不是由独立调用点**
-/// 建了读者：`hotkey::install` 里 clone 一次整段 `[general]`，`show_tray` 那一支本轮真分岔，
-/// 其余五支**待改码接进各自的调用点**（§5.15 那一族）。与 [`pin_cfg`] / [`capture_cfg`]
-/// 同形：一次 clone 整段快照、进程启动那一次读，`write_back` 不改本会话已经开着的 tray。
+/// 的 `general.show_tray` 决定）。
+///
+/// `launch_at_startup` 自本轮起**不再只是快照里的一个字段**：它有两只手，都不走这一枚快照 ——
+/// * [`crate::settings_view::write`] 在 [`falcon_core::config::AUTOSTART_KEY`] 那一枚键上拧
+///   `HKCU\...\Run` 里那条启动项（`platform_windows::autostart::sync`），系统拒了的那一趟
+///   档一个字也不写、页上那句说的是原因；
+/// * [`startup_autostart_banner`] 在启动时读一次机器（`autostart::inspect`，只报告不改动），
+///   以机器为准回填这一枚键。
+/// 于是「档里写着开而注册表里没有」这一族在这一档里没有可达的写法，而这一枚键仍是
+/// `RESTART_KEYS` 里的那一枚：启动项是立刻写进机器的，**用它登录一次**才是它生效的时候。
+///
+/// 其余 4 枚键（`start_minimized` 需要 main window 初始化时机、`close_to_tray` 需要窗口关闭
+/// 拦截、`confirm_exit` 需要对话框、`language` 需要 i18n 装填）本轮**由快照字段而不是由独立
+/// 调用点**建了读者：`hotkey::install` 里 clone 一次整段 `[general]`，`show_tray` 那一支真
+/// 分岔，其余四支**待改码接进各自的调用点**（§5.15 那一族）。与 [`pin_cfg`] / [`capture_cfg`]
+/// 同形：一次 clone 整段快照，而 `launch_at_startup` 那一支自本轮起每次问的是机器。
 pub fn general_cfg() -> falcon_core::config::General {
     with(|s| s.config.general.clone())
 }
@@ -472,6 +508,14 @@ pub fn hot_corner_cfg() -> falcon_core::config::HotCorner {
 /// [`hot_corner_cfg`] 同形 —— 一次 clone，点击不是每秒一百次。
 pub fn tray_cfg() -> falcon_core::config::Tray {
     with(|s| s.config.tray.clone())
+}
+
+/// §5.16.1 第十三名那一枚命令的存储键住在 `[hotkey] command`，整段 `[hotkey]` 因此有了这一枚
+/// reader。**每一次按下现问一次**，与 [`tray_cfg`] 同一理由：`command` 不在 [`RESTART_KEYS`] 里，
+/// 而「改了档、下一次按下去跑的就是新那一串」是这一格唯一能被观测的样子 —— 启动那一次读会把
+/// 改档与按下之间的那一段时间做成一句假话。
+pub fn hotkey_cfg() -> falcon_core::config::Hotkey {
+    with(|s| s.config.hotkey.clone())
 }
 
 /// §5.4.4 / §5.4.5：整段 `[whiteboard]` 由这一枚 reader 取快照，唯一的读者 = 开白板那一步。
@@ -575,10 +619,20 @@ pub fn appearance_cfg() -> falcon_core::config::Appearance {
 /// 本轮的证人是梯 rc 0 + exe sha 换，而不是 §9.1 第十条 headless。
 ///
 /// `#[allow(dead_code)]` 挂在函数头上、P72 起由 [`startup_banner`] 一次读 `log_level` 与
-/// `data_dir` 两格 ⇒ `#[allow(dead_code)]` 撤。剩下三格（`cli_enabled` / `crash_recovery`
-/// / `privacy_no_temp_files`）仍待各自的调用点（`cli_enabled` 那一格要 UI 面：Settings 里的 CLI
-/// 注册按钮；`crash_recovery` 要 §7.2 recovery snapshot；`privacy_no_temp_files` 要 temp-file
-/// policy）。`recognize_text` 已由 P148 接进 `MaskState::record_history` 的确认臂。
+/// `data_dir` 两格 ⇒ `#[allow(dead_code)]` 撤。剩下三格自此各有自己的行为读者，而**没有一格
+/// 从这里读**（这一枚函数只交回快照，判据长在别处）：
+/// * `cli_enabled` —— [`crate::cli_gate`]（`main.rs`，一趟 argv 被 [`crate::cli::classify`] 判成
+///   `Run` 之后现读一次；关着 ⇒ 终端上读到一句点名这枚键的拒绝并退 1，而不是静默退 0。闸的只有
+///   §5.17 那一臂：`NotCli` / `Help` / `Error` 三臂原样放行，出厂 `false` 才不会把十九扇量具门、
+///   四档文件命令与常驻应用一起关掉）。
+/// * `privacy_no_temp_files` —— [`crate::mask::MaskState::sweep_temp_at_open`]（每场遮罩进场前
+///   现读一次，收回本程序自己那枚带标签的 `%TEMP%\falconshot-sendto` 里属于过去流程的旧图；
+///   分岔本体是 [`crate::mask::MaskState::sweep_stale_temp`]。另一枚临时目录 `falconshot-clip`
+///   不归它 —— 那一枚的死活由「剪贴板还引用着就别删」那条规矩问剪贴板，读者是
+///   [`crate::state::PinState::sweep_clip_files`]，两处各按各自那一问）。
+/// * `crash_recovery` —— 仍待 §7.2 的 recovery snapshot 那一路。
+///
+/// `recognize_text` 已由 P148 接进 `MaskState::record_history` 的确认臂。
 /// 但**整段读者**自此有非 test 调用点、不再算死码。
 pub fn advanced_cfg() -> falcon_core::config::Advanced {
     with(|s| s.config.advanced.clone())
@@ -639,23 +693,29 @@ pub fn startup_banner() -> String {
     format_startup_banner(&history_cfg(), &advanced_cfg())
 }
 
-/// P73：把整段 `[appearance]` 的 8 枚键逐字回读成一行。
+/// P73：把整段 `[appearance]` 的键逐字回读成一行。
 ///
 /// **本轮没有分岔本体**（P64 / P65 / P66 / P69 / P70 / P71 那一族"读者-only 无分岔 ⇒ 撤单测"
 /// 本轮沿用）：`theme` 是 enum 走 `{:?}`（`System` / `Light` / `Dark` 三臂、本轮不加"System
 /// 展开成实际生效的一臂"那种分岔，那需要 `QGuiApplication::styleHints()->colorScheme()` 的
-/// 运行期读数、本轮 `settings::start()` 早于 Qt 存在 ⇒ 无法读）、其余 7 枚是 String / u32 直读。
+/// 运行期读数、本轮 `settings::start()` 早于 Qt 存在 ⇒ 无法读）、其余各枚是 String / u32 直读。
+///
+/// **P149 起本行是 9 枚而不是 8 枚**：`appearance.ui_font_family`（§5.19.4「调整界面字体」里
+/// **字体**那一半，字号是 `ui_font_size`）在 core 侧建键时一并进了 [`falcon_core::config::Appearance`]，
+/// 而这一行是「整段回读」的证人——漏一枚就是「导出/导入之外还有一份没人念过的档」。名单与
+/// `core::config::tests::the_appearance_section_is_nine_keys_all_reachable` 数的是同一批。
 ///
 /// **证人 dichotomy 的第 69 项 ⑫ 那一族本轮回到"读者-only ⇒ 撤单测"一侧**（P67 / P68 / P72
 /// 三轮分岔+单测之后、本轮同 P64 / P65 / P66 / P69 / P70 / P71 六轮那一族 ⇒ **本轮不加 cargo
 /// 单测**、qt 计数仍 207、三枚之和仍 499，本轮的证人是梯 rc 0 + exe sha 换）。
 pub fn format_appearance_banner(a: &falcon_core::config::Appearance) -> String {
     format!(
-        "appearance.theme={:?} appearance.accent={} appearance.toolbar_placement={} appearance.ui_font_size={} appearance.magnifier_border={} appearance.magnifier_corner_radius={} appearance.magnifier_foreground={} appearance.magnifier_background={}",
+        "appearance.theme={:?} appearance.accent={} appearance.toolbar_placement={} appearance.ui_font_size={} appearance.ui_font_family={} appearance.magnifier_border={} appearance.magnifier_corner_radius={} appearance.magnifier_foreground={} appearance.magnifier_background={}",
         a.theme,
         a.accent,
         a.toolbar_placement,
         a.ui_font_size,
+        a.ui_font_family,
         a.magnifier_border,
         a.magnifier_corner_radius,
         a.magnifier_foreground,
@@ -669,6 +729,74 @@ pub fn format_appearance_banner(a: &falcon_core::config::Appearance) -> String {
 /// 立刻调这一枚、打印 `[appearance cfg]` 那一行。
 pub fn startup_appearance_banner() -> String {
     format_appearance_banner(&appearance_cfg())
+}
+
+/// §5.19.2「主题色」交到界面那一侧的**那一枚色**：用户钉的 `accent` 先过对比度闸
+/// [`falcon_core::config::accent_on`]、再按**当前生效的那套餐具**夹到底色上。
+///
+/// **分岔本体是两格，都是纯的**：`face` 的两臂（`"dark"` 吃 [`falcon_core::config::SURFACE_DARK`]、
+/// 其余一律吃 `SURFACE_LIGHT`，与 `theme_face` 丢掉 `Option<bool>` 那一形状同一个「没有第三臂」
+/// 的口径）× `accent` 那枚字面在**这一面底**上够不够 [`falcon_core::config::ACCENT_MIN_CONTRAST`]
+/// （够 ⇒ 原样；不够 ⇒ core 只往能看见的那个方向夹明度）。界面因此永远拿到一枚看得见、
+/// 且仍然是用户挑的那枚色相的色——§7.4「所有主题下均应满足基本可读性和对比度要求」在
+/// **读**的那一刻落地，而不是等画师逐窗核对。
+///
+/// 分岔是纯函数 ⇒ 不撤单测（证人 dichotomy 的第 69 项 ⑫ 那一族、P118 `format_theme_banner` /
+/// P119 `theme_face` 同形）。**这一枚不裹一层「现读档」的 `startup_*`**：界面那一侧四枚外观键
+/// 由 session.rs 的 `appearance_words` **一次锁、一份快照**地读，`theme_face` 由调用方递进来——
+/// 因为底名必须吃**当前生效的那套餐具**，而不是各走各的再去问一次注册表。自己现推导底名，
+/// 用户钉了 dark、机器是浅色，页上就会「深色餐具配浅色底夹出来的色」。
+pub fn accent_face(a: &falcon_core::config::Appearance, face: &str) -> String {
+    let surface = if face == "dark" {
+        falcon_core::config::SURFACE_DARK
+    } else {
+        falcon_core::config::SURFACE_LIGHT
+    };
+    falcon_core::config::accent_on(&a.accent, surface)
+}
+
+/// §5.19.4「支持调整界面字体和字号」交给界面的两枚字：族（family）与**磅**（不是像素）。
+///
+/// **磅这一枚没有分岔**——档里存的就是磅（[`falcon_core::config::Appearance::ui_font_size`]），
+/// QML 绑 `font.pointSize` 就是它，DPI 由 Qt 按那一面屏自己乘；`ui_font_px` 那一枚换算只服务
+/// 「要说出一枚像素数」的读者（core 头顶那封信）。族同样直读：空族在**读档那一步**就被
+/// `validate` 归成出厂族（`ui_font_family_has_a_reader_side_floor_and_survives_a_round_trip`
+/// 在 core 侧盯着），所以界面这一侧永远不会拿到一枚空串把系统字体挤掉——**这里不再兜第二次底**，
+/// 兜底只有 validate 那一处（#281：同一句判断只许一处回答）。
+///
+/// 分岔本体是 `family.trim().is_empty()` 的**反面**：本轮没有——所以这两枚是纯读者、
+/// 没有新的单测要加在这一格上（core 那侧的往返单测就是它们的对面）。
+pub fn ui_font_face(a: &falcon_core::config::Appearance) -> (i32, String) {
+    (
+        a.ui_font_size as i32,
+        a.ui_font_family.clone(),
+    )
+}
+
+/// 界面字体的**出厂那一枚磅**，也就是页上那套字号层次所围绕的基准。
+///
+/// 为什么要单独递出去（而不是让 QML 自己写 `ui_font / 9`）：页上画的是有层次的三十多枚字号
+/// （正文 13、说明 12、标题 14/18），把整页压成一枚磅数会把那层结构抹平，所以界面乘的是
+/// 「此刻的磅 ÷ 出厂的磅」那一枚倍数 —— 而分母正是 core 那一枚出厂值，页上不许抄第二份数字
+/// （#281：默认值只有一个作者）。现问 [`falcon_core::config::Config::default`]，所以 core 那侧
+/// 改了出厂磅，页上的基准跟着改，不需要谁记得去改 QML。
+pub fn ui_font_baseline() -> i32 {
+    falcon_core::config::Config::default().appearance.ui_font_size as i32
+}
+
+/// §5.19.4「调整工具栏方向和位置」里**落点**那一枚交给界面的词。
+///
+/// 闭集在 core（[`falcon_core::config::TOOLBAR_PLACEMENTS`]，五臂 `auto`/`top`/`bottom`/`left`/
+/// `right`）：页上那一格打不进名单外的字（`set_str` 拒）、档里读来的垃圾由 `validate` 归一
+/// 并说出来，所以**界面这一侧拿到的永远是名单里的那五枚之一**，这里不需要、也不许再兜一次
+/// 「认不出就算 auto」——那是第二份判断（#281）。`auto` 的展开不在这里做：那一枚要吃**选区**
+/// 的长短边，而选区是遮罩那边的事实（[`falcon_core::config::toolbar_edge`] 由 `mask` 那一侧
+/// 带着宽高现问）。
+///
+/// 与上面两枚同一口径：**不裹 `startup_*`**——页上四枚外观值一次读一份快照，这里只是那一份里
+/// 的一格。
+pub fn toolbar_placement_face(a: &falcon_core::config::Appearance) -> String {
+    a.toolbar_placement.clone()
 }
 
 /// P118：§5.19.1 第 1 步「读取系统主题（Windows 注册表 `AppsUseLightTheme`）」的那一行读数。
@@ -752,6 +880,107 @@ pub fn startup_theme_face() -> &'static str {
         appearance_cfg().theme,
         platform_windows::theme::apps_use_light_theme(),
     )
+}
+
+/// §5.1.2 启动回填的三臂判据。**机器是那一枚开关的真相**，所以不一致时以机器为准改档，
+/// 而不是反过来拿档去拧机器 —— 后者会让一次 `cargo run`（`target\debug` 那条路径）替安装好的
+/// 那一台重写启动项。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AutostartRead {
+    /// 机器没答上来（那一格读不动、或这台不是 Windows）：**档里那一格不动**，页上照档里说。
+    /// 一条读不到的启动项既证明不了「没开」，也就没资格把用户那一枚改成 `false`。
+    Silent(String),
+    /// 机器与档说的是同一件事：一个字节也不动。
+    Agrees {
+        file: bool,
+        held: platform_windows::autostart::Held,
+    },
+    /// 机器与档不一样：以机器为准，档里那一枚该改成 `machine`。
+    Drifts {
+        file: bool,
+        machine: bool,
+        held: platform_windows::autostart::Held,
+    },
+}
+
+/// 判据本体，纯的：`read` 是**机器那一侧**交回来的位置或一句原因。单测对着这一枚问
+/// 「档与机器不一致时该改哪一头」，一台有注册表的机器都不是这一问的前提。
+pub fn autostart_backfill(
+    file_says: bool,
+    read: Result<platform_windows::autostart::Held, String>,
+) -> AutostartRead {
+    match read {
+        Err(why) => AutostartRead::Silent(why),
+        Ok(held) => {
+            let machine = held.switch_on();
+            if machine == file_says {
+                AutostartRead::Agrees {
+                    file: file_says,
+                    held,
+                }
+            } else {
+                AutostartRead::Drifts {
+                    file: file_says,
+                    machine,
+                    held,
+                }
+            }
+        }
+    }
+}
+
+/// 一行说完这一趟启动回填，给 `main.rs` 的 `[autostart cfg]` 那一行。
+///
+/// `saved_ms` 是**真落了盘**的那一次的毫秒数，`None` = 这一趟没写文件。那一格不许由调用方
+/// 猜：「一致所以没写」与「改了档而没写成功」是两件要分开说的事（§9.4 对失败保存定的规矩）。
+pub fn format_autostart_line(read: &AutostartRead, saved_ms: Option<u64>) -> String {
+    use platform_windows::autostart::held_line;
+    let wrote = match saved_ms {
+        Some(ms) => format!("（以机器为准改档，落盘 {ms} ms）"),
+        None => String::new(),
+    };
+    match read {
+        AutostartRead::Silent(why) => {
+            format!("读不到启动项：{why}（档里那一格未动，页上那一枚照档里说）")
+        }
+        AutostartRead::Agrees { file, held } => {
+            format!("档里={file} 机器={} ⇒ 一致{wrote}", held_line(held))
+        }
+        AutostartRead::Drifts {
+            file,
+            machine,
+            held,
+        } => format!(
+            "档里={file} 机器={} ⇒ 档里改成 {machine}{wrote}",
+            held_line(held)
+        ),
+    }
+}
+
+/// §5.1.2 的启动腿：读一次机器里的启动项、用它回填 `[general] launch_at_startup`，交回一行
+/// 给 `main.rs` 打印。
+///
+/// 这一格存在的对面是「拨上去没反应」那一族欠账的另一半：页上写的是档里那一枚，而档里那一枚
+/// 可以由别人改（手改文件、导入、上一场安装在另一条路径上留下的启动项）。启动时以机器为准对
+/// 一次账，页上那一枚开关从此说的是「下一次登录会不会启动」，而不是「文件里上次写了什么」。
+///
+/// 只有真不一致才写盘：默认那一趟（档里 `false`、机器里没有启动项）一个字节也不动。
+pub fn startup_autostart_banner() -> String {
+    let read = autostart_backfill(
+        general_cfg().launch_at_startup,
+        platform_windows::autostart::inspect().map_err(|e| e.to_string()),
+    );
+    let saved = match &read {
+        AutostartRead::Drifts { machine, .. } => Some(with(|s| {
+            // 直接改这一枚 bool 字段，而不是绕 [`falcon_core::config::AUTOSTART_KEY`] 那一条
+            // `settings_view::write`：回填的读数出自机器而不是用户的输入，没有语法要过，而那条
+            // 路会**再拧一次启动项** —— 拿回填去改机器是本节最不该做的事。
+            s.config.general.launch_at_startup = *machine;
+            s.save()
+        })),
+        _ => None,
+    };
+    format_autostart_line(&read, saved)
 }
 
 /// P74：把整段 `[about]` 的 4 枚键逐字回读成一行。
@@ -1434,6 +1663,13 @@ pub fn history_data_dir() -> std::path::PathBuf {
 /// 分岔本体是纯函数：输入是已经取回的那些行加一枚分钟偏移，不读 config、不开 SQLite、
 /// 不落盘、不开窗。时间偏移是**调用方交进来的**而不是这里读的：`captured_at` 是 epoch 秒，
 /// 而"这一行写于几点"要的是那一台机器当时的偏移，一处读时钟就多了第二个主人。
+///
+/// 「位置」那一节答的是 PRD §5.14.1 第三句「历史记录应包含时间、屏幕、位置、尺寸和截图内容」
+/// 里那**一样**此前只在库里、没上过屏的：`x`/`y` 自 `history.rs:199-200` 建表就在写，而这一串
+/// 只取了 `rect.w` 与 `rect.h` —— 于是清单把「在哪一块」说成了「有多大」，五样里少一样。那两个
+/// 数**只从 `rec.rect` 来**：界面上、量具里都不许拿尺寸或屏名再推一次起点（#281），推出来的那份
+/// 与 SQLite 里那一列没有任何东西保证相等。摆在尺寸**之前**是有意的两件事：位置与尺寸同属
+/// 「那一块地方」，读的人先看在哪、再看多大。
 pub fn history_rows_joined(records: &[falcon_core::history::Record], offset_min: i32) -> String {
     records
         .iter()
@@ -1441,13 +1677,15 @@ pub fn history_rows_joined(records: &[falcon_core::history::Record], offset_min:
             let stamp =
                 falcon_core::naming::LocalStamp::from_epoch(rec.captured_at / 1_000, offset_min);
             let mut label = format!(
-                "{} · {:04}-{:02}-{:02} {:02}:{:02} · {}×{} · {} · {}",
+                "{} · {:04}-{:02}-{:02} {:02}:{:02} · 位置 {},{} · {}×{} · {} · {}",
                 rec.id,
                 stamp.year,
                 stamp.month,
                 stamp.day,
                 stamp.hour,
                 stamp.min,
+                rec.rect.x,
+                rec.rect.y,
                 rec.rect.w,
                 rec.rect.h,
                 rec.monitor_id.replace('|', "/"),
@@ -1481,7 +1719,8 @@ pub fn history_rows_joined(records: &[falcon_core::history::Record], offset_min:
 }
 
 /// [`history_rows_joined`] 挂上产品路径的那一臂：[`history_open_in`] 的分岔开出去 ⇒
-/// [`falcon_core::history::History::newest`] 取最新 `limit` 行 ⇒ join。
+/// [`falcon_core::history::History::newest`] 取最新 `limit` 行（筛开着时是
+/// [`falcon_core::history::History::cancelled_page`]）⇒ join。
 /// **P98 起本函数是 `newest` 的第一位非 test 调用点**（P95 普查点名的那 11 枚 still-zero
 /// 里的一枚，§10 第 98 项）。
 ///
@@ -1490,17 +1729,84 @@ pub fn history_rows_joined(records: &[falcon_core::history::Record], offset_min:
 /// 都说成空，等于让一枚坏掉的 `history.db` 读成一次正常清空。行数的**次序**也不在这里重定：
 /// `newest` 自己按 `(captured_at, id)` 倒序，join 不排序、不去重，所以界面看到的就是库里
 /// 排出来的那一份。
+///
+/// `cancelled_only` 是 PRD §5.14.3 步 3「找到标记为“已取消”的记录」里**筛**那一半，它落到
+/// 的是**查询**（core `History::cancelled_page`，多一枚 `WHERE cancelled = 1`）而不是读完之后
+/// 自己截掉：事后筛的那一页永远不知道「这一页短是因为到底了，还是因为中间那些没取消的行被
+/// 我扔了」，屏上那句「清单到底了」就会说反话（§7.1 分页那一支的判据，见
+/// [`crate::mask::MaskState::list_history`] 头上那三句答法）。空清单在这一读里还是**两种**
+/// 不同的事：不筛时是「库里没有行」，筛过时是「库里没有已取消的行」——那一句由
+/// [`crate::mask::MaskState`] 分开说，不在这里合并。
 pub fn history_rows_at(
     dir: &std::path::Path,
     cfg: &falcon_core::config::History,
     limit: usize,
     offset_min: i32,
+    cancelled_only: bool,
 ) -> Result<String, String> {
     match history_open_in(dir, cfg) {
-        Ok(Some(store)) => store
-            .newest(limit)
-            .map(|records| history_rows_joined(&records, offset_min))
-            .map_err(|e| format!("{} 里那些行读不回（{e}）", dir.display())),
+        Ok(Some(store)) => {
+            let rows = if cancelled_only {
+                store.cancelled_page(None, limit)
+            } else {
+                store.newest(limit)
+            };
+            rows.map(|records| history_rows_joined(&records, offset_min))
+                .map_err(|e| format!("{} 里那些行读不回（{e}）", dir.display()))
+        }
+        Ok(None) => Err(format!(
+            "{} 里的历史没开（`[history] enabled` 是关的）",
+            dir.display()
+        )),
+        Err(e) => Err(format!("打不开 {} 里的 history.db（{e}）", dir.display())),
+    }
+}
+
+/// §7.1「历史记录加载应支持分页或虚拟列表」里**更旧那一页**的分岔本体：先按游标行号把那一行
+/// 问回来，再按 `(captured_at, id)` 取比它更旧的 `limit` 行 ——
+/// [`falcon_core::history::History::older_than`] 自此有了产品读者（此前它的调用点只有单测）。
+///
+/// 游标用的是**行号**而不是整行：界面那一头手里只有清单最后一行第一段那枚裸数字
+/// （[`history_rows_joined`] 头顶钉下的口径），而 core 那一枚要的是一对 `(captured_at, id)`。
+/// 「行号 → 那一行」这一步就住在本函数里，只此一份（#281）—— 页上不许替它猜一个时间戳，
+/// `newest` 那一头也不许第二次把两列排出来。
+///
+/// 三种答法各说各的话（#453）：库里再没有更旧的行 ⇒ `Ok(空串)`，那是「读到底了」；游标那一枚
+/// 已经不在库里 ⇒ `Err` 点它的名 —— 把「你手里最后一行刚被删掉」说成「到底了」，用户读到的
+/// 就是一句反话；没开 / 打不开 / 那些行读不回 ⇒ 与 [`history_rows_at`] 同一句拒绝。
+///
+/// 「到底了」那一臂在筛开着时说的是**这张筛过的清单**到底了（库里再没有更旧的已取消行），
+/// 而不是库里再没有行 —— 说这句话的 [`crate::mask::MaskState::list_history_older`] 手里有
+/// `cancelled_only` 这一枚，它因此能分开那句中文（#453）。游标那一枚行号**不**跟着筛走：
+/// `store.get(cursor)` 问的是屏上最后一行那一枚行号，那一行本来就是筛过之后留下来的，
+/// 按 `cancelled` 再筛一次就把「这一行还在不在库里」问成了「这一行算不算数」。
+pub fn history_rows_older_at(
+    dir: &std::path::Path,
+    cfg: &falcon_core::config::History,
+    cursor: i64,
+    limit: usize,
+    offset_min: i32,
+    cancelled_only: bool,
+) -> Result<String, String> {
+    match history_open_in(dir, cfg) {
+        Ok(Some(store)) => {
+            let was = store
+                .get(cursor)
+                .map_err(|e| format!("{} 里那一行读不回（{e}）", dir.display()))?;
+            let Some(was) = was else {
+                return Err(format!(
+                    "{} 里没有第 {cursor} 行（它已被删除或清理，清单上那一行是旧的）",
+                    dir.display()
+                ));
+            };
+            let rows = if cancelled_only {
+                store.cancelled_page(Some(&was), limit)
+            } else {
+                store.older_than(&was, limit)
+            };
+            rows.map(|records| history_rows_joined(&records, offset_min))
+                .map_err(|e| format!("{} 里那些行读不回（{e}）", dir.display()))
+        }
         Ok(None) => Err(format!(
             "{} 里的历史没开（`[history] enabled` 是关的）",
             dir.display()
@@ -1527,6 +1833,29 @@ pub fn history_usage_line(
     format!(
         "history records={} original={}B thumb={}B db={}B total={}B",
         records, original_bytes, thumb_bytes, db_bytes, total
+    )
+}
+
+/// §8.7「提示用户清理历史或调整存储上限」那一句话本体：占用与上限进、一句中文出。纯函数，
+/// 与 [`history_usage_line`] 同一族。
+///
+/// **判「顶到没顶到」不在这里**：那一问读的是与自动清理同一份上限语义（`0` = 这一枚没设），
+/// 所以它住在 core 的 `falcon_core::history::Retention::at_cap` 里，本函数只把已经判出来的那一趟
+/// 的数字说出来（#281）。这里也**不做单位换算**：`B` 与上面那行 §6.2 的占用同一枚单位，把字节
+/// 除以 1048576 去凑档上那枚 `max_size_mb` 就是给同一道算术第二个作者，四舍五入还会替用户编出
+/// 「0 MB 已到上限」那种话。
+///
+/// `max_items` 为 `0` 时说得出「此刻 N 条」而说不出条数上限——那一枚上限压根没设，此时顶到的
+/// 是字节那一枚。两形都得说人话，不许退成一句「已到上限」了事。
+pub fn history_pressure_line(records: u64, max_items: usize) -> String {
+    let counted = if max_items > 0 {
+        format!("此刻 {records} 条、上限 {max_items} 条")
+    } else {
+        format!("此刻 {records} 条（条数没设上限，顶到的是字节那一枚）")
+    };
+    format!(
+        "历史已到存储上限（{counted}，占用见上一行）：要么在「首选项 > 历史记录」把上限调大，\
+         要么删掉不要的那几行——自动清理只动未锁定的最旧记录，锁着的行不会被动。"
     )
 }
 
@@ -2028,7 +2357,27 @@ pub fn palette_export(path: &Path) -> Result<String, String> {
     ))
 }
 
-/// §5.7.22 步骤 5:读一份调色板档、报出会盖掉本机哪一排色;只有 `confirm` 才真写。
+/// 没有 confirm 时补的那一句，命令行那一副：它的门是 `--confirm`，所以只能说 `--confirm`。
+pub const PALETTE_UNAPPLIED_CLI: &str = "[palette] 未应用：加 --confirm 才会写入（§5.7.22 步骤 5）";
+/// 同一件事的页面那一副：设置页上没有 `--confirm` 可加，它有的是一枚「确认应用」钮。说一句
+/// 「加 --confirm」的页是在教人敲命令行。
+pub const PALETTE_UNAPPLIED_PAGE: &str =
+    "[palette] 未应用：按「确认应用」才会写入（§5.7.22 步骤 5）";
+
+/// §5.7.22 步骤 5：命令行那一副。
+pub fn palette_import(path: &Path, confirm: bool) -> Result<String, String> {
+    palette_import_at(path, confirm, PALETTE_UNAPPLIED_CLI)
+}
+
+/// §5.7.22 步骤 5：设置页那一副。与上面**同一只手**，只有「没写」那一句的措辞按门换 ——
+/// 页与命令行之间因此不存在两套落盘码。
+pub fn palette_import_page(path: &Path, confirm: bool) -> Result<String, String> {
+    palette_import_at(path, confirm, PALETTE_UNAPPLIED_PAGE)
+}
+
+/// §5.7.22 步骤 5 的两扇门共用的一只手：读一份调色板档、报出会盖掉本机哪一排色;只有 `confirm`
+/// 才真写。`unapplied` 是没写那一句按门换的措辞（[`PALETTE_UNAPPLIED_CLI`] /
+/// [`PALETTE_UNAPPLIED_PAGE`]）。
 ///
 /// 两件事这一手必须拦住:
 ///
@@ -2037,7 +2386,7 @@ pub fn palette_export(path: &Path) -> Result<String, String> {
 ///    「这档写了十枚出厂色」在落盘之后完全同一副样子。空档在这里当 Err 退回,本机一枚不动。
 /// 2. **写失败不许报成功**。[`Settings::save`] 把失败记进 `problems` 而自己只返回耗时,所以
 ///    这一手看的是 save 前后 `problems` 长没长 —— 与 [`config_import`] 同一条 §5.17 的规矩。
-pub fn palette_import(path: &Path, confirm: bool) -> Result<String, String> {
+fn palette_import_at(path: &Path, confirm: bool, unapplied: &str) -> Result<String, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let read = palette_read_text(&text);
     // 这一手排在读本机之前:拦下一份空档不需要知道本机有什么,而**退了这一趟就一定一枚没写**。
@@ -2053,7 +2402,7 @@ pub fn palette_import(path: &Path, confirm: bool) -> Result<String, String> {
     let current = with(|s| s.config.annotation.palette.clone());
     let mut out = render_palette_preview(path, &read, &current);
     if !confirm {
-        out.push_str("[palette] 未应用：加 --confirm 才会写入（§5.7.22 步骤 5）\n");
+        out.push_str(&format!("{unapplied}\n"));
         return Ok(out);
     }
     let kept = read.palette.colors.len();
@@ -3192,7 +3541,7 @@ mod tests {
         let one = vec![rec(7, "主屏", false, false)];
         assert_eq!(
             history_rows_joined(&one, -480),
-            "7 · 2023-11-14 14:13 · 64×32 · 主屏 · region",
+            "7 · 2023-11-14 14:13 · 位置 10,20 · 64×32 · 主屏 · region",
             "一条 ⇒ 无 `|`；行号在第一段，字段以 ` · ` 分节"
         );
 
@@ -3253,7 +3602,7 @@ mod tests {
         // ① NULL：这一行从没识别过 ⇒ 与本轮之前一字不差。
         assert_eq!(
             one(rec(None)),
-            "7 · 2023-11-14 14:13 · 64×32 · 主屏 · region",
+            "7 · 2023-11-14 14:13 · 位置 10,20 · 64×32 · 主屏 · region",
             "没识别过的那一行多了话"
         );
 
@@ -3317,7 +3666,7 @@ mod tests {
             .unwrap();
         drop(store);
 
-        let joined = history_rows_at(&dir, &cfg, 50, -480).expect("开着就该读得回");
+        let joined = history_rows_at(&dir, &cfg, 50, -480, false).expect("开着就该读得回");
         let rows: Vec<&str> = joined.split('|').collect();
         assert_eq!(rows.len(), 2, "两行 ⇒ 两段：{joined}");
         assert!(
@@ -3343,7 +3692,7 @@ mod tests {
         );
 
         // `limit` 真到了 SQL：只要一行时读回的就是倒序的那一枚，而不是两枚再截。
-        let one = history_rows_at(&dir, &cfg, 1, -480).expect("limit 1 也该读得回");
+        let one = history_rows_at(&dir, &cfg, 1, -480, false).expect("limit 1 也该读得回");
         assert_eq!(one.split('|').count(), 1, "limit 1 ⇒ 一段");
         assert!(
             one.starts_with(&format!("{newer} · ")),
@@ -3353,7 +3702,7 @@ mod tests {
         // 开着而库里没有行 = 一次正常的空，不是错。
         let empty = sandbox("history-listing-empty");
         assert_eq!(
-            history_rows_at(&empty, &cfg, 50, -480).as_deref(),
+            history_rows_at(&empty, &cfg, 50, -480, false).as_deref(),
             Ok(""),
             "空库 ⇒ Ok(空串)"
         );
@@ -3363,8 +3712,385 @@ mod tests {
             enabled: false,
             ..cfg.clone()
         };
-        let said = history_rows_at(&dir, &off, 50, -480).unwrap_err();
+        let said = history_rows_at(&dir, &off, 50, -480, false).unwrap_err();
         assert!(said.contains("没开"), "关着的答法要点名开关：{said}");
+    }
+
+    /// §7.1「历史记录加载应支持分页或虚拟列表」里分页那一支的本体：[`history_rows_older_at`]
+    /// 的三种答法分开，而游标用的是 `(captured_at, id)` **那一对**而不是单看时间。
+    ///
+    /// 前两枚种的是同一个 `at_ms`：拿时间当游标的人会在这一格红 —— 同一毫秒的两行之间，
+    /// `< ?` 谁也不满足谁，于是第 2 行读不回第 1 行，屏上那条清单停在第 2 行就说「到底了」。
+    /// 那是把一句反话显示给用户，所以这一格钉的是**次序**，不是"有没有读回一行"。
+    #[test]
+    fn the_older_page_walks_the_cursor_pair_not_the_clock() {
+        let dir = sandbox("history-paging");
+        fn meta<'a>(at_ms: i64, monitor: &'a str) -> falcon_core::history::CaptureMeta<'a> {
+            falcon_core::history::CaptureMeta {
+                at_ms,
+                offset_min: -480,
+                monitor_id: monitor,
+                rect: falcon_core::PhysRect::new(0, 0, 4, 4),
+                source: falcon_core::history::Source::Region,
+                cancelled: false,
+            }
+        }
+        let cfg = falcon_core::config::History {
+            enabled: true,
+            keep_originals: false,
+            thumb_px: 0,
+            ..Default::default()
+        };
+        let frame = falcon_core::frame::Frame::filled(4, 4, [0, 0, 0, 255]).unwrap();
+        let mut store = falcon_core::history::History::open(&dir).unwrap();
+        // 同一毫秒的两行（甲、乙）+ 晚一小时的第三行（丙）。清单倒序是 丙 · 乙 · 甲。
+        let jia = store
+            .record(&meta(1_700_000_000_000, "甲"), &frame, &cfg)
+            .unwrap();
+        let yi = store
+            .record(&meta(1_700_000_000_000, "乙"), &frame, &cfg)
+            .unwrap();
+        let bing = store
+            .record(&meta(1_700_003_600_000, "丙"), &frame, &cfg)
+            .unwrap();
+        assert!(jia < yi, "行号是自增的，这一格的对照指着它");
+        drop(store);
+
+        // 丙 那一页往旧：只读一行的话，读回的必须是**同一毫秒里行号较小的那一枚**（乙）。
+        let one =
+            history_rows_older_at(&dir, &cfg, bing, 1, -480, false).expect("更旧的那一页该读得回");
+        assert_eq!(one.split('|').count(), 1, "limit 1 ⇒ 一段：{one}");
+        assert!(
+            one.starts_with(&format!("{yi} · ")) && one.contains("乙"),
+            "游标是 `(captured_at, id)` 那一对：{one}"
+        );
+
+        // 再走一步：乙 往旧一枚就是甲 —— 毫秒相同也照样分得出先后，这一格量的就是那把刀。
+        let next = history_rows_older_at(&dir, &cfg, yi, 1, -480, false).expect("第二页也该读得回");
+        assert!(
+            next.starts_with(&format!("{jia} · ")) && next.contains("甲"),
+            "同一毫秒的更旧那一枚没被当成\"到底了\"：{next}"
+        );
+
+        // 甲 已是最后一行：Ok(空串) = 读到底了，不是错。
+        assert_eq!(
+            history_rows_older_at(&dir, &cfg, jia, 50, -480, false).as_deref(),
+            Ok(""),
+            "手里已是最后一行 ⇒ 一次正常的空"
+        );
+
+        // 游标那一枚已经不在了 ⇒ Err 点它的名。把「你手里那一行刚被删掉」说成「到底了」
+        // 是一句反话（#453），屏上那一行确实还是旧的。
+        let gone = history_rows_older_at(&dir, &cfg, 987_654, 50, -480, false).unwrap_err();
+        assert!(
+            gone.contains("987654") && gone.contains("没有第"),
+            "游标不在库里的那句答复要点名它：{gone}"
+        );
+
+        // 开关关着：与 [`history_rows_at`] 同一句拒绝，本函数不另编一种"没开"。
+        let off = falcon_core::config::History {
+            enabled: false,
+            ..cfg.clone()
+        };
+        let said = history_rows_older_at(&dir, &off, bing, 50, -480, false).unwrap_err();
+        assert!(said.contains("没开"), "关着的答法要点名开关：{said}");
+    }
+
+    /// §5.14.1 规则第三句「历史记录应包含时间、屏幕、**位置**、尺寸和截图内容」里那一枚**位置**：
+    /// 这一格钉的不是"行上有没有两个数"，而是**那两个数是 `rec.rect` 的 x 与 y**——尺寸那一节
+    /// （`64×32`）本轮之前就在，把行换成 `10,20 · 64×32` 之后，只有位置写得对、写得是那一节的位置
+    /// 才过得了这一格（#281：`history_rows_joined` 是行文的唯一作者，别处不该有第二把对照）。
+    ///
+    /// 三臂各挡一种偷懒：① 负坐标夹成 0（扩展桌面里左边那块屏的原点本就是负的，抄成 0 是把
+    /// 「在左边那块屏的最左边」说成「在主屏的左上角」）；② `0,0` 那一行**不许**因为两个数都是 0
+    /// 就少写一节 —— 少写就是 #433 那句静默；③ 同一枚尺寸、不同的 x/y，两行的位置节必须不同。
+    #[test]
+    fn the_history_list_names_where_the_selection_was() {
+        fn rec(id: i64, x: i32, y: i32) -> falcon_core::history::Record {
+            falcon_core::history::Record {
+                id,
+                captured_at: 1_700_000_000_000,
+                monitor_id: "主屏".to_string(),
+                rect: falcon_core::PhysRect::new(x, y, 64, 32),
+                source: falcon_core::history::Source::Region,
+                path: None,
+                thumb: None,
+                cancelled: false,
+                locked: false,
+                ocr_text: None,
+                note: String::new(),
+            }
+        }
+        let one = |r: falcon_core::history::Record| history_rows_joined(&[r], -480);
+
+        assert_eq!(
+            one(rec(7, 10, 20)),
+            "7 · 2023-11-14 14:13 · 位置 10,20 · 64×32 · 主屏 · region",
+            "位置那一节写在哪一节之后、以什么字形写，都由这一格钉死"
+        );
+
+        let left = one(rec(8, -1920, 0));
+        assert!(
+            left.contains(" · 位置 -1920,0 · "),
+            "负坐标被夹成了 0，屏上那行就把另一块屏说成了主屏：{left}"
+        );
+
+        let origin = one(rec(9, 0, 0));
+        assert!(
+            origin.contains(" · 位置 0,0 · "),
+            "选区从原点开始时不许少写一节（#433）：{origin}"
+        );
+
+        let pair = history_rows_joined(&[rec(10, 1, 2), rec(11, 3, 4)], -480);
+        let rows: Vec<&str> = pair.split('|').collect();
+        assert_eq!(rows.len(), 2, "两条 ⇒ 恰好一个 `|`");
+        assert!(
+            rows[0].contains("位置 1,2") && rows[1].contains("位置 3,4"),
+            "那两个数不是从尺寸或屏名推出来的：{rows:?}"
+        );
+    }
+
+    /// 清单里**行身份**的唯一读法：一行是 `id · 时间 · 位置 x,y · 宽×高 · 屏幕 · 来源[ · 字样]`，
+    /// 所以那一枚行号是第一个 ` · ` 之前的整段。
+    ///
+    /// 不用 `page.contains(&format!("{id} · "))` 问「这一行在不在」：那一串里的分隔符是复用字面，
+    /// `17:13 · 位置` 里躺着「3 · 」、`4×4 · 主屏` 里躺着「4 · 」—— 数字小的行号会被别人的时间或
+    /// 尺寸命中，一次**对的**筛选因此被报成漏了行（本档第一版就是这么红的）。空串是一串没有行，
+    /// 它 split 出来的一段 `""` 不算一行。
+    fn row_ids(page: &str) -> Vec<String> {
+        page.split('|')
+            .filter(|l| !l.is_empty())
+            .map(|l| l.split(" · ").next().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// §5.14.3 第 3 步「找到标记为“已取消”的记录」里**筛**那一半在产品这一读上的三臂：筛上而有
+    /// 那些行 / 筛上而一行也没有 / 没筛。
+    ///
+    /// 关键是**没有一臂是"读全量再在 Rust 里挑"**：筛住在 SQL 里（
+    /// [`falcon_core::history::History::cancelled_page`] 那一记 `WHERE cancelled = 1`），于是
+    /// 「这一页少于页宽」从此真的等于「问到底了」。读完再挑的那一版会有一页筛得空、而库里还有
+    /// 更旧的已取消行 —— 那句「清单到底了」就成了猜，页上要么停在半路，要么一轮一轮问空页（#453）。
+    ///
+    /// 第二臂那句 `Ok("")` 与「库里根本没有行」是同一串空、**两句不同的话**：分辨它的是
+    /// [`crate::mask::MaskState::list_history`]（那儿才有 `cancelled_only` 这枚语境），这一格只管
+    /// 交回的东西对不对。
+    #[test]
+    fn the_cancelled_filter_has_rows_has_none_and_is_off_by_default() {
+        let dir = sandbox("history-filter");
+        let empty = sandbox("history-filter-none-cancelled");
+        fn meta<'a>(at_ms: i64, cancelled: bool) -> falcon_core::history::CaptureMeta<'a> {
+            falcon_core::history::CaptureMeta {
+                at_ms,
+                offset_min: -480,
+                monitor_id: "主屏",
+                rect: falcon_core::PhysRect::new(0, 0, 4, 4),
+                source: falcon_core::history::Source::Region,
+                cancelled,
+            }
+        }
+        let cfg = falcon_core::config::History {
+            enabled: true,
+            keep_originals: false,
+            thumb_px: 0,
+            ..Default::default()
+        };
+        let frame = falcon_core::frame::Frame::filled(4, 4, [0, 0, 0, 255]).unwrap();
+
+        // 四行：两行按 Esc 取消过（乙、丁），两行没有（甲、丙）。行号随插入自增，甲<乙<丙<丁。
+        let mut store = falcon_core::history::History::open(&dir).unwrap();
+        let jia = store
+            .record(&meta(1_700_000_000_000, false), &frame, &cfg)
+            .unwrap();
+        let yi = store
+            .record(&meta(1_700_003_600_000, true), &frame, &cfg)
+            .unwrap();
+        let bing = store
+            .record(&meta(1_700_007_200_000, false), &frame, &cfg)
+            .unwrap();
+        let ding = store
+            .record(&meta(1_700_010_800_000, true), &frame, &cfg)
+            .unwrap();
+        drop(store);
+
+        // ① 筛上而有那些行：只有两行，而且行末都带着那个字样；没取消过的两枚一个字也不提。
+        let filtered = history_rows_at(&dir, &cfg, 50, -480, true).expect("筛这一问该读得回");
+        let rows: Vec<&str> = filtered.split('|').collect();
+        assert_eq!(rows.len(), 2, "筛上 ⇒ 只回那两行：{filtered}");
+        // 行身份按**整段**比，不按 `contains("{id} · ")`：那一串里「3 · 」本来就躺在
+        // `17:13 · 位置` 的边界上、「4 · 」躺在 `4×4 · 主屏` 上，拿子串问「这一行没进来」
+        // 会把一次正确的筛选读成漏了。
+        assert_eq!(
+            row_ids(&filtered),
+            vec![ding.to_string(), yi.to_string()],
+            "筛过的清单应是倒序的那两行，别的一行也不许在：{filtered}"
+        );
+        for r in &rows {
+            assert!(r.ends_with(" · 已取消"), "筛进来的那行没带字样：{r}");
+        }
+
+        // ② 没筛：四行全在，其中两行带字样。这一臂挡住"筛写在了 join 之后"——那样全量那一问
+        // 也会只剩两行，而用户没说要看筛过的。
+        let all = history_rows_at(&dir, &cfg, 50, -480, false).expect("全量那一问该读得回");
+        let all_rows: Vec<&str> = all.split('|').collect();
+        assert_eq!(all_rows.len(), 4, "没筛 ⇒ 四行：{all}");
+        assert_eq!(
+            row_ids(&all),
+            vec![
+                ding.to_string(),
+                bing.to_string(),
+                yi.to_string(),
+                jia.to_string()
+            ],
+            "全量那一问应是四行倒序，一位也不许缺：{all}"
+        );
+        assert!(
+            all_rows.iter().filter(|l| l.ends_with(" · 已取消")).count() == 2,
+            "全量里那两行的字样数不对：{all:?}"
+        );
+
+        // ③ 筛上而一行也没有：库里三行都没取消过 ⇒ `Ok("")`，不是 `Err`。把一次正常的空答成
+        // "打不开 / 没开"就是无病呻吟（#453）。
+        let mut bare = falcon_core::history::History::open(&empty).unwrap();
+        for i in 0..3 {
+            bare.record(&meta(1_700_000_000_000 + i * 1000, false), &frame, &cfg)
+                .unwrap();
+        }
+        drop(bare);
+        assert_eq!(
+            history_rows_at(&empty, &cfg, 50, -480, true).as_deref(),
+            Ok(""),
+            "没有已取消的行 ⇒ 一次正常的空"
+        );
+        assert_eq!(
+            history_rows_at(&empty, &cfg, 50, -480, false).as_deref().map(|s| s.split('|').count()),
+            Ok(3),
+            "同一座库没筛时是三行：这一对照挡住「筛被写死成了 1」"
+        );
+    }
+
+    /// 同一枚筛**翻页**那一臂：拿已取消那一页的最后一行当游标继续问，读回的必须是更旧的已取消行；
+    /// 问到底时交回 `Ok("")` —— 那是**筛过的**清单到底了，不是"库里再没有更旧的行"。
+    ///
+    /// 中间那一档（`limit 2` 而只回一行）是本格的全部理由：筛住在 SQL 里时，短页就等于到底；
+    /// 若是读完再筛，短页既可能是到底也可能只是这一页没赶上，而页上那句「到底了」只能二选一，
+    /// 选错就说成反话。游标那一枚仍走 [`falcon_core::history::History::get`] 的**不筛**那一问：
+    /// 它问的是「那一行还在库里吗」，拿 `cancelled` 去问它就把一句拒绝改写成另一种。
+    #[test]
+    fn the_older_page_stays_filtered_and_says_when_it_runs_out() {
+        let dir = sandbox("history-filter-paging");
+        fn meta<'a>(at_ms: i64, cancelled: bool) -> falcon_core::history::CaptureMeta<'a> {
+            falcon_core::history::CaptureMeta {
+                at_ms,
+                offset_min: -480,
+                monitor_id: "主屏",
+                rect: falcon_core::PhysRect::new(0, 0, 4, 4),
+                source: falcon_core::history::Source::Region,
+                cancelled,
+            }
+        }
+        let cfg = falcon_core::config::History {
+            enabled: true,
+            keep_originals: false,
+            thumb_px: 0,
+            ..Default::default()
+        };
+        let frame = falcon_core::frame::Frame::filled(4, 4, [0, 0, 0, 255]).unwrap();
+        // 五行按时间递增、取消与否交替：筛过的清单是 戊 · 丙 · 甲，全量是 戊丁丙乙甲。
+        let mut store = falcon_core::history::History::open(&dir).unwrap();
+        for i in 0..5 {
+            store
+                .record(
+                    &meta(1_700_000_000_000 + i * 1000, i % 2 == 0),
+                    &frame,
+                    &cfg,
+                )
+                .unwrap();
+        }
+        let ids: Vec<i64> = store
+            .newest(50)
+            .unwrap()
+            .into_iter()
+            .map(|r| r.id)
+            .rev()
+            .collect();
+        drop(store);
+        let (jia, yi, bing, ding, wu) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+
+        // 第一页（页宽 2、筛上）：戊、丙 —— 页上此刻的最后一行是丙，下一页的游标就是它。
+        let first = history_rows_at(&dir, &cfg, 2, -480, true).expect("筛上的第一页该读得回");
+        let rows: Vec<&str> = first.split('|').collect();
+        assert_eq!(rows.len(), 2, "筛上的第一页该有两行：{first}");
+        assert!(
+            rows[0].starts_with(&format!("{wu} · ")) && rows[1].starts_with(&format!("{bing} · ")),
+            "筛过的那一页里混进了没取消的行，或是次序反了：{rows:?}"
+        );
+
+        // 同一枚游标（戊）不筛那一问回的是 丁、丙 —— 两问不一样，这一格才量得出筛住在查询里。
+        let unfiltered = history_rows_older_at(&dir, &cfg, wu, 2, -480, false).expect("全量那一页");
+        let urows: Vec<&str> = unfiltered.split('|').collect();
+        assert!(
+            urows[0].starts_with(&format!("{ding} · "))
+                && urows[1].starts_with(&format!("{bing} · ")),
+            "没筛的那一问被筛污染了：{urows:?}"
+        );
+        let same_cursor =
+            history_rows_older_at(&dir, &cfg, wu, 2, -480, true).expect("筛过的那一页");
+        assert_eq!(
+            same_cursor.split('|').count(),
+            2,
+            "同一枚游标筛上时也该有两行（丙、甲）：{same_cursor}"
+        );
+
+        // 游标那一行自己**不复查** `cancelled`：丁 没被取消过，而它是"从哪儿继续找"的坐标，
+        // 不是候选。拿筛条件去问它，这一问就成了 `Err`「没有第 丁 行」。
+        let odd_cursor = history_rows_older_at(&dir, &cfg, ding, 2, -480, true)
+            .expect("没取消过的那一枚当游标，也只是一个坐标");
+        let orows: Vec<&str> = odd_cursor.split('|').collect();
+        assert!(
+            orows[0].starts_with(&format!("{bing} · "))
+                && orows[1].starts_with(&format!("{jia} · ")),
+            "游标那一行被复查了：{orows:?}"
+        );
+        // 没取消过的那两枚（乙、丁）在筛过的**任何**一页里一个字也不提 —— 丁 出现过的位置只有
+        // 游标那枚坐标，不是清单上的一行。行身份按整段比（见 [`row_ids`] 头上那段）。
+        for page in [&first, &same_cursor, &odd_cursor] {
+            let leaked: Vec<String> = row_ids(page)
+                .into_iter()
+                .filter(|id| *id == yi.to_string() || *id == ding.to_string())
+                .collect();
+            assert!(leaked.is_empty(), "未取消的行被递进了筛过的那一问：{page}");
+        }
+
+        // 页上那一页的最后一行（丙）当游标：更旧的已取消行只剩甲 ⇒ **短页**，而它不是"没赶上"。
+        let tail = history_rows_older_at(&dir, &cfg, bing, 2, -480, true).expect("更旧的那一页");
+        let tail_rows: Vec<&str> = tail.split('|').collect();
+        assert_eq!(tail_rows.len(), 1, "筛过的清单只剩一行：{tail}");
+        assert!(
+            tail_rows[0].starts_with(&format!("{jia} · ")) && tail_rows[0].ends_with(" · 已取消"),
+            "短页里那一行不是最旧的那一枚已取消行：{tail_rows:?}"
+        );
+
+        // 再走一步：筛过的清单到底 ⇒ `Ok("")`，页上就此不再问（`tailed`）。同一枚游标不筛时
+        // 也到底 —— 两问在这一档相等，差异全在前面那一页，这一格因此量的不是"空不空"，而是
+        // **短页与到底之间没有第三种答**。
+        assert_eq!(
+            history_rows_older_at(&dir, &cfg, jia, 2, -480, true).as_deref(),
+            Ok(""),
+            "筛过的清单到底 ⇒ 一次正常的空"
+        );
+        assert_eq!(
+            history_rows_older_at(&dir, &cfg, jia, 2, -480, false).as_deref(),
+            Ok(""),
+            "同一枚游标不筛时也该到底（甲是最旧的一行）"
+        );
+
+        // 游标那一枚根本不在库里 ⇒ 与不筛那一问同一句拒绝，本函数不另编一种"没有"。
+        let gone = history_rows_older_at(&dir, &cfg, 987_654, 2, -480, true).unwrap_err();
+        assert!(
+            gone.contains("987654") && gone.contains("没有第"),
+            "筛上的那一问点不齐游标时仍要点它的名：{gone}"
+        );
     }
 
     /// P110：[`history_usage_line`] 的分岔本体是纯函数 ⇒ 独立 cargo 单测证人
@@ -3380,6 +4106,29 @@ mod tests {
         assert!(l.contains("thumb=40B"), "{l}");
         assert!(l.contains("db=60B"), "{l}");
         assert!(l.contains("total=1100B"), "{l}");
+    }
+
+    /// §8.7「提示用户清理历史或调整存储上限」那一句话**本体**。这一格只问「说了什么」——
+    /// 「顶到没顶到」那一判在 core 的 `Retention::at_cap`（`0` = 那一枚上限没设，两边同一枚读法），
+    /// 这里第二次判就成了同一件事实的两个作者（#281）。
+    #[test]
+    fn the_pressure_line_offers_both_exits_and_spares_locked_rows() {
+        let said = history_pressure_line(120, 100);
+        // PRD 那一句给的是两条路（清理 / 调上限），一句「已到上限」把两条路都省了就是没说；
+        // §8.7 第二、三条（先清未锁定的最旧、不静默删锁着的）也在同一句里，页上不许再补一句。
+        for want in ["清理", "调大", "上限", "未锁定", "最旧"] {
+            assert!(said.contains(want), "那一句少了「{want}」：{said}");
+        }
+        assert!(said.contains("此刻 120 条、上限 100 条"), "{said}");
+        // 条数那一枚没设上限时不许说「上限 0 条」——设 `0` 的意思就是不设，那样一句话是反的；
+        // 此时顶到的只能是字节，而那两枚数本函数拿不到，所以指上面那一行 §6.2 的占用。
+        let bytes_only = history_pressure_line(45, 0);
+        assert!(!bytes_only.contains("上限 0 条"), "{bytes_only}");
+        assert!(bytes_only.contains("顶到的是字节那一枚"), "{bytes_only}");
+        assert!(bytes_only.contains("此刻 45 条"), "{bytes_only}");
+        // 单位换算一处也不做：把字节除以 1048576 去凑档上那枚 `max_size_mb` 就是给同一道算术
+        // 第二个作者，四舍五入还会替用户编出「0 MB 已到上限」那种话。
+        assert!(!said.contains("MB"), "{said}");
     }
 
     /// P110：`records=0 / 三枚字节 0 / 合计 0` ⇒ 一行照印，不返回空串、不 `unwrap`、
@@ -3867,6 +4616,297 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// P149：§5.19.2 的主题色走到界面那一侧的分岔本体，四臂逐一点名：`face` 两臂（浅底/深底）×
+    /// 「够 3:1 就原样」与「不够就往那一面夹」两臂。**夹的算术本体在 core `accent_on`**（那边
+    /// 有 hue/方向那格），这里判的是**界面这一侧的接线**：底选错了臂，浅底上的暗夹会把已经看得见
+    /// 的色往更暗里推、深底反之 —— 两臂都写对才画得出「同一枚主题色在两套餐具上都能看见」。
+    #[test]
+    fn accent_face_arms_the_surface_by_the_theme_and_keeps_a_visible_color() {
+        use falcon_core::config::{Appearance, ACCENT_MIN_CONTRAST};
+
+        let mut a = Appearance::default();
+        // 出厂那一枚在两面底上本来就够：够 ⇒ **原样**，界面不许自作主张地改颜色。
+        a.accent = "#0078D7".into();
+        assert_eq!(accent_face(&a, "light"), "#0078D7");
+        assert_eq!(accent_face(&a, "dark"), "#0078D7");
+        // 第三词不是第三臂：除 `"dark"` 一律走浅色那一面（与 `theme_face` 只有两词同一口径）。
+        assert_eq!(accent_face(&a, ""), accent_face(&a, "light"));
+        assert_eq!(accent_face(&a, "LIGHT"), accent_face(&a, "light"));
+
+        // 不够的那枚（浅灰）在浅底上必须被夹成看得见的，且**夹出来的东西**过 3:1 那条线。
+        a.accent = "#DADCE0".into();
+        let sunk = accent_face(&a, "light");
+        assert_ne!(sunk, "#DADCE0", "浅底上不够的主题色没被夹");
+        let ratio = falcon_core::config::contrast_ratio(&sunk, falcon_core::config::SURFACE_LIGHT);
+        assert!(
+            ratio.is_some_and(|c| c >= ACCENT_MIN_CONTRAST),
+            "夹完仍然不够 3:1：{sunk} -> {ratio:?}"
+        );
+        let lifted = accent_face(&a, "dark");
+        assert!(
+            falcon_core::config::contrast_ratio(&lifted, falcon_core::config::SURFACE_DARK)
+                .is_some_and(|c| c >= ACCENT_MIN_CONTRAST),
+            "深底上这一枚不够 3:1：{lifted}"
+        );
+
+        // 读不出来的字面**不许把空串递给界面**（那一枚画出来是「没有主题色」，PRD 说的不是这个）。
+        a.accent = "not-a-color".into();
+        let fallback = accent_face(&a, "light");
+        assert!(!fallback.is_empty(), "非法主题色递给了界面一个空串");
+        assert!(
+            falcon_core::config::contrast_ratio(&fallback, falcon_core::config::SURFACE_LIGHT)
+                .is_some_and(|c| c >= ACCENT_MIN_CONTRAST),
+            "非法主题色的归宿这一枚在浅底上看不见：{fallback}"
+        );
+    }
+
+    /// P149：§5.19.4 那两枚字（族 + 磅）与落点那一枚词的读者本体。这一格的对面不是「算错了」，
+    /// 而是「递给界面的那一枚**不是档里的那一枚**」：磅不许换算成像素再递（QML 绑 `font.pointSize`，
+    /// 乘两遍就是高分屏上大一号的那一种坏），族不许空（空串会把系统字体挤进来），落点不许是
+    /// 名单外的字（闭集在 core 的 `set_str` / `validate`，这里只验「递给界面的那一枚仍在名单里」）。
+    #[test]
+    fn the_ui_font_pair_and_the_placement_word_reach_the_page_as_the_file_has_them() {
+        use falcon_core::config::{Appearance, TOOLBAR_PLACEMENTS, UI_FONT_FAMILY_DEFAULT};
+
+        let mut a = Appearance::default();
+        let (points, family) = ui_font_face(&a);
+        assert_eq!(points, a.ui_font_size as i32, "磅被换过一手才递给界面");
+        assert_eq!(family, UI_FONT_FAMILY_DEFAULT);
+        assert!(!family.trim().is_empty(), "出厂那一枚族是空串");
+
+        a.ui_font_size = 11;
+        a.ui_font_family = "Arial".into();
+        assert_eq!(ui_font_face(&a), (11, "Arial".into()));
+
+        a.ui_font_family = "   ".into();
+        let (points, family) = ui_font_face(&a);
+        assert_eq!(points, 11);
+        // **这一族不在这里兜底**：validate 在读档那一步就把它归成出厂族（core 那侧的往返单测
+        // 盯着那一格），所以内存里是空串 ⇒ 递出去的也是空串。写这一行是为了**反着钉**：谁要把
+        // 「空 ⇒ 出厂」抄进这一格，就有第二份归一、两份会先旧（#281）。
+        assert_eq!(family, "   ");
+        // 整段读回走的是**过闸之后**的那一份：一次 `validate` 之后，界面拿到的就不是空串了。
+        let mut cfg = falcon_core::config::Config::default();
+        cfg.set_str("appearance.ui_font_family", "   ").unwrap();
+        assert_eq!(ui_font_face(&cfg.appearance).1, UI_FONT_FAMILY_DEFAULT);
+
+        assert!(TOOLBAR_PLACEMENTS.contains(&toolbar_placement_face(&a).as_str()));
+        for edge in TOOLBAR_PLACEMENTS {
+            a.toolbar_placement = (*edge).into();
+            assert_eq!(toolbar_placement_face(&a), *edge);
+            assert!(TOOLBAR_PLACEMENTS.contains(&toolbar_placement_face(&a).as_str()));
+        }
+    }
+
+    /// §5.19.2 / §5.19.4 那四枚外观键在**页上**的对面：每一枚都得有真读者，而「怎么把它变成
+    /// 像素」这一句判断只许有一位作者。
+    ///
+    /// 这一格管的是上一轮那两种坏同时存在的那一形：**逻辑齐备、生产路径零读者**（`accent` 递到
+    /// `Session` 了，可四扇窗各写各的 `dark?"#4C8DF6":"#2563B8"`，改档不动一个像素），以及
+    /// **#281**（倍数的算术在四栋里各抄一遍，四份会先旧）。运行期的门只看得见「这一趟屏幕是什么
+    /// 颜色」，看不见「读数是不是只长在一处」——所以这一格判**源码**，与
+    /// [`crate::annotate_check`] 里 `the_bands_colors_have_exactly_one_owner_and_it_is_the_file`
+    /// 同一族，尺子自己也要被反证（摘掉共享对象里那一句，作者计数就得掉一枚）。
+    ///
+    /// 注释不参与：本档那几段说明把 `session.accent`、`ui_font ÷ 出厂磅` 都当**引文**写过，
+    /// 算进去就是把「解释绑定」读成「绑定」（#313 / #253 那一族）。
+    #[test]
+    fn the_appearance_keys_reach_every_window_and_the_font_ratio_has_one_author() {
+        let code = |l: &str| -> String {
+            let t = l.trim_start();
+            if t.starts_with("//") {
+                return String::new();
+            }
+            t.to_string()
+        };
+        let reads = |src: &str, needle: &str| {
+            src.lines()
+                .map(code)
+                .filter(|l| l.contains(needle))
+                .count()
+        };
+
+        const SHARED: &str = include_str!("../qml/UiFont.qml");
+        const WINDOWS: [(&str, &str); 4] = [
+            ("SettingsWindow.qml", include_str!("../qml/SettingsWindow.qml")),
+            ("HistoryWindow.qml", include_str!("../qml/HistoryWindow.qml")),
+            ("GroupWindow.qml", include_str!("../qml/GroupWindow.qml")),
+            (
+                "CustomCaptureWindow.qml",
+                include_str!("../qml/CustomCaptureWindow.qml"),
+            ),
+        ];
+
+        // ① 主题色：四扇窗都绑 `Session.accent` 那枚**值**。少一扇，那一扇就还停在画师写死的
+        //    两枚字面上；而字面本身不许出现在别处（`accent_fill` 之外的第三份色 = 第三个主人）。
+        for (name, src) in WINDOWS {
+            assert!(
+                reads(src, "session.accent") >= 1,
+                "{name} 不读 Session.accent，那一页上的强调色与档无关"
+            );
+            assert_eq!(
+                reads(src, "property color accent_fill"),
+                1,
+                "{name} 的强调色有了第二处声明"
+            );
+        }
+
+        // ② 字号与字族：**倍数的算术只长在共享对象那一枚文件里**，页上一处也没有。
+        assert_eq!(
+            reads(SHARED, "session.ui_font /"),
+            1,
+            "ui_font ÷ 出厂磅这一句有了第二个主人"
+        );
+        for (name, src) in WINDOWS {
+            assert!(
+                reads(src, "UiFont {") == 1,
+                "{name} 没有把那枚共享读者接进来（或接了两枚）"
+            );
+            assert!(
+                reads(src, "uiFont.px(") >= 1,
+                "{name} 画着字却不乘倍数：改 appearance.ui_font_size 不动这一扇窗的像素"
+            );
+            assert!(
+                reads(src, "font.family: uiFont.family") >= 1,
+                "{name} 不读 appearance.ui_font_family"
+            );
+            assert_eq!(
+                reads(src, "session.ui_font "),
+                0,
+                "{name} 自己算起了倍数：#281 说的就是这一句"
+            );
+        }
+
+        // ③ 落点：`[appearance] toolbar_placement` 自此有了一枚界面读者，而 `auto` 的展开不在
+        //    页上判（页上问 `toolbarEdge`，长边优先那一句的本体在 core `config::toolbar_edge`）。
+        const BAR: &str = include_str!("../qml/AnnotationToolbar.qml");
+        assert_eq!(
+            reads(BAR, "session.toolbar_placement"),
+            1,
+            "落点那一枚词要么没读者，要么在栏里被读了两遍"
+        );
+        assert_eq!(
+            reads(BAR, "toolbarEdge(view.hole_w, view.hole_h)"),
+            1,
+            "auto 的展开没现问桥，或在页上判了第二遍"
+        );
+
+        // 尺子自己也要被量：摘掉共享对象里那一句比值，作者计数就得掉一枚（#269 同一族）。
+        let dropped = SHARED.replace("ui.session.ui_font / ui.baseline", "1");
+        assert_eq!(
+            reads(&dropped, "session.ui_font /"),
+            0,
+            "这一格的尺子抓不到「倍数被写死」那一形"
+        );
+    }
+
+    /// §5.1.2 的启动回填判据。**机器是那一枚开关的真相**，六臂都在这里：两枚一致、四种漂移、
+    /// 与「机器没答」那一臂。最后一臂是最容易写反的一格 —— 把读不到折成 `Agrees { file: false }`
+    /// 或折成 `Drifts { machine: false }`，页上那枚开关就会在一次读不动注册表的启动里被悄悄关掉。
+    #[test]
+    fn the_machine_is_the_truth_the_file_follows_and_a_silent_machine_moves_nothing() {
+        use platform_windows::autostart::Held;
+
+        let absent = Ok(Held::Absent);
+        let here = Ok(Held::Here);
+        // 一条指向别处的启动项：机器确实会在登录时启动一个 falconshot ⇒ 开关是开着的。
+        let elsewhere = Ok(Held::Elsewhere(std::ffi::OsString::from(
+            r"C:\Old\Path\falconshot.exe",
+        )));
+
+        assert_eq!(
+            autostart_backfill(false, absent.clone()),
+            AutostartRead::Agrees {
+                file: false,
+                held: Held::Absent
+            }
+        );
+        assert_eq!(
+            autostart_backfill(true, here.clone()),
+            AutostartRead::Agrees {
+                file: true,
+                held: Held::Here
+            }
+        );
+        // 档里写着开而注册表里没有 —— 这一族欠账的形状，回填交回的是「改成 false」。
+        let drift = autostart_backfill(true, absent.clone());
+        assert!(
+            matches!(
+                drift,
+                AutostartRead::Drifts {
+                    file: true,
+                    machine: false,
+                    ..
+                }
+            ),
+            "{drift:?}"
+        );
+        assert!(
+            matches!(
+                autostart_backfill(false, here.clone()),
+                AutostartRead::Drifts {
+                    file: false,
+                    machine: true,
+                    ..
+                }
+            ),
+            "机器里明明有一条指向本程序的启动项，回填却说没开"
+        );
+        assert!(
+            matches!(
+                autostart_backfill(false, elsewhere.clone()),
+                AutostartRead::Drifts { machine: true, .. }
+            ),
+            "「指向别处」被折成了没开"
+        );
+        assert!(
+            matches!(
+                autostart_backfill(true, elsewhere),
+                AutostartRead::Agrees { file: true, .. }
+            ),
+            "回填拿档去改机器了：那条别人的启动项不该被这一趟动过"
+        );
+
+        let silent = autostart_backfill(true, Err("权限被拒".to_string()));
+        assert_eq!(
+            silent,
+            AutostartRead::Silent("权限被拒".to_string()),
+            "读不到被折成了一枚答案"
+        );
+        assert_eq!(
+            format_autostart_line(&silent, None),
+            "读不到启动项：权限被拒（档里那一格未动，页上那一枚照档里说）"
+        );
+    }
+
+    /// 那一行里「有没有写文件」必须是量得出来的：`saved_ms` 为 `None` 时不许出现落盘那几个字，
+    /// 为 `Some` 时不许丢掉原因。默认那一趟（档里 false、机器里没有）一个字节也不动 —— 每次启动
+    /// 都重写一遍用户的设置档是这一格最容易长成的坏形状。
+    #[test]
+    fn the_autostart_line_names_the_write_only_when_there_was_one() {
+        use platform_windows::autostart::Held;
+
+        let agrees = AutostartRead::Agrees {
+            file: false,
+            held: Held::Absent,
+        };
+        let line = format_autostart_line(&agrees, None);
+        assert!(line.contains("一致"), "{line}");
+        assert!(line.contains("不在"), "{line}");
+        assert!(!line.contains("落盘"), "{line}");
+
+        let drift = AutostartRead::Drifts {
+            file: true,
+            machine: false,
+            held: Held::Absent,
+        };
+        let wrote = format_autostart_line(&drift, Some(7));
+        assert!(wrote.contains("改成 false"), "{wrote}");
+        assert!(wrote.contains("落盘 7 ms"), "{wrote}");
+        // 改了档而没报毫秒数：那一趟不许看起来像没发生过。
+        assert!(!format_autostart_line(&drift, None).contains("落盘"));
     }
 
     /// §5.7.22 的第一位读者：色带走桥的那一份，枚数与顺序都由档决定。

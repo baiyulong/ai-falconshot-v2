@@ -99,6 +99,52 @@ pub fn background(card: &Card) -> Result<[u8; 4], CardError> {
     colors::parse(&card.background).ok_or_else(|| CardError::Background(card.background.clone()))
 }
 
+/// §5.8.6 步骤 3 与步骤 5 的那一行**颜色值**：不透明写六位、带透明写八位。
+///
+/// Alpha is written rather than applied — a swatch painted with `#00000000` is a picture
+/// of nothing at all, and the value line is what the user reads the colour off.
+///
+/// 这一手自 §5.8.6 步骤 4「用户可进入编辑模式修改颜色值」起有了第二只需要它的手（一格栅窗
+/// 改完颜色要重写这一行），所以它住在卡片这一侧而不是贴图那一侧：两处各写一遍「alpha 是 255
+/// 就省掉」就是两张卡片会对同一个颜色写下不同的字（#281）。
+pub fn colour_text(rgba: [u8; 4]) -> String {
+    if rgba[3] == 0xff {
+        colors::format(rgba, colors::ColorFormat::HexUpper)
+    } else {
+        colors::format(rgba, colors::ColorFormat::HexRgba)
+    }
+}
+
+/// §5.8.6: the `Card` a colour is drawn on — 背景**就是**那枚颜色，宽度、字号、字体仍来自
+/// 用户那一刻的 `[card]`。
+///
+/// 交回的是整张卡而不是只换背景那一格，因为「颜色卡片长什么样」是一件事：贴图那一臂与
+/// [`crate::pin::CardPin::card_of`] 都要它，写两遍就是两处可能走散的读法。
+pub fn colour_card(base: &Card, rgba: [u8; 4]) -> Card {
+    let mut card = base.clone();
+    // 色块是**不透明**的那一枚：`#RRGGBB` 是背景那一格唯一的写法，而带 alpha 的那一行写在
+    // [`colour_text`] 上 —— 一次编辑换掉的两半共用这一枚函数，才不会出现块与字各走一头。
+    card.background = colors::format(rgba, colors::ColorFormat::HexUpper);
+    card
+}
+
+/// 档的闸对**这一张候选卡片**的回答：夹过的那一份，与闸自己那句「这一格越界了、夹成这一枚数」。
+///
+/// §5.8.5 步骤 4 之后四枚旋钮可以只落在一张卡片身上，可那两枚数的界只有一名作者
+/// （[`crate::config::Config::validate`] 里 `card.width` / `card.font_size` 那两行）。这一手
+/// 把候选塞进一份出厂的档、让那一行自己夹、再把夹回来的那一份连它的抱怨一起交回 —— 界在桥或
+/// 页上再抄一遍就是第二个作者，而第二位与第一位在下一轮改界那天一定会走散（#281）。
+///
+/// 出厂那份档的每一枚键本来就在界内（`config.rs` 的
+/// `card_keys_are_clamped_and_its_background_repaired` 钉着「the shipped card needs no
+/// repair」），所以交回的抱怨只可能来自传进来的这一张卡片。
+pub fn gate(card: &Card) -> (Card, Vec<String>) {
+    let mut probe = crate::config::Config::default();
+    probe.card = card.clone();
+    let said = probe.validate();
+    (probe.card, said)
+}
+
 /// The line boxes of `text`, top-down, each with the y it sits at inside the card.
 ///
 /// Private because it is the middle of two answers that must not disagree: [`size`] and
@@ -306,5 +352,73 @@ mod tests {
         let bg = background(&c).expect("default colour parses");
         assert_eq!(bg, [0xff, 0xff, 0xff, 0xff]);
         assert_eq!(foreground(bg), [0, 0, 0, 255]);
+    }
+
+    /// §5.8.5 步骤 4 落在**一枚卡片**上之后仍要过同一道闸，而这一格判的是「过的是同一道闸」
+    /// 而不是「界是这两枚数」：读回的是 [`crate::config::Config::validate`] 自己的夹法与它自己
+    /// 那句抱怨，界若被谁在别处抄了第二份，这一格读回的夹值就会与档那一头不一致。
+    #[test]
+    fn the_gate_clamps_a_card_with_the_settings_own_numbers() {
+        let shipped = Card::default();
+        let (kept, said) = gate(&shipped);
+        assert_eq!(kept, shipped, "出厂那张卡不该被改一个字：{said:?}");
+        assert!(said.is_empty(), "出厂那张卡被抱怨了：{said:?}");
+
+        let wild = Card {
+            width: 1_000_000,
+            font_size: 500,
+            ..Default::default()
+        };
+        let (clamped, said) = gate(&wild);
+        assert_eq!(
+            (clamped.width, clamped.font_size),
+            (4096, crate::annotation::model::FONT_MAX),
+            "越界的两格没按档的那两枚界夹回来：{clamped:?}（抱怨：{said:?}）"
+        );
+        for needle in ["card.width", "card.font_size"] {
+            assert!(
+                said.iter().any(|w| w.contains(needle)),
+                "闸没有点名 {needle}，状态栏就无从可说：{said:?}"
+            );
+        }
+
+        // 下面那枚界也是同一道闸的读数：一张 1 px 宽的卡排不出任何一行字。
+        let (thin, said) = gate(&Card {
+            width: 1,
+            font_size: 0,
+            ..Default::default()
+        });
+        assert_eq!(
+            (thin.width, thin.font_size),
+            (160, crate::annotation::model::FONT_MIN),
+            "贴着地板的两格没被夹到地板上：{thin:?}（抱怨：{said:?}）"
+        );
+    }
+
+    /// 步骤 5「卡片颜色和显示文本同步更新」的前提是这两半各只有一个写法：色块那格是不透明的
+    /// `#RRGGBB`，那一行在不透明时与它同字、带 alpha 时多出 alpha 那两位。
+    #[test]
+    fn a_colour_writes_its_swatch_and_its_value_line_from_one_reading() {
+        let red = [0xe8, 0x11, 0x23, 0xff];
+        assert_eq!(colour_text(red), "#E81123");
+        assert_eq!(colour_text([0x12, 0x34, 0x56, 0x80]), "#12345680");
+
+        let base = Card {
+            width: 640,
+            ..Default::default()
+        };
+        let card = colour_card(&base, red);
+        assert_eq!(card.background, "#E81123", "色块没换成那枚颜色：{card:?}");
+        assert_eq!(card.width, base.width, "宽度该仍来自 [card]：{card:?}");
+        assert_eq!(
+            (card.font_size, &card.font_family),
+            (base.font_size, &base.font_family),
+            "字号与字体该仍来自 [card]：{card:?}"
+        );
+        assert_eq!(
+            card.background,
+            colour_text(red),
+            "不透明时色块与那一行写的是同一串字，否则同步这一步要用户自己对两次账"
+        );
     }
 }

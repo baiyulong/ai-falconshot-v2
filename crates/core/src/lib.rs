@@ -9,6 +9,7 @@ pub mod clip;
 pub mod colors;
 pub mod config;
 pub mod dialog_link;
+pub mod drop;
 pub mod encode;
 pub mod feedback;
 pub mod frame;

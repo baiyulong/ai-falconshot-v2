@@ -17,6 +17,7 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use falcon_core::capture::{
     CaptureService, MonitorInfo, ScreenSnapshot, WindowExtras, WindowInfo, XcapCapture,
+    window_at_in,
 };
 use falcon_core::frame::Frame;
 use falcon_core::geometry::{PhysPoint, PhysRect};
@@ -87,6 +88,23 @@ pub fn cursor_overlay() -> Option<(falcon_core::frame::Frame, PhysPoint)> {
     if !crate::settings::capture_cfg().include_cursor {
         return None;
     }
+    let p = cursor_pos()?;
+    WinExtras.cursor_image(p)
+}
+
+/// §5.4.3 的指针那一问的**不计数**版本，给活动窗口那一腿用（[`window_frame`]）。
+///
+/// 为什么不进 [`CURSOR_READS`]，不是省事：那枚计数器说的是「一次**冻结**流程里指针被问了几回」，
+/// `--gauge` 那一行钉的是 `cursor_reads == freeze_count`（`crates/qt_bridge/src/autosave_check.rs`）。
+/// 活动窗口这条路**压根不 `freeze`** —— 它的内容是 `PrintWindow` 现取的一块窗口画布，不是桌面上
+/// 那一张被冻住的画面，所以这里没有「更早的画面」需要可对账：能问的「此刻」就是取像素的此刻，
+/// 两件事在同一毫秒里发生，§5.4.3 第 419 行要的「与实际屏幕位置一致」在这一路上是自动成立的。
+/// 把它记进同一枚计数器，只会让那一行开始测计数的摆法而不是测时刻。
+///
+/// 键（`[capture] include_cursor`）由调用方读，这一格只答「此刻屏幕上亮着哪一只指针、它的图
+/// 左上角在屏幕哪里」—— 与 [`cursor_overlay`] 同一把尺子、同一个平台入口，热点已经在
+/// `crates/platform-windows/src/cursor.rs` 里减过。
+pub fn cursor_now() -> Option<(falcon_core::frame::Frame, PhysPoint)> {
     let p = cursor_pos()?;
     WinExtras.cursor_image(p)
 }
@@ -460,29 +478,35 @@ pub fn pin_last_region() -> Result<(PinId, String), String> {
 /// The order is the order of confidence: an unreadable owner is refused before
 /// "minimised", because a handle the shell will not explain is not evidence that any
 /// of the later readings mean anything.
+///
+/// 自本轮起**判定表本身**在 core（[`falcon_core::capture::active_window_block`]，那里有它的
+/// 分支与次序的断言，包括 §5.2.6 第 239 行「最小化窗口不可作为活动窗口截图对象」那一格），
+/// 这里只剩**措辞**：那一枚枚举每一种拒绝在这里说哪一句中文，以及那句里带的进程名。这样
+/// 「四种拒绝都还在、次序没变」这件事由 `cargo test -p falcon-core` 说，而不只是由下面那
+/// 几条断言句子的门说。句子里的字一个没改 —— 门的证词还是同一句。
 pub fn active_window_refusal(
     owner: Option<u32>,
     self_pid: u32,
     minimized: bool,
     app: Option<&str>,
 ) -> Option<String> {
-    let Some(pid) = owner else {
-        return Some(
-            "前台窗口查不到它的进程：受保护的进程或别的会话就是这样，这一趟不猜它是谁".to_string(),
-        );
-    };
-    if pid == self_pid {
-        return Some("前台是 Falconshot 自己：贴图截贴图只会得到一张图里的图".to_string());
-    }
-    if minimized {
-        return Some("活动窗口最小化了：桌面上没有它的画面可截（§5.2.6）".to_string());
-    }
-    if let Some(app) = app {
-        if is_lock(app) {
-            return Some(format!("会话锁屏，前台是 {app}：那不是用户正在用的窗口"));
+    let locked = app.map(is_lock).unwrap_or(false);
+    let block = falcon_core::capture::active_window_block(owner, self_pid, minimized, locked)?;
+    Some(match block {
+        falcon_core::capture::ActiveWindowBlock::UnknownOwner => {
+            "前台窗口查不到它的进程：受保护的进程或别的会话就是这样，这一趟不猜它是谁".to_string()
         }
-    }
-    None
+        falcon_core::capture::ActiveWindowBlock::SelfForeground => {
+            "前台是 Falconshot 自己：贴图截贴图只会得到一张图里的图".to_string()
+        }
+        falcon_core::capture::ActiveWindowBlock::Minimized => {
+            "活动窗口最小化了：桌面上没有它的画面可截（§5.2.6）".to_string()
+        }
+        falcon_core::capture::ActiveWindowBlock::LockedSession => format!(
+            "会话锁屏，前台是 {}：那不是用户正在用的窗口",
+            app.unwrap_or_default()
+        ),
+    })
 }
 
 /// `capture_active_window` (§5.2.6): the window the shell is giving keystrokes to,
@@ -620,6 +644,45 @@ pub fn window_under_cursor() -> Option<WindowInfo> {
     window_at(cursor_pos()?)
 }
 
+/// §5.3.2 遮罩那一路的**候选表**：一次枚举，供这一场每次 hover 就地判。
+///
+/// 为什么遮罩不直接反复问 [`window_at`]：那一手每问一次就把桌面重新枚举一遍（外加每扇窗
+/// 一次 DWM 属性、一次进程名查询），而 hover 是**鼠标每动一次**问一句。放大镜那一族为了
+/// 同一件事早就吃过教训并写下理由（[`crate::mask::MaskState::snapshot`]：一次按下热键一次
+/// 拷贝，之后就地读，绝不每帧再问桌面）。这里取的就是同一族做法。
+///
+/// `include_own_process` 递 `false`：这一路不要把本进程自己的窗当候选。`xcap` 的
+/// `is_valid_window` 实际上已经把同进程顶层窗筛掉了，所以这一格在出厂路径上是重复保险 ——
+/// 写下它是因为 [`CaptureService::windows`] 的调用方**能**点名要自己的窗（`--list-windows`
+/// 就要），而这一路不要：让「不要」在这一行看得见，比让读代码的人去猜下游知不知道这件事好。
+///
+/// 枚举失败答**空表**而不是把一个 `Err` 递给遮罩：§5.3.2 整节是一条可选的快捷路径，量不到
+/// 候选时遮罩必须照样能自由拖选区（§5.3.1），而一张遮罩因为桌面枚举失败就报错退出是不可用的。
+/// 这一格因此是「退化成自由选区」，不是「什么都没发生」。
+pub fn window_candidates() -> Vec<WindowInfo> {
+    service().windows(false).unwrap_or_default()
+}
+
+/// §5.3.2 那一句「这一枚光标落在哪一扇窗、该窗可截图的边界是哪一块」的**桥层读者**，
+/// 走的是一次 hover 的缓存表（[`window_candidates`]）而不是重新问桌面。
+///
+/// 两条规则与那枚次序都不在这一手里：排除的判据是 [`falcon_core::capture::window_is_shootable`]、
+/// 「光标最直接指向」的次序是 [`falcon_core::capture::window_at_in`]，而 CLI 那一路
+/// [`window_at`] 走的是**同样这两枚**（经 [`CaptureService::window_at`]）。本仓规矩「一件事
+/// 只有一个作者」在这一路的写法就是：这里既不写第二次「取最靠前的可见者」、也不写第二次
+/// 「算这扇窗该截哪一块」—— 边界交回的是 [`WindowInfo::visible_bounds`]，那一只手从窗口
+/// 截图落地起就是唯一的作者，高亮框与截出来的图因此天生是同一块矩形。
+///
+/// 交回 `(hwnd, 可截图边界)` 两样而不只是矩形：`hwnd` 说的是「落在哪一扇窗」这一半，门上的
+/// 判据与 `--mask` 那一路都要读它；只递矩形就把这一半丢在了桥外。
+///
+/// `None` = 光标此刻没有落在任何一扇**可截**的窗上（桌面、被排除的全透窗、或表是空的）。
+/// 那是答案不是失败，调用方据此退回 §5.3.1 的自由选区。
+pub fn window_under(candidates: &[WindowInfo], p: PhysPoint) -> Option<(u32, PhysRect)> {
+    let w = window_at_in(candidates, p)?;
+    Some((w.hwnd, w.visible_bounds()))
+}
+
 /// The middle of the primary monitor, in physical pixels - what `--snap` grabs
 /// when it is not told a rectangle. The point of the flag is to prove that real
 /// screen pixels reach a real window, not to stand in for a selection UI that does
@@ -710,9 +773,103 @@ pub fn rect_arg(flag: &str, raw: &str) -> Result<PhysRect, String> {
 /// The DWM read itself, with no window opened and no memory written — [`pin_window`]
 /// and [`active_frame`] are its two presenters, so §5.17's clipboard/file arms and a hot
 /// key all ask the shell the same one question about a handle.
+///
+/// §5.2.6 规则第一句「可按设置决定是否包含窗口阴影、圆角和鼠标指针」自本轮起真的跟着设置走：
+/// 拿到的是窗口的可见内容之后，三枚键交给 [`falcon_core::capture::window_picture`]（判定与画法
+/// 都在那一格里，`crates/core/src/capture.rs` 有它的六条断言），这里只负责**读那三枚键**与**问
+/// 平台那三件事**。三枚键都关着时当场原样交回，一次 Win32 也不问 —— 出厂默认那一侧的字节必须
+/// 和这一格存在之前一样，这是 [`window_picture`] 的 `a_window_shot_with_no_settings_is_the_picture_it_always_was`
+/// 钉住的那一条，重复一遍守卫只是为了不去问 `GetWindowRect`。
+///
+/// 交回的矩形会随阴影圈一起变大（[`falcon_core::capture::window_picture`] 报的就是图自己的框），
+/// 所以下面 `remember` 记的、贴图摆的坐标，都是**含阴影那张**的左上角，不是窗口可见边的左上角：
+/// 用户按「重复上次截图」要回来的应当是他刚看到的那一块画面。
 pub fn window_frame(hwnd: u32) -> Result<(Frame, PhysRect), String> {
     let cap = service().capture_window(hwnd).map_err(|e| e.to_string())?;
-    Ok((cap.frame, cap.rect))
+    let cfg = crate::settings::capture_cfg();
+    // 三枚键都关着 ⇒ 连设置快照之外的一次 `decoration()` clone、一次 `GetWindowRect`、一次
+    // 指针问数都不发：出厂那一侧的开销必须是零，而这一条由下面那枚计数探针在单测里钉住。
+    if !(cfg.window_shadow || cfg.window_corner || cfg.include_cursor) {
+        return Ok((cap.frame, cap.rect));
+    }
+    let dec = crate::settings::decoration();
+    let cursor = if cfg.include_cursor {
+        cursor_now()
+    } else {
+        None
+    };
+    decorate_window(&cfg, &dec, &WinExtras, hwnd, cap.frame, cap.rect, cursor)
+}
+
+/// 三枚键 + 平台的答案 → 一张按设置画好的窗口截图。
+///
+/// 写成递参数的一枚函数（而不是在函数体里自己去 `settings::` 与 `WinExtras`），为的是让
+/// 「该不该问、问了之后画没画」这两格在**没有桌面**的那一趟里也问得到：设置快照、`extras`、
+/// 指针都由外面进来，测试给一枚会数数的假把手就能读出「这枚键关着时一次调用也没发出去」。
+/// 上面 [`window_frame`] 是唯一把真设置与真 `WinExtras` 递进来的地方，也就是这一腿唯一的读者。
+///
+/// 每一枚键各自问它的对面，而不是互相推断：
+/// - `window_shadow` ⇒ [`WindowExtras::window_rect`]（`GetWindowRect`，含 DWM 画阴影那条看不见的
+///   带）和 [`falcon_core::config::Output::shadow_size`]（用户给阴影留过几像素）。带量不出来
+///   （非 Windows、或 DWM 不肯答）时 core 退到常数下界，**不会**退成「没有阴影」。
+/// - `window_corner` ⇒ [`WindowExtras::window_corner_radius`]（这扇窗**自己**被系统切成多大）
+///   与 `[capture] window_corner_radius`（用户写死的数，0 = 用系统那一枚，**也只有 0 才去问**）。
+///   切出来的外部颜色仍归 `[output] corner_fill`（§5.5.6 第二句的两读法在那里已有主人）。
+/// - `include_cursor` ⇒ 参数里那一枚 `cursor`。窗口腿不自 `freeze`，所以「此刻」就是像素被取走
+///   的此刻，[`cursor_now`] 在 [`window_frame`] 里读一次、原样递进来。
+///
+/// 画法本身一个也不在这里：[`falcon_core::capture::window_picture`] 那一格（顺序 = 指针→圆角→
+/// 阴影圈，边距 = 量到的带/配置/常数三者最宽）在 `crates/core/src/capture.rs` 有它的六条断言。
+fn decorate_window(
+    cfg: &falcon_core::config::Capture,
+    dec: &falcon_core::imageops::Decoration,
+    extras: &dyn WindowExtras,
+    hwnd: u32,
+    frame: Frame,
+    visible: PhysRect,
+    cursor: Option<(Frame, PhysPoint)>,
+) -> Result<(Frame, PhysRect), String> {
+    let shadow = if cfg.window_shadow {
+        falcon_core::capture::WindowShadow::On {
+            configured: dec.plate.shadow_margin,
+            color: dec.plate.shadow_color,
+        }
+    } else {
+        falcon_core::capture::WindowShadow::Off
+    };
+    // 只有真要画阴影才去量那条带：`GetWindowRect` 便宜，但一次不为画的读不该发出去。
+    let real = if cfg.window_shadow {
+        extras.window_rect(hwnd)
+    } else {
+        None
+    };
+    // 用户写过数 ⇒ 那一问没有对象了：`[capture] window_corner_radius` 头顶那句「`>0` 是第一种，
+    // 谁也不问了」说的就是这一格，而它由下面那枚探针钉住（`the_window_leg_asks_only_the_settings_that_are_on`）。
+    // core 那边 `resolved_corner_radius` 本来就优先取 `requested`，所以这里交 `None` 不改一张图，
+    // 只省下一次没人要的 `DWMWA_WINDOW_CORNER_PREFERENCE`。
+    let system = if cfg.window_corner && cfg.window_corner_radius == 0 {
+        extras.window_corner_radius(hwnd)
+    } else {
+        None
+    };
+    let corner = if cfg.window_corner {
+        falcon_core::capture::WindowCorner::On {
+            requested: cfg.window_corner_radius,
+            system,
+            outside: dec.outside,
+        }
+    } else {
+        falcon_core::capture::WindowCorner::Off
+    };
+    falcon_core::capture::window_picture(
+        &frame,
+        &visible,
+        real.as_ref(),
+        shadow,
+        corner,
+        cursor.as_ref().map(|(f, p)| (f, *p)),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// A whole window as its own pin — [`window_frame`]'s picture presented.
@@ -1143,5 +1300,131 @@ mod tests {
                 .unwrap()
                 .contains("LockApp.exe")
         );
+    }
+
+    /// §5.2.6 那一腿**问哪几格**的计数探针。画法本身在 core 有它自己的断言（`window_picture`
+    /// 那六条），这一格只管 [`decorate_window`] 写成递参数所要答的那一问：**每一枚键只问自己对
+    /// 面那一格，关着的键一次也不问**。出厂默认那一侧必须连 `GetWindowRect` 与
+    /// `DWMWA_WINDOW_CORNER_PREFERENCE` 都不发出去 —— 「默认不额外加东西」若只在地上不加、在系
+    /// 统调用上照发，用户看不见而这一程的开销看得见，而那句「谁也不问了」就成了 doc 里的空话。
+    ///
+    /// 这一格**不**答的另一半也写在这里，免得读数被当成全绿：`include_cursor` 关着时「不去问
+    /// 指针」那一守卫在 [`window_frame`] 里，而那一枚要真有桌面才跑得动（`capture_window` 先问
+    /// shell 要位图），所以它由门上的读数判，不由这里判。这里判的是递进来的那半：给了指针就落
+    /// 进画面，没给就不落。
+    #[test]
+    fn the_window_leg_asks_only_the_settings_that_are_on() {
+        use std::sync::atomic::AtomicUsize;
+
+        struct Asked {
+            rect: AtomicUsize,
+            corner: AtomicUsize,
+        }
+
+        impl Asked {
+            fn new() -> Self {
+                Self {
+                    rect: AtomicUsize::new(0),
+                    corner: AtomicUsize::new(0),
+                }
+            }
+            /// `(问过带几次, 问过圆角几次)`
+            fn asked(&self) -> (usize, usize) {
+                (
+                    self.rect.load(Ordering::SeqCst),
+                    self.corner.load(Ordering::SeqCst),
+                )
+            }
+        }
+
+        impl WindowExtras for Asked {
+            fn dwm_bounds(&self, _: u32) -> Option<PhysRect> {
+                None
+            }
+            fn element_chain(&self, _: PhysPoint) -> Vec<PhysRect> {
+                Vec::new()
+            }
+            fn cursor_image(&self, _: PhysPoint) -> Option<(Frame, PhysPoint)> {
+                None
+            }
+            fn process_path(&self, _: u32) -> Option<(String, String)> {
+                None
+            }
+            fn window_rect(&self, _: u32) -> Option<PhysRect> {
+                self.rect.fetch_add(1, Ordering::SeqCst);
+                Some(asked_rect())
+            }
+            fn window_corner_radius(&self, _: u32) -> Option<u32> {
+                self.corner.fetch_add(1, Ordering::SeqCst);
+                Some(4)
+            }
+        }
+
+        let src = Frame::filled(20, 10, [10, 20, 30, 255]).unwrap();
+        let visible = PhysRect::new(100, 100, 20, 10);
+        let dec = falcon_core::imageops::Decoration::default();
+        let mut cfg = falcon_core::config::Capture::default();
+
+        let draw = |cfg: &falcon_core::config::Capture,
+                    extras: &Asked,
+                    cursor: Option<(Frame, PhysPoint)>| {
+            decorate_window(cfg, &dec, extras, 7, src.clone(), visible, cursor).unwrap()
+        };
+
+        // ① 三枚全关（出厂那一侧）：一个像素不动，而这一层一次也没去问 shell。
+        let asked = Asked::new();
+        let (out, rect) = draw(&cfg, &asked, None);
+        assert_eq!(out, src, "关着的时候这一路动过像素");
+        assert_eq!(rect, visible, "关着的时候这一路挪过矩形");
+        assert_eq!(asked.asked(), (0, 0), "关着的键去问了 shell");
+
+        // ② 只开阴影：问带，不问圆角。边距不在这里重算一遍 —— core 的
+        // `window_shadow_margin` 是唯一作者，这里只拿它的答案比矩形。
+        let asked = Asked::new();
+        cfg.window_shadow = true;
+        let (_, rect) = draw(&cfg, &asked, None);
+        assert_eq!(asked.asked(), (1, 0), "阴影这一格问错了对象");
+        let margin = falcon_core::capture::window_shadow_margin(
+            &visible,
+            Some(&asked_rect()),
+            dec.plate.shadow_margin,
+        );
+        assert!(margin > 0, "开着而不把框变大，这一枚键就没有读者");
+        assert_eq!(rect, visible.inflate(margin));
+
+        // ③ 开圆角、半径写 0 = §5.5.6 步骤 3 的第二读法：这一问**该**发出去，四角被系统那枚半径切掉。
+        let asked = Asked::new();
+        cfg.window_shadow = false;
+        cfg.window_corner = true;
+        let (out, rect) = draw(&cfg, &asked, None);
+        assert_eq!(asked.asked(), (0, 1), "圆角这一格该问一次");
+        assert_eq!(rect, visible, "切圆角不改尺子");
+        assert_eq!(out.get(0, 0), [0, 0, 0, 0], "系统那枚半径没把角切掉");
+
+        // ④ 开圆角、半径写过数 = 第一读法：谁也不问了，图仍是圆的（切的是用户给的 6）。
+        let asked = Asked::new();
+        cfg.window_corner_radius = 6;
+        let (out, _) = draw(&cfg, &asked, None);
+        assert_eq!(
+            asked.asked(),
+            (0, 0),
+            "用户写了半径还去问系统那枚，白问一次而谁也不读它"
+        );
+        assert_eq!(out.get(0, 0), [0, 0, 0, 0], "写死的半径没落进图里");
+
+        // ⑤ 指针那一格：这一层只管**递**，落点归 core 的 `window_picture` 判。
+        let asked = Asked::new();
+        cfg.window_corner = false;
+        cfg.window_corner_radius = 0;
+        let pointer = Frame::filled(4, 4, [255, 0, 0, 255]).unwrap();
+        let (out, _) = draw(&cfg, &asked, Some((pointer, PhysPoint::new(102, 101))));
+        assert_eq!(out.get(2, 1), [255, 0, 0, 255], "递进来的指针没落进画面");
+        assert_eq!(asked.asked(), (0, 0), "指针这一格不该问带也不该问圆角");
+    }
+
+    /// ② 那一格假把手答出来的**真实框**：每边比可见边宽 8 px。写成常数而不是在断言里再抄一
+    /// 遍数字，免得探针与被量的对象各有一份带量。
+    fn asked_rect() -> PhysRect {
+        PhysRect::new(92, 92, 36, 26)
     }
 }

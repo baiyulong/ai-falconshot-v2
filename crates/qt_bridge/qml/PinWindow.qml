@@ -111,6 +111,43 @@ Window {
     property int gifTurns: 0
     property var gifSeen: ({})
 
+    // §7.1「GIF 不可见或最小化时，可降低刷新频率以节省资源」: 这一格问的是只有窗读得到的一件
+    // 事，答的是「此刻有没有人在看这一扇窗」。
+    //
+    // 两枚读数缺一枚就漏一半，而这不是推想出来的：本机 Qt 6.10.1 的 `qml.exe` 在
+    // `QT_QPA_PLATFORM=offscreen` 下（不开窗、不动这台机器的桌面）拿三枚探针读回来——
+    // - 一扇 `visible: true` 的窗答 `visibility == Windowed`；
+    // - `showMinimized()` 之后同一扇窗答 `visibility == Window.Minimized`(3) 而 `visible`
+    //   **仍是 true**：Qt 的 `QWindow::isVisible()` 返回的是 `d->visible`，那是应用自己要求过
+    //   的状态，最小化只由 `QWindowPrivate::updateVisibility()` 写进 `visibility`。所以只问
+    //   `visible` 的那一版看不见「最小化」这一半，PRD 那句也就只兑了一半。
+    // - `visible: false` 的窗答 `visibility == Window.Hidden`(0)，于是 `visible` 那一臂与
+    //   `Window.Hidden` 那一臂在同一条线上互相作证，而不是其中一枚是抄来的。
+    //
+    // 两枚**不能用的读数**同样由探针钉死，写在这里免得下一轮再试一次：`win.visibleDepth` 当场
+    // 静默 undefined（6.10.1 的 Window 类型没有这一格：`qml/QtQuick/plugins.qmltypes` 与
+    // `include/QtQuick/`、`include/QtGui/` 三处都查过），拿它当读数就是把这一格永远判成「没人
+    // 看」；`QWindow.Minimized` 当场 ReferenceError——枚举在这档 QML 里只认 `Window.` 前缀。
+    //
+    // 读不到的一半写在明处（§433 不许静默）：被另一扇窗**盖住**这一状态，Qt 在这一扇窗上没有
+    // 给 QML 留任何读数（`isExposed()` 不是属性，而 Windows 上被盖住的顶层窗照样是 exposed）。
+    // 本仓现成的 Win32 那一把是 `crates/platform-windows` 的 `proc::is_minimized(hwnd)`
+    // （`IsIconic`，`capture.rs` 那条枚举一路在用），要接它得先把贴图自己的 HWND 交到窗这一侧，
+    // 那是 `cpp/pin_shim.cpp` 与 `pin_view.rs` 的活；本档不假造第二枚读数，也不把「隐藏 + 最小化」
+    // 两档说成「看不见」。
+    readonly property bool gifWatched: win.visible
+            && win.visibility !== Window.Minimized
+            && win.visibility !== Window.Hidden
+
+    // 这两档间隔的**作者**是 `falcon_core::pin` 的 `GIF_POLL_MS` / `GIF_HIDDEN_POLL_MS` 与那枚
+    // 判据 `gif_interval`（#281：一扇窗的帧钟只能有一处说「该多久问一次」；什么时候换帧仍由
+    // `PlayState::delay_ms` 一处说，这里不乘第二遍 delay）。窗这一侧把那两个数写成自己的绑定值，
+    // 抄得对不对不由这段注释说了算：`falcon_core::pin` 的
+    // `the_pin_qml_gif_gate_really_reads_the_window_s_own_visibility` 一格读这份源档，数字漂一格、
+    // 或者 `gifClock` 的 `interval` 不再问 `gifWatched`，那一格当场红。
+    readonly property int gifPollMs: 20
+    readonly property int gifHiddenPollMs: 1000
+
     color: "transparent"
 
     // Frameless, no taskbar entry, and optionally top-most - all three as Qt
@@ -722,8 +759,8 @@ Window {
         gaugeSay("xf-label-v", flipVAction.text)
         gaugeSay("xf-label-gray", grayscaleAction.text)
         gaugeSay("xf-label-inv", invertAction.text)
-        // 三枚数字键自己报的键序与开关。`enabled` 在这一刻必须是真：分组名框没被开过，
-        // `groupField.activeFocus` 因此为假，退让那一支没有关掉键。
+        // 三枚数字键自己报的键序与开关。`enabled` 在这一刻必须是真：三扇吃键盘的框都没开，
+        // `win.typing` 因此为假，那一处退让没有关掉键。
         // 三枚数字键自己报的**注册情况**：`sequences` 那一枚列表的长度与 `enabled`。为什么不报
         // 键帽本体：`String(shortcut.sequences)` 出来的是 Qt 内部那套 QKeySequence 的调试串，
         // 不是这一档能拿去判的约定（约定变了读数就变，绿的红的都不说明产品）。键帽「1/2/3」
@@ -1215,13 +1252,21 @@ Window {
     // by" - which frame that adds up to, and whether it is the last of them, is
     // the state machine's answer, and the new picture comes back as a revision.
     //
-    // 20 ms is a polling rate, not a frame delay: no clip is asked to hold still
-    // for it. `gif_frames > 1` is the half that keeps a still's window from
+    // `gifPollMs` is a polling rate, not a frame delay: no clip is asked to hold
+    // still for it. `gif_frames > 1` is the half that keeps a still's window from
     // asking at all, so the encoder is never reached fifty times a second for a
     // picture that has no second frame.
+    //
+    // §7.1 adds the one thing that was missing: 没人看的那一扇不再每秒问五十次，降到
+    // `gifHiddenPollMs`。降频而不是停钟，是因为 `onTriggered` 交回 Rust 的永远是窗**真正
+    // 等到的那一段**（`gifClock.interval`），而 `PlayState::tick` 早就写着「迟到的一段是
+    // 花掉了、不是欠着了，一次 tick 至多绕片子一圈」。于是这一格回来的那一帧是它走开时
+    // 站着的那一帧（慢片子除外：一圈比一秒长的片子在看不见的那一段仍然按自己的步子走），
+    // 既不中退、也不补一场爆发——读数是 `falcon_core::pin` 的
+    // `the_throttled_wait_is_spent_rather_than_owed_when_the_pin_comes_back` 那一格。
     Timer {
         id: gifClock
-        interval: 20
+        interval: win.gifWatched ? win.gifPollMs : win.gifHiddenPollMs
         repeat: true
         running: win.view.gif_playing && win.view.gif_frames > 1
         onTriggered: win.view.gifTick(gifClock.interval)
@@ -1267,6 +1312,66 @@ Window {
     // thing that makes Qt ask the provider for a new image; drag and zoom never
     // touch it. `cache: false` because the ids are recycled by the revision, not
     // by the URL.
+    // §5.9.9 步骤 1「激活贴图并进入裁剪模式」——这一层的全部状态就这一格。窗只记「在不在裁剪
+    // 里」；框映回图里的那一块、这一块能不能裁、裁完怎么撤销，全在 core（`PinItem::crop_window`
+    // → `crop` → `crop_undo`），页上一个判据也不写（#281）。入口有两只：菜单那一行「裁剪」与
+    // 下面那对 `Return` / `Esc`（步骤 3「按 Enter 确认」，PRD 只点名 Enter；退出这一手 PRD 没
+    // 点名，这里给它一枚 `Esc` 加菜单上同一行的字面，因为一扇模式窗没有第二条出路就是牢房）。
+    property bool cropMode: false
+
+    // 这扇窗上吃键盘的**四**扇框：§5.12.1 的分组名、§5.9.3 的尺寸与缩放、§5.9.4 的透明度、
+    // §5.8.5/§5.8.6 的卡片设置。窗内快捷键的退让只问这一格，不在每一枚键上抄一遍名单——名单抄第二份就是「一件事两个作者」，
+    // 而第四框的人只会改自己那一枚键。为什么按「开着」而不是按「谁在焦点上」：§5.9.3 步骤 3 要
+    // 用户往框里打的正是宽度与百分比，那串数字里有 1、2、3 —— 三枚数字键的键帽。
+    readonly property bool typing: groupPrompt.visible || sizeDialog.visible
+            || opacityDialog.visible || cardDialog.visible
+
+    // 起步的框就是整扇窗：不裁任何东西的那一块矩形在 core 那一头不算一次裁剪
+    // （`crop` 对 `inside == whole` 直接返回 Ok 而不压栈），所以「进来什么也没拖、直接按
+    // Enter」不会在撤销栈里留下一枚空步。框的尺寸是排版不是判据，故在这里一次赋值。
+    function enterCrop() {
+        cropBox.x = 0
+        cropBox.y = 0
+        cropBox.width = win.width
+        cropBox.height = win.height
+        win.cropMode = true
+    }
+
+    // 交出去的是**桌面物理像素**的那一块，与 §5.9.11 右拖那一手交出去的是同一个空间、同一套
+    // 换算（见 `dragArea.onReleased` 末尾那四行：窗的物理位置 + 框在窗内的逻辑偏移 × dpr）。
+    // 先收模式再交矩形：`cropWindow` 之后那一次 reload 会重画窗，模式留着就还有一层压在
+    // 新画面上。被 core 拒了（空框）窗也不动，页上读得到的是 reload 回来的那块。
+    function commitCrop() {
+        win.cropMode = false
+        win.view.cropWindow(
+            win.view.pos_x + Math.round(cropBox.x * win.dpr),
+            win.view.pos_y + Math.round(cropBox.y * win.dpr),
+            Math.round(cropBox.width * win.dpr),
+            Math.round(cropBox.height * win.dpr))
+    }
+
+    // 一枚把手的共用形状：尺寸、光标，以及把这一拖的 `dx`/`dy` 原样交回外面。八枚同一形状，
+    // 差别只在外面那三行（位置、光标、`onMoved` 里那一条算式）。声明在根上而不是 `cropLayer`
+    // 里：Qt 6 的 inline component 只认**根对象**那一层的 `component` 声明（`Quick::` 前缀
+    // 之外没有第二种写法），而 `CustomCaptureWindow.qml` 的 `component FieldRow` 也在根上。
+    component Grip: Rectangle {
+        id: grip
+
+        width: 10
+        height: 10
+        color: "#ff1e90ff"
+        border.color: "#ffffffff"
+        border.width: 1
+        property int arrow: Qt.ArrowCursor
+        signal moved(real dx, real dy)
+
+        MouseArea {
+            anchors.fill: parent
+            cursorShape: grip.arrow
+            onPositionChanged: (mouse) => grip.moved(mouse.dx, mouse.dy)
+        }
+    }
+
     Image {
         id: picture
         anchors.fill: parent
@@ -1486,8 +1591,164 @@ Window {
         }
     }
 
-    // The single-pin menu (§5.9.12 to §5.9.18). §5.10's batch menu acts on a
-    // selection instead of on this window and is Phase 2.
+    // §5.8.4 方式二：拖进**这一枚**贴图窗的那几格（文件与网页地址混着拖也算）。
+    //
+    // 这一层只做两件页做得动的事：把 `mimeData.urls` 那几格串成一串（分隔符是
+    // `settings_view::RECORD` 那一枚控制字符 `\u001d`——整个程序里列表分隔符只有这一个作者，而选
+    // 它的理由在这里同样成立：格子的**值是用户自己拖进来的**，任何可见字符都可能出现在里面），以及
+    // 把这一枚窗的 `pinId` 一起递过去。什么算文件、什么算地址、这一趟换不换这一枚、取不取得回，
+    // 一句都不在页上判：那是 `falcon_core::drop` 与 `crate::drop_in` 各自的作者（#281）。
+    //
+    // `String(urls[i])` 而不是 `urls[i].toLocalFile()`：本机这代 Qt 给 JS 的 `QUrl` 一个成员都读不
+    // 出来（P37 在 `AnnotationToolbar.qml` 与 `PinWindow.qml` 那两处 `accepted` 上量过 `TypeError`），
+    // 所以递过桥的只能是整句 URL，认它的手在 `crate::save::local_path`。
+    //
+    // 交回的那一句不读：`session.pinDrop` 已经把同一句写进 `session.status`，与 `saveAs` 那一腿同
+    // 一形状（`onAccepted` 丢掉返回值，屏幕上那一行由 status 那一格说）。
+    //
+    // 穿透模式（§5.9.12 那枚 `Qt.WindowTransparentForInput`）下这一格收不到落下：整扇窗对输入是
+    // 透明的，PRD 给的出口是 §5.9.13 那一枚「关掉穿透」的入口，不是这里再想一个绕过它的办法。
+    DropArea {
+        id: dropIn
+        anchors.fill: parent
+        onDropped: (drop) => {
+            const urls = drop.mimeData.urls
+            const parts = []
+            for (let i = 0; i < urls.length; ++i) {
+                parts.push(String(urls[i]))
+            }
+            drop.accept()
+            win.session.pinDrop(win.pinId, parts.join(String.fromCharCode(0x1d)))
+        }
+    }
+
+    // §5.9.9 步骤 2「拖动裁剪边界」的那一层：一块压暗、一枚裁剪框、八条可拖的边界（四边 +
+    // 四角）与整块的移动。它在 `dragArea` **之后**声明，所以同一坐标下这一层吃下鼠标、窗不再
+    // 被拖动 —— 模式期间窗属于裁剪，这正是步骤 1 那一句「进入裁剪模式」要的形状；退出（Enter
+    // 或 Esc）后 `dragArea` 立刻恢复它原本的那一手，两处不重叠。
+    //
+    // 八条算式各只写在自己那一行，判的是「这一拖把手挪到窗内的哪一格」，是排版不是裁剪判据：
+    // 最小 1 px 只为「别把框抹成一格都摸不着」，而这一块到图里是哪一块、装不装得下，由 core
+    // 那一手判（`crop_window` → `crop`，上面 `commitCrop` 那封信）。
+    Rectangle {
+        id: cropLayer
+
+        visible: win.cropMode
+        anchors.fill: parent
+        color: "#66000000"
+
+        Rectangle {
+            id: cropBox
+
+            color: "transparent"
+            border.color: "#ffeeeeee"
+            border.width: 1
+
+            // 框体：整块搬动，动的是位置不是尺寸。
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.SizeAllCursor
+                onPositionChanged: (mouse) => {
+                    cropBox.x = Math.max(0, Math.min(cropBox.x + mouse.dx,
+                                                     cropLayer.width - cropBox.width))
+                    cropBox.y = Math.max(0, Math.min(cropBox.y + mouse.dy,
+                                                     cropLayer.height - cropBox.height))
+                }
+            }
+
+            Grip {
+                x: -5
+                y: cropBox.height / 2 - 5
+                arrow: Qt.SizeHorCursor
+                onMoved: (dx, dy) => {
+                    var nx = Math.max(0, Math.min(cropBox.x + dx, cropBox.right - 1))
+                    cropBox.width = cropBox.right - nx
+                    cropBox.x = nx
+                }
+            }
+            Grip {
+                x: cropBox.width - 5
+                y: cropBox.height / 2 - 5
+                arrow: Qt.SizeHorCursor
+                onMoved: (dx, dy) => {
+                    cropBox.width = Math.max(1, Math.min(cropBox.width + dx,
+                                                         cropLayer.width - cropBox.x))
+                }
+            }
+            Grip {
+                x: cropBox.width / 2 - 5
+                y: -5
+                arrow: Qt.SizeVerCursor
+                onMoved: (dx, dy) => {
+                    var ny = Math.max(0, Math.min(cropBox.y + dy, cropBox.bottom - 1))
+                    cropBox.height = cropBox.bottom - ny
+                    cropBox.y = ny
+                }
+            }
+            Grip {
+                x: cropBox.width / 2 - 5
+                y: cropBox.height - 5
+                arrow: Qt.SizeVerCursor
+                onMoved: (dx, dy) => {
+                    cropBox.height = Math.max(1, Math.min(cropBox.height + dy,
+                                                          cropLayer.height - cropBox.y))
+                }
+            }
+            Grip {
+                x: -5
+                y: -5
+                arrow: Qt.SizeFDiagCursor
+                onMoved: (dx, dy) => {
+                    var nx = Math.max(0, Math.min(cropBox.x + dx, cropBox.right - 1))
+                    var ny = Math.max(0, Math.min(cropBox.y + dy, cropBox.bottom - 1))
+                    cropBox.width = cropBox.right - nx
+                    cropBox.height = cropBox.bottom - ny
+                    cropBox.x = nx
+                    cropBox.y = ny
+                }
+            }
+            Grip {
+                x: cropBox.width - 5
+                y: -5
+                arrow: Qt.SizeBDiagCursor
+                onMoved: (dx, dy) => {
+                    var ny = Math.max(0, Math.min(cropBox.y + dy, cropBox.bottom - 1))
+                    cropBox.height = cropBox.bottom - ny
+                    cropBox.y = ny
+                    cropBox.width = Math.max(1, Math.min(cropBox.width + dx,
+                                                         cropLayer.width - cropBox.x))
+                }
+            }
+            Grip {
+                x: -5
+                y: cropBox.height - 5
+                arrow: Qt.SizeBDiagCursor
+                onMoved: (dx, dy) => {
+                    var nx = Math.max(0, Math.min(cropBox.x + dx, cropBox.right - 1))
+                    cropBox.width = cropBox.right - nx
+                    cropBox.x = nx
+                    cropBox.height = Math.max(1, Math.min(cropBox.height + dy,
+                                                          cropLayer.height - cropBox.y))
+                }
+            }
+            Grip {
+                x: cropBox.width - 5
+                y: cropBox.height - 5
+                arrow: Qt.SizeFDiagCursor
+                onMoved: (dx, dy) => {
+                    cropBox.width = Math.max(1, Math.min(cropBox.width + dx,
+                                                         cropLayer.width - cropBox.x))
+                    cropBox.height = Math.max(1, Math.min(cropBox.height + dy,
+                                                           cropLayer.height - cropBox.y))
+                }
+            }
+        }
+    }
+
+    // The single-pin menu (§5.9.12 to §5.9.18). §5.10 的批量菜单不是另一期工程，也不是菜单
+    // 之外的另一处地方：下面那几行（§5.10.3 的透明度、§5.10.4 的重置/关闭/销毁）就长在这一份菜单里。
+    // "这一手带走几枚"由桥侧那一处答（`state::batch_hand`：被叫的那一枚在名单里、且名单不止一枚
+    // 时才是批量，否则只叫本窗），窗一枚也不数。
 
     // §5.9.16 step 2 names two doors to one thing - 「按 `Ctrl+C` 或选择"复制图片"」 - so
     // the thing is declared once and both doors point at it. An `Action` rather than a
@@ -1517,7 +1778,9 @@ Window {
 
     // §5.10.1 步骤 4 要的是**两只门、一只手**：「点空白区域」与「按 Esc」都退出多选，所以
     // 与 `copyAction` 同一形状 —— 声明一次，两扇门都 `trigger()`，而 `win.session.clearSelection`
-    // 在场上一处也不会多。它不挂进菜单（§5.10 的批量菜单是 Phase 2），但**不能**因此
+    // 在场上一处也不会多。§5.10 的批量菜单早就在这扇窗的右键菜单上了（「重置视图」「关闭」
+    // 「销毁」三枚入口见下面那一段），而这一条依旧不挂进去：§5.10.1 步骤 4 点名的退出入口只有
+    // 空白区域与 Esc 两只门。但它**不能**因此
     // `enabled: false`：一枚 disabled 的 Action 的 `trigger()` 是空转，两扇门就一起哑了。
     Action {
         id: clearSelectionAction
@@ -1532,6 +1795,9 @@ Window {
     Shortcut {
         sequences: [StandardKey.Cancel]
         context: Qt.WindowShortcut
+        // 裁剪模式下让给下面那枚 `cropEscapeKey`：那时 `Esc` 说的是「退出这一层」，不是
+        // 「清掉多选」（两枚 `enabled` 互斥，同一刻场上只有一枚在听）。
+        enabled: !win.cropMode
         onActivated: clearSelectionAction.trigger()
     }
 
@@ -1590,21 +1856,44 @@ Window {
         onTriggered: win.view.toggleInvert()
     }
 
+    // §5.9.2 步骤 2「滚动鼠标滚轮，或使用 `+`、`-`」：滚轮那一只早就在场（`dragArea.onWheel`），
+    // `+` / `-` 这一只到 P18x 之前都没有落点，所以这一节的那半句是空的。与上面那六枚同一形状
+    // （声明一次，菜单那一行 `action:` 到它，键 `trigger()` 它），窗侧一算式也不写：梯子上下一
+    // 级是什么、上下界在哪，全在 core（`ZOOM_STEPS` / `ZOOM_MIN` / `ZOOM_MAX`，`zoomStep` 那一手
+    // 走的就是同一只作者）。
+    //
+    // 两枚键帽写成 `["+"]` 与 `["-", "="]`：`-` 在主键盘上，`=` 是不按 Shift 时同一枚键的字面
+    // （美式布局上 `+` 要 Shift），键帽本身是 PRD 点名的那两枚，`=` 只是同一枚物理键的另一面。
+    Action {
+        id: zoomInAction
+
+        text: "放大"
+        onTriggered: win.view.zoomStep(true)
+    }
+
+    Action {
+        id: zoomOutAction
+
+        text: "缩小"
+        onTriggered: win.view.zoomStep(false)
+    }
+
     // 键帽是本档钉的默认，不是 PRD 钉的：第 1010 行只说「数字键」、第 1026 行只说「对应快捷键」，
     // 而第 7 行明写「快捷键使用常见默认值举例，实际以用户设置和运行平台为准」。这里钉
     // 1=向左旋转、2=向右旋转、3=灰度，即那三行在菜单上的次序；「§5.16.1 用户可在设置中修改
-    // 快捷键」那一问目前只覆盖全局表 `hotkey.actions`，窗口内这三枚键还没进那张表，差距逐名记
+    // 快捷键」那一问目前只覆盖全局表 `hotkey.actions`，窗口内这几枚键还没进那张表，差距逐名记
     // 在台账的欠账里，不在这里冒充已做。
     //
-    // `enabled: !groupField.activeFocus` 是这三枚键唯一的一处退让：§5.12.1 的分组名框是这扇窗上
-    // 唯一的文本输入（全档 `TextField` 只出现那一处），焦点在它上面时用户打的「1」是名字的
-    // 一个字符，不是旋转的手势。不做这层退让，重命名「第1组」就变成一次旋转。
+    // 退让问的是上面那一格 `win.typing`：焦点落在窗上任何一扇吃键盘的框里时，用户打的「1」是
+    // 名字或宽度的一个字符，不是旋转的手势——§5.12.1 的分组名框之外，§5.9.3 的尺寸三格与
+    // §5.9.4 的透明度一格同样要人往里打数字。不做这层退让，重命名「第1组」或输入宽度 1280
+    // 就各成一次手势，而窗内的键也不在各枚键上抄一份名单。
     Shortcut {
         id: rotateLeftKey
 
         sequences: ["1"]
         context: Qt.WindowShortcut
-        enabled: !groupField.activeFocus
+        enabled: !win.typing
         onActivated: rotateLeftAction.trigger()
     }
 
@@ -1613,7 +1902,7 @@ Window {
 
         sequences: ["2"]
         context: Qt.WindowShortcut
-        enabled: !groupField.activeFocus
+        enabled: !win.typing
         onActivated: rotateRightAction.trigger()
     }
 
@@ -1622,8 +1911,59 @@ Window {
 
         sequences: ["3"]
         context: Qt.WindowShortcut
-        enabled: !groupField.activeFocus
+        enabled: !win.typing
         onActivated: grayscaleAction.trigger()
+    }
+
+    // 上面那两枚 Action 的键那一半。§5.9.2 步骤 2 明写「滚动鼠标滚轮，或使用 `+`、`-`」，
+    // 所以这两枚键是 PRD 给的手，不是这里自己长出来的。退让与数字键同一封（`win.typing`）：
+    // 框里打的 `+` 是宽度的一个字符。裁剪模式下也让开（`!win.cropMode`）：那时这扇窗
+    // 属于裁剪层，键盘上那几枚该说的是「确认 / 退出」，而不是在用户没看的时候把底下的画换掉。
+    Shortcut {
+        id: zoomInKey
+
+        sequences: ["+"]
+        context: Qt.WindowShortcut
+        enabled: !win.typing && !win.cropMode
+        onActivated: zoomInAction.trigger()
+    }
+
+    Shortcut {
+        id: zoomOutKey
+
+        sequences: ["-", "="]
+        context: Qt.WindowShortcut
+        enabled: !win.typing && !win.cropMode
+        onActivated: zoomOutAction.trigger()
+    }
+
+    // §5.9.9 步骤 3「按 `Enter` 确认」。`Return` 与 `Enter` 两枚都接：前者是主键盘那枚，
+    // 后者是小键盘那枚，`sequences:` 一次把两枚都接上，与上面 `StandardKey.Copy` 那封信同一
+    // 理由（一枚键序在 Qt 里可以对应多枚 native 绑定，只接第一枚就是漏一半）。
+    Shortcut {
+        id: cropEnterKey
+
+        sequences: ["Return", "Enter"]
+        context: Qt.WindowShortcut
+        enabled: win.cropMode && !win.typing
+        onActivated: win.commitCrop()
+    }
+
+    // 裁剪模式的退路。PRD 那一句只点了 Enter，退出这一手是这一层自己欠的：一层压暗吃下了
+    // 鼠标，用户拖完想反悔就得有一枚键说话。键帽写死 `"Esc"`，不抬进 Qt 那枚标准取消键序：
+    // 那一套标准键序在场上已经有主（上面 `clearSelectionAction` 那一支，`esc == 1` 那枚
+    // 尺判的就是它只写一遍），两枚 Shortcut 各叫一次同一套标准键序就是一件事两种说法。
+    // 两支的 `enabled` 互斥（上面那一支读 `!win.cropMode`，这一支读 `win.cropMode`），所以同一刻
+    // 场上永远只有一支在听 `Esc`：非裁剪时清名单，裁剪时退出这一层。两支都再让一让
+    // `win.typing`：框开着的时候 `Esc` 说的是「把这扇框收掉」，Qt 自己会那么办，窗不必趁势
+    // 把名单清了或把裁剪层退出。
+    Shortcut {
+        id: cropEscapeKey
+
+        sequences: ["Esc"]
+        context: Qt.WindowShortcut
+        enabled: win.cropMode && !win.typing
+        onActivated: win.cropMode = false
     }
 
     Menu {
@@ -1674,9 +2014,30 @@ Window {
 
         MenuSeparator {}
 
-        MenuItem { text: "放大"; onTriggered: win.view.zoomStep(true) }
-        MenuItem { text: "缩小"; onTriggered: win.view.zoomStep(false) }
+        MenuItem { action: zoomInAction }
+        MenuItem { action: zoomOutAction }
         MenuItem { text: "重置缩放"; onTriggered: win.view.resetZoom() }
+
+        // §5.9.3 步骤 1/2「用户打开贴图菜单 → 选择"尺寸与缩放"」那一格。字面取 PRD 那一行的
+        // 词，`…` 说的是「按下之后还有一扇框要打字」，与本页「另存为…」/「新建分组…」同一
+        // 形状。判据一个也不在这里：三格文本原样交给 `applySizeText`，等比锁定、上下界、非法
+        // 输入三判全在 core（`size_zoom_request`），拒语也是它那句。
+        MenuItem { text: "尺寸与缩放…"; onTriggered: sizeDialog.open() }
+
+        // §5.9.4 步骤 2 的第二扇门「或在菜单中输入透明度」（第一扇是 Ctrl+滚轮，早就在场）。
+        // 这一格只**判**那一格的文本（`opacityFromText`），按下之后交回的百分比交给
+        // `opacitySetTarget` 那只唯一的落点 —— 透明度是 §5.10.3 的批量一手，窗不数名单。
+        MenuItem { text: "透明度…"; onTriggered: opacityDialog.open() }
+
+        // §5.8.5 步骤 4「用户可调整卡片宽度、字号、字体和背景颜色」与 §5.8.6 步骤 4–5 那一扇
+        // 就地调整的窗。`visible` 读的是 `view.is_card` —— 判断本体是 core 那一格
+        // `PinItem::card` 有没有，桥只搬（#281），于是「这一行看得见、按下只会说这不是卡片」
+        // 那一族门在这一层就组不出来（与上面「刷新截图」那两行同一形状，#494）。
+        MenuItem {
+            text: "卡片设置…"
+            visible: win.view.is_card
+            onTriggered: cardDialog.open()
+        }
 
         MenuSeparator {}
 
@@ -1701,6 +2062,20 @@ Window {
 
         MenuItem { text: "固定缩略图"; onTriggered: win.view.toggleThumbnail() }
         MenuItem { text: "退出缩略图"; onTriggered: win.view.exitThumbnail() }
+        // §5.9.9 步骤 1「激活贴图并进入裁剪模式」的那一枚入口。一条字面两只手（进与退是同一
+        // 枚），与上面「独显」/「显示全部贴图」同一形状：字面读的就是 `win.cropMode` 那一格，
+        // 窗上压暗层跟着它，所以「菜单说什么」与「窗上是什么」永远是同一刻的同一格。
+        // 进去之后鼠标属于裁剪层（`cropLayer` 在 `dragArea` 之后声明），确认是 `Enter`、
+        // 退出是 `Esc` 或再按这一行；块内那四行算式只搬框，裁剪判据在 core。
+        MenuItem {
+            text: win.cropMode ? "退出裁剪" : "裁剪…"
+            onTriggered: {
+                if (win.cropMode)
+                    win.cropMode = false
+                else
+                    win.enterCrop()
+            }
+        }
         MenuItem { text: "撤销裁剪"; onTriggered: win.view.undoCrop() }
         MenuItem { text: "恢复原图"; onTriggered: win.view.restoreOriginal() }
 
@@ -1994,6 +2369,218 @@ Window {
                 width: 240
                 placeholderText: "输入分组名称"
                 onAccepted: groupPrompt.accept()
+            }
+        }
+    }
+
+    // §5.9.3 那一扇「尺寸与缩放」。形状照上面 `groupPrompt`：一枚 `Dialog`、Ok/Cancel 两枚
+    // 标准键、`contentItem` 一列 `TextField` —— 页上不多发明一种控件，也不写一个字段的判据。
+    //
+    // 三格的初值：宽、高填的是**这一刻窗上的物理尺寸**（`view.size_w` / `view.size_h`，桥从
+    // 状态机搬出来的那一格），百分比留空。为什么填窗上的数就是「输入窗口尺寸」那一式：core
+    // 把宽高读在 `shown_size`（图自己的那块）上算回缩放，于是打进去的那个数正好是窗要变成的
+    // 那块物理尺寸，「原样按 Ok」算回同一枚缩放、一处也不动。上下界（§5.9.2 的
+    // `ZOOM_MIN`..=`ZOOM_MAX`）页上不抄第二份：越界那句拒语把界自己报出来（`size_zoom_request`）。
+    Dialog {
+        id: sizeDialog
+
+        title: "尺寸与缩放"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        modal: true
+        anchors.centerIn: parent
+        onOpened: {
+            sizeWField.text = String(win.view.size_w)
+            sizeHField.text = String(win.view.size_h)
+            sizePctField.text = ""
+            win.view.dialog_message = ""
+            sizeWField.forceActiveFocus()
+        }
+        // 被拒那一臂把框请回来：Qt 的 `Dialog` 在 `accepted` 之前先把窗收了，而那句拒语要
+        // 让用户看得见、改得了。回滚不需要 —— core 被拒时窗一处也不动（`pin.rs` 的
+        // `the_size_dialog_refuses_what_was_typed_and_changes_nothing` 判的就是这一臂）。
+        // 接受那一臂交回的是**落在窗上的**那枚缩放（core 的答案本体），页上不读它、也不算它。
+        onAccepted: {
+            if (win.view.applySizeText(sizeWField.text, sizeHField.text,
+                                       sizePctField.text) < 0)
+                sizeDialog.open()
+        }
+        contentItem: Column {
+            spacing: 8
+
+            Label { text: "宽度、高度（像素）或缩放百分比 —— 只填一种：" }
+
+            Row {
+                spacing: 8
+
+                TextField {
+                    id: sizeWField
+
+                    width: 88
+                    placeholderText: "宽度"
+                }
+                TextField {
+                    id: sizeHField
+
+                    width: 88
+                    placeholderText: "高度"
+                }
+                TextField {
+                    id: sizePctField
+
+                    width: 88
+                    placeholderText: "百分比"
+                    onAccepted: sizeDialog.accept()
+                }
+            }
+
+            Label { text: "锁定比例：只填宽，高跟着比例走；只填高，宽跟着走；两格都填是一块容器。" }
+
+            // 那一格拒语的唯一读者。串的本体是 core 的 `PinError`（`#[error(…)]` 那六臂中文），
+            // 桥只搬运、页只画；绑的是属性本体，不绑 `dialog_messageChanged` 那种驼峰信号名
+            // （cxx-qt 不驼峰化 qproperty，名字写错是**静默**的，#316 那一族）。
+            Label {
+                text: win.view.dialog_message
+                visible: text !== ""
+                width: 300
+                wrapMode: Text.Wrap
+                color: "#ffc25b5b"
+            }
+        }
+    }
+
+    // §5.9.4 步骤 2「或在菜单中输入透明度」那一格。同一形状、同一「被拒就把框请回来」的招，
+    // 区别只在按下之后那一手交出去的是**判出来的百分比**而不是文本：透明度是 §5.10.3 的批量
+    // 一手，「这一手改几枚」由 `state::batch_hand` 判一次，页上把数交给既有的那只落点
+    // `opacitySetTarget`（与菜单那三行、Ctrl+滚轮同一只手，窗不数名单）。
+    //
+    // 界不抄第二份：`typed_opacity` 那一头判的是 `OPACITY_MIN`..=100，拒语里带着这两个数。
+    // 0 那一档在这一扇门上到不了 —— 规则第一句「透明度过低时仍应保留找回窗口的方式」要的
+    // 就是这一扇门自己走得回来，理由写在 `pin.rs` 那封信里。
+    Dialog {
+        id: opacityDialog
+
+        title: "透明度"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        modal: true
+        anchors.centerIn: parent
+        onOpened: {
+            opacityField.text = String(win.view.opacity)
+            win.view.dialog_message = ""
+            opacityField.forceActiveFocus()
+        }
+        onAccepted: {
+            const pct = win.view.opacityFromText(opacityField.text)
+            if (pct < 0)
+                opacityDialog.open()
+            else
+                win.opacitySetTarget(win.pinId, pct)
+        }
+        contentItem: Column {
+            spacing: 8
+
+            Label { text: "不透明度百分比（100 = 完全不透明）：" }
+
+            TextField {
+                id: opacityField
+
+                width: 120
+                placeholderText: "百分比"
+                onAccepted: opacityDialog.accept()
+            }
+
+            Label {
+                text: win.view.dialog_message
+                visible: text !== ""
+                width: 300
+                wrapMode: Text.Wrap
+                color: "#ffc25b5b"
+            }
+        }
+    }
+
+    // §5.8.5 步骤 4「调整卡片宽度、字号、字体和背景颜色」与 §5.8.6 步骤 4–5 那一扇就地调整的窗。
+    // 形状照上面 `sizeDialog`：一枚 `Dialog`、Ok/Cancel 两只标准键、一列 `TextField`、被拒那一臂
+    // 把框请回来 —— 页上不发明第二种控件，也不写一个字段的判据（四判全在 core 与 `state.rs`）。
+    //
+    // 四格的初值是 `readCard` 现读的**这一枚卡片此刻**用的那四枚数（`[card]` 打底、这一枚被调过
+    // 的那几格盖上去），不是 `[card]` 的那四枚：打开 A 卡片的窗该看见 A 现在真的是多宽，页上显示
+    // 480 而 A 其实是 700 时按 Ok 就是把 A 改回 480 —— 那一手没人要求过。
+    //
+    // 空着的那一格 = 这一枚在这一格上仍跟着 `[card]`；那一判由 `card_edit` 一名作者判，页上既不
+    // 替用户猜一枚颜色、也不把 `[card]` 那一枚数当成「用户刚填的」打回去（#281）。
+    Dialog {
+        id: cardDialog
+
+        title: "卡片设置"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        modal: true
+        anchors.centerIn: parent
+        onOpened: {
+            win.view.readCard()
+            cardWField.text = String(win.view.card_width)
+            cardFontField.text = String(win.view.card_font_size)
+            cardFamilyField.text = win.view.card_family
+            cardColourField.text = win.view.card_background
+            win.view.dialog_message = ""
+            cardWField.forceActiveFocus()
+        }
+        // 被拒那一臂把框请回来（与 `sizeDialog` 同一招）：core 在被拒时不提交身份，屏幕上留下的
+        // 还是旧的那一张，所以这里没有回滚要做，只有那一格拒语要让人看得见、改得了。
+        onAccepted: {
+            if (!win.view.applyCardEdit(cardWField.text, cardFontField.text,
+                                        cardFamilyField.text, cardColourField.text))
+                cardDialog.open()
+        }
+        contentItem: Column {
+            spacing: 8
+
+            // 同一格在两张卡上叫不同名字：§5.8.6 那一扇要的是「颜色值」（改它就是步骤 5 那「两半
+            // 一起换」），§5.8.5 那一扇要的是「背景颜色」。题头跟着 `card_colour` 走，页上不猜。
+            Label {
+                text: win.view.card_colour
+                        ? "颜色值：改它会把色块与那一行一起换。留空 = 这一格没填。"
+                        : "宽度、字号、字体、背景颜色 —— 留空的那一格仍跟着 [card]。"
+                width: 320
+                wrapMode: Text.Wrap
+            }
+
+            Row {
+                spacing: 8
+
+                TextField {
+                    id: cardWField
+
+                    width: 88
+                    placeholderText: "宽度"
+                }
+                TextField {
+                    id: cardFontField
+
+                    width: 88
+                    placeholderText: "字号"
+                }
+                TextField {
+                    id: cardFamilyField
+
+                    width: 140
+                    placeholderText: "字体"
+                }
+                TextField {
+                    id: cardColourField
+
+                    width: 120
+                    placeholderText: win.view.card_colour ? "颜色值" : "背景颜色"
+                    onAccepted: cardDialog.accept()
+                }
+            }
+
+            // 那一格拒语的唯一读者，与上面两扇输入框同一枚绑法：绑属性本体，不绑驼峰信号名。
+            Label {
+                text: win.view.dialog_message
+                visible: text !== ""
+                width: 300
+                wrapMode: Text.Wrap
+                color: "#ffc25b5b"
             }
         }
     }

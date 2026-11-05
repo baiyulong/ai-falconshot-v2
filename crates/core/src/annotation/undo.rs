@@ -140,7 +140,9 @@ impl UndoStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::annotation::command::{clone_command, crop_command, move_command, style_command};
+    use crate::annotation::command::{
+        clone_command, crop_command, delete_and_renumber_command, move_command, style_command,
+    };
     use crate::annotation::model::{Brush, Element, Geom, Kind, Style, KINDS};
     use crate::geometry::{PhysPoint, PhysRect};
     use crate::imageops::Shape;
@@ -361,6 +363,7 @@ mod tests {
         Move(u8, i32, i32),
         Style(u8, u32),
         Clone(u8, i32, i32),
+        Delete(u8),
         Renumber(u32),
         Crop(u32, u32),
         Undo,
@@ -384,6 +387,7 @@ mod tests {
             (0u8..16, -40..40i32, -40..40i32).prop_map(|(i, dx, dy)| Op::Move(i, dx, dy)),
             (0u8..16, 1u32..24).prop_map(|(i, w)| Op::Style(i, w)),
             (0u8..16, -30..30i32, -30..30i32).prop_map(|(i, dx, dy)| Op::Clone(i, dx, dy)),
+            (0u8..16).prop_map(Op::Delete),
             (1u32..30).prop_map(Op::Renumber),
             (1u32..200, 1u32..200).prop_map(|(w, h)| Op::Crop(w, h)),
             Just(Op::Undo),
@@ -479,10 +483,20 @@ mod tests {
                     }
                     Op::Clone(i, dx, dy) => {
                         if let Some(id) = Op::pick(&m.doc, i) {
-                            // A copy mutates the document as it is made, so the
-                            // builder takes the document by value like the live
-                            // Ctrl-drag gesture does.
-                            if let Some(cmd) = clone_command(&mut m.doc, &[id], dx, dy) {
+                            if let Some(cmd) = clone_command(&m.doc, &[id], dx, dy) {
+                                cmd.apply(&mut m.doc);
+                                grew = stack.record(cmd, t);
+                                recorded = true;
+                            }
+                        }
+                    }
+                    Op::Delete(i) => {
+                        // §5.7.12 步 5：删掉一枚编号可能带出一条 `Compound`（删除 + 自动
+                        // 重排），也可能只是一条 `Remove`。两条路都从这同一个落点走，因为它
+                        // 比的是整张表 —— 撤销一次删除要把那几枚交回它们被记下的位置。
+                        if let Some(id) = Op::pick(&m.doc, i) {
+                            if let Some(cmd) = delete_and_renumber_command(&m.doc, &[id]) {
+                                cmd.apply(&mut m.doc);
                                 grew = stack.record(cmd, t);
                                 recorded = true;
                             }

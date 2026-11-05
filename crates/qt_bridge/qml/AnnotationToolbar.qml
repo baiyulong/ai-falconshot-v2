@@ -38,8 +38,16 @@ Rectangle {
     ///
     /// 与 `send_to_menu` 同一件要求：`"".split("|")` 在 JS 里数出**一段空串**而不是零段，
     /// 所以先滤零长段。两枚都随本面板的创建求值一次，与遮罩同生同灭。
-    readonly property var band_said: bar.view.bandColors().split("|")
-                                                   .filter(function (s) { return s.length > 0 })
+    ///
+    /// 第一行那句 `bar.view.band_revision` 不是多余的一读，它是这一行唯一的重发理由：QML 的绑定
+    /// 只为**属性**重发、不为函数调用重发，而 `bandColors()` 每读一次都是现问档。§5.7.21 第二步
+    /// 要的正是「拖完一次，这一排当场就是新顺序」，所以那一枚钟（Rust 每改一次加一格）必须被绑
+    /// 进来 —— 否则页上停在面板创建那一刻的名单，改档要重截一张才看得见。
+    readonly property var band_said: {
+        bar.view.band_revision
+        return bar.view.bandColors().split("|")
+                                       .filter(function (s) { return s.length > 0 })
+    }
     readonly property var palette: bar.band_said.map(function (s) { return Number.parseInt(s, 16) })
 
     /// The three named widths (§5.7.20 step 1), in device pixels. The wheel over them
@@ -120,19 +128,47 @@ Rectangle {
     width: body.implicitWidth + 12
     height: body.implicitHeight + 12
 
+    /// §5.19.4「支持调整工具栏方向和位置」里**落点**那一半的读者。档里
+    /// `[appearance] toolbar_placement` 那枚词经 `Session.toolbar_placement` 递到页上；`auto`
+    /// 到底落在哪一边**不在页上判** —— 页上现问 `Session.toolbarEdge(选区宽, 选区高)`，那一手
+    /// 读的是 core `config::toolbar_edge` 的「长边优先」（#281：一句判断只许一处回答）。绑
+    /// `toolbar_placement` 这一格是为了登记依赖：值一变（§5.20.2 的即时生效）这一问就重跑，
+    /// 页上不缓存落点。`""` 那一臂 = 桥还没 publish（第一帧），走画师原本写死的那一边。
+    readonly property string edge: bar.session.toolbar_placement === ""
+        ? "bottom"
+        : String(bar.session.toolbarEdge(view.hole_w, view.hole_h))
+
     // Under the selection, centred on it, and above it when the bottom edge of the
     // screen leaves no room. Clamped on both axes, because a selection that touches
     // a screen edge is the common case, not the odd one.
+    //
+    // 上下那一头保持原样（横向居中、放不下就翻对面）；左右那一头是纵向居中。摆到左右时这一排
+    // 仍是横排：「方向」那一半（`left`/`right` ⇒ 一列）本轮决定不做，尺寸算的账、以及真做之前
+    // 要先定的那一件产品决定，都写在 PRD §5.19.4 下面那条**实现口径（2026-11-03）**里（#281：
+    // 一处判断一个作者，这里不重述它）。
     x: {
+        if (edge === "left") {
+            return Math.max(4, view.hole_x - width - 10)
+        }
+        if (edge === "right") {
+            return Math.min(view.hole_x + view.hole_w + 10, host.width - width - 4)
+        }
         const cx = view.hole_x + view.hole_w / 2
         return Math.max(4, Math.min(cx - width / 2, host.width - width - 4))
     }
     y: {
-        const below = view.hole_y + view.hole_h + 10
-        if (below + height <= host.height - 4) {
-            return below
+        if (edge === "left" || edge === "right") {
+            const cy = view.hole_y + view.hole_h / 2
+            return Math.max(4, Math.min(cy - height / 2, host.height - height - 4))
         }
-        return Math.max(4, view.hole_y - height - 10)
+        const below = view.hole_y + view.hole_h + 10
+        const above = Math.max(4, view.hole_y - height - 10)
+        if (edge === "top") {
+            return view.hole_y - height - 10 >= 4
+                ? above
+                : Math.min(below, host.height - height - 4)
+        }
+        return below + height <= host.height - 4 ? below : above
     }
 
     /// The mask window has to reload the *other* screen's window after a click that
@@ -360,6 +396,18 @@ Rectangle {
         bar.grabbed()
     }
 
+    /// §5.5.9 的替代分支：这一枚按下去，先把这一张写成一份文件，再把那枚路径交给 shell 的
+    /// 默认关联程序。三道梯（落盘、命名、话）全在 `MaskState::share_out` 那一格，页上一步
+    /// 也不自己判。
+    ///
+    /// 返回值不进 `delivered`，走的是上面 `revealLanded` 那条同一个理由：那一面答的是
+    /// 「这一张给出去了吗」，而这里可能失败的是「对面那个程序收没收下这条请求」——文件其实
+    /// 已经落成了。把一次失败的揭示写成一次失败的保存，就是屏幕上有一句假话。
+    function shareOut() {
+        bar.view.shareOut()
+        bar.grabbed()
+    }
+
     /// §5.5.4 step 4：那条通知被点了一下，把刚落盘的那张图在它自己的目录里亮出来。
     ///
     /// 一次点击恰好一次调用，没有别的入口：这条行没有键位，`Cell` 也不替它代发。
@@ -383,6 +431,17 @@ Rectangle {
     function saveAndPin() {
         bar.pinAfterSave = true
         saveAs.open()
+    }
+
+    /// §5.8.1 步 2 与步 3 的一枚钮：把这一张直接浮成一扇贴图，一份文件也不写。
+    ///
+    /// 它挨着「存完再钉图」而不是替了它，因为那是 PRD 433 那一节的两件不同的事：那一枚要的是
+    /// **用户挑中过的那份文件**浮起来（§10 第 43 项 ①），这一枚要的只是屏幕上这一块画面，
+    /// 用户没打算为它交出目录、名字和一次磁盘。判据全在 `MaskState::pin_selection` 那一格，
+    /// 页上这一步只是把它的返回值交给 `delivered`——那一面答的就是"这一刻屏幕上多了一张贴图吗"。
+    function pin() {
+        bar.delivered = bar.view.pinSelection()
+        bar.grabbed()
     }
 
     // The `--ink` gauge at this door. Everything above is the product's own path; what
@@ -430,11 +489,52 @@ Rectangle {
     //
     // 补零走 `slice(-6)` 而不是别的写法：少一位就是一枚读不出来的颜色（`0a84ff` 会掉成
     // `a84ff`），而档里那一枚的期待值由 `format!("{r:02X}…")` 补着零。
-    function bandSaid() {
-        const hexes = bar.palette.map(function (v) {
+    //
+    // 它单独是一枚函数，因为下面那一格 `band-move` 要读的正是**同一份**名单：一份名单写两遍
+    // 就是两把会各自漂移的尺子（#281 同一口径）。
+    function bandHexes() {
+        return bar.palette.map(function (v) {
             return ("000000" + v.toString(16).toUpperCase()).slice(-6)
         }).join(",")
-        return String(bar.band_said.length) + "|" + String(band.count) + "|" + hexes
+    }
+
+    function bandSaid() {
+        return String(bar.band_said.length) + "|" + String(band.count) + "|" + bar.bandHexes()
+    }
+
+    // §5.7.21 第二步留在屏幕上的一格。`moveColor` 正是页上拖完一次色块之后被按下的那一只手
+    // —— 量具在这里按**两次**：把排头那一枚挪到第二格，再挪回来。两次都真落盘，所以这一趟走完
+    // 之后档里那一排与出发时一字不差，上面那一格 `band` 的期待值也不会被它挪走。
+    //
+    // 九段各有主人：拖过去之后的「名单 + Repeater 真的造出几枚」、拖回来之后的同一对读数、
+    // 出发前/第一次挪后/第二次挪后的那枚钟，`last` 是「那两次各自的返回值与窗上 `band_last` 那一格
+    // 是不是同一句话」，最后一格才是那两句话本身（`splitn` 收着它，句子里出现 `|` 也不会把前八段挤位）。
+    // 那一句必须**紧跟着**每一次按下去读：`band_last` 是一格而不是两格，拖回来那一次会盖掉拖过去
+    // 那一句 —— 在腿末才读它，比的就是「第一次的返回值」与「第二次的句子」，两句话天生不同，
+    // 这一格会红得毫无道理（2026-11-03 真机第一次跑就是这么红的）。
+    //
+    // **这一格说的是什么、不说什么**：它说的是「那只手改得动档、页上跟着换了顺序、那句话走到了
+    // 窗上」，**不是**「一次真的指针拖动会走到这只手」—— 后者要在这条腿上装一只合成拖动，这一族
+    // 还没有那样的基础设施（§10 第 35 项 ⑤ 那一族「要往屏幕上取样」欠的是同一只手）。页上那段
+    // 换算（`slotOf` 把指针落到第几格）因此也只被这一格的**前半**碰到：差值由量具直接给。
+    function bandMoveLeg() {
+        const rev0 = bar.view.band_revision
+        const after = String(bar.view.moveColor(0, 1))
+        const afterLast = String(bar.view.band_last)
+        const hexAfter = bar.bandHexes()
+        const countAfter = String(band.count)
+        const rev1 = bar.view.band_revision
+        const back = String(bar.view.moveColor(1, -1))
+        const backLast = String(bar.view.band_last)
+        const hexBack = bar.bandHexes()
+        const countBack = String(band.count)
+        const rev2 = bar.view.band_revision
+        return [
+            hexAfter, countAfter, hexBack, countBack,
+            String(rev0), String(rev1), String(rev2),
+            after === afterLast && back === backLast ? "yes" : "no",
+            after + " :: " + back
+        ].join("|")
     }
 
     // Phase 1: name the file, then open the door the way the cell does. The name is the
@@ -444,6 +544,10 @@ Rectangle {
         // 日程的第一句，问的是这一页**已经**造出来的东西：面板随遮罩窗创建，比这一枚 Timer
         // 早，而下面每一步都要往 `message` 那一格里写字，所以它只能站在这一步之前。
         bar.gaugeSay("band", bar.bandSaid())
+        // 紧跟着的那一句是「拖得动」那一格（§5.7.21 第二步）。它必须站在**这一行**的位置：
+        // 日程要求它在 `band` 之后、在任何一次往 `message` 格里写字之前，而它自己动的是档
+        // 不是那句话，所以它插不进更下面任何一站。
+        bar.gaugeSay("band-move", bar.bandMoveLeg())
         const stem = String(bar.gauge[0]) + "/" + String(bar.gauge[1])
         saveAs.currentFolder = bar.dlgUrl(String(bar.gauge[0]) + "/")
         saveAs.currentFile = bar.dlgUrl(stem)
@@ -475,6 +579,12 @@ Rectangle {
         const pinName = bar.dlgUrl(String(bar.gauge[0]) + "/" + String(bar.gauge[1]) + "-p.png")
         const pinned = bar.view.saveAndPin(pinName, "")
         bar.gaugeSay("pin-after", String(pinned) + "|" + bar.view.message)
+        // 这一腿刚钉的那一枚**此刻就飘在桌面上**：`saveAndPin` 现在会把名册的读数搬过桥，窗随之
+        // 长出来（规矩住在 `crate::hotkey::republish_roster` 头顶那段）。而本门的 `no ghost` 那一行
+        // 判的是「屏幕上那枚墨擦干净了没有」，拿一扇盖住整块选区的贴图去量桌面，量到的是贴图自己。
+        // 于是这一趟把**门自己造出来的那一枚**收起来：§5.15 的全局收起不碰名册，只让它不在屏幕上
+        // 站着 —— `mask pin via qml` 读的是状态机那份渲染帧，与可见与否两件事，收起来它照判。
+        bar.session.hideAllPins()
 
         // The click's before-half has to be a sentence, not silence. P38 read
         // `accept-was ""` here - a true reading, and an empty one, so the graded pair
@@ -716,7 +826,17 @@ Rectangle {
         // 与 `Cell` 同一件要求：这枚也是一枚钮，§5.21.2 那句「工具栏按钮应提供提示文本」
         // 不问它画的是颜色还是字。
         required property string hint
+        /// §5.7.21 第二步的那一只手：「指针在**本枚**局部坐标的 (`mx`,`my`)，这是这一排的第几格？
+        /// `-1` 是不落在任何一格上」。换算只有色带自己会做（它知道自己有几枚、每一枚在哪、多宽），
+        /// 所以页上递进来的是这只手而不是一个格宽 —— 格宽在这里没有第二把尺（18 px 与 `spacing`
+        /// 各归各的主人）。`required` 而不是默认 `null`：漏了一只手就是一枚拖不动的色块，而那
+        /// 正是这一句需求要的整件事，它应当在构造期发红，不在拖不动的那一刻。
+        required property var slotOf
+        /// 点了一下：下一笔的笔色就是这一块（§5.7.21 第一步）。
         signal tapped()
+        /// 拖到了第 `to` 格（§5.7.21 第二步）。只在松手那一格**不是**按下那一格时被发，发出去的是
+        /// 页上算好的目标格号，不是像素。
+        signal dragged(int to)
 
         width: 18
         height: 18
@@ -735,7 +855,23 @@ Rectangle {
             anchors.fill: parent
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
-            onReleased: if (containsMouse) swatch.tapped()
+            // 拖的判据是「松手那一格不是按下的那一格」，不是「按过而且动过」：指针滑回自己
+            // 那一格松手仍然是一次点选 —— §5.7.21 第一步那颗色块不能被一次没走成的拖吞掉。
+            // `from` 记的是按下那一刻落在第几格（-1 = 没落在任何格上，也就没有拖可谈）。
+            property int from: -1
+            onReleased: (mouse) => {
+                const to = swatch.slotOf(mouse.x, mouse.y)
+                if (area2.from >= 0 && to >= 0 && to !== area2.from) {
+                    swatch.dragged(to)
+                } else if (area2.containsMouse) {
+                    swatch.tapped()
+                }
+                area2.from = -1
+            }
+            onPressed: (mouse) => { area2.from = swatch.slotOf(mouse.x, mouse.y) }
+            // 一次被取消的拖（指针跑出窗、面板被关掉……）不许留下一个还亮着的 `from`：下一次
+            // 按下如果没落到任何格上，它会拿**上一次**那一格当起点，把一次点选读成一次拖。
+            onCanceled: { area2.from = -1 }
         }
 
         ToolTip.text: swatch.hint
@@ -774,21 +910,83 @@ Rectangle {
         Row {
             spacing: 6
 
-            Repeater {
-                // 这一枚 id 长在 Repeater 上而不是长在 Row 上：`count` 是「页上真的造出几枚」
-                // 的读数，不是名单长度（与 `HistoryWindow.qml` 的 `buttonRows` 同一枚读数）。
-                id: band
-                model: bar.palette
+            // §5.7.21 step 3's wheel, scoped to the colour band and to nothing else. A
+            // `WheelHandler` is a QObject with no geometry of its own, so it hears over
+            // its parent item — hence the band, its readout and the handler are wrapped in
+            // one `Row` (`colorBand`, the 「主颜色按钮」) rather than the handler being a
+            // child of the whole pen row, which would turn a wheel over a width cell into
+            // an alpha change nobody asked for (the same reason `pens` gives below).
+            Row {
+                id: colorBand
+                spacing: 2
 
-                delegate: Swatch {
-                    required property var modelData
+                Repeater {
+                    // 这一枚 id 长在 Repeater 上而不是长在 Row 上：`count` 是「页上真的造出几枚」
+                    // 的读数，不是名单长度（与 `HistoryWindow.qml` 的 `buttonRows` 同一枚读数）。
+                    id: band
+                    model: bar.palette
 
-                    rgb: modelData
-                    hint: "颜色：点一下，下一笔的笔色就是这一块"
-                    active: bar.view.pen_rgb === modelData
-                    onTapped: bar.view.setColor((modelData >> 16) & 255,
-                                             (modelData >> 8) & 255,
-                                             modelData & 255)
+                    delegate: Swatch {
+                        id: chip
+
+                        required property var modelData
+                        required property int index
+
+                        rgb: modelData
+                        hint: "颜色：点一下，下一笔的笔色就是这一块；按住拖到别的色块那一格，这一排就换成那个顺序"
+                        active: bar.view.pen_rgb === modelData
+                        // 「指针这一落是第几格」逐枚问 Repeater 自己：第 i 枚在哪、多宽都是页上
+                        // **画出**的那两个数，这里不写第二把尺（18 px 与 `spacing: 2` 各归各的主人，
+                        // 把它们抄成一枚 `20` 就是一把会自己漂移的尺子）。只算横轴：拖的落点按列读，
+                        // 指针往上或往下飘一点不该让一次拖作废。
+                        slotOf: (mx, my) => {
+                            const at = chip.mapToItem(colorBand, mx, my)
+                            for (let i = 0; i < band.count; ++i) {
+                                const it = band.itemAt(i)
+                                if (it !== null && at.x >= it.x && at.x < it.x + it.width) {
+                                    return i
+                                }
+                            }
+                            return -1
+                        }
+                        onTapped: bar.view.setColor((modelData >> 16) & 255,
+                                                 (modelData >> 8) & 255,
+                                                 modelData & 255)
+                        // 递出去的是**两个格号之差**而不是新的名单：换算、拒绝与落盘只有设置页
+                        // 「上一格／下一格」那两只钮在用的那一只手（`moveColor` 走的就是它）。
+                        // 页上不再排第二遍顺序，所以「页上拖成了、档里那一排没改」这一族没有出口。
+                        onDragged: (to) => {
+                            bar.view.moveColor(chip.index, to - chip.index)
+                            bar.grabbed()
+                        }
+                    }
+                }
+
+                // §5.7.21 step 3's readout — 第四字节，band 那一排色块本身画不出来的那一个。
+                // 绑 `pen_alpha`（Rust 现读的 qproperty，`stepAlpha` 之后 reload 把它刷新）而不是
+                // 从 `pen_rgb` 里 decode：色块的名单不带 alpha，从色块上读百分比是读错了对象。
+                // 它一直在这一排里，所以 `pen_for` 给马克笔种下的默认半透明一进来就看得见，
+                // 不必等人滚过一次轮。
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: bar.view.pen_alpha + "%"
+                    font.pixelSize: 12
+                    color: bar.view.pen_alpha < 100 ? "#ff9f0a" : "#8e8e96"
+                }
+
+                WheelHandler {
+                    // `notch > 0` 递 `+1`、否则 `-1`：滚一格走一格梯， rung 大小、下限与上限
+                    // 都归 `Layer::step_alpha`（`ALPHA_STEP_PCT` / `ALPHA_MIN_PCT`），这一页只交
+                    // 方向与格数，不再数第二把梯（与 `pens` / `fonts` / `magnifications` 每一枚
+                    // 轮同一口径）。
+                    onWheel: (event) => {
+                        const notch = event.angleDelta.y
+                        if (notch === 0) {
+                            return
+                        }
+                        bar.view.stepAlpha(notch > 0 ? 1 : -1)
+                        bar.grabbed()
+                    }
                 }
             }
 
@@ -857,6 +1055,215 @@ Rectangle {
                     bar.view.applyFilled(!bar.view.filled)
                     bar.grabbed()
                 }
+            }
+        }
+
+        // §5.7.9 步骤 2「设置笔刷大小和形状」与 §5.7.10 步骤 2「设置模糊强度、笔刷大小和形状」
+        // 里那一枚**强度**控件：只有马赛克与模糊两枚工具显示它。门由 `effect_tool` 把 ——
+        // 那一枚布尔问的是「此刻手里的工具有没有强度可设」，而工具在 `TOOLS` 里排第几是 Rust
+        // 的号（QML 自己比索引就是第二把会各自漂移的梯）。标题用 `effect_caption`：同一格数字
+        // 在马赛克那一排叫「块大小」、在模糊那一排叫「模糊强度」，字不同，也不许在这儿猜。
+        //
+        // 取值走 `effect_intensity`（Rust 现读），落值走 `applyEffectIntensity`。形态沿本文件
+        // 已有的一族（轮 + 读数，与线宽、字号同写法）而不是滑杆：滑杆要 `from`/`to` 两枚边界，
+        // 而那两个端点是 `annotate` 夹 intensity 的那两枚（`EFFECT_MIN..EFFECT_MAX`），从没跨过
+        // 在这儿写死 1..96 就是抄散文。轮递 ±1、由 Rust 夹到它自己那两把梯的同一端点上，于是
+        // 屏上的梯与盘上的夹是**同一把**梯，这一页一个边界也不持有。
+        //
+        // 「笔刷大小」那一半由上一排的 细/中/粗 + 轮（`setWidth`，`brush` 直径随它联动）与橡皮那
+        // 一排负责，本行不重做；「形状」那一半（`brush_tool` / `brush_shape` / `applyBrushShape`）
+        // 是 §5.7.10 步骤 2 的另一枚控件，紧接本行下面那一排「笔刷」接的就是它。
+        Row {
+            spacing: 6
+            visible: bar.view.effect_tool
+            height: visible ? implicitHeight : 0
+
+            Caption {
+                label: bar.view.effect_caption
+            }
+
+            // Owned by this Row for the reason `pens` and `fonts` give: the handler hears
+            // over its parent item, which is this strength's caption, readout and nothing
+            // else. `notch > 0` 递 +1、否则 -1：一格一 rung，上下端点归 `annotate`。
+            WheelHandler {
+                onWheel: (event) => {
+                    const notch = event.angleDelta.y
+                    if (notch === 0) {
+                        return
+                    }
+                    bar.view.applyEffectIntensity(bar.view.effect_intensity + (notch > 0 ? 1 : -1))
+                    bar.grabbed()
+                }
+            }
+
+            // The number the wheel agrees on, for the reason the 放大 row gives: between the
+            // clamp's two ends nothing is lit, and a user who rolled has to be able to see
+            // what the pen actually is. Read back off `effect_intensity`, not off a QML
+            // running tally — §5.7.1's per-tool memory can hand either tool a strength this
+            // panel never clicked.
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: String(bar.view.effect_intensity)
+                font.pixelSize: 12
+                color: "#f2f2f2"
+            }
+        }
+
+        // §5.7.8 步骤 2「设置颜色、透明度和笔刷形状」与 §5.7.9 / §5.7.10 步骤 2 里那一枚
+        // **形状**：`brush_tool` / `brush_shape` / `applyBrushShape` 三样早就跨过了这道桥，
+        // 界面上一直缺的是这一排（强度那一行头上那句「另账处理」记的就是它，下面接着）。三枚互斥
+        // 的钮而不是一枚开关：圆头、方头与扁头（§5.7.8 规则那点名的那一枚椭圆）是三个名字，亮着
+        // 的那一枚就是此刻的那一个；序号是 `annotate` 里 `BRUSH_SHAPES` 那张表数的，这一页只管名字。
+        Row {
+            spacing: 6
+            visible: bar.view.brush_tool
+            height: visible ? implicitHeight : 0
+
+            Caption {
+                label: "笔刷"
+            }
+
+            Cell {
+                label: "圆头"
+                hint: "笔刷形状：圆的笔头，荧光笔与马赛克都跟着它"
+                active: bar.view.brush_shape === 0
+                onTapped: {
+                    bar.view.applyBrushShape(0)
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "方头"
+                hint: "笔刷形状：方的笔头，涂一块是一块"
+                active: bar.view.brush_shape === 1
+                onTapped: {
+                    bar.view.applyBrushShape(1)
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "扁头"
+                hint: "笔刷形状：§5.7.8 那句「椭圆形笔刷」—— 扁着走的那一支，垂直于走笔方向那一侧宽出一倍。标签不叫「椭圆」：那是上面工具排里那枚画椭圆的工具的名字"
+                active: bar.view.brush_shape === 2
+                onTapped: {
+                    bar.view.applyBrushShape(2)
+                    bar.grabbed()
+                }
+            }
+        }
+
+        // §5.7.6 步骤 2「选择单向、双向或其他箭头样式」里那**其他样式**的一排。单向与双向不在
+        // 这里：那是 `TOOLS` 上两枚不同的工具，归最上面那一排，样式这一族不重做它们。三枚钮亮
+        // 的是 `arrow_head` 那一个序号，句子在这一页、梯子与「出格就不动笔」在 `annotate`
+        // —— 与「对齐」那一排同一形状。整行在 `arrow_tool` 那扇门后面（成对写 height 与 visible
+        // 的口径同上），门是 Rust 现读的：工具在 `TOOLS` 里排第几是 Rust 的数。
+        Row {
+            spacing: 6
+            visible: bar.view.arrow_tool
+            height: visible ? implicitHeight : 0
+
+            Caption {
+                label: "箭头"
+            }
+
+            Repeater {
+                model: ["三角", "尖角", "圆点"]
+
+                delegate: Cell {
+                    required property int index
+                    required property var modelData
+
+                    // `index` 是 Rust 那张表里的序号：0 实心三角、1 空心 V、2 圆点。
+                    label: modelData
+                    hint: "箭头样式：箭头那头画成" + modelData
+                    active: bar.view.arrow_head === index
+                    onTapped: {
+                        bar.view.applyArrowHead(index)
+                        bar.grabbed()
+                    }
+                }
+            }
+        }
+
+        // §5.7.3 步骤 2「配置圆角半径」：只有手里是圆角矩形时这一行才占高度。两个方向各递 ±1，
+        // 一格有多宽、地板与天花板各是多少都在 `annotate`（透明度那把阶梯同一分工，这一页一个
+        // 边界也不持有）。读数 `corner_radius` 是读回来的：§5.7.1 的每工具记忆可能交回一个这排
+        // 从没按过的半径。步骤 4 那句「通过控制点调整……圆角」要的仍是把手那一族，本轮没接。
+        Row {
+            spacing: 6
+            visible: bar.view.rounded_tool
+            height: visible ? implicitHeight : 0
+
+            Caption {
+                label: "圆角"
+            }
+
+            Cell {
+                label: "更小"
+                hint: "圆角：把这枚矩子的圆角收小一格"
+                onTapped: {
+                    bar.view.stepCornerRadius(-1)
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "更大"
+                hint: "圆角：把这枚矩子的圆角放大一格"
+                onTapped: {
+                    bar.view.stepCornerRadius(1)
+                    bar.grabbed()
+                }
+            }
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "半径 " + bar.view.corner_radius + " px"
+                font.pixelSize: 12
+                color: "#f2f2f2"
+            }
+        }
+
+        // §5.7.12 步骤 2「设置起始编号」：只有手里是编号时这一行才占高度。与上面那两把阶梯
+        // 同一分工 —— 一格一步、地板 1、天花板 9999 都住在 `annotate`，这一排只递方向。
+        // 读数 `counter_start` 是读回来的：它是 `Document` 计数器**此刻**的那一格，所以撤销掉
+        // 一枚号之后这一格跟着往回走的是"下一枚是几"，而不是界面自己记的那个数。
+        // 步骤 5「删除中间编号时可选择是否自动重排」不在这一排里：那一枚开关改的是「删除」怎么被
+        // 记，所以它跟着下面「对象」那一排的删除走（`auto_renumber` / `applyAutoRenumber`）。
+        Row {
+            spacing: 6
+            visible: bar.view.number_tool
+            height: visible ? implicitHeight : 0
+
+            Caption {
+                label: "编号"
+            }
+
+            Cell {
+                label: "更小"
+                hint: "编号：把下一枚号往回退一步"
+                onTapped: {
+                    bar.view.stepCounterStart(-1)
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "更大"
+                hint: "编号：把下一枚号往前进一步"
+                onTapped: {
+                    bar.view.stepCounterStart(1)
+                    bar.grabbed()
+                }
+            }
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "下一枚 " + bar.view.counter_start
+                font.pixelSize: 12
+                color: "#f2f2f2"
             }
         }
 
@@ -934,15 +1341,16 @@ Rectangle {
         }
 
         // §5.7.11 step 4's row, and only for the tool it belongs to. 颜色 is not here
-        // because every pen already has one two rows up; 字体 is not here because a family
-        // name wants a string field rather than a cell.
+        // because every pen already has one two rows up; 字体 is here but not as a `Cell`,
+        // because a family name is a string the user types rather than a rung on a ladder.
         //
         // What this row cannot preview is 背景 and 描边. Step 4 comes before step 5's
-        // click-away, and while the box is open its pixels belong to the `TextInput`, not
+        // click-away, and while the box is open its pixels belong to the `TextEdit`, not
         // to the ink layer - so the first sight of a plate or a ring is the committed
-        // object. 字号 is the exception, and the one that makes this row more than a
-        // promise about the next object: `text_font` is the same style number the cells
-        // light, so the field the user is typing into resizes on the click.
+        // object. 字号 and 字体 are the exceptions, and the two that make this row more than
+        // a promise about the next object: `text_font` and the field's own `font.family` are
+        // the same style numbers the cells light and the string box types, so the box the
+        // user is typing into changes with the click.
         Row {
             spacing: 6
             visible: bar.view.text_tool
@@ -989,17 +1397,59 @@ Rectangle {
                 }
             }
 
-            // The number the cells and the wheel agree on, because between two named
-            // sizes no cell is lit and the user is left aiming blind. The family rides on
-            // the same readout rather than getting a knob of its own: it has no cell to
-            // light, and the row that does have one is §5.7.11's 字体 control, which is
-            // not this round's - but a size with no family beside it would leave the file's
-            // `font_family` row arriving somewhere nothing can look at.
+            // The number the cells and the wheel agree on, bound to Rust because between
+            // two named sizes no cell is lit and the user would be left aiming blind.
+            // 字号 alone: the family has its own cell below, and a readout that repeats
+            // what the field beside it says is two displays of one number with two
+            // lifetimes.
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: bar.view.pen_font + "px · " + bar.view.pen_family
+                text: bar.view.pen_font + "px"
                 font.pixelSize: 12
                 color: "#f2f2f2"
+            }
+
+            Item { width: 1; height: 18 }
+
+            Caption {
+                label: "字体"
+            }
+
+            // §5.7.11 step 4's 字体. A name is a string, so this is the row's one field
+            // rather than a fourth cell, and it is the *only* place on the page that
+            // says which family the pen carries.
+            //
+            // The current answer rides on `placeholderText`, which stays a binding: Qt
+            // shows a placeholder only while `text` is empty, so what the user reads
+            // when the box is untouched is Rust's own string, and what they type is
+            // nobody else's business until they hand it over. Binding `text` instead
+            // would be the trap `sizeBar` records - the first keystroke destroys the
+            // binding, and the box goes on showing a family Rust never accepted.
+            // Committing therefore clears the box, which puts Rust's answer back.
+            //
+            // Focus is this cell's one cost, and it is the one every field on these
+            // windows pays: while the box holds the keys, `surface`'s arrows and chords
+            // hear nothing. A click back on the mask returns them, and §5.7.11 step 5
+            // is a click on the mask anyway.
+            TextField {
+                id: familyField
+
+                width: 130
+                height: 22
+                anchors.verticalCenter: parent.verticalCenter
+                font.pixelSize: 12
+                color: "#f2f2f2"
+                placeholderTextColor: "#8a8a90"
+                placeholderText: bar.view.pen_family
+
+                // `Layer::set_font_family` trims and keeps the pen when what arrives is
+                // blank, so an empty box is 没改 rather than 改成默认 - and the box says
+                // so, because after the clear the placeholder is the family again.
+                onEditingFinished: {
+                    bar.view.setFamily(text)
+                    familyField.text = ""
+                    bar.grabbed()
+                }
             }
 
             Item { width: 1; height: 18 }
@@ -1047,6 +1497,100 @@ Rectangle {
                     bar.grabbed()
                 }
             }
+
+            // §5.7.11 那句「文本描边支持颜色和宽度设置」里缺的那两只手 —— 开关只是把那一圈边
+            // 画出来，颜色与宽度各归这一排。整排的门是 `text_outline`：圈不画的时候摆六枚色块
+            // 和一格宽度，就是让读数指着屏幕上不存在的东西（与 放大／橡皮 那两排的门同规）。
+            Row {
+                spacing: 6
+                visible: bar.view.text_outline
+                // 关着的时候这一排在横向上不占一格：`Row` 只按 `visible` 决定画不画，照旧给
+                // 不可见的孩子留位置，所以宽度自己归零（Column 里那几排归零的是高度，同一件事
+                // 的两个方向）。
+                width: visible ? implicitWidth : 0
+                height: visible ? implicitHeight : 0
+
+                Caption {
+                    label: "圈色"
+                }
+
+                // 借的是主色带那六枚芯片，但只借**点**的那一半：`slotOf` 一律答 -1，所以按住
+                // 拖到别的色块那一格不会重排 —— 换算只有主色带自己会做（它知道自己几枚、每枚
+                // 在哪），而这里拖出个顺序来没有任何一只手会读。
+                Row {
+                    spacing: 2
+
+                    Repeater {
+                        model: bar.palette
+
+                        delegate: Swatch {
+                            required property var modelData
+
+                            rgb: modelData
+                            hint: "描边颜色：点一下，那一圈边就是这一块"
+                            // 亮的是**渲染那一层正在用的那一枚**（`outline_for` 的答案），不是
+                            // 「用户配过没有」：没人配过时屏幕上是一圈让位给笔色的边，那一排
+                            // 芯片要亮的就是那一圈，否则面板与画布会各报一枚（#281）。
+                            active: bar.view.outline_rgb === modelData
+                            slotOf: () => -1
+                            onTapped: {
+                                bar.view.setOutlineColour((modelData >> 16) & 255,
+                                                          (modelData >> 8) & 255,
+                                                          modelData & 255)
+                                bar.grabbed()
+                            }
+                        }
+                    }
+                }
+
+                Caption {
+                    label: "圈宽"
+                }
+
+                // 与 细/中/粗 那一排同一份名单（`bar.pens`）：一圈边就是一条线，core 给线的那把
+                // 尺只有一把，这里不另立第二梯。滚轮是同一句「悬停那一枚钮再滚」的微调。
+                Row {
+                    id: rings
+                    spacing: 2
+
+                    Repeater {
+                        model: bar.pens
+
+                        delegate: Cell {
+                            required property int index
+                            required property var modelData
+
+                            label: ["细", "中", "粗"][index]
+                            hint: ["细：那一圈边最窄", "中：那一圈边中等宽", "粗：那一圈边最宽"][index]
+                            active: bar.view.outline_width === modelData
+                            onTapped: {
+                                bar.view.applyOutlineWidth(modelData)
+                                bar.grabbed()
+                            }
+                        }
+                    }
+
+                    WheelHandler {
+                        onWheel: (event) => {
+                            const notch = event.angleDelta.y
+                            if (notch === 0) {
+                                return
+                            }
+                            bar.view.applyOutlineWidth(bar.view.outline_width + (notch > 0 ? 1 : -1))
+                            bar.grabbed()
+                        }
+                    }
+                }
+
+                // 三枚有名字的芯片之外的那个读数：出厂那一档（2px）不亮任何一枚，没有它用户就
+                // 只能盲滚。`outline_width` 是 Rust 现读的，滚一格 reload 之后跟着变。
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: bar.view.outline_width + "px"
+                    font.pixelSize: 12
+                    color: "#f2f2f2"
+                }
+            }
         }
 
         // §5.7.14's 擦除到透明, and only for the tool it belongs to - the third row of
@@ -1091,6 +1635,103 @@ Rectangle {
             }
         }
 
+        // §5.7.16 / §5.7.17 / §5.7.18 在箭头工具下的那一行：面板报的是**这一串对象**，按下去动的
+        // 也是这一串。框选那一枚是 §5.7.17 第一步的「进入选择模式」，复制与删除是第四步那四件事里
+        // 能按的两枚，左转右转是 §5.7.15 第二步的「拖动旋转控制点」之外那一半「输入旋转角度」。
+        // 样式那一族不在这一行里：笔上那十几枚旋钮已经顺带改这一串（`crates::annotate::Layer` 的
+        // set_* 那一批），一行里再摆一套样式钮就是第二套面板。
+        //
+        // 整行在 `picked_count > 0 || marquee_mode` 那扇门后面（与橡皮、字号那两行同一口径：
+        // visible 与 height 成对写）。枚数、角度、档开着没有，三样都从 `reload` 读回来 —— 界面
+        // 一处也不自己数、自己加。
+        Row {
+            spacing: 6
+            visible: bar.view.picked_count > 0 || bar.view.marquee_mode
+            height: visible ? implicitHeight : 0
+
+            Caption {
+                label: "对象"
+            }
+
+            Cell {
+                label: "框选"
+                hint: "框选：拖一个框，框到的都进这一串"
+                active: bar.view.marquee_mode
+                onTapped: {
+                    bar.view.applyMarquee(!bar.view.marquee_mode)
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "复制"
+                hint: "复制：给这一串做一份副本，副本接着被选中"
+                usable: bar.view.picked_count > 0
+                onTapped: {
+                    bar.view.clonePicked()
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "删除"
+                hint: "删除：抹掉这一串，一次撤销整组拿回"
+                usable: bar.view.picked_count > 0
+                onTapped: {
+                    bar.view.deletePicked()
+                    bar.grabbed()
+                }
+            }
+
+            // §5.7.12 步骤 5「删除中间编号时可选择是否自动重排」里的那一枚选择键。它改的是左边
+            // 那一枚「删除」怎么被记 —— 亮着时那一次删除与它带着的重排是栈上的**一条**编辑 ——
+            // 所以摆在这一枚旁边，而不是编号那一排：把开关门在「手里是编号」后面，用户在真正按
+            // 删除的那一刻（箭头工具在手）反而找不着它。亮与灭读 `auto_renumber` 这一枚 qproperty，
+            // 界面不另记一份（同一档开关的另一种写法见上面「框选」）。
+            Cell {
+                label: "重排"
+                hint: "自动重排：删掉中间一号后，后面的号自己往前补上那个空档"
+                active: bar.view.auto_renumber
+                onTapped: {
+                    bar.view.applyAutoRenumber(!bar.view.auto_renumber)
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "左转"
+                hint: "左转：每一枚绕它自己的中心转一格"
+                usable: bar.view.picked_count > 0
+                onTapped: {
+                    bar.view.stepRotation(-1)
+                    bar.grabbed()
+                }
+            }
+
+            Cell {
+                label: "右转"
+                hint: "右转：每一枚绕它自己的中心转一格"
+                usable: bar.view.picked_count > 0
+                onTapped: {
+                    bar.view.stepRotation(1)
+                    bar.grabbed()
+                }
+            }
+
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                // 只在真有色枚可数时报这一行：那一档单独开着的时候，「0 枚 · 转 0°」是一句
+                // 关于不存在的东西的读数。
+                visible: bar.view.picked_count > 0
+                // 那一个度数是读回来的而不是这里加的：屏幕上写的与撤销栈上落的那一条必须是同一
+                // 份，一格「转了 15° 而屏上还停在 0°」没人能核对（`Layer::step_rotation` 头上
+                // 那句阶梯分工讲的正是这件事）。
+                text: bar.view.picked_count + " 枚 · 转 " + bar.view.picked_rotation + "°"
+                font.pixelSize: 12
+                color: "#8e8e96"
+            }
+        }
+
         // 那两行菜单的名字，P122 起第一次走到屏幕上：`sendToMenuNames()` 与 `shareMenuNames()`
         // 自 P91/P92 建起，`qml/` 里 0 处读者，判它们的一直是 Rust 单测与启动 banner（那两枚读的是
         // 库里那份解析结果，不是此刻这一行）。模型是 `[output] send_to_apps` / `share_targets`
@@ -1100,8 +1741,10 @@ Rectangle {
         // [`crate::mask::MaskState::send_to_target`] → `falcon_core::sendto::plan` →
         // `platform_windows::open::dispatch`）已经长在 Rust 上，而 §5.5.10 步骤 2 要的正是
         // 「完成截图后点击"发送到应用"」——一枚点不动的按钮就是在邀请人点它，那一格如今反过来钉
-        // 的是"按得动而没处可去"。share 那一半仍是 `Text`：§5.5.9 的原生分享与 provider 派发
-        // 都还没有 owner，所以它只是把"有哪些目标"摆在屏幕上，不假装能按。
+        // 的是"按得动而没处可去"。share 那一半仍是 `Text`：provider 派发（把这一张**递给 slack**
+        // 而不是递给关联表）到现在还没有 owner，所以它只把"有哪些目标"摆在屏幕上，不假装能按。
+        // §5.5.9 的替代分支那一枚入口不住在这一排，住在下面那一路的「打开方式」里
+        // （`bar.shareOut()`）——两处别读成两处入口：这一排是名单，那一枚才是按得动的手。
         //
         // 话（`sendToLast`）写在同一行的末尾而不是那条通知行里：通知那一行整块被
         // `MouseArea` 盖着（§5.5.4 步骤 4 的"点击打开所在目录"），把派发那句放进去会让人
@@ -1279,6 +1922,34 @@ Rectangle {
                 hint: "快速保存：不问名字，按设置里的路径直接落盘"
                 usable: bar.view.selected
                 onTapped: bar.quickSave()
+            }
+
+            // §5.5.9 的替代分支。原生分享面板那一臂按 2026-11-02 的划界不做（Windows 那一片
+            // 是 WinRT 的 `DataTransferManager`，要应用以包身份运行，而本程序是一枚未打包 exe），
+            // 于是那一节的「隐藏入口或提供替代方案」两读里走后者：交给系统默认的看图程序。
+            //
+            // 名字取「打开方式」而不是「分享」：这一枚按下去**不**认目标——它把文件交给 shell 的
+            // 关联表，交给的到底是哪一扇窗由那台机器说了算。把它叫「分享」而下面那一排又写着
+            // slack / teams 这些**具体目标**的名字（那一排是 `[output] share_targets` 的名单，
+            // 仍是 `Text`、仍不可按），用户就会以为自己递给了那一枚目标。挨着 快速保存 放，
+            // 是因为两枚按的都是「先把这一张写成文件」这一条腿。
+            Cell {
+                label: "打开方式"
+                hint: "打开方式：把这一张写成文件，再交给系统默认的看图程序"
+                usable: bar.view.selected
+                onTapped: bar.shareOut()
+            }
+
+            // §5.8.1 步 2：这一枚钮按下去就是「把这一块贴到屏幕上」，中间没有对话框、没有文件名。
+            //
+            // 名字取「贴图」而不是「立即贴图」：PRD 990 行写的就是这两个字，而它下面那一枚已经
+            // 把自己说清楚了（「存完再钉图」——五个字里带着那份文件）。两枚共用的画面是同一张，
+            // 分开的是「要不要一份文件」这一件事，屏幕上读得出。
+            Cell {
+                label: "贴图"
+                hint: "贴图：把选区里这张图浮成一张贴图，不写成文件"
+                usable: bar.view.selected
+                onTapped: bar.pin()
             }
 
             // PRD 433's "完成后可复制、保存或贴图" read as one flow instead of two: the

@@ -1,18 +1,26 @@
 //! PRD §5.21.1「检查更新」那四步里**能被算出来的那三步**：第 3 步「系统获取版本信息」、
 //! 第 4 步里「有新版本时显示版本号、更新说明和下载入口」那三样**内容**。
 //!
-//! 这一层不联网，而且这一句不是免责声明、是这一枚模块的形状：第 3 步要的「获取」在这里
-//! 落地成**读一份本机的清单**，清单路径来自 `[about] release_feed`。为什么不先写一个 HTTP
-//! 客户端——因为写了也没人能验：本仓库今天没有任何一台稳定的发布服务器，任何一句「取回成功」
-//! 都会是这一代编出来给自己听的判据。所以取回这一手是**读档**，读不到就说读不到；而 PRD 那
-//! 三样内容（版本号 / 更新说明 / 下载入口）在两种来源下长的是同一张脸，将来真接上网络时，
-//! 换的只有喂进 [`decide`] 的那串字，判决和那三句话一个字不改。
+//! 这一层**不联网**，而且这一句不是免责声明、是这一枚模块的形状：第 3 步要的「获取」在这里是
+//! **一只手作为参数**（[`Getter`]）。取回字的那一只手住在平台那一层（`platform_windows::fetch`，
+//! 走这台机器的 wininet），本层只把取回来的那串字判成版本号、更新说明与下载入口。
+//!
+//! 为什么拆成两半而不是在这里直接联网：判决要能在没有网络的机器上被逐格问过（CI、selftest、
+//! 以及**没把** `release_feed` 写成地址的那些档），而网络那一只手必须有一个能塞进假货的位置 ——
+//! 否则「取回失败」那一格的判据只能靠真断一次网线来证（#261）。
+//!
+//! 取回这一手**是**真的自它落地那天起：`https://` 那一枚 `release_feed` 如今会被去取。此前它
+//! 交回的是一句「本 build 不联网」的拒绝，那一句是本仓库还没有 HTTP 客户端那一刻的形状，
+//! 已经跟着那一格一起退役（留下的那一格是 [`Answer::FetchFailed`]，说的是**这一次**没取回来，
+//! 不是「这一层不肯取」）。本地路径那一支照旧能喂：一份盘上的清单与一份取回来的清单走的是
+//! 同一只 [`decide`]、长的是同一张脸。
 //!
 //! 第 4 步的「显示」不在这里——那一手要的是一扇窗，本模块只交出一句**可以被显示**的话。
 //! 窗有没有把这句话说出来，判据不归这层（见 §10 本轮那一行的结转）。
 //!
-//! #281：本层是这三句话唯一的作者。桥那侧的托盘、selftest 的行、门的读回都从这里取，
-//! 一处也不另抄。
+//! #281：本层是这几句话唯一的作者。桥那侧的托盘、selftest 的行、门的读回都从这里取，
+//! 一处也不另抄。§6.3 那一枚「涉及远程获取时应明确提示网络请求」的那句话也在这里
+//! （[`net_notice`]），因为只有这一层同时看得见「这是地址」与「闸肯不肯取」。
 
 /// §5.18.1 第 1441 行那一列菜单建议里的写法就是「检查更新」四个字，**托盘那一项的名字唯一作者**
 /// 在这里（与 `history_window::TRAY_WORD` / `group_window::TRAY_WORD` 同一分工，#281）：托盘那一
@@ -185,8 +193,11 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 pub enum Answer {
     /// 档上 `[about] release_feed` 是空的——没得取。
     NoFeed,
-    /// 写了值，但这个 build 不联网：清单的来源只认本机路径。这一句是**拒绝**，不是失败重试。
-    RemoteRefused(String),
+    /// 写的是地址、也确实去取了，可那一份没取回来：连不上、状态码不是 2xx、比 [`FEED_LIMIT`]
+    /// 大、读不出字、或者那一句根本过不了 [`crate::link`] 那道闸。`{why}` 是取回那一只手交回的
+    /// **原话**，本层不替它重述（#281）；`{feed}` 留着是为了让用户看得见是哪一句没通 —— 一份档上
+    /// 可能同时留着两枚地址。
+    FetchFailed { feed: String, why: String },
     /// 是本机路径，但读不出字来（不存在、是目录、没有权限）。原因原样带出去。
     Unreadable(String),
     /// 读出来了，可这个通道在这一份清单上一行也没有。
@@ -209,9 +220,9 @@ impl Answer {
                 "检查更新：还没配发布清单（about.release_feed 是空的），这一趟没东西可取"
                     .to_string()
             }
-            Answer::RemoteRefused(feed) => format!(
-                "检查更新：本 build 不联网，about.release_feed 只认本机文件路径，{feed:?} 不会去取"
-            ),
+            Answer::FetchFailed { feed, why } => {
+                format!("检查更新：{feed:?} 那一份没取回来（{why}）")
+            }
             Answer::Unreadable(why) => format!("检查更新：清单读不出来（{why}）"),
             Answer::NoChannel(channel) => format!("检查更新：清单里没有 {channel} 这一行"),
             Answer::UpToDate { current, listed } => {
@@ -251,26 +262,90 @@ impl Answer {
     }
 }
 
-/// 第 3 步的那一只手：拿档上那两枚键（`release_feed`、`channel`）和包自己的版本号，交回一个
-/// 结局。**读文件这件事在这里发生**——不在 `decide` 里，因为 `decide` 是纯函数，纯函数才能在
-/// 没有盘上清单的机器（CI、selftest）被逐格判过；而这一枚函数是那一格与真实盘面之间唯一一座桥。
-pub fn check(feed: &str, channel: &str, current: &str) -> Answer {
-    match read_feed(feed) {
+/// 一份清单最多允许多大。**这一枚数是产品的话、不是机制的数**：它说的是「本程序认一份版本
+/// 清单该有多大」，而把它交给 `fetch` 去执行的是调用者（`platform_windows::fetch::text(url,
+/// FEED_LIMIT)`）。超了是**失败**（[`Answer::FetchFailed`]），不是「拿前面那一段做判决」——
+/// 一份被剪掉尾巴的清单会读出半个通道。
+///
+/// 1 MiB 比任何一份真实的三通道清单大两个数量级（清单是一行一行的 `channel= version= notes=
+/// url=`，人写的），因此这一枚数真正拦的是「喂进来的不是清单」：一台把 `release_feed` 指到
+/// 首页、指到一份 JSON、指到一张图片的档。
+pub const FEED_LIMIT: usize = 1024 * 1024;
+
+/// 第 3 步「获取」那一只手的**形状**。`Err` 那一串必须是**已经成句**的话（真机那一只手交回的
+/// 是 `platform_windows::fetch::FetchError` 的 `Display`），本层只把它放进
+/// [`Answer::FetchFailed`] 的 `{why}`，一个字也不另编（#281）。
+pub type Getter<'a> = &'a dyn Fn(&str) -> Result<String, String>;
+
+/// §6.3「涉及在线识别或远程图片获取时，应明确提示网络请求」那一枚键里，**「要不要提示 + 提示
+/// 的那一句」**的入口：句子本体住在 [`web_notice`] 那一手里，这一枚只加那道闸。
+///
+/// 只在「这一句确实会被去取」时交回一句话：判据与取回那一只手共用 [`crate::link`] 那一道闸，
+/// 所以不会出现「提示了要联网、结果一句拒绝说它不是地址」。`None` = 不是 http(s)、或域名含
+/// 非 ASCII —— 那两种形态一次网络请求都不发，于是也不该提示。
+///
+/// 递进去的 `what` 说的是这一趟要去取的是**什么**：`[about] release_feed` 那一趟取的是清单
+/// （[`running_line`] 递 `那份清单`），§5.8.4 方式二那一趟拖进来的是图片（`crates/qt_bridge` 的
+/// `drop_in` 递 `那一份图片`）。句式、向哪儿说、以及「什么形态不提示」这三件事只在这里写过一次；
+/// 两个读者各编一句，§6.3 那一枚键就有了两个作者，而其中一个迟早会忘了说要联网。
+pub fn net_notice(url: &str, what: &str) -> Option<String> {
+    match crate::link::classify(url) {
+        crate::link::Target::Web(web) if web.openable() => Some(web_notice(&web, what)),
+        _ => None,
+    }
+}
+
+/// [`net_notice`] 那一句的**本体**：host 已经由 [`crate::link`] 解析出来的那一位，直接拿它说话。
+///
+/// 为什么单独立这一手、而不是让第二个读者去叫 [`net_notice`] 再 `unwrap_or` 一句：`net_notice`
+/// 的 `None` 那一支说的是「这一句压根不会被去取」，而手里已经是 [`crate::link::Web`] 的那一位
+/// **早过了同一道闸**（`drop::Dropped::classify` 只在 `openable()` 时才交回 `Web`）。逼它从
+/// `None` 里编一个替代品，就是给 §6.3 那一枚键多开一个「想不起来说要联网」的出口（#433）。
+pub fn web_notice(web: &crate::link::Web, what: &str) -> String {
+    format!("这一趟要向 {} 取{what}：那是一次网络请求。", web.display_host())
+}
+
+/// 第 3 步「在路上」那一句：按下去到落地之间，屏幕上那一行写的字。它**不是** [`Answer`] 的
+/// 一格 —— 那一刻还没有判决，而把「还没有判决」写成一种判决正是 #453 拦的那件事。
+pub const RUNNING: &str = "检查更新：这一趟已经在跑，取回那一份清单之前还没有判决。";
+
+/// 按下去那一刻那一行的**唯一**作者：在路上那一句，加上（只有真会被去取的那句地址才跟着的）
+/// 那一次网络请求的提示。§6.3 那一枚「应明确提示网络请求」必须在这一趟**发起前**说出口 ——
+/// 等落地那一句再提示，用户看到的是请求已经发生了。
+pub fn running_line(feed: &str) -> String {
+    match net_notice(feed, "那份清单") {
+        Some(notice) => format!("{RUNNING}{notice}"),
+        None => RUNNING.to_string(),
+    }
+}
+
+/// 第 3 步的那一只手：拿档上那两枚键（`release_feed`、`channel`）、包自己的版本号，与**取回字
+/// 的那一只手**（[`Getter`]），交回一个结局。**读盘与取回都在这里发生**——不在 `decide` 里，因为
+/// `decide` 是纯函数，纯函数才能在没有盘上清单的机器（CI、selftest）被逐格判过；而这一枚函数是
+/// 那一格与真实盘面／真实网络之间唯一一座桥。
+pub fn check(feed: &str, channel: &str, current: &str, get: Getter) -> Answer {
+    match read_feed(feed, get) {
         Err(answer) => answer,
         Ok(text) => decide(&text, channel, current),
     }
 }
 
-/// `feed` 是一枚路径。**不以盘上真相为判据的那几条**（空、含 scheme）先在这里拒掉，剩下的
-/// 才去读——顺序是有意义的：`https://…` 交回的是「本 build 不联网」这句拒绝，而不是
-/// 「找不到文件」这句失败；两者在用户耳朵里是两件事，前者是这一层的边界，后者是他的盘出了状况。
-fn read_feed(feed: &str) -> Result<String, Answer> {
+/// `feed` 或是一枚路径、或是一句地址。**不以盘上真相为判据的那几条**（空）先在这里拒掉，
+/// 剩下的按形态分给两只手：含 `://` 的递给 [`Getter`]（**这一层自己一次 socket 都不碰**），
+/// 其余的按路径读盘。
+///
+/// 顺序是有意义的：一句取不回来的地址交回的是「那份清单没取回来」，而不是「找不到文件」——
+/// 两者在用户耳朵里是两件事，前者问他的是网络与那台服务器，后者问他的是自己的盘（#453）。
+fn read_feed(feed: &str, get: Getter) -> Result<String, Answer> {
     let trimmed = feed.trim();
     if trimmed.is_empty() {
         return Err(Answer::NoFeed);
     }
     if trimmed.contains("://") {
-        return Err(Answer::RemoteRefused(trimmed.to_string()));
+        return get(trimmed).map_err(|why| Answer::FetchFailed {
+            feed: trimmed.to_string(),
+            why,
+        });
     }
     std::fs::read_to_string(trimmed).map_err(|e| Answer::Unreadable(format!("{trimmed}：{e}")))
 }
@@ -291,20 +366,42 @@ pub fn decide(text: &str, channel: &str, current: &str) -> Answer {
     }
 }
 
-/// §5.21.1 之外的那半句：`[about] check_every_days` 与 `auto_check_updates` 两枚键**今天有读者**
-/// （config 那一层把它们读出来，selftest 那一行数过它们），但没有任何一只手在**自动**发起检查。
-/// 这一枚纯函数把那两枚键的判决先写成产品的话，是为了当那一只手落下去时，它要写的判据已经
-/// 在这里、不必再发明一遍。`last_days` 是「上一次自动检查距今天数」，还没有地方存它——那是
-/// 结转里那一行，不是这一格能假装的事。
-pub fn auto_decision(auto: bool, every_days: u32, last_days: Option<u32>) -> &'static str {
-    if !auto {
-        return "自动检查关了（about.auto_check_updates=false），这一趟不会自己发起";
-    }
-    match last_days {
-        None => "没有上次检查的记录，自动检查可以跑",
-        Some(days) if days >= every_days => "距上次自动检查已过天数够数，自动检查可以跑",
-        Some(_) => "距上次自动检查还不够 about.check_every_days 那枚天数，这一趟跳过",
-    }
+/// §5.21.1 之外的那半句：`[about] auto_check_updates` 与 `check_every_days` 是本项目自己加的两枚
+/// 键（PRD 那一节只写用户点的那一次），它们要的读者是「启动那一趟自己起不起检查」。
+///
+/// 判决与那句产品的话出自**同一次分支**：分成两枚函数写，就会出现「做的事」与「说的话」各有
+/// 一套想法的一天（#281），而这两枚键的坏正好是那种谁也看不见谁的形状。
+///
+/// `last_days` = 「上一次自动检查距今天数」。读不到记录（没写过、档坏了、机器钟走过表）交回
+/// `None`，那一支与「从没检查过」走同一条路：起跑一次比替用户按住一整族更新少坏一些。
+pub struct Auto {
+    pub wanted: bool,
+    pub why: &'static str,
+}
+
+pub fn auto_plan(auto: bool, every_days: u32, last_days: Option<u32>) -> Auto {
+    let (wanted, why) = if !auto {
+        (
+            false,
+            "自动检查关了（about.auto_check_updates=false），这一趟不会自己发起",
+        )
+    } else {
+        match last_days {
+            None => (
+                true,
+                "没有上次自动检查的记录，这一趟自己起（about.check_every_days 不必够数）",
+            ),
+            Some(days) if days >= every_days => (
+                true,
+                "距上次自动检查已过天数够 about.check_every_days 那枚数，这一趟自己起",
+            ),
+            Some(_) => (
+                false,
+                "距上次自动检查还不够 about.check_every_days 那枚天数，这一趟跳过",
+            ),
+        }
+    };
+    Auto { wanted, why }
 }
 
 #[cfg(test)]
@@ -316,6 +413,17 @@ mod tests {
 channel=stable version=1.30.0 notes=修了三张贴图的坑 url=https://example.invalid/stable
 channel=beta version=1.31.0-beta notes= url=
 ";
+
+    /// 一次也没碰 socket 的那一只**假的手**：「取回」在这一层是一枚参数，因此正面那一臂
+    /// （取回来一份新清单）在 core 就能证，不需要哪台稳定的发布服务器。反面那一臂（真取不回）
+    /// 的话术原样带出，由 `platform_windows::fetch` 那一侧负责；`--update-check` 那一档对着
+    /// **本机**起的那一扇服务器量真的那一臂。
+    const FETCHED: &str = "channel=stable version=1.31.0 notes=取回来的那一份 url=https://example.invalid/dl\n";
+
+    /// 递给 [`check`] 那一只**永远用不上**的手：路径那一支不该走到它上面。
+    fn never_taken(_url: &str) -> Result<String, String> {
+        panic!("本地路径被当成地址递给了取回的手");
+    }
 
     #[test]
     fn a_known_channel_line_parses_and_an_unknown_one_is_refused() {
@@ -420,7 +528,11 @@ channel=beta version=1.31.0-beta notes= url=
         assert_eq!(decide(SAMPLE, "stable", "1.30.0").download_url(), None);
         assert_eq!(Answer::NoFeed.download_url(), None);
         assert_eq!(
-            Answer::RemoteRefused("https://x/y".into()).download_url(),
+            Answer::FetchFailed {
+                feed: "https://x/y".into(),
+                why: "连不上".into()
+            }
+            .download_url(),
             None
         );
     }
@@ -449,42 +561,158 @@ channel=beta version=1.31.0-beta notes= url=
 
     #[test]
     fn an_empty_feed_is_not_reported_as_a_failure() {
-        assert_eq!(check("", "stable", "1.0.0"), Answer::NoFeed);
-        assert!(check("", "stable", "1.0.0")
+        assert_eq!(check("", "stable", "1.0.0", &never_taken), Answer::NoFeed);
+        assert!(check("", "stable", "1.0.0", &never_taken)
             .sentence()
             .contains("release_feed 是空的"));
     }
 
+    /// 地址那一支**取回来了**：判决用的是那一只手交回的字，而这一格在 core 就能证 —— 不需要
+    /// 任何一台稳定的发布服务器，也不需要一次真 socket（#261：证人是一枚参数）。
     #[test]
-    fn a_url_is_refused_before_any_attempt_to_read_it() {
-        // 这一格的判据是**话术**：把 https:// 读成「文件不存在」是把这一层的边界说成用户的盘
-        // 出了状况，而这两件事用户处理方式完全不同。
-        let answer = check("https://example.invalid/stable", "stable", "1.0.0");
-        let Answer::RemoteRefused(feed) = &answer else {
-            panic!("{answer:?}")
+    fn an_address_is_fetched_and_the_fetched_words_are_judged() {
+        let asked = std::cell::Cell::new(String::new());
+        let get = |url: &str| {
+            asked.set(url.to_string());
+            Ok(FETCHED.to_string())
         };
-        assert_eq!(feed, "https://example.invalid/stable");
-        assert!(
-            answer.sentence().contains("不联网"),
-            "{}",
-            answer.sentence()
+        let answer = check("https://example.invalid/RELEASES.txt", "stable", "1.0.0", &get);
+        assert_eq!(
+            asked.into_inner(),
+            "https://example.invalid/RELEASES.txt",
+            "那句地址没原样递给取回的手"
         );
+        let Answer::Available { release, .. } = &answer else {
+            panic!("{}", answer.sentence())
+        };
+        assert_eq!(release.version, "1.31.0");
+        assert_eq!(release.notes, "取回来的那一份");
+        assert_eq!(release.url, "https://example.invalid/dl");
+        assert_eq!(answer.download_url(), Some("https://example.invalid/dl"));
     }
 
+    /// 首尾空白剥掉再递：档里 `"  https://x/y  "` 与 `"https://x/y"` 是同一份清单，而取回那一只
+    /// 手收到带空白的串时，`link` 那道闸会把主机名读歪。
     #[test]
-    fn a_missing_file_says_which_one_it_tried() {
-        let answer = check("no_such_release_manifest.bin", "stable", "1.0.0");
+    fn the_fetched_address_is_the_trimmed_one() {
+        let asked = std::cell::Cell::new(String::new());
+        let get = |url: &str| {
+            asked.set(url.to_string());
+            Ok(FETCHED.to_string())
+        };
+        check("  https://example.invalid/RELEASES.txt ", "stable", "1.0.0", &get);
+        assert_eq!(asked.into_inner(), "https://example.invalid/RELEASES.txt");
+    }
+
+    /// 取不回的那一格里，话术**不能**是「找不到文件」：那是把用户自己的盘出了状况说成是他的
+    /// 网络出了状况（#453 的两个方向都算）。这一格同时把取回那一只手那句原话一个字不改地留着。
+    #[test]
+    fn a_failed_fetch_names_the_address_and_keeps_the_getters_sentence() {
+        let answer = check(
+            "https://example.invalid/RELEASES.txt",
+            "stable",
+            "1.0.0",
+            &|_| Err("取不回那一句地址：连不上那台服务器（系统返回 12002）".to_string()),
+        );
+        let Answer::FetchFailed { feed, why } = &answer else {
+            panic!("{answer:?}")
+        };
+        assert_eq!(feed, "https://example.invalid/RELEASES.txt");
+        assert!(why.contains("12002"), "{why}");
+        let line = answer.sentence();
+        assert!(line.contains("没取回来") && line.contains("12002"), "{line}");
+        assert!(!line.contains("找不到文件"), "{line} 把网络的事说成了盘的事");
+        assert!(!answer.has_manifest(), "{line} 说它读到了一份清单");
+        assert_eq!(answer.download_url(), None);
+    }
+
+    /// 本地路径那一支**一次也不**走到取回的手上：`never_taken` 一被调用就 panic，因此这一格的
+    /// 证人就是「没 panic」，而它守的是「配了盘上清单的用户不会被偷偷联网」（§6.3 的反面）。
+    #[test]
+    fn a_local_path_never_reaches_the_getter() {
+        let answer = check(
+            "no_such_release_manifest.bin",
+            "stable",
+            "1.0.0",
+            &never_taken,
+        );
         let Answer::Unreadable(why) = &answer else {
             panic!("{answer:?}")
         };
         assert!(why.contains("no_such_release_manifest.bin"), "{why}");
     }
 
+    /// §6.3「涉及在线识别或远程图片获取时，应明确提示网络请求」那一枚键的那一句话：只有
+    /// **确实会被去取**的那一句地址才提示。判据与取回那一只手共用 [`crate::link`] 那道闸，
+    /// 所以不会出现「提示了要联网，结果一句拒绝说它不是地址」。
+    ///
+    /// 两个读者各递自己那一枚名词，句式只在这里写过一次：换掉那枚名词，提示的还是同一句「要联网」；
+    /// 换掉那一句式，两处会一起换 —— 而 §6.3 要的正是「说了没有」，不是「说的是哪样东西」。
+    #[test]
+    fn the_network_notice_is_said_only_for_an_address_that_would_be_fetched() {
+        let said = net_notice("https://releases.example.invalid/RELEASES.txt", "那份清单")
+            .expect("该提示的一次网络请求没提示");
+        assert!(
+            said.contains("releases.example.invalid") && said.contains("网络请求"),
+            "{said}"
+        );
+        assert!(said.starts_with("这一趟要向"), "{said}");
+        assert!(said.contains("那份清单"), "{said}");
+        // §5.8.4 方式二那一位读者：同一句句式，另一样东西。
+        let picture = net_notice("https://img.example.invalid/a.png", "那一份图片")
+            .expect("远程图片也是远程获取，§6.3 对它说同一句话");
+        assert!(picture.starts_with("这一趟要向"), "{picture}");
+        assert!(picture.contains("那一份图片"), "{picture}");
+        assert!(picture.contains("网络请求"), "{picture}");
+        assert_ne!(said, picture, "两位读者说的是同一句还是同一枚宾语，得分得出来");
+        // 端口不是默认口时那枚数跟着一起说：`:8443` 换的是**另一台服务**。
+        let ported = net_notice("http://127.0.0.1:8443/RELEASES.txt", "那份清单")
+            .expect("门那一档走的就是这一枚形态");
+        assert!(ported.contains("127.0.0.1:8443"), "{ported}");
+        // 三种都不会发一次请求的形态，一种也不提示。
+        assert!(net_notice("https://exämple.invalid/RELEASES.txt", "那份清单").is_none());
+        assert!(net_notice("ftp://releases.example.invalid/x", "那份清单").is_none());
+        assert!(net_notice("", "那份清单").is_none());
+        // 图片那一位读者撞上同样的形态，也一样不提示（不许因为宾语换了就多发一次「要联网」）。
+        assert!(net_notice("ftp://img.example.invalid/a.png", "那一份图片").is_none());
+    }
+
+    /// 在路上那一句里**不许**有任何判决的形状（「已是最新」「发现新版本」「取不到」都不许）：
+    /// 那一时刻三样都还没发生，而屏幕上那一行被读成一次判决的日子必然比被读成等待的日子多。
+    /// 地址那一支要**在这趟发起前**把网络请求说出来（§6.3），本地路径那一支不许提网络。
+    #[test]
+    fn the_running_line_promises_no_verdict() {
+        let local = running_line("C:/releases/RELEASES.txt");
+        assert_eq!(local, RUNNING, "{local}");
+        for banned in ["已是最新", "发现新版本", "没取回来", "读不出来", "清单里没有"] {
+            assert!(!local.contains(banned), "{local} 把判决写进了等待里");
+        }
+        let remote = running_line("https://releases.example.invalid/RELEASES.txt");
+        assert!(remote.starts_with(RUNNING), "{remote}");
+        assert!(remote.contains("网络请求"), "{remote} 没把这一次联网说出来");
+    }
+
+    /// [`FEED_LIMIT`] 是产品的话、不是机制的数：它必须比任何一份人写的三通道清单大得多，否则
+    /// 「清单太大」这一格会在真清单上亮。这一格钉的是那枚数量级，写死的数一旦改小到贴着
+    /// 真实清单，这里就红。
+    #[test]
+    fn the_feed_limit_is_far_above_a_hand_written_manifest() {
+        assert!(
+            SAMPLE.len() * 100 < FEED_LIMIT,
+            "上限 {FEED_LIMIT} 离一份样例清单（{} 字节）不够远",
+            SAMPLE.len()
+        );
+    }
+
     #[test]
     fn has_manifest_is_true_only_for_rows_that_read_a_manifest() {
         assert!(decide(SAMPLE, "stable", "1.0.0").has_manifest());
         assert!(!Answer::NoFeed.has_manifest());
-        assert!(!Answer::RemoteRefused("x".into()).has_manifest());
+        assert!(!Answer::FetchFailed {
+            feed: "https://x/y".into(),
+            why: "连不上".into()
+        }
+        .has_manifest());
         assert!(!Answer::Unreadable("x".into()).has_manifest());
         assert!(!Answer::NoChannel("beta".into()).has_manifest());
     }
@@ -506,12 +734,33 @@ channel=beta version=1.31.0-beta notes= url=
         assert_eq!(c.about.channel, "stable");
     }
 
+    /// 四支各证一次「做的事」与「说的话」出自同一次分支：每一格都把 `wanted` 与那一句一起判，
+    /// 一支也不许只读句子 —— 只读句子的那一版判不出「跳过那一支真跳过了没有」。
     #[test]
-    fn auto_decision_reaches_the_three_readings() {
-        assert!(auto_decision(false, 7, None).contains("自动检查关了"));
-        assert!(auto_decision(true, 7, None).contains("没有上次检查的记录"));
-        assert!(auto_decision(true, 7, Some(3)).contains("这一趟跳过"));
-        assert!(auto_decision(true, 7, Some(7)).contains("够数"));
+    fn auto_plan_pairs_each_reading_with_its_verdict() {
+        let off = auto_plan(false, 7, None);
+        assert!(!off.wanted, "关了还是自己起了：{}", off.why);
+        assert!(off.why.contains("自动检查关了"), "{}", off.why);
+
+        let first = auto_plan(true, 7, None);
+        assert!(first.wanted, "没记录就该起跑：{}", first.why);
+        assert!(
+            first.why.contains("没有上次自动检查的记录"),
+            "{}",
+            first.why
+        );
+
+        let due = auto_plan(true, 7, Some(7));
+        assert!(due.wanted, "够数却没起：{}", due.why);
+        assert!(
+            due.why.contains("够 about.check_every_days 那枚数"),
+            "{}",
+            due.why
+        );
+
+        let early = auto_plan(true, 7, Some(3));
+        assert!(!early.wanted, "不够数还是自己起了：{}", early.why);
+        assert!(early.why.contains("这一趟跳过"), "{}", early.why);
     }
 
     use crate::config::Config;

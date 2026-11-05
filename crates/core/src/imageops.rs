@@ -412,7 +412,10 @@ pub fn shape_mask(
             let (nx, ny) = (x as f64 + 0.5, y as f64 + 0.5);
             let inside = match shape {
                 Shape::Rect => true,
-                Shape::Circle => {
+                // 这一格画的是**盒子内接**的那一枚椭圆：长短轴之比是盒子带的，不是这一格带的，
+                // 所以 [`ELLIPSE_RATIO`] 到这里为止 —— 递一枚正方形的盒子进来，圆与椭圆得到
+                // 同一枚盘。想在这一格里看见扁，递的盒子就得是扁的。
+                Shape::Circle | Shape::Ellipse => {
                     let rx = width as f64 / 2.0;
                     let ry = height as f64 / 2.0;
                     let dx = (nx - rx) / rx.max(1e-6);
@@ -444,7 +447,18 @@ pub fn shape_mask(
 pub enum Shape {
     Rect,
     Circle,
+    /// §5.7.8 规则「支持圆形或椭圆形笔刷」里的那一枚椭圆：一枚**长轴垂直于走笔方向**的笔头，
+    /// 扁多少由 [`ELLIPSE_RATIO`] 说。它与 [`Self::Circle`] 不是同一支笔的两种叫法 —— 同一枚
+    /// size 下它在长轴那一侧盖到两倍（一支没动过的笔没有方向可问，按横着走的那一支的极限算，
+    /// 长轴上下）。
+    Ellipse,
 }
+
+/// 椭圆笔头的长轴是短轴的几倍。§5.7.8 只说「圆形或椭圆形」，没有给比例，所以这里定一枚数而
+/// 不是再加一把梯：一支能拧扁瘦比例的笔要的是两枚旋钮（比例与朝向），那两枚 PRD 都没点过名，
+/// 而一枚按钮后面藏两枚旋钮是界面在赌用户会猜。写在这里而不是写进每一处匹配，是因为「这一支
+/// 笔有多扁」只该有一位作者（#281）。
+pub const ELLIPSE_RATIO: f64 = 2.0;
 
 /// A 1 px hairline in the accent colour, used by the selection rectangle and
 /// by `Plate` defaults; kept here so the QML side and the export side agree.

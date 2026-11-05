@@ -1453,9 +1453,21 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
         .and_then(|c| c.image_bytes.as_ref())
         .and_then(|b| falcon_core::encode::decode(b).ok())
         .map(|f| (f.width, f.height));
+    // §5.9.17 步 1 那枚开关在**默认行为**这一臂上的读数：`auto_copy_out` 读的正是它，所以开着时
+    // 那句话要点名一枚文件、那块板上要恰好列着一枚，关着时两句都不许多出来。只在 `auto_copy`
+    // 开着的那一支判：关着时压根没递，拿"没点名文件"去证明一枚没走的分岔是量一枚不存在的读数。
+    // 板子看不见（`clip_after` 为 `None`）时那一问不吃成"零枚"—— 整个判据在 `blind` 那一支已经
+    // 是 BLOCKED，`#453` 那条"看不见 ≠ 没有"在这里同样成立。
+    let as_file = crate::settings::output_cfg().copy_as_file;
+    let said_files = copy_said.contains("文件引用");
+    let board_files = clip_after.as_ref().map(|c| c.files.len());
+    let file_said = said_files == as_file;
+    let file_board = board_files.map_or(true, |n| n == usize::from(as_file));
     let copied = match switch_copy {
         false => copies_after == copies_before && copy_said.is_empty() && img_before == img_after,
-        true if copies_after == copies_before + 1 => dims_after == stitched,
+        true if copies_after == copies_before + 1 => {
+            dims_after == stitched && file_said && file_board
+        }
         true => false,
     };
     // 开关开着而次数没动、话说了：那是本程序当场**拒**了这一次递（剪贴板被别的窗口占着，
@@ -1473,9 +1485,18 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
              {copy_said:?}；剪贴板此刻递回的图={dims_after:?}（字节 {img_after_len} 个），动手之前缝合\
              那一位交回的图={stitched:?}；进场时那份图的字节={img_before_len} 个。要求开着时次数加一\
              且剪贴板上那张图的尺寸就是拼出来的那一张，关着时次数不动、话也没说、那一份字节一个也没\
-             变{tail}",
+             变{file_tail}{tail}",
             img_after_len = img_after.as_ref().map(|b| b.len()).unwrap_or(0),
             img_before_len = img_before.as_ref().map(|b| b.len()).unwrap_or(0),
+            file_tail = match board_files {
+                Some(n) => format!(
+                    "；§5.9.17 那枚开关={as_file}，那句话点名文件={said_files}，板上列了 {n} 枚\
+                     （要求两种读数都跟着开关走）"
+                ),
+                None => format!(
+                    "；§5.9.17 那枚开关={as_file}，那句话点名文件={said_files}，板上列了几枚读不到"
+                ),
+            },
             tail = if blind.is_some() {
                 "——对面不为读打开，那一份字节本档看不见，判 BLOCKED 而不是 FAIL"
             } else if refused {
@@ -2747,7 +2768,10 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
 
     // `locking a named row writes the lock through the product leg` 这一格：§5.14.4 规则 2 那一枚
     // 锁的**产品腿**（P100 起）。P99 那一次这把锁是本档自己
-    // 经 core 打的（`History::set_locked` 至今零产品读者），所以那一格量的是"清空绕不绕开
+    // 经 core 打的 —— 那时 `History::set_locked` 确实零产品读者；P100 起它有读者了
+    // （`crates/qt_bridge/src/mask.rs` 的 `lock_history` ⇒ `crates/qt_bridge/src/session.rs`
+    // 的 `historyLock` ⇒ `qml/HistoryWindow.qml` 每一行右边那枚「锁上 / 解开」），所以「至今
+    // 零读者」那句话到 P99 为止、不再是真的。那一格量的是"清空绕不绕开
     // 锁定项"，前置归尺子。本格量的换成产品那一条腿：`lock_history(id, true)` 写没写成、
     // 写成的那一次有没有把**别的**两格计数抬高（它动的是一枚布尔，库里一行也不少 —— 并进
     // 删除或清空任何一枚都说明那三格被抹平了），而"锁上没有"仍由本档当场问盘上。

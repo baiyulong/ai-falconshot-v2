@@ -12,7 +12,8 @@
 //! texture in place without touching the encoder. That is what keeps plan rule 4
 //! ("the hot path must not cross") true while the wheel is being spun.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
@@ -25,7 +26,8 @@ use falcon_core::geometry::{DipRect, PhysPoint, PhysRect, PhysSize, Scale};
 use falcon_core::gif::GifClip;
 use falcon_core::naming;
 use falcon_core::pin::{
-    clamp_zoom, Desktop, GroupFate, GroupId, Monitor, PinId, PinItem, PinSet, PinSlot,
+    clamp_zoom, snapshot_due, Desktop, GroupFate, GroupId, Monitor, PinId, PinItem, PinSet,
+    PinSlot, PrevRun, Restored,
 };
 use falcon_core::refresh::Refresh;
 
@@ -110,6 +112,30 @@ pub struct PinViewData {
     /// —— 形状同 §5.9.15 的那枚 `has_transparent_pixels`：一枚「这一手有点得动的东西」的格子，
     /// 而不是一行点了没反应的装饰（#494 / #433 那一族）。
     pub refreshable: bool,
+    /// §5.8.5 步骤 4 / §5.8.6 步骤 4：这一枚**是不是**卡片贴出来的 —— 菜单那一行
+    /// 「卡片设置…」的 `visible` 读的正是这一格，形状与 [`Self::refreshable`] 同一式：
+    /// 一页上不许有一行按下之后只会说「这不是卡片」的入口（#433）。判断本体是 core 那一格
+    /// [`falcon_core::pin::PinItem::card`] 有没有，桥只搬（#281）。
+    pub is_card: bool,
+}
+
+/// 那一格「调整这一枚卡片」的窗开起来该带着的读数，只有 [`PinState::card_view`] 一名作者。
+///
+/// 为什么不并进 [`PinViewData`]：那枚是每一枚贴图每一次几何变化都要往外搬的一份，而这里这四格
+/// 只在卡片窗打开的那一刻被读一次 —— 让六次窗口绑定多背两枚字符串，代价付得没有道理。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CardViewData {
+    /// `false` = 这一枚不是卡片贴出来的。窗那一侧读这一格决定显示不显示那四格，而不是显示
+    /// 四个 0 —— 「空窗」与「这一枚没有这一问」在页上是两件事（#453）。
+    pub is_card: bool,
+    /// §5.8.6：这是一张**颜色**卡片，那一格填的是颜色值、而色块与那一行要一起换。
+    pub is_colour: bool,
+    pub width: u32,
+    pub font_size: u32,
+    pub font_family: String,
+    pub background: String,
+    /// 卡片上的那些话；颜色卡片写的就是它代表的那枚颜色值（[`falcon_core::card::colour_text`]）。
+    pub text: String,
 }
 
 /// What one §8.5 screen change did to the pins, as three counts and no prose:
@@ -123,6 +149,61 @@ pub struct Refit {
     pub changed: bool,
     pub moved: usize,
     pub total: usize,
+}
+
+/// §7.2 重建那一手交回的**数**，措辞由 [`Rebuild::line`] 一次拼出（#281：句子只有一个作者）。
+/// 四叠 id 分格放着，因为它们是四种不同的话：「摆回来了」「被夹回可见区」「文件不在了」
+/// 「读不出图片」——合并任何两格，屏幕上那句话就答不出「坏的那一枚去哪了」。
+#[derive(Clone, Debug, Default)]
+pub struct Rebuild {
+    /// 逐枚摆回来的 id，顺序就是快照里的顺序。
+    pub restored: Vec<PinId>,
+    /// §8.5 的那枚夹子在启动时也走一遍：多屏/DPI 变了，落点出界的那些枚被移回来。
+    pub clamped: usize,
+    /// 指向的文件没了（或从来只在内存里）。
+    pub missing: Vec<PinId>,
+    /// 文件在，但解不出图——§7.2 第一句与 §8.2 的那一枚，不许带走整趟启动。
+    pub corrupt: Vec<PinId>,
+}
+
+impl Rebuild {
+    /// 启动横幅上的那一句。空表不是沉默的理由：「没有正常结束」本身就是一句要说的话，
+    /// 而坏的那一枚必须**点名**——数量只回答「几枚」，id 才回答「去哪找」。
+    pub fn line(&self) -> String {
+        let mut said = format!(
+            "上一次运行没有正常结束：{} 枚未关闭的贴图摆回来了",
+            self.restored.len()
+        );
+        if self.clamped > 0 {
+            said += &format!("（其中 {} 枚按当前屏幕夹回了可见区）", self.clamped);
+        }
+        let names = |ids: &[PinId]| {
+            ids.iter()
+                .map(|i| i.to_string())
+                .collect::<Vec<_>>()
+                .join("、")
+        };
+        let mut bad: Vec<String> = Vec::new();
+        if !self.missing.is_empty() {
+            bad.push(format!(
+                "贴图 {} 的文件不在了（{}）",
+                self.missing.len(),
+                names(&self.missing)
+            ));
+        }
+        if !self.corrupt.is_empty() {
+            bad.push(format!(
+                "贴图 {} 读不出图片（{}）",
+                self.corrupt.len(),
+                names(&self.corrupt)
+            ));
+        }
+        if !bad.is_empty() {
+            said += &format!("；没能恢复：{}。", bad.join("，"));
+        }
+        said += "。";
+        said
+    }
 }
 
 /// §5.11 独显那一手交回的三件事，各答各的问题（合起来才是一次完整的汇报）：
@@ -155,6 +236,107 @@ fn group_say(name: &str, err: &falcon_core::pin::PinError) -> String {
             }
         }),
         other => other.to_string(),
+    }
+}
+
+/// §5.8.4 方式二里那一张**已经到手**的图片从哪儿来的。两支的差别只在字节在哪儿拿到 —— 文件那一支
+/// 由盘上读，地址那一支由 `platform_windows::fetch::bytes` 取回；到手之后装进贴图的那一手是同一个
+/// （[`PinState::drop_replace`] 与 [`PinState::drop_new`]）。
+///
+/// 为什么不是「一串字节 + 一枚是不是文件的布尔」：那两支的**读法**本来就不同（一份路径要交给
+/// [`falcon_core::encode::decode_file`]，它会按扩展名 hint 格式；一串字节只能交给
+/// [`falcon_core::encode::decode`] 从字节猜），把两支挤成一格就会有一支走错那只手。两支护住的是
+/// 同一句话：这一张已经在这台机器手里了，接下来怎么装只有一处可说。
+#[derive(Clone, Debug)]
+pub enum Arrived {
+    File(PathBuf),
+    /// 取回的那串字节，与**那一枚解析出来的域名**（[`falcon_core::link::Web::display_host`]，
+    /// 与 §6.3 提示联网说的、与 `fetch::bytes` 真的去取的那一句，同出一格）。带 host 而不是带整句
+    /// URL：屏幕上那一行要说的是「从哪儿来的」，而把一整句带 query 的地址原样贴进那一行，读的人
+    /// 分辨不出哪一段是域名。
+    Remote { bytes: Vec<u8>, host: String },
+}
+
+impl Arrived {
+    /// 跟用户说这一张从哪儿来的那半句：文件说路径，地址说那枚域名。整个 crate 里只有这里把
+    /// [`Arrived`] 翻成人读的那半句 —— 落点那两手、门与屏幕上那一行共读它（#281）。
+    pub fn label(&self) -> String {
+        match self {
+            Arrived::File(path) => path.display().to_string(),
+            Arrived::Remote { host, .. } => format!("从 {host} 取回的那一份"),
+        }
+    }
+}
+
+/// §5.8.4 那一趟的**决定**：落下那一刻由 [`falcon_core::drop::Landing::plan`] 交回的那一对，由
+/// 发起的那一手（[`crate::drop_in`]）原样带过取回，再交给 [`PinState::land`]。
+///
+/// 为什么要一枚结构体把这一对**装起来传**，而不是让落地点自己再算一遍：`plan` 数的那一枚
+/// `count` 是「这一批里到手了几格可用」，而取回之后它只会变小 —— 再算一遍就会在「设置开着、两句
+/// 地址、一句 404」那一趟里从 `New` 翻成 `Replace`：屏幕上说的是「各钉一枚新的」，真做的却是换掉
+/// 这一枚。这一枚结构体存在的意义就是让那一趟**只能带、不能重算**。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Decision {
+    pub landing: falcon_core::drop::Landing,
+    pub said: &'static str,
+}
+
+impl Decision {
+    /// 落下那一刻问一次 [`falcon_core::drop::Landing::plan`]，把交回的那一对装起来。整个 crate 里
+    /// 只有这一处叫 `plan`（#281）：门要问「这一趟的落点是怎么定的」也问这一手。
+    pub fn at(replaces: bool, count: usize) -> Decision {
+        let (landing, said) = falcon_core::drop::Landing::plan(replaces, count);
+        Decision { landing, said }
+    }
+}
+
+/// [`PinState::arm_drop`] 的三枚答。分开写（#453）：「这一枚上已经有一趟在路上」与「这一枚已经不
+/// 在桌上了」是两件事，合成一句「不能落」就会把「再等一会儿」与「这扇窗已经关了」说成同一句话，
+/// 而用户能做的只有那两样里的各一样。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arming {
+    /// 这一趟归我：闸已经为我合上，落地时（成与败都算）必须 [`PinState::disarm_drop`]。
+    Taken,
+    /// 这一枚上已经有一趟在路上：这一趟不发起，屏幕上说的是「还在路上」那一句。
+    Busy,
+    /// 这一枚贴图已经不在名册里了：这一趟压根没有落点。
+    Gone,
+}
+
+/// §5.9.17 那架剪贴板梯子（[`PinState::clip_ladder`]）的三扇门。
+///
+/// 一枚类型而不是三枚字符串参数，是因为「写不出去时什么东西还在」这半句是**本节的规则**
+/// （PRD 1270-1271 行）的措辞，不是各扇门可以自拟的文案：让门递整句就会有三种拼法（#281），
+/// 让门递「贴图 / 截图」这样一个名词又凑不出默认行为那一扇的话 —— 那一扇没人按过，说
+/// 「可以再复制一次」是替用户安排他没做过的动作（§5.5.1 步 3 的默认行为连一句招呼都不占
+/// [`crate::mask::MaskState::message`]，正是同一条理由）。所以这里只放"是哪一扇"，文案留在
+/// 梯子里。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipDoor {
+    /// 贴图菜单的「复制图片」与贴图上的 `Ctrl+C`（§5.9.17 步 1 点名的那一扇）。
+    Pin,
+    /// 遮罩工具条的「复制」（§5.5.2 步 3）：**有人按的**那一张选区。
+    Selection,
+    /// §5.5.1 步 3 的默认行为那一次复制：同一张选区，没人按。
+    AutoSelection,
+}
+
+impl ClipDoor {
+    /// 这一张在 [`crate::save::quick_to`] 那句拒绝里叫什么。
+    pub(crate) fn subject(self) -> &'static str {
+        match self {
+            Self::Pin => "贴图",
+            Self::Selection | Self::AutoSelection => "选区",
+        }
+    }
+
+    /// 文件写得出去、剪贴板那头没拒绝、只有落盘这一手失败时接在那句后面的半句。
+    pub(crate) fn retry(self) -> &'static str {
+        match self {
+            Self::Pin => "贴图还在，可以再复制一次。",
+            Self::Selection => "截图还在，可以再复制一次。",
+            Self::AutoSelection => "默认行为没递东西，截图照旧在。",
+        }
     }
 }
 
@@ -223,6 +405,14 @@ pub struct PinState {
     /// 同一封信的 GIF 那一半：§5.9.14 那些帧只活在内存里（不进取证快照），销毁时不搬走，
     /// 撤销回来就是一枚不会动的静图。
     trash_clips: HashMap<PinId, GifClip>,
+    /// §5.8.4 方式二：**正在为一枚贴图取回拖进来的那一张**的那几枚 id。
+    ///
+    /// 落点在另一条线程上（`crate::drop_in`），从按下到到手之间这一枚贴图还可以被拖动、被缩放、
+    /// 被刷新，唯独**不能再被落一次**：两趟都装到同一枚上，先到哪一趟屏幕上就是哪一张，而用户在
+    /// 第二趟里看见的是「我明明拖了第二张」。挡下的那一手说的是它自己那一句（「还在路上」，而不是
+    /// 假装这一趟成了），谁把 id 放进来，谁就负责在它落地（成与败都算）把它取走 —— 这一对只在
+    /// [`PinState::arm_drop`] / [`PinState::disarm_drop`] 里被写，窗侧不数。
+    dropping: HashSet<PinId>,
     /// What went wrong loudly enough that a run has to report it, kept so
     /// `--selftest` can assert on an empty list instead of on stdout.
     pub problems: Vec<String>,
@@ -232,6 +422,10 @@ pub struct PinState {
     /// this slot is `MaskState::pre_notice`; the two are the same string by
     /// construction because both come out of [`crate::save::reminder`].
     pub pre_notice: String,
+    /// §6.3 的那只节拍器记到哪儿了：上一枚**真的写下去**的快照的毫秒数与它的指纹。
+    /// [`Self::snapshot_pass`] 是唯一读者；写失败不动这两个格子，所以下一趟自会重试。
+    snapshot_saved_ms: i64,
+    snapshot_fingerprint: String,
 }
 
 impl PinState {
@@ -239,10 +433,10 @@ impl PinState {
         let mut problems = Vec::new();
         let desk = desktop_from_platform(&mut problems);
         // §5.5.4–14：整段 `[pin]` 自 P64 起由 `crate::settings::pin_cfg()` 送进运行期 ——
-        // P63 之前这里是 `..Default::default()`，`PinConfig::default()` 的九枚键（`default_topmost`
-        // / `default_opacity` / `default_zoom` / `default_click_through` / `alpha_bg` /
-        // `wheel_resizes` / `cycle_on_click` / `state_save_seconds` / `solo_dim_opacity`）
-        // 从来没有拿到用户 config 里写的值。取一次进程启动时的快照，中途 `write_back`
+        // P63 之前这里是 `..Default::default()`，[`falcon_core::config::Pin`] 上的**每一枚**键
+        // 从来没有拿到用户 config 里写的值（那一串枚数不在这里点名：名单的唯一作者是那个 struct
+        // 自己，抄一份在这儿就会在有人加一枚键的那天变成第二份错的答案 —— 此前它已经错过一次）。
+        // 取一次进程启动时的快照，中途 `write_back`
         // 也不会让已经在跑的贴图抖动 —— "默认"就是**新**贴图的默认。
         Self {
             desk,
@@ -271,6 +465,30 @@ impl PinState {
     /// field's only writer.
     pub fn add_captured(&mut self, frame: Frame, at: PhysPoint) -> Result<PinId, String> {
         self.place(frame, at, true)
+    }
+
+    /// [`Self::add`] for the three word-shaped pastes（纯文本、HTML 文本、颜色值）：同一张位图，
+    /// 外加「这一枚被要求说什么」那一份身份（[`falcon_core::pin::CardPin`]）。
+    ///
+    /// 身份在这里写下，而不是让调用方贴完之后自己再去 `get_mut` 补一手：§5.8.5 步骤 4 与
+    /// §5.8.6 步骤 4 那两扇就地调整的窗只认这一格，而分成两只手时「贴成功了、身份半路丢了」
+    /// 那一格读回来就是一扇按下去只会说「这不是卡片」的入口（#433）。于是这里也是
+    /// [`falcon_core::pin::PinItem::card`] 唯一的桥侧写入者。
+    pub fn add_card(
+        &mut self,
+        frame: Frame,
+        at: PhysPoint,
+        card: falcon_core::pin::CardPin,
+    ) -> Result<PinId, String> {
+        let id = self.place(frame, at, false)?;
+        match self.set.get_mut(id) {
+            Some(p) => p.card = Some(card),
+            // `place` 一行前刚把这枚 id 交出来，走到这一臂就是集合在跟自己打架。它被记下来
+            // 而不是被咽下去：从这一刻起这一枚读回来是「不是卡片」，而一句没吭声的运行等于
+            // 拿自己已经破掉的那条承诺给自己打分。
+            None => self.note(format!("pin {id}: 刚开出来的贴图不在集合里，卡片身份没记上")),
+        }
+        Ok(id)
     }
 
     fn place(&mut self, frame: Frame, at: PhysPoint, captured: bool) -> Result<PinId, String> {
@@ -578,6 +796,7 @@ impl PinState {
             grayscale: p.grayscale,
             inverted: p.inverted,
             refreshable: self.refreshable(p),
+            is_card: p.card.is_some(),
         }
     }
 
@@ -879,12 +1098,20 @@ impl PinState {
     /// 扇出走**全体**：§5.11 步骤 3 带走的是名单**之外**的那些枚，所以每一扇窗都得重读一次
     /// `live`（[`Self::view_data`] 那一行）与 `opacity`。一只按名单走的扇出恰好放过该藏的
     /// 那些枚 —— 读起来像绿了，而那是最贵的一种错。
+    ///
+    /// 扇出之后还添一手 `crate::hotkey::replay_tip`：§5.11 规则③ 那句「应显示当前处于 Solo
+    /// 状态」要的是一处**常驻**读数，而窗上那两样（吐司、右键菜单里那一行「退出独显」）都不是常驻
+    /// —— 吐司自己会隐，菜单那一行要用户先知道去开那扇菜单。于是这一格把此刻的 solo 读数投给托盘
+    /// 图标那句 tip。它递的是**这一手刚问出来的读数**（`solo_active` 与 [`Self::solo_kept`]），
+    /// 不是新存一枚布尔：这一格是 solo 唯一的写者，把改写挂在它尾巴上，两条入口（菜单与
+    /// `ctrl+shift+s`）就共用同一条尾巴，而桥侧不会多出第二份 solo 真相（#281）。
     pub fn solo_pin(&mut self, id: Option<PinId>) -> SoloOutcome {
         if self.set.solo_active() {
             let back = self.set.exit_solo();
             for one in self.ids() {
                 self.sync(one);
             }
+            crate::hotkey::replay_tip(None);
             return SoloOutcome {
                 changed: back,
                 ..Default::default()
@@ -901,9 +1128,15 @@ impl PinState {
         for one in self.ids() {
             self.sync(one);
         }
+        let active = self.set.solo_active();
+        crate::hotkey::replay_tip(if active {
+            Some(self.solo_kept())
+        } else {
+            None
+        });
         SoloOutcome {
             changed: hidden,
-            active: self.set.solo_active(),
+            active,
             list_moved: !same,
         }
     }
@@ -1236,10 +1469,11 @@ impl PinState {
     /// Only the position moves. 裁剪到有效区 is the plan's word for what
     /// [`Desktop::keep_visible`] does to a *window*: it clamps into the union of
     /// what is left and crops no pixel of the picture, so a pin whose pixels did
-    /// not change is never re-encoded - nothing here calls [`Self::sync`]. What the
-    /// clamp does not do is §8.5's first bullet's 主显示器: the union box keeps dead
-    /// space inside it, and a pin parked there is not moved. §10 第 53 项 ④ carries
-    /// that as the cell with no spec, instead of this sentence claiming it away.
+    /// not change is never re-encoded - nothing here calls [`Self::sync`]. The
+    /// union box keeps dead space inside it, and §8.5's first bullet's 主显示器 is
+    /// the second half of the same hand — [`falcon_core::pin::PinItem::refit`] asks
+    /// it, so a pin no monitor is showing any more lands on the primary rather
+    /// than staying in the hole.
     pub fn refit_onto(&mut self, desk: Desktop) -> Refit {
         let changed = desk != self.desk;
         self.desk = desk;
@@ -1249,12 +1483,117 @@ impl PinState {
         };
         for p in self.set.items_mut() {
             out.total += 1;
-            let before = p.pos_phys;
-            if p.move_to(before, &self.desk) != before {
+            if p.refit(&self.desk) {
                 out.moved += 1;
             }
         }
         out
+    }
+
+    /// §6.3 的一趟快照，判据全在 core（[`snapshot_due`] 管节拍、[`PinSet::write_state`]
+    /// 管落盘与安全写法），这一格只管**这一趟值不值得写**：
+    /// 节拍没到 ⇒ 不写；指纹没变 ⇒ 不写（同一张桌面每 5 秒重编一遍 PNG 是把 §6.3 的
+    /// "快照" 过成了负载）；场上空着而盘上也没有 ⇒ 不写（不为一张空桌造文件）。
+    /// 指纹带着 `revisions`：§5.5.8 刷新会换像素不换几何，`{:?}` 看不见那种变化，
+    /// 而每次真推新纹理都会把那一格的计数顶上去——它是"桌面没变但图变了"的唯一证人。
+    /// 返回的是给日志的一行（没写就交空串）。
+    pub fn snapshot_pass(&mut self, dir: &Path, seconds: u32, now_ms: i64) -> String {
+        if !snapshot_due(self.snapshot_saved_ms, now_ms, seconds) {
+            return String::new();
+        }
+        if self.set.is_empty() && !PinSet::has_state(dir) {
+            return String::new();
+        }
+        let fp = format!("{:?}", (&self.set, &self.revisions));
+        if fp == self.snapshot_fingerprint {
+            return String::new();
+        }
+        // 落盘走 core 那一手既有的 `write_state`：tmp→fsync→rename 与 `pins/` 缓存
+        //  pruning 都在它里面，桥不另发明第二份格式。像素的出处是 [`Self::frames`]——
+        // 没有文件 backing 的那几枚（剪贴板、刚截的屏）由它编成 PNG，这正是 §7.2
+        // 「尽可能恢复」里那个「尽可能」的真身。
+        let written = self.set.write_state(dir, &mut |id| self.frames.get(&id).cloned(), now_ms);
+        match written {
+            Ok(report) => {
+                self.snapshot_saved_ms = now_ms;
+                self.snapshot_fingerprint = fp;
+                if !report.frames_failed.is_empty() {
+                    // 写不出去的像素回不来，而这一句只说事实，不替 core 重试。
+                    self.note(format!(
+                        "pin snapshot: {} 枚的像素没能写进缓存 {:?}",
+                        report.frames_failed.len(),
+                        report.frames_failed
+                    ));
+                }
+                format!(
+                    "pin snapshot: {} 枚（缓存像素 {} 枚）",
+                    report.pins, report.frames_written
+                )
+            }
+            Err(e) => {
+                // 节拍器不动：下一趟照常重试，而不是把一次失败记成一次成功。
+                self.note(format!("pin snapshot failed: {e}"));
+                format!("pin snapshot failed: {e}")
+            }
+        }
+    }
+
+    /// §7.2 重建的**数据半边**（无 Qt，可 headless 单测）：把快照里的集合、像素并回
+    /// 活的那一份，再按此刻真的在场的桌面把落点夹一遍——快照里那几个坐标是**上一次
+    /// 那块桌面**的说法，拔了屏、换了 DPI 之后不许把窗钉在已经不存在的坐标上。
+    /// 纹理那一半在 [`Self::push_textures`]，因为 `sync` 要把手伸给 Qt。
+    pub fn rebuild_from(&mut self, restored: Restored) -> Rebuild {
+        let Restored {
+            set,
+            frames,
+            missing_ids,
+            corrupt_ids,
+            ..
+        } = restored;
+        let ids = set.ids();
+        self.set = set;
+        for (id, frame) in frames {
+            self.frames.insert(id, frame);
+        }
+        let desk = self.desk.clone();
+        let refit = self.refit_onto(desk);
+        Rebuild {
+            restored: ids,
+            clamped: refit.moved,
+            missing: missing_ids,
+            corrupt: corrupt_ids,
+        }
+    }
+
+    /// 摆回来的那些枚把纹理交给 Qt。启动那一趟它排在 [`Session::refresh`] 之前跑到，
+    /// 于是 `main.qml` 的 `Component.onCompleted` 只看见「场上多了几枚」——恢复没有
+    /// 第二条 QML 腿，页面本来就在按场上枚数造窗。
+    pub fn push_textures(&mut self) {
+        let ids = self.ids();
+        for id in ids {
+            self.sync(id);
+        }
+    }
+
+    /// §7.2 的启动门（数据半边）：core 判「该不该恢复」（[`falcon_core::pin::plan_startup`]），
+    /// 这一格把判据的结果并进活的那一份并换成一句人话。恢复出来的贴图**不写**历史库
+    /// （§5.14 记录的是用户的操作，不是机器的复原），这里没有任何一腿通向 `History`。
+    pub fn session_startup(&mut self, dir: &Path, pid: u32, now_ms: i64) -> String {
+        let plan = match falcon_core::pin::plan_startup(dir, pid, now_ms) {
+            Ok(p) => p,
+            Err(e) => {
+                self.note(format!("pin session: {e}"));
+                return format!("贴图恢复检查失败，这一趟从空白开始：{e}");
+            }
+        };
+        match (plan.prev, plan.restore) {
+            (PrevRun::Crashed, Some(back)) => self.rebuild_from(back).line(),
+            (PrevRun::Crashed, None) => {
+                "上一次运行没有正常结束，但盘上没有留下贴图。".to_string()
+            }
+            // 首趟或上一趟正常收尾：不恢复，也不说 —— 沉默是这一臂的正确对用户话。
+            (PrevRun::Clean, _) => String::new(),
+        }
     }
 
     /// Hands the pin's current picture to one of the output paths. Taking the
@@ -1288,6 +1627,36 @@ impl PinState {
         done
     }
 
+    /// §5.9.17 的**贴图**那一臂：把这一枚贴图此刻在屏幕上显示的那一张交给
+    /// [`Self::clip_ladder`]，一位读者、一句话也不改。
+    pub fn copy_image_with_files(
+        &mut self,
+        id: PinId,
+    ) -> Result<(usize, std::path::PathBuf), String> {
+        // 画面取自 `rendered`：那一格是产品自己递上屏幕的那一份，而 §5.9.17 要贴进剪贴板的
+        // 必须与屏幕上飘的是同一张（与 [`Self::copy_image`] 同一把尺）。没有那一格就是
+        // 「还没有画过」，那一问在梯子**之前**答，所以它既不动序号也不动那份登记。
+        let Some(frame) = self.with_rendered(id, |frame| frame.clone()) else {
+            return Err(not_drawn(id));
+        };
+        self.clip_ladder(&frame, ClipDoor::Pin)
+    }
+
+    /// §5.9.17 的**截图**那一臂：遮罩的复制把 [`crate::mask::MaskState::delivered`] 那一张
+    /// 递进同一架梯子。`door` 说的是哪一扇（有人按的 `copy_out` / 没人按的默认行为），因为
+    /// 那两扇的中文本来就不一样 —— 见 [`ClipDoor`]。
+    ///
+    /// 三位读者共用一架，是因为这一节的两条规则都写在梯子里而不是写在门上 ——「临时文件在剪贴板
+    /// 失效前不得删除」（PRD 1270 行）与「文件名应遵守预设命名规则」（1271 行）。再造第二架就会
+    /// 出现两套「剪贴板此刻有没有点名这一枚」的读法（#281）。
+    pub fn copy_frame_with_files(
+        &mut self,
+        frame: &Frame,
+        door: ClipDoor,
+    ) -> Result<(usize, std::path::PathBuf), String> {
+        self.clip_ladder(frame, door)
+    }
+
     /// §5.9.17 - the same copy, with a file reference riding along in the *same*
     /// clipboard transaction, so Explorer's `Ctrl+V` (steps 4-5) has something to make
     /// a real file out of.
@@ -1306,16 +1675,27 @@ impl PinState {
     /// 快速保存 presses, because the two series are not the same series and a name that
     /// collides across them is a name the collision policy has to settle anyway.
     ///
+    /// 三扇门共用的是**同一枚**序号（[`PinState::clip_seq`]）：它们往同一个目录写、用同一个
+    /// 前缀，所以贴图那一次「图片 _3.png」之后遮罩那一次必须报「图片 _4.png」—— 各自从 1 数
+    /// 起的两串会在第二次就撞在一起，把「按名字认出哪一次复制」这件事交还给用户去猜。
+    ///
     /// `%m` and `%t` expand to nothing here: a pin carries neither the monitor it came
     /// from nor the tool that drew its选区 - the same unanswered question §5.5.4's 快速保存
-    /// left open, not a new one.
+    /// left open, not a new one. 遮罩那两扇也留空：那两张图**知道**自己来自哪一台显示器，但
+    /// 这一架梯子的名字规则是同一条，替两扇门另开一条"这里 %m 有值"就是给同一枚键两种读法。
+    ///
+    /// `door` 决定两句中文：这一张在 [`crate::save`] 那一句里叫什么（贴图 / 选区），以及
+    /// 「写不出去时什么东西还在」那半句 —— 三扇门的说法本来就不一样（贴图说「贴图还在」，
+    /// 遮罩的复制说「截图还在」，默认行为那一次没人按过、不能说「可以再复制一次」），并成
+    /// 一枚参数就会有一边说一句它没说的话，让每扇门自带整句又会让同一枚规则有三种拼法。
     ///
     /// Returns the pixel count (what [`Self::copy_image`] reports) and the path the
     /// clipboard now names, so the door that called this can say which file a paste
     /// will make.
-    pub fn copy_image_with_files(
+    fn clip_ladder(
         &mut self,
-        id: PinId,
+        frame: &Frame,
+        door: ClipDoor,
     ) -> Result<(usize, std::path::PathBuf), String> {
         // Whatever a previous run (or a previous copy whose file the clipboard has since
         // dropped) left in our corner goes first: it is by definition no longer a live
@@ -1323,9 +1703,7 @@ impl PinState {
         // shutdown hook we do not have yet.
         self.sweep_clip_files();
         let dir = Self::clip_dir();
-        let (width, height) = self
-            .with_rendered(id, |frame| (frame.width, frame.height))
-            .ok_or_else(|| not_drawn(id))?;
+        let (width, height) = (frame.width, frame.height);
         let naming_cfg = crate::settings::naming();
         let export = crate::settings::export();
         let (epoch, offset_min) = platform_windows::clock::wall_clock();
@@ -1343,39 +1721,31 @@ impl PinState {
             seq,
             collision: &naming_cfg.collision,
         };
-        let written = self.with_rendered(id, |frame| {
-            crate::save::quick_to(
-                frame,
-                naming::LocalStamp::from_epoch(epoch, offset_min),
-                facts,
-                &quick,
-                &export,
-                "贴图",
-            )
-        });
-        let path = match written {
-            None => return Err(not_drawn(id)),
-            Some(Err(crate::save::Refusal::BadName(e))) => return Err(e),
-            Some(Err(crate::save::Refusal::Write(e))) => {
-                return Err(format!("{e}。贴图还在，可以再复制一次。"))
+        let path = match crate::save::quick_to(
+            frame,
+            naming::LocalStamp::from_epoch(epoch, offset_min),
+            facts,
+            &quick,
+            &export,
+            door.subject(),
+        ) {
+            Ok((path, _said)) => path,
+            Err(crate::save::Refusal::BadName(e)) => return Err(e),
+            Err(crate::save::Refusal::Write(e)) => {
+                return Err(format!("{e}。{}", door.retry()))
             }
-            Some(Ok((path, _said))) => path,
         };
         self.clip_seq = seq;
-        let pixels = self.with_rendered(id, |frame| {
-            platform_windows::clip::write_image_with_files(frame, std::slice::from_ref(&path))
-                .map(|_| (frame.width as usize) * (frame.height as usize))
-                .map_err(|e| e.to_string())
-        });
-        let pixels = match pixels {
-            Some(Ok(counted)) => counted,
-            Some(Err(e)) => {
+        let pixels = match platform_windows::clip::write_image_with_files(
+            frame,
+            std::slice::from_ref(&path),
+        ) {
+            Ok(()) => (frame.width as usize) * (frame.height as usize),
+            Err(e) => {
                 let _ = std::fs::remove_file(&path);
-                return Err(format!("{e}（临时文件已收回，剪贴板上的旧内容照旧）"));
-            }
-            None => {
-                let _ = std::fs::remove_file(&path);
-                return Err(not_drawn(id));
+                return Err(format!(
+                    "{e}（临时文件已收回，剪贴板上的旧内容照旧）"
+                ));
             }
         };
         // The promise of this gesture is a file the paste target can actually open, so the
@@ -1511,7 +1881,7 @@ impl PinState {
                 Ok(said) => Ok(said),
                 Err(crate::save::Refusal::BadName(e)) => Err(e),
                 Err(crate::save::Refusal::Write(e)) => {
-                    Err(format!("{e}。贴图还在，可以再保存一次。"))
+                    Err(format!("{e}。贴图还在，{}", crate::save::SAVE_EXITS))
                 }
             }
         }) else {
@@ -1542,19 +1912,255 @@ impl PinState {
         Ok(id)
     }
 
-    /// §5.9.14: hand a pin the frames its own file carries. Both doors that read a
-    /// path call this - 选择图片文件 and a file copied in Explorer - so a GIF
-    /// animates whichever way it arrived.
+    /// §5.8.3 第 3 步的**整批**那一手：把用户挑中的那几枚路径读成贴图，交回整批的账
+    /// （[`falcon_core::pin::FilePinBatch`]）。它是 [`Self::add_from_file`] 的批处理外壳，
+    /// 逐枚读、逐枚记账、坏的那一枚吃掉不了后面那几枚 —— 那三件事的判据与单测都在 core 那一层
+    /// （[`falcon_core::pin::read_picture_batch`]），这里只把「一枚路径 → 一格贴图」这一手递进去。
     ///
-    /// A clip that will not read is noted, not a refused paste: the first frame is
-    /// already on screen and the pin keeps showing it until the user pastes the
-    /// file again. A file that is not a GIF at all answers "no clip" without
-    /// decoding, which is why pasting a PNG does not pay for a second read of it.
-    fn attach_clip(&mut self, id: PinId, path: &std::path::Path) {
-        let clip = match falcon_core::gif::decode_file(path) {
+    /// `base` 是这一批共同的起手点，由调用方现读一次（[`next_drop_point`]），其后第 `index`
+    /// 枚按 [`falcon_core::pin::cascade_at`] 排开。为什么不在这里逐枚问指针：对话框是模态的，
+    /// 那几趟里指针根本不会动，问到的还是同一个点 —— 三枚挑的文件会变成三扇**完全重叠**的窗，
+    /// 名册上是三格、屏幕上是一扇，而「一次选三枚得三扇窗」正是这一节要成立的那一条。
+    ///
+    /// 拒绝那一头的措辞仍归 [`read_refusal`]：这里一个字也不写。超出
+    /// [`falcon_core::pin::FILE_PIN_MAX`] 的那些枚 core 挡在**读盘之前**，所以这一手不会为它们
+    /// 建出窗来再收回，也不会替它们去碰磁盘。
+    pub fn pin_pictures(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        base: PhysPoint,
+    ) -> falcon_core::pin::FilePinBatch {
+        falcon_core::pin::read_picture_batch(paths, |path, index| {
+            self.add_from_file(
+                &path.to_string_lossy(),
+                falcon_core::pin::cascade_at(base, index),
+            )
+        })
+    }
+
+    /// §5.8.4 落点那一趟的**这一枚贴图**的闸，答见 [`Arming`]。
+    ///
+    /// 为什么这一格归 [`PinState`] 而不是归 [`crate::drop_in`] 的某张表：闸问的是「**这一枚贴图**
+    /// 现在接不接受一次换来源」，而那一枚贴图的生死与名册都在这一格里；线程侧自己数一叠 id 就是
+    /// 第二份名册（#281），而它数不到的那一格正是「窗已经关了、那一趟还在路上」。
+    ///
+    /// 拿到 [`Arming::Taken`] 的那一只手必须保证落地时调用 [`Self::disarm_drop`] —— **成与败都算
+    /// 落地**，漏一趟就把这一枚永久锁住了。
+    pub fn arm_drop(&mut self, id: PinId) -> Arming {
+        if self.set.get(id).is_none() {
+            return Arming::Gone;
+        }
+        if self.dropping.insert(id) {
+            Arming::Taken
+        } else {
+            Arming::Busy
+        }
+    }
+
+    pub fn disarm_drop(&mut self, id: PinId) {
+        self.dropping.remove(&id);
+    }
+
+    /// 这一枚此刻有没有一趟在路上。门与单测问的是这一格，不数线程、不数队列。
+    pub fn dropping(&self, id: PinId) -> bool {
+        self.dropping.contains(&id)
+    }
+
+    /// 到手的那一张**读出像素**。两支共走这一手，于是「读不出来该怎么说」仍然只有一个作者
+    /// （[`read_refusal`]）：文件那一支的主语是路径，地址那一支的主语是 [`Arrived::label`]。
+    ///
+    /// PRD §5.8.4 那句「获取失败时，不得用低质量占位图静默替代」在这一格的形状是：`Err` 交回的是
+    /// **一句没有像素跟着的话**，[`PinState::frames`] 里不会被插进任何东西，屏幕上仍是上一张。
+    /// 占位图那一族坏之所以在这条路上组不出来，是因为这里没有第三种答 —— 要么是一张**真的**译出来
+    /// 的图，什么也没到手时只有那句拒绝。
+    fn read_arrived(&self, arrived: &Arrived) -> Result<Frame, String> {
+        match arrived {
+            Arrived::File(path) => encode::decode_file(path.as_path())
+                .map_err(|e| read_refusal(&path.to_string_lossy(), &e)),
+            Arrived::Remote { bytes, .. } => {
+                encode::decode(bytes).map_err(|e| read_refusal(&arrived.label(), &e))
+            }
+        }
+    }
+
+    /// §5.8.4 方式二第 3 步的 `Landing::New` 那一支：**另钉一枚**。
+    ///
+    /// 文件那一支就是 §5.8.3 已经走过的那一手（[`Self::add_from_file`]）：同一枚读法、同一句拒绝、
+    /// 同一手 GIF。地址那一支是这一节新添的那一路 —— 它没有路径可交给 `add_from_file`，所以像素
+    /// 从手里的字节译、动图从同一串字节译，落点仍然由 [`Self::place`] 那一手算（来历同为
+    /// `Volatile`，§7.2 的快照因此会把取回的那一份写进 cache，而崩溃恢复看到的就是这一张）。
+    pub fn drop_new(&mut self, arrived: &Arrived, at: PhysPoint) -> Result<PinId, String> {
+        match arrived {
+            Arrived::File(path) => self.add_from_file(&path.to_string_lossy(), at),
+            Arrived::Remote { bytes, .. } => {
+                let frame = self.read_arrived(arrived)?;
+                let label = arrived.label();
+                let id = self.add(frame, at)?;
+                self.attach_gif_bytes(id, bytes, label);
+                Ok(id)
+            }
+        }
+    }
+
+    /// §5.8.4 方式二第 3 步的 `Landing::Replace` 那一支：**换掉这一枚现在的那一张**。
+    ///
+    /// 一次落点要跟着换的格子比「换一张位图」多，而每一格都已经有了自己的作者，所以逐枚写明：
+    /// - 形状与那一刀（[`PinItem::src_rect`]）交给 [`PinItem::adopt_source`] —— 它与 §7.2 恢复共用
+    ///   那一手，桥侧不自己夹第二遍；撤销栈与自由缩略图那一格也在那一手里跟着走；
+    /// - 来历改成 `Volatile`：旧那一格若是 `Cache(path)`，下一份快照就会把**旧**那一张再写一遍，
+    ///   于是崩溃恢复把旧的复活回来 —— PRD §7.2 要的正是反过来；
+    /// - [`PinItem::gif`] 那一格与 [`PinState::clips`]：旧的那几帧属于旧图，先收走，新那一份若是
+    ///   动图再由 [`Self::attach_gif`] 填回；
+    /// - [`PinState::pushed`] 必须清：新那一张若与旧的**同尺寸、同效果**，[`Self::sync`] 的内容键
+    ///   看不出区别，就会答「什么都没动」而一枚像素也不送 —— §5.5.8 刷新那一支写的就是同一枚坏。
+    ///
+    /// 失败那一支**一枚格子也不动**：读不出像素时先 `?` 回去，屏幕上还是上一张，屏幕上那一行说的
+    /// 也是这一句（PRD 那句「不得用低质量占位图静默替代」在落点这一层的形状）。
+    pub fn drop_replace(&mut self, id: PinId, arrived: &Arrived) -> Result<String, String> {
+        let frame = self.read_arrived(arrived)?;
+        let size = PhysSize::new(frame.width, frame.height);
+        let label = arrived.label();
+        {
+            let p = match self.set.get_mut(id) {
+                Some(p) => p,
+                None => {
+                    return Err(format!(
+                        "贴图 {id} 已经不在桌上了：这一趟没有可以换的那一枚，{label} 也没有被丢掉。"
+                    ))
+                }
+            };
+            if p.adopt_source(size).is_err() {
+                // 一枚像素也没有的一张图：与「读不出来」同一句，且此刻还没有任何格子被动过。
+                return Err(format!("{label} 换不进去：那一张图一枚像素也没有。"));
+            }
+            p.image = falcon_core::pin::ImageRef::Volatile;
+            p.gif = None;
+            // 缩略图那一格记的是「这一枚怎么被看着」而不是「这一枚是什么」，所以换来源之后它还得
+            // 成立：Free 那一支的矩形是源图像素，[`PinItem::adopt_source`] 已经把它夹进新的那一刀；
+            // Fixed 那一支的盒子是窗口像素，装人是按**眼前这一张的形状**算的（§5.9.10 那一枚算式
+            // 的唯一作者就是 `enter_fixed_thumbnail`），所以按原来那个盒子重算一次。
+            match p.thumbnail {
+                Some(t) if t.mode == falcon_core::pin::ThumbnailMode::Fixed => {
+                    p.enter_fixed_thumbnail(t.rect.size())
+                }
+                _ => p.sync_size(),
+            }
+        }
+        self.clips.remove(&id);
+        self.frames.insert(id, frame);
+        self.pushed.remove(&id);
+        match arrived {
+            Arrived::File(path) => self.attach_clip(id, path),
+            Arrived::Remote { bytes, .. } => {
+                self.attach_gif_bytes(id, bytes, arrived.label())
+            }
+        }
+        if !self.sync(id) {
+            return Err(format!(
+                "{label} 换不进贴图 {id}：这一张没能送上线，屏幕上还是上一张，复制与保存也还是上一张的内容。"
+            ));
+        }
+        Ok(format!("{label} 已换到贴图 {id} 上。"))
+    }
+
+    /// §5.8.4 方式二第 3 步的**整批落地**：把已经到手的那几张，按落下那一刻定下的那一枚落点装上 ——
+    /// [`falcon_core::drop::Landing::Replace`] 就装到 `id` 这一枚上，
+    /// [`falcon_core::drop::Landing::New`] 就各钉一枚新的（落位点与 §5.8.3 同一式：指针边起手、
+    /// 按次序阶梯排开，[`falcon_core::pin::cascade_at`]）。
+    ///
+    /// `failed` 是取回那一趟**没有到手**的那些格各自的说法（`FetchError` 的原话，由
+    /// [`crate::drop_in`] 搬来）。它和这里新添的失败一起进 `trouble`：屏幕上那一行最多原样引
+    /// [`falcon_core::pin::FILE_PIN_SAID_MAX`] 句，多出来的逐行记进运行历史 —— 与 §5.8.3 那一批
+    /// 同一条规矩，因为「一行提示到第四句就不像提示、像日志」在那一节已经说过一次了。
+    pub fn land(
+        &mut self,
+        id: PinId,
+        arrived: &[Arrived],
+        decision: &Decision,
+        failed: &[String],
+    ) -> String {
+        let mut done: Vec<String> = Vec::new();
+        let mut trouble: Vec<String> = failed.to_vec();
+        match decision.landing {
+            falcon_core::drop::Landing::Replace => match arrived.first() {
+                Some(first) => match self.drop_replace(id, first) {
+                    Ok(said) => done.push(said),
+                    Err(e) => trouble.push(e),
+                },
+                // 一枚也没有：这一趟没换。留着那一枚贴图上现在的那一张，而不是给它换上一张
+                // 「取回来了但不知道是什么」的东西 —— PRD 那句「不得用低质量占位图静默替代」
+                // 在落点上的形状就是这一臂。
+                None => trouble.push(format!(
+                    "贴图 {id} 没被换掉：这一趟没有取回可以装的东西，屏幕上还是它原来那一张。"
+                )),
+            },
+            falcon_core::drop::Landing::New => {
+                let base = next_drop_point();
+                for (index, item) in arrived.iter().enumerate() {
+                    let at = falcon_core::pin::cascade_at(base, index);
+                    match self.drop_new(item, at) {
+                        Ok(new) => done.push(format!("{} 钉成贴图 {new}", item.label())),
+                        Err(e) => trouble.push(e),
+                    }
+                }
+            }
+            // 一格可用的都没有：`plan` 只会在这种情形交回这一枚，而那种情形的 `arrived` 必然是空
+            // （它与 `piles.usable()` 同出一格）。所以这一臂没有事可做 —— 屏幕上那一行说的就是
+            // `decision.said` 那一句，而它说的正是「什么都没动」。
+            falcon_core::drop::Landing::Nothing => {}
+        }
+        // `Replace` 那一支只装第一枚：`plan` 只在正好一枚时答这一支，走到这里还多就是有人在
+        // 两处各判一遍（#281）。记下来，不静默。
+        for extra in arrived.iter().skip(1) {
+            if decision.landing == falcon_core::drop::Landing::Replace {
+                self.note(format!(
+                    "{} 没有被装上去：这一趟的落点是换贴图 {id} 一枚，多出来的这一枚没有落点",
+                    extra.label()
+                ));
+            }
+        }
+
+        let mut line = String::new();
+        if !done.is_empty() {
+            line.push_str(done.join("；").as_str());
+        }
+        let quoted = trouble.len();
+        for (index, why) in trouble.iter().enumerate() {
+            if index >= falcon_core::pin::FILE_PIN_SAID_MAX {
+                // 多出来的那些枚逐行进账，屏幕上那一行不再引它 —— 但**不咽下去**：一行没引不等于
+                // 一件没发生。
+                self.note(format!("拖入贴图 {id}：{why}"));
+                continue;
+            }
+            line.push_str(if line.is_empty() { "" } else { "；" });
+            line.push_str(why);
+        }
+        if quoted > falcon_core::pin::FILE_PIN_SAID_MAX {
+            line.push_str(&format!(
+                "（另有 {} 句逐行记进运行历史）",
+                quoted - falcon_core::pin::FILE_PIN_SAID_MAX
+            ));
+        }
+        if line.is_empty() {
+            line.push_str("这一趟没有装上任何东西。");
+        }
+        format!("{}{}：{}", decision.said, decision.landing.word(), line)
+    }
+
+    /// §5.9.14 那一格的**落账处**：一张到手的图片里可能带的那几帧 GIF 在这里收下。两只读者共走
+    /// 这一手（[`Self::attach_clip`] 从文件读、[`Self::attach_gif_bytes`] 从取回的字节读），所以
+    /// 「译不出来只记一行、不把这一次落点顶回去」这句话在整个 crate 里只写过一遍：第一帧已经在
+    /// 屏幕上了，一句「这一份的动图读不出」不该把整趟作废。
+    fn attach_gif(
+        &mut self,
+        id: PinId,
+        got: Result<Option<GifClip>, falcon_core::gif::GifError>,
+        label: String,
+    ) {
+        let clip = match got {
             Ok(clip) => clip,
             Err(e) => {
-                self.note(format!("{}: {e}", path.display()));
+                self.note(format!("{label}: {e}"));
                 None
             }
         };
@@ -1565,6 +2171,31 @@ impl PinState {
                 p.set_gif(count);
             }
         }
+    }
+
+    /// 地址那一支的 GIF：到手的是字节，不是路径。`is_gif` 先问一句，**不是动图就一枚也不译** ——
+    /// 与 [`Self::attach_clip`] 头顶那句「a file that is not a GIF answers "no clip" without
+    /// decoding」是同一枚道理，那一支不该为一张 PNG 付第二次读的代价。
+    fn attach_gif_bytes(&mut self, id: PinId, bytes: &[u8], label: String) {
+        let got = if falcon_core::gif::is_gif(bytes) {
+            falcon_core::gif::decode(bytes).map(Some)
+        } else {
+            Ok(None)
+        };
+        self.attach_gif(id, got, label);
+    }
+
+    /// §5.9.14: hand a pin the frames its own file carries. Both doors that read a
+    /// path call this - 选择图片文件 and a file copied in Explorer - so a GIF
+    /// animates whichever way it arrived.
+    ///
+    /// A clip that will not read is noted, not a refused paste: the first frame is
+    /// already on screen and the pin keeps showing it until the user pastes the
+    /// file again. A file that is not a GIF at all answers "no clip" without
+    /// decoding, which is why pasting a PNG does not pay for a second read of it.
+    fn attach_clip(&mut self, id: PinId, path: &std::path::Path) {
+        let got = falcon_core::gif::decode_file(path);
+        self.attach_gif(id, got, path.display().to_string());
     }
 
     /// §5.8.2 - whatever the user copied becomes a pin. Deciding *what it was* is
@@ -1588,6 +2219,10 @@ impl PinState {
             }
             _ => None,
         };
+        // §5.8.5 步骤 4 / §5.8.6 步骤 4–5：卡片那三臂贴出来的不只是像素 —— 它被要求说什么，
+        // 从此记在**这一枚**贴图身上。只留位图的话，那四枚旋钮唯一的落点就是 `[card]`，而改档
+        // 改的是每一张将来的卡片、旧的那张一动不动，那不是步骤 4 要的那一手。
+        let mut asked: Option<falcon_core::pin::CardPin> = None;
         let frame = match payload {
             (falcon_core::clip::ClipKind::Image, falcon_core::clip::ClipPayload::Image(f)) => f,
             (falcon_core::clip::ClipKind::Files, falcon_core::clip::ClipPayload::Files(paths)) => {
@@ -1598,21 +2233,25 @@ impl PinState {
                 // §5.8.6 step 3: the swatch and the value it stands for are one card, not
                 // a 64×64 square. The 背景颜色 the user set in `[card]` is what the copied
                 // colour replaces here; width, 字号 and 字体 still come from the same file.
-                let mut card = crate::settings::card_cfg();
-                card.background =
-                    falcon_core::colors::format(rgba, falcon_core::colors::ColorFormat::HexUpper);
-                card_picture(&colour_value(rgba), &card)?
+                //
+                // 那张卡与那一行字都由 [`falcon_core::card`] 写着（`colour_card` / `colour_text`
+                // 是这两半唯一的两名作者），身份里存的也是同一枚颜色 —— 步骤 5「同步更新」之后
+                // 这两半是同一个事实的两面，抄第二遍就是给它们一个走散的机会。
+                let card = falcon_core::card::colour_card(&crate::settings::card_cfg(), rgba);
+                let text = falcon_core::card::colour_text(rgba);
+                asked = Some(falcon_core::pin::CardPin::of_colour(rgba));
+                card_picture(&text, &card).map_err(card_refusal)?
             }
             (falcon_core::clip::ClipKind::Text, falcon_core::clip::ClipPayload::Text(text)) => {
-                card_picture(&text, &crate::settings::card_cfg())?
+                asked = Some(falcon_core::pin::CardPin::of_text(text.clone()));
+                card_picture(&text, &crate::settings::card_cfg()).map_err(card_refusal)?
             }
             (falcon_core::clip::ClipKind::Html, falcon_core::clip::ClipPayload::Html(html)) => {
                 // §5.8.2's 保留基本格式 is the line structure: `html_text` keeps the blocks
                 // the sanitizer allowed and drops the styling along with the markup.
-                card_picture(
-                    &falcon_core::clip::html_text(&html),
-                    &crate::settings::card_cfg(),
-                )?
+                let text = falcon_core::clip::html_text(&html);
+                asked = Some(falcon_core::pin::CardPin::of_text(text.clone()));
+                card_picture(&text, &crate::settings::card_cfg()).map_err(card_refusal)?
             }
             (_, falcon_core::clip::ClipPayload::Empty) => Err("剪贴板没有可贴图的内容")?,
             _ => Err(
@@ -1620,16 +2259,133 @@ impl PinState {
                     .to_string(),
             )?,
         };
-        let id = self.add(frame, at)?;
+        let id = match asked {
+            Some(card) => self.add_card(frame, at, card)?,
+            None => self.add(frame, at)?,
+        };
         if let Some(path) = pasted_file {
             self.attach_clip(id, &path);
         }
         Ok(id)
     }
 
+    /// §5.8.5 步骤 4 / §5.8.6 步骤 4–5 在**这一枚**贴图上的落点：四格文本原样交给 core ——
+    /// `[card]` 打底、这一枚被调过的格盖上去、越界的那一格由档的那道闸自己夹（[`falcon_core::card::gate`]
+    /// 是那条界唯一的读者，桥不抄第二份），颜色那一串由 [`falcon_core::colors::parse`] 读。
+    ///
+    /// 拒的那一路这一枚一处也不动（core 在被拒时不提交身份），所以窗上留下的还是旧的那一张。
+    /// 成功那一路交回的是用户读的那一句：这一枚卡片**此刻**的四枚读数与新图幅，越界时再带上闸
+    /// 自己那句 —— 念的是用掉了的那枚数而不是刚打进去的那串字，否则 1 000 000 会被念成一个
+    /// 从没发生过的宽度（#433/#455）。
+    ///
+    /// [`Self::pushed`] 那一格必须跟着丢：卡片只换背景时新图与旧图**尺寸相同**，内容键答
+    /// 「什么都没动」，屏幕上就会一直挂着旧的那一块色 —— 与 [`Self::refresh`] 覆盖那一臂同一封
+    /// 理由，那一手也是这么写的。
+    pub fn edit_card(&mut self, id: PinId, edit: falcon_core::pin::CardEdit) -> Result<String, String> {
+        if edit.is_empty() {
+            return Err(format!(
+                "贴图 {id} 的卡片没收到要改的那一格：宽度、字号、字体、背景颜色（颜色卡片那一格填的是颜色值），填一种就够，这一枚没动。"
+            ));
+        }
+        let base = crate::settings::card_cfg();
+        let answer = match self.set.get_mut(id) {
+            Some(p) => p.edit_card(&base, &edit, &platform_windows::glyphs::DirectWrite),
+            // 名单里没有这一枚：窗已关掉，那一手没有落点。
+            None => None,
+        };
+        match answer {
+            None => Err(format!(
+                "贴图 {id} 不是卡片贴出来的：那四格改的是「一段话被排成图」的那一枚，图片与文件没有这一问。"
+            )),
+            Some(Err(why)) => Err(card_pin_refusal(why)),
+            Some(Ok(report)) => {
+                let (w, h) = (report.frame.width, report.frame.height);
+                let card = report.card;
+                self.frames.insert(id, report.frame);
+                self.pushed.remove(&id);
+                let online = self.sync(id);
+                let mut said = format!(
+                    "贴图 {id} 的卡片重排好了：宽 {} 像素、字号 {}、字体 {}、背景 {}，图幅 {}×{}。",
+                    card.width, card.font_size, card.font_family, card.background, w, h
+                );
+                if let Some(remembered) = self.set.get(id).and_then(|p| p.card.as_ref()) {
+                    // §5.8.6 步骤 5：颜色卡片那一行就是它的值，念出来才看得见「两半一起换了」。
+                    if remembered.colour.is_some() {
+                        said.push_str(&format!("色块与那一行一起换成了「{}」。", remembered.text));
+                    }
+                }
+                for why in &report.clamped {
+                    said.push_str(&format!("（{why}）"));
+                }
+                if !online {
+                    return Err(format!(
+                        "{said} —— 新的那一张没能送上线：屏幕上还是上一张，复制与保存也还是上一张的内容。"
+                    ));
+                }
+                Ok(said)
+            }
+        }
+    }
+
+    /// 那一格栅窗开起来该带着的读数：这一枚卡片**此刻**用的那四枚数（`[card]` 打底、自己的
+    /// override 盖上去，[`falcon_core::pin::CardPin::card_of`] 那一手），而不是 `[card]` 的那四枚。
+    ///
+    /// 为什么读的是有效值而不是那几枚 override：打开 A 卡片的窗该看见 A 现在真的是多宽 —— 页上
+    /// 若显示 `[card]` 的 480 而 A 其实是 700，用户按 Ok 就是在把 A 改回 480（那一手没人要求过）。
+    pub fn card_view(&self, id: PinId) -> CardViewData {
+        let Some(remembered) = self.set.get(id).and_then(|p| p.card.as_ref()) else {
+            return CardViewData::default();
+        };
+        let effective = remembered.card_of(&crate::settings::card_cfg());
+        CardViewData {
+            is_card: true,
+            is_colour: remembered.colour.is_some(),
+            width: effective.width,
+            font_size: effective.font_size,
+            font_family: effective.font_family,
+            background: effective.background,
+            text: remembered.text.clone(),
+        }
+    }
+
+    /// §5.8.5 步骤 4 与 §5.8.6 步骤 4 在页上那四格里填的那串文本 ⇒ core 那四格的结构。
+    ///
+    /// 空格 = 这一格没填 = 这一枚卡片在这一格上仍跟着 `[card]`；**唯一**的例外是颜色那一扇门的
+    /// 那一格（它只有一格，空着就是「没说要改成什么」），那一格由页上原样递进来、让
+    /// [`falcon_core::colors::parse`] 拒它 —— 桥不在这里替用户猜一枚颜色，也不悄悄留旧色。
+    ///
+    /// `pub` 的理由是这一手必须有**一名**作者：页上那四格与门上的四格递进来的是同一串文本，
+    /// 而「空格 = 这一格没填」那一判在窗侧与桥侧重判一遍，就会分成两套（#281）。
+    pub fn card_edit(
+        width: &str,
+        font_size: &str,
+        font_family: &str,
+        background: &str,
+    ) -> falcon_core::pin::CardEdit {
+        let number = |raw: &str| raw.trim().parse::<u32>().ok();
+        falcon_core::pin::CardEdit {
+            width: number(width),
+            font_size: number(font_size),
+            font_family: filled(font_family),
+            background: filled(background),
+        }
+    }
+
     fn note(&mut self, message: String) {
         self.problems.push(message);
     }
+}
+
+/// 页上那一格填进去的一串字 ⇒ core 那一格的 `Option`：trim 之后空着就是「这一格没填」，
+/// 于是这一枚卡片在这一格上仍跟着 `[card]`（§5.8.5 步骤 4 那四枚旋钮的其中两格）。
+///
+/// 颜色那一格也走这里，是因为它在这里还不是颜色、只是「有没有填」：填了的那一串原样交给
+/// [`falcon_core::colors::parse`] 去读或去拒，没填的那一串不该被桥猜成一枚色、也不该被悄悄
+/// 留着旧色（拒出来的那一句归 [`card_pin_refusal`]，与贴出来那一路的 [`card_refusal`] 共用
+/// 同一份失败事实）。
+fn filled(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
 /// §8.1: the paste path words its own refusals, and the two are different answers - one
@@ -1647,27 +2403,37 @@ fn card_refusal(e: falcon_core::card::CardError) -> String {
     }
 }
 
+/// §5.8.5 步骤 4 / §5.8.6 步骤 4–5 在**这一枚**贴图上的那一路拒绝：说的不是档里那一格，
+/// 是用户刚刚在这一枚卡片上填的那一串 —— 「[card] 里的 background = …」那一句在这里是假的，
+/// 这一手从头到尾没碰过档。两种形状的答案不同（颜色那一格 vs 排出来的图太大），core 只交回
+/// 结构、措辞归这里（§8.1）。
+fn card_pin_refusal(e: falcon_core::card::CardError) -> String {
+    use falcon_core::card::CardError as E;
+    match e {
+        E::TooLarge(w, h) => format!(
+            "这一枚卡片按刚填的排版排出来是 {w}×{h} 像素，比一张贴图能装的还大——这一枚没动。"
+        ),
+        E::Background(value) if value.trim().is_empty() => {
+            "颜色值那一格是空的：填一串 #RRGGBB、rgb(...) 这样的颜色，这一枚没动。".to_string()
+        }
+        E::Background(value) => {
+            format!("{value} 不是颜色值，这一枚卡片没动——改成 #RRGGBB 再按一次。")
+        }
+    }
+}
+
 /// §5.8.5 / §5.8.6: the one place a card is asked for, so the three word-shaped pastes
 /// (纯文本、HTML 文本、颜色值) cannot disagree about what 宽度、字号、字体 mean.
 ///
 /// DirectWrite answers the measuring, the same provider the capture mask lays its own text
 /// with. Where a machine has no font to ask, [`falcon_core::card`] paints the background
 /// and nothing else rather than inventing a line height.
-fn card_picture(text: &str, card: &falcon_core::config::Card) -> Result<Frame, String> {
+///
+/// 它交回的是 core 那句原话而不是措辞好的一句：拒绝的**措辞**属于走到哪一扇门 —— 贴出来的那一路
+/// 说「[card] 里的 background」（[`card_refusal`]），改这一枚的那一路说「{value} 不是颜色值」
+/// （[`card_pin_refusal`]），两路共用一份失败事实。
+fn card_picture(text: &str, card: &falcon_core::config::Card) -> Result<Frame, falcon_core::card::CardError> {
     falcon_core::card::render(text, card, &platform_windows::glyphs::DirectWrite)
-        .map_err(card_refusal)
-}
-
-/// §5.8.6 step 3's 颜色值: six digits when the copied colour is opaque, eight when it is
-/// not. The alpha is written rather than applied - a swatch painted with `#00000000` is a
-/// picture of nothing at all, and the value line is what the user reads the colour off.
-fn colour_value(rgba: [u8; 4]) -> String {
-    use falcon_core::colors::{format, ColorFormat};
-    if rgba[3] == 0xff {
-        format(rgba, ColorFormat::HexUpper)
-    } else {
-        format(rgba, ColorFormat::HexRgba)
-    }
 }
 
 /// What went wrong with a file, said the way the user reads it.
@@ -1726,6 +2492,128 @@ pub fn state() -> &'static Mutex<PinState> {
 pub fn with<R>(f: impl FnOnce(&mut PinState) -> R) -> R {
     let mut guard = state().lock().unwrap_or_else(PoisonError::into_inner);
     f(&mut guard)
+}
+
+// --------------------------------------------------------- §7.2 的会话与 §6.3 的节拍
+
+/// 量具与单测钉落点用的环境变量，与 `FALCONSHOT_GUIDE_DIR` / `FALCONSHOT_LASTREGION_DIR`
+/// 同一族：给了就往那里读写，没给才问 `advanced.data_dir` 那一位主人（§6.1：贴图状态
+/// 与 `config.toml`、`history.db` 同目录，不另立门户）。
+pub const ENV_DIR: &str = "FALCONSHOT_PIN_STATE_DIR";
+
+/// 落点的那一条决定是纯的：[`dir_in`] 收 env 与主人两个读数，单测碰得到它、碰不到进程
+/// 环境（`cargo test` 多线程，改环境是另一码事 —— 与 `capture::dir_in` 同一分工）。
+pub fn pin_state_dir() -> PathBuf {
+    let data = crate::settings::history_data_dir();
+    dir_in(std::env::var_os(ENV_DIR).as_deref(), &data)
+}
+
+fn dir_in(env: Option<&std::ffi::OsStr>, data: &Path) -> PathBuf {
+    match env {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => data.to_path_buf(),
+    }
+}
+
+/// 快照与会话戳共同的钟：epoch 毫秒。快一秒慢一秒都不改变 §7.2 的判断——判据是
+/// 「戳在不在」，不是「戳上写着几点」；而 `snapshot_due` 对时钟回拨的那一臂已经
+/// 把「更早写一枚」当成了正确答案。
+fn epoch_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// §6.3 的"每 5 秒"没有 QML Timer 那一层可搭（热键泵的消息窗不带定时器，页面一侧
+/// 不许为恢复多长一条腿），所以是一位管家线程：它的全部主张就是
+/// [`PinState::snapshot_pass`]，而那一格把判断都交给了 core。睡一小片一小片，
+/// 为的是 [`stop_snapshot_saver`] 不用等满一整拍。
+static SAVER: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+static SAVER_STOP: AtomicBool = AtomicBool::new(false);
+
+fn start_snapshot_saver(dir: PathBuf, seconds: u32) {
+    let mut held = SAVER.lock().unwrap_or_else(PoisonError::into_inner);
+    if held.is_some() {
+        return;
+    }
+    SAVER_STOP.store(false, Ordering::SeqCst);
+    *held = Some(std::thread::spawn(move || {
+        let step_ms = 200u64;
+        let mut waited: u64 = 0;
+        let window = (seconds as u64).saturating_mul(1000).max(step_ms);
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(step_ms));
+            waited += step_ms;
+            if SAVER_STOP.load(Ordering::SeqCst) {
+                break;
+            }
+            if waited >= window {
+                waited = 0;
+                let seconds2 = seconds;
+                let dir2 = dir.clone();
+                let _ = with(|s| s.snapshot_pass(&dir2, seconds2, epoch_ms()));
+            }
+        }
+    }));
+    drop(held);
+}
+
+/// 停下节拍器并把它收干净。收尾**不**补写快照：正常结束的下一趟什么都不该摆回来
+/// （§7.2 的判据），留着最后一拍反而是在给下一次启动留尸体。
+fn stop_snapshot_saver() {
+    SAVER_STOP.store(true, Ordering::SeqCst);
+    let handle = SAVER.lock().unwrap_or_else(PoisonError::into_inner).take();
+    if let Some(h) = handle {
+        let _ = h.join();
+    }
+}
+
+/// 快照这一族今天是不是开着。两枚键都必须点头：`[advanced] crash_recovery` 是
+/// §7.2 的开关本体，`[pin] state_save_seconds` 是 §6.3 的节拍（0 关闭）——节拍停了
+/// 就再也没有写的人，恢复也就无从谈起，所以两枚里任何一枚说不，这一族整体沉默。
+pub fn pin_session_enabled() -> bool {
+    if !crate::settings::with(|st| st.config.advanced.crash_recovery) {
+        return false;
+    }
+    with(|s| s.cfg.state_save_seconds) > 0
+}
+
+/// §7.2 的启动门 + §6.3 的节拍器，由 `main` 在**产品自己那一趟**（无 flag 常驻）于
+/// QML 引擎出现之前调用：恢复的贴图在 `Session` 的 `Component.onCompleted` 读场上
+/// 枚数之前就已经在场，页面按既有那条 `syncPins` 腿给它们造窗 —— 恢复不新增 QML
+/// 概念。交回的是启动日志上的一行（干净首启是空串）。
+pub fn start_session() -> String {
+    if !pin_session_enabled() {
+        return "[advanced] crash_recovery 或 [pin] state_save_seconds 关了这一族：不恢复、不快照。".to_string();
+    }
+    let dir = pin_state_dir();
+    let seconds = with(|s| s.cfg.state_save_seconds);
+    let line = with(|s| s.session_startup(&dir, std::process::id(), epoch_ms()));
+    // 数据并回来之后才把像素推给 Qt：`sync` 的那一手要的是已经落位的 `set`。
+    with(|s| s.push_textures());
+    start_snapshot_saver(dir, seconds);
+    line
+}
+
+/// §7.2 的正常退出门，`main` 在事件环返回之后、进程结束之前走到这里。所有体面
+/// 的结束（托盘「退出」、`quit_after`、关掉最后一扇被允许关的窗）都从 `exec()`
+/// 的返回处经过，所以这一格就是「用户按自己的意思结束了这一趟」唯一的判定点；
+/// 它把会话戳收走、把快照与 `pins/` 缓存一起清掉 —— 下一次启动因此**不会**把
+/// 用户已经关掉的贴图再摆回来。崩溃那一趟走不到这里，戳留在盘上，恢复因此发生。
+pub fn finish_session() -> String {
+    stop_snapshot_saver();
+    if !pin_session_enabled() {
+        return String::new();
+    }
+    let dir = pin_state_dir();
+    match falcon_core::pin::finish_clean(&dir) {
+        Ok(()) => String::new(),
+        Err(e) => {
+            with(|s| s.note(format!("pin session close: {e}")));
+            format!("贴图会话收尾失败：{e}")
+        }
+    }
 }
 
 /// The screen layout pins are clamped to: every monitor the platform enumerates,
@@ -1987,6 +2875,47 @@ fn next_drop_point() -> PhysPoint {
 /// than only once the global hotkey lands in M5.
 pub fn paste_from_clipboard() -> Result<PinId, String> {
     with(|s| s.add_from_clipboard(next_drop_point()))
+}
+
+/// §5.8.3 第 1 步那两枚入口背后的那一批：把**已经取到的**那几枚路径读成贴图，并把整批的账
+/// 交回给按下来的那一家（托盘 → [`crate::hotkey`]）。
+///
+/// 门为什么长在这一层而不是住在托盘那一路里：`next_drop_point()` 与 [`PinState::add_from_file`]
+/// 都是这一层的手，桥的另一家要用就得把它们公开成两枚；而 core 那一侧
+/// [`falcon_core::pin::read_picture_batch`] 要的恰恰是「把读盘这一手递进去」。所以这一层只做
+/// **注入**：路径由调用方交来（对话框、拖到图标上、命令行、将来还有 §5.8.4 的远程取图），
+/// 怎么读、读不成要说哪一句，仍是 [`PinState::pin_pictures`] 与 [`read_refusal`] 那一处的事
+/// （#281 —— 拒绝那四句话已经在 `--pin` 门那一边被人量过，这里不重写第二份）。
+///
+/// 落位点的起手只问**一次** [`next_drop_point`]：剩下的阶梯归 [`PinState::pin_pictures`]，而
+/// 那一手在本档单测 `a_picked_batch_of_files_lands_on_the_roster` 那一格有证人（真文件、真
+/// 解码器、读回来的是名册里那几格的坐标）。这一枚薄壳只剩「现问一次指针」，而那一问正是
+/// §9.1 第十条 headless 那一半问不动的事。
+pub fn pin_pictures(paths: &[std::path::PathBuf]) -> falcon_core::pin::FilePinBatch {
+    let base = next_drop_point();
+    with(|s| s.pin_pictures(paths, base))
+}
+
+/// §5.8.4 方式二第 3 步的落地：把已经到手的那几张装上，并把**屏幕上那一行**交回。
+///
+/// 与 [`pin_pictures`] 同一枚形状的薄壳：`next_drop_point()` 只有这一层能问（指针），而
+/// [`crate::drop_in`] 那一头要的是「一句话 + 一次装」。落地之后不论成与败都把
+/// [`PinState::disarm_drop`] 那一格放下来 —— 那一格挂在 `true` 上而不放，就等于这一枚贴图从此
+/// 不再接受任何一次落下，而用户看不见为什么。
+///
+/// 这一手只在 **GUI 线程**上叫（取回字节那条线程把结果排队回来，或者本来就没有要取回的东西）。
+/// 它动 [`PinState::frames`]、动纹理，而那些格子只有这一条线程可以碰。
+pub fn land_drop(
+    id: PinId,
+    arrived: &[Arrived],
+    decision: &Decision,
+    failed: &[String],
+) -> String {
+    with(|s| {
+        let line = s.land(id, arrived, decision, failed);
+        s.disarm_drop(id);
+        line
+    })
 }
 
 /// §5.9.1: a new pin arrives roughly where the user is looking, and the desktop
@@ -2268,7 +3197,7 @@ pub fn selftest() -> (bool, String) {
         // keeps the numbers here and the pixels out of the log.
         let (card_ok, card_said) =
             match card_picture("文本卡片 one two three", &crate::settings::card_cfg()) {
-                Err(e) => (false, e),
+                Err(e) => (false, card_refusal(e)),
                 Ok(frame) => {
                     let (w, h) = (frame.width, frame.height);
                     let flat = frame.is_uniform().is_some();
@@ -3121,9 +4050,13 @@ pub fn selftest() -> (bool, String) {
         );
 
         // §5.21.3 的桥侧第一处读者：诊断那一半从活的 about 横幅与活的主目录里现读，令牌只
-        // 夹在一枚 fixture 行里。三臂各答一个问题 —— 没点下头的臂（配置开关不论怎么摆都得
-        // 省略）、开关跟着配置走的臂、两把闸都开的臂。敏感值在最后一臂里也不许活着出来。
-        use falcon_core::feedback::{self, Draft, Payload};
+        // 夹在一枚 fixture 行里。三臂各答一个问题 —— 没点下头的臂（两半各留一句省略，且各自
+        // 说得清是被谁关掉的）、开关跟着配置走的臂（日志那一半不归它管）、两把闸都开的臂。
+        // 敏感值在最后一臂里也不许活着出来。
+        // 三臂的分母是本档**明写的布尔**与明写的行：判据不许随这台机器勾没勾而红。生产路径
+        // 那一手由后面那一格现读 —— [`crate::feedback_window::preview`] 就是页上那一段预览，
+        // 它与「发送」共用同一只手，所以那一格红的时候，屏幕上给用户看的也是错的东西。
+        use falcon_core::feedback::{self, Consent, Draft, Payload};
         let about = crate::settings::about_cfg();
         let profile = std::env::var("USERPROFILE").unwrap_or_default();
         let account = profile.rsplit(['\\', '/']).next().unwrap_or("").to_string();
@@ -3137,11 +4070,27 @@ pub fn selftest() -> (bool, String) {
             logs: vec!["retry token=fixturevalue".to_string()],
         };
         let version = env!("CARGO_PKG_VERSION");
-        let unasked = feedback::payload(&draft, about.send_diagnostics, false, version, "windows");
-        let gated = feedback::payload(&draft, about.send_diagnostics, true, version, "windows");
-        let open = feedback::payload(&draft, true, true, version, "windows");
-        let leaks = |p: &Payload| {
-            let j = p.lines.join(" ");
+        let consent = |confirmed: bool, logs_box: bool| Consent {
+            confirmed,
+            logs: logs_box,
+        };
+        let unasked = feedback::payload(
+            &draft,
+            about.send_diagnostics,
+            &consent(false, false),
+            version,
+            "windows",
+        );
+        let gated = feedback::payload(
+            &draft,
+            about.send_diagnostics,
+            &consent(true, false),
+            version,
+            "windows",
+        );
+        let open = feedback::payload(&draft, true, &consent(true, true), version, "windows");
+        // 「什么算原值漏出去」在这里只有一个作者：三臂与生产路径那一格问的都是同一列值。
+        let leaks_in = |j: &str| {
             let mut v = Vec::new();
             if j.contains("eyJhbGciOiJIUz12") {
                 v.push("bearer");
@@ -3154,14 +4103,21 @@ pub fn selftest() -> (bool, String) {
             }
             v
         };
+        let leaks = |p: &Payload| leaks_in(&p.lines.join(" "));
         let (l_no, l_g, l_open) = (leaks(&unasked), leaks(&gated), leaks(&open));
+        let (omit_d, omit_l) = (
+            unasked.lines[2].starts_with("diag=omitted"),
+            unasked.lines[3].starts_with("log=omitted"),
+        );
         check(
             "feedback bundle scrubs secrets",
-            !unasked.attached
-                && unasked.lines.len() == 3
-                && unasked.lines[2].starts_with("machine=omitted")
-                && gated.attached == about.send_diagnostics
-                && open.attached
+            !unasked.attached()
+                && unasked.lines.len() == 4
+                && omit_d
+                && omit_l
+                && gated.attached() == about.send_diagnostics
+                && !gated.logs
+                && open.attached()
                 && open.lines.len() == 2 + draft.diagnostics.len() + draft.logs.len()
                 && open.lines[1] == "desc=selftest 反馈包"
                 && open.lines.iter().any(|l| l.contains(feedback::MARK))
@@ -3170,13 +4126,16 @@ pub fn selftest() -> (bool, String) {
                 && l_g.is_empty()
                 && l_open.is_empty(),
             format!(
-                "未确认臂={}行 省略={} 泄漏={:?} | 开关臂 attached={}==cfg={} 泄漏={:?} | \
-                 双开臂={}行 藏={}枚 泄漏={:?} 主目录名={} | 主目录那一行现读={}",
+                "未确认臂={}行 diag省略={} log省略={} 泄漏={:?} | 开关臂 attached={}==cfg={} \
+                 给不给日志={} 泄漏={:?} | 双开臂={}行 藏={}枚 泄漏={:?} 主目录名={} | \
+                 主目录那一行现读={}",
                 unasked.lines.len(),
-                unasked.lines[2].starts_with("machine=omitted"),
+                omit_d,
+                omit_l,
                 l_no,
-                gated.attached,
+                gated.attached(),
                 about.send_diagnostics,
+                gated.logs,
                 l_g,
                 open.lines.len(),
                 open.redactions,
@@ -3191,6 +4150,33 @@ pub fn selftest() -> (bool, String) {
                     .find(|l| l.contains("profile="))
                     .map(String::as_str)
                     .unwrap_or("(双开臂里没有 profile= 行)"),
+            ),
+        );
+
+        // 生产路径那一格：读的是**这台机器此刻**的档、此刻的主目录与此刻的日志行，所以它只问
+        // 一条「原值活着出去了没有」—— 开关该不该开、日志该不该带，都不由这一格判（那三件事的
+        // 分母是用户的档，而 §9.1 第十五条只许读它）。两半各说一句（`diag=` 与 `log=`）是
+        // [`falcon_core::feedback::payload`] 恒成立的形状：带出去的照抄，没带的写省略。
+        let real = crate::feedback_window::preview("selftest 反馈包", true);
+        let l_real = leaks_in(&real);
+        check(
+            "feedback path the page uses",
+            real.contains("feedback v=")
+                && real.contains("desc=selftest 反馈包")
+                && real.contains("diag=")
+                && real.contains("log=")
+                && l_real.is_empty(),
+            format!(
+                "预览 {} 字节 / {} 行；两半都说上了={}/{}；省略那一句在不在={}；原值漏出={:?}；\
+                 此刻 send_diagnostics={} 在册日志 {} 枚",
+                real.len(),
+                real.lines().count(),
+                !real.contains("\ndiag=omitted"),
+                !real.contains("\nlog=omitted"),
+                real.contains("=omitted"),
+                l_real,
+                about.send_diagnostics,
+                crate::feedback_window::logs().len()
             ),
         );
 
@@ -4998,6 +5984,62 @@ mod tests {
         assert!(notice(third).is_none());
     }
 
+    /// §8.5 第一句里「将**不可见**贴图移动到**主显示器**可见区域」那一半，第一次在桥的这一只手
+    /// 上有读者。上面那一枚量的是一条直边（并集只剩 1600），而三块屏拔掉中间那一块时剩下的两块
+    /// 上下错开：贴图仍在并集那只盒子里，却没有任何一台显示器在放它，`keep_visible` 对它一个字也
+    /// 不说。落点写死成主屏右缘留 `MIN_VISIBLE_PX` 的那一个数（1000 − 24 = 976），不是
+    /// `rescue_onto_primary` 的回声（#274：让被检的那只手自己算期望，它写成什么样都照样绿）。
+    ///
+    /// 三问：① 没人在放的那一枚被搬到主屏，`moved` 数它一枚、页上那句话也说它一枚；② 主屏正在放
+    /// 的那一枚一步也不动（「搬不可见的」不许被过成「重铺全场」）；③ 拖拽那一臂照旧走 §5.9.1 ——
+    /// 用户自己把一枚拖进死角里，屏幕没变化，就没有第二只手替他决定该去哪。
+    #[test]
+    fn a_pin_on_no_monitor_after_a_screen_change_lands_on_the_primary() {
+        use super::{notice, Desktop, Monitor, Scale};
+        use falcon_core::geometry::{PhysPoint, PhysRect, PhysSize};
+        use falcon_core::pin::ImageRef;
+
+        let mon = |x, y, w, h| Monitor::new(PhysRect::new(x, y, w, h), Scale::ONE);
+        let before = Desktop::from_monitors(vec![mon(0, 0, 1000, 600), mon(1000, 0, 1000, 600)]);
+        let after = Desktop::from_monitors(vec![mon(0, 0, 1000, 600), mon(1000, -600, 1000, 600)]);
+        assert_eq!(after.bounds, PhysRect::new(0, -600, 2000, 1200));
+
+        let mut s = PinState::default();
+        let spawn = |s: &mut PinState, x, y| {
+            s.set
+                .spawn(
+                    ImageRef::Volatile,
+                    PhysSize::new(100, 80),
+                    PhysPoint::new(x, y),
+                    &s.cfg,
+                )
+                .expect("spawn")
+        };
+        // 这两枚此刻都在右边那块屏上，所以装上第一份表时一枚也不该动。
+        let lost = spawn(&mut s, 1100, 300);
+        let kept = spawn(&mut s, 100, 100);
+        let first = s.refit_onto(before);
+        assert!(first.changed && first.moved == 0 && first.total == 2, "{first:?}");
+
+        // ① 中间那块换了位置：`lost` 落在盒子里的死角，`kept` 仍被主屏放着。
+        let second = s.refit_onto(after.clone());
+        assert!(second.changed && second.moved == 1, "{second:?}");
+        assert_eq!(s.set.get(lost).expect("pin").pos_phys, PhysPoint::new(976, 300));
+        assert_eq!(s.set.get(kept).expect("pin").pos_phys, PhysPoint::new(100, 100), "主屏正在放的那一枚也被搬了");
+        let said = notice(second).expect("搬了一枚却没人说");
+        assert!(said.contains("1 张贴图"), "{said}");
+
+        // ③ 拖进死角：并集那一夹之外没有第二只手。
+        let _ = s.clear_selection();
+        assert_eq!(s.drag_pin(kept, 1100, 0), 1, "这一拖该只搬被按住的那一枚");
+        assert_eq!(
+            s.set.get(kept).expect("pin").pos_phys,
+            PhysPoint::new(1200, 100),
+            "拖拽那一臂被 §8.5 的那一只手带了走"
+        );
+        assert!(!s.desk.covered(&s.set.get(kept).expect("pin").window_rect()), "这枚此刻就在死角里，正是下一趟屏幕变化要搬的那一枚");
+    }
+
     /// §5.5.11 步骤 3 的那一判第一次有一枚**只读**的形状：两臂各问一次，行里四段都得由这一枚
     /// 自己印出来。判据写死成整行相等而不是 `contains`，因为门那一格引的就是这一整行 —— 少一段、
     /// 多一段、或同一问第二次答得不一样，都是门在引一枚它读不懂的读数（#239 那一族）。
@@ -5653,5 +6695,651 @@ mod tests {
         assert_eq!(t.assign_selection_to_group(Some(g3)).expect("assign 丙"), 2);
         assert_eq!(t.delete_group(g3, true).expect("destroy"), 2);
         assert!(t.ids().is_empty(), "连贴图一起销毁要把两枚都带走");
+    }
+
+    // ---------------------------------------------------------------- §7.2 的会话
+    //
+    // 三枚门各量各的一格，全部跑在 `PinState::default()` 的**局部**桌面上（不进全局
+    // `with`，也就不与并行的别家单测抢场）：落点是 `sandbox` 的沙盒，时钟是递进去的
+    // 假毫秒。`sync` 一手不碰——纹理交给 Qt 那一腿在 `cargo test` 底下没有
+    // QGuiApplication（`the_pin_door_says_it_before_the_file_exists` 写明了同一分工），
+    // 所以这里用 `set.spawn` 直接上钉、把像素放进 `frames`，绕开 `add`。像素→纹理
+    // 那一段由量具（真 app）负责量。
+
+    /// §7.2 的两扇门在同一个沙盒里前后走完：崩溃的那趟**留下**会话戳，下一趟把贴图
+    /// 摆回来；正常结束的那趟把戳与快照一起收走，下一趟**什么都不见**。「否则用户
+    /// 永远关不掉它们」这一问就在这里量：第三趟看到的空场，是第二趟体面收尾的**结果**，
+    /// 不是「从没写过」的结果——第一趟确实落了快照，且落得成功。
+    /// 恢复的算术（几枚、哪枚、字段怎么回来）core 在 `pin.rs` 里量过；这一枚量的是
+    /// 桥侧的接线：门按顺序走，话说得对，数据真落进 `set` 与 `frames`。
+    #[test]
+    fn a_clean_exit_lays_the_pins_down_for_good_and_a_kill_leaves_them_for_next_time() {
+        use super::{Desktop, Monitor, PinSet};
+        use falcon_core::geometry::{PhysPoint, PhysRect, PhysSize, Scale};
+        use falcon_core::pin::{self, ImageRef};
+
+        let desk = || Desktop::from_monitors(vec![Monitor::new(PhysRect::new(0, 0, 1600, 900), Scale::ONE)]);
+        let dir = sandbox("clean-vs-crash");
+
+        // —— 第一趟：开场（点会话戳）、上两枚贴图、按节拍落快照。
+        let mut s = PinState::default();
+        s.refit_onto(desk());
+        assert_eq!(s.session_startup(&dir, 1, 10), "", "干净首启该是沉默");
+        let mut ids = Vec::new();
+        for x in [40i32, 240] {
+            let id = s
+                .set
+                .spawn(ImageRef::Volatile, PhysSize::new(8, 4), PhysPoint::new(x, 40), &s.cfg)
+                .expect("spawn");
+            s.frames.insert(id, Frame::new(8, 4).expect("frame"));
+            ids.push(id);
+        }
+        assert!(s.snapshot_pass(&dir, 5, 100).contains("pin snapshot"));
+        assert!(dir.join(pin::SESSION_FILE).is_file(), "开场点过的戳要活着——它兼着「上一趟还活着」的证词");
+
+        // —— 这一趟**死在这里**：进程被杀，退出门没有走到，戳留在盘上。
+        drop(s);
+        // —— 第二趟：据戳恢复。
+        let mut s2 = PinState::default();
+        s2.refit_onto(desk());
+        let said = s2.session_startup(&dir, 2, 9_000);
+        assert!(said.contains("2 枚未关闭的贴图摆回来了"), "{said}");
+        assert_eq!(s2.set.ids(), ids, "摆回来的就是那些枚，id 不增不减");
+        assert!(s2.frames.contains_key(&ids[0]), "没有文件 backing 的那几枚，像素要从 pins/ 缓存里回来");
+
+        // —— 第二趟体面收场（退出门在桥侧只剩「问 core 收收尾」这一行，门本身由
+        // `main` 那两处在真退出时经过；这里直接量判据的两半都落了）。
+        pin::finish_clean(&dir).expect("finish_clean");
+        assert!(!dir.join(pin::SESSION_FILE).is_file(), "戳要被收走");
+        assert!(!PinSet::has_state(&dir), "快照要被清空");
+
+        // —— 第三趟：盘上**曾经**有过快照，收场之后什么也不摆回来。
+        let mut s3 = PinState::default();
+        s3.refit_onto(desk());
+        assert_eq!(s3.session_startup(&dir, 3, 20_000), "", "用户关过的不该再出现在任何一句话里");
+        assert!(s3.set.is_empty(), "第三趟的场上必须是空的");
+    }
+
+    /// §7.2 第一句与 §8.2 的那一枚坏图在**桥侧的说法**：递四枚进去，腐蚀其中一枚的
+    /// 缓存像素、删掉另一枚的文件——剩下的两枚必须回来，坏的两枚必须各点各的名
+    /// （数量只回答「几枚」，id 才回答「去哪找」）。core 的 `pin.rs` 已量过同样的
+    /// 算术（`one_undecodable_picture_does_not_take_the_restore_down`）；坏的名字若
+    /// 恰好等于计数，这条横幅就答不出点名这件事，所以沙盒里让坏的 id 与 1 错开。
+    #[test]
+    fn one_bad_picture_does_not_take_the_restore_down_and_names_its_ids() {
+        use super::{Desktop, Monitor};
+        use falcon_core::geometry::{PhysPoint, PhysRect, PhysSize, Scale};
+        use falcon_core::pin::ImageRef;
+
+        let desk = || Desktop::from_monitors(vec![Monitor::new(PhysRect::new(0, 0, 1600, 900), Scale::ONE)]);
+        let dir = sandbox("bad-pin-named");
+        let mut s = PinState::default();
+        s.refit_onto(desk());
+        let _ = s.session_startup(&dir, 1, 10);
+        let mut ids = Vec::new();
+        for x in [40i32, 140, 240, 340] {
+            let id = s
+                .set
+                .spawn(ImageRef::Volatile, PhysSize::new(8, 4), PhysPoint::new(x, 40), &s.cfg)
+                .expect("spawn");
+            s.frames.insert(id, Frame::new(8, 4).expect("frame"));
+            ids.push(id);
+        }
+        assert!(s.snapshot_pass(&dir, 5, 100).contains("pin snapshot"));
+
+        // 坏两枚：一枚的缓存像素被换成非图（文件在、解不出），一枚的文件整个消失。
+        let cache = dir.join(falcon_core::pin::CACHE_DIR);
+        std::fs::write(cache.join(format!("{}.png", ids[3])), b"not a png").expect("corrupt");
+        std::fs::remove_file(cache.join(format!("{}.png", ids[2]))).expect("rm");
+
+        let mut s2 = PinState::default();
+        s2.refit_onto(desk());
+        let said = s2.session_startup(&dir, 2, 9_000);
+        assert_eq!(s2.set.ids(), vec![ids[0], ids[1]], "好的两枚必须回来，坏的两枚不许混进来");
+        assert!(said.contains("2 枚未关闭的贴图摆回来了"), "{said}");
+        assert!(said.contains(&format!("读不出图片（{}）", ids[3])), "解不出的那枚要点名：{said}");
+        assert!(said.contains(&format!("文件不在了（{}）", ids[2])), "消失的那枚也要点名：{said}");
+        assert!(s2.frames.contains_key(&ids[0]), "活着的那两枚要带着像素回来，不只是壳");
+    }
+
+    /// §6.3 的节拍与「没写就没变」的指纹各拦各的那一趟：时钟在这里是**假数**——
+    /// `snapshot_due` 收的是 caller 递的毫秒，所以「等满五秒」不必真的等。core 的尺
+    /// 量过 `snapshot_due` 的算术；这一枚量桥侧的**调用顺序**：先问节拍、再问指纹、
+    /// 两头都点头才动盘。第四臂的变子是缩放——§6.1 明列的一格，`{:?}` 看得见它。
+    #[test]
+    fn the_snapshot_cadence_and_the_unchanged_desk_both_keep_the_disk_quiet() {
+        use super::{Desktop, Monitor, PinSet};
+        use falcon_core::geometry::{PhysPoint, PhysRect, PhysSize, Scale};
+        use falcon_core::pin::ImageRef;
+
+        let dir = sandbox("snapshot-cadence");
+        let mut s = PinState::default();
+        s.refit_onto(Desktop::from_monitors(vec![Monitor::new(
+            PhysRect::new(0, 0, 1600, 900),
+            Scale::ONE,
+        )]));
+        let _ = s.session_startup(&dir, 1, 10);
+        let id = s
+            .set
+            .spawn(ImageRef::Volatile, PhysSize::new(8, 4), PhysPoint::new(40, 40), &s.cfg)
+            .expect("spawn");
+        s.frames.insert(id, Frame::new(8, 4).expect("frame"));
+
+        // ① 到点就写：第一枚快照落在盘上。
+        assert!(s.snapshot_pass(&dir, 5, 100).contains("pin snapshot"));
+        assert!(PinSet::has_state(&dir), "写了就该在盘上");
+
+        // ② 没到拍子：一个字也不说，盘上也不许多写一次。
+        assert_eq!(s.snapshot_pass(&dir, 5, 200), "", "节拍未到不该写");
+
+        // ③ 到拍了而什么都没变：指纹把这一趟拦下来（每五秒重编一遍 PNG 不是快照，是负载）。
+        assert_eq!(s.snapshot_pass(&dir, 5, 5_100), "", "场上没变就不该再编码一遍");
+
+        // ④ 有东西变了：下一拍就该写。
+        s.set.get_mut(id).unwrap().set_zoom(150);
+        assert!(
+            s.snapshot_pass(&dir, 5, 5_200).contains("pin snapshot"),
+            "变过的一枚该落下新的一枚快照"
+        );
+    }
+
+    /// 落点选择的纯函数：注入赢、空串算没给、没给才轮到真配置的主人——与
+    /// `capture::dir_in` / `guide` 同一族分工（量具与单测永远不许往 `%APPDATA%`
+    /// 里写恢复文件；§6.1「与 config.toml、history.db 同目录」由另一头
+    /// `pin_state_dir()` 的读者 `settings::history_data_dir()` 担保）。
+    #[test]
+    fn the_state_dir_follows_the_injected_one_and_only_then_the_owners() {
+        use std::ffi::OsStr;
+        use std::path::{Path, PathBuf};
+        assert_eq!(
+            super::dir_in(Some(OsStr::new("C:\\注入")), Path::new("C:\\真配置")),
+            PathBuf::from("C:\\注入")
+        );
+        assert_eq!(
+            super::dir_in(Some(OsStr::new("")), Path::new("C:\\真配置")),
+            PathBuf::from("C:\\真配置"),
+            "空的环境变量算「没给」，不算「给了个空目录」"
+        );
+        assert_eq!(
+            super::dir_in(None, Path::new("C:\\真配置")),
+            PathBuf::from("C:\\真配置")
+        );
+    }
+
+    /// §5.8.3 那三步在桥这一头的整条路：托盘上那一项「打开图片并贴图」取到路径之后，叫的
+    /// 就是 [`PinState::pin_pictures`] 这一手。
+    ///
+    /// 判的三件事都是**数出来的**，不是散文：
+    /// ① 一次挑中的好文件有几枚，名册里就添几格；
+    /// ② 它们的**坐标两两不同**（阶梯从 `base` 起按挑的顺序排），因为 `windows()==N` 唯一
+    ///   冒充得过去的坏法就是 N 扇完全重叠的窗；
+    /// ③ 夹在中间的一枚坏档（同一份 PNG 只留下文件头那八枚字节）与一枚本程序不认的扩展名
+    ///   （`.txt`）**不吃掉它后面那枚好的**（§7.2），而两枚坏的各留下一句自己的话、各自带着
+    ///   自己的文件名（§5.8.3 最后那一句「文件损坏或格式不支持时应显示错误信息」）。
+    ///
+    /// 为什么桥这一头还要再来一遍，core 那边 `read_picture_batch` 那几格已经判过账本形状：
+    /// 那一批发的是**假说法**，判的是账本；这一批发的是**真文件 + 真解码器 + 真 `add_from_file`**，
+    /// 判的是这本账真接得上桥里那一只手。本仓反复出现的那一族缺陷正是「逻辑齐备、生产路径零
+    /// 调用」—— 只有 core 那几格，这一条链在真机上断在哪一环都没人知道。
+    ///
+    /// `base` 是写死的 `(40, 40)` 而不是现问指针：那一只手归 [`next_drop_point`] 与真机那一路，
+    /// §9.1 第十条 headless 这一头问不动（§9.1 第十五条同一口径）。
+    #[test]
+    fn a_picked_batch_of_files_lands_on_the_roster() {
+        use super::{Desktop, Monitor, PinId};
+        use falcon_core::encode::{self, EncodeOptions, Format};
+        use falcon_core::geometry::{PhysPoint, PhysRect, Scale};
+
+        let dir = sandbox("picked-batch");
+        let mut s = PinState::default();
+        s.refit_onto(Desktop::from_monitors(vec![Monitor::new(
+            PhysRect::new(0, 0, 1600, 900),
+            Scale::ONE,
+        )]));
+
+        let mut opt = EncodeOptions::default();
+        opt.format = Format::Png;
+        let picture = |name: &str, w: u32| {
+            let path = dir.join(name);
+            let frame = Frame::filled(w, 4, [9, 9, 9, 255]).expect("frame");
+            encode::save(&frame, &path, &opt).expect("write png");
+            path
+        };
+        let first = picture("first.png", 5);
+        let fourth = picture("fourth.png", 7);
+        let fourth_shown = fourth.display().to_string();
+        // 好 PNG 的头八枚字节：格式认得出来、像素读不回来 —— 那是「文件损坏」。
+        let second = dir.join("second.png");
+        std::fs::write(&second, &std::fs::read(&first).expect("read back")[..8]).expect("truncate");
+        // §5.8.3 那七种之外的一种名字 —— 那是「格式不支持」。
+        let third = dir.join("notes.txt");
+        std::fs::write(&third, b"not a picture at all").expect("write text");
+
+        let base = PhysPoint::new(40, 40);
+        let step = falcon_core::pin::CASCADE_STEP_PX;
+        let batch = s.pin_pictures(&[first.clone(), second.clone(), third.clone(), fourth], base);
+
+        // ① 两枚好的出来，名册里两格，而坐标按**挑的顺序**排。
+        let ids: Vec<PinId> = batch.pinned.iter().map(|(_, id)| *id).collect();
+        assert_eq!(batch.windows(), 2, "挑中的两枚好文件就是名册里两格");
+        assert_eq!(batch.trouble(), 2, "两枚坏的都要留下一笔账");
+        assert_eq!(
+            batch.pinned.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(),
+            vec![first.display().to_string().as_str(), fourth_shown.as_str()],
+            "坏档后面那枚好的必须照样贴出来（§7.2 在桥这一头的对面）"
+        );
+        let at = |s: &PinState, id: PinId| s.set.get(id).unwrap().pos_phys;
+        assert_eq!(at(&s, ids[0]), base, "第一枚站在现问交回的那个点上");
+        assert_eq!(
+            at(&s, ids[1]),
+            PhysPoint::new(40 + 3 * step, 40 + 3 * step),
+            "第四枚挑的文件站在第三格阶梯上——坏掉的那两枚各占自己那一格，不许把它往前挤成重叠"
+        );
+
+        // ② 两种坏各说一句，措辞出自 [`read_refusal`] 而不是这一格。
+        let said: Vec<&str> = batch.failed.iter().map(|f| f.why.as_str()).collect();
+        assert_eq!(said.len(), 2, "一枚坏的抵一句，两枚就是两句");
+        assert!(
+            said[0].contains("损坏") && said[0].contains("second.png"),
+            "{}",
+            said[0]
+        );
+        assert!(
+            said[1].contains("不是本程序会读的图片") && said[1].contains("notes.txt"),
+            "{}",
+            said[1]
+        );
+        assert_ne!(said[0], said[1], "「损坏」与「格式不支持」不许混成同一句");
+
+        // ③ 屏幕上那一行仍由 core 那一只 [`falcon_core::pin::FilePinBatch::said`] 说：桥这里
+        // 一个字也不写（#281），所以这一格只判它接得上接不上。
+        let line = batch.said();
+        assert!(
+            line.contains("已贴出 2 张贴图") && line.contains("另有 2 枚没有贴出来"),
+            "{line}"
+        );
+
+        // ④ 名册里那两格真的带回了**像素**，不是一格坐标加一句好话：贴图宽度读的是文件自己的。
+        assert_eq!(
+            batch.pinned.iter().map(|(_, id)| s.set.get(*id).unwrap().size_phys.w).collect::<Vec<_>>(),
+            vec![5, 7],
+            "贴出来的那两枚得是它们自己那两枚尺寸"
+        );
+    }
+
+    /// §5.8.5 步 4 / §5.8.6 步 4–5 在桥侧的三件事，全都问不到屏幕：① [`PinState::add_card`] 是
+    /// `PinItem::card` 唯一的写入者，所以那一格栅窗**开得起**（`is_card`），而一张普通贴图开不起
+    /// （#494：一按只会说「这不是卡片」的入口不该亮着）；② 窗里那四格读的是这一枚**此刻**的有效
+    /// 值，一张从没被调过的卡片跟着 `[card]`，不是跟着那几枚 override；③ 四格全空的那一次被拒且
+    /// 一处不动，不是卡片的那一枚被拒时说的是**另一件**事（#453 两种失败保持分开）。
+    ///
+    /// 真的重排要 DirectWrite 与一扇活的窗，那一问在 `--pin` 那道门里有证人，这里不猜（#261）——
+    /// 所以这一枚单测一格也不 assert 新图幅，只 assert 那四枚读数与那两句拒。
+    #[test]
+    fn a_card_pin_answers_the_dialog_without_a_screen() {
+        use super::CardViewData;
+        use falcon_core::geometry::PhysPoint;
+        use falcon_core::pin::CardPin;
+
+        let base = crate::settings::card_cfg();
+        let mut s = PinState::default();
+        let at = PhysPoint::new(10, 20);
+        let card = s
+            .add_card(
+                Frame::new(40, 20).expect("frame"),
+                at,
+                CardPin::of_text("卡片".to_string()),
+            )
+            .expect("卡片贴不出来");
+        let plain = s
+            .add_captured(Frame::new(8, 8).expect("frame"), at)
+            .expect("贴图贴不出来");
+
+        // ① 菜单那一行的门：卡片亮，普通贴图不亮。
+        assert!(s.view_data(card).is_card, "刚贴出来的卡片自己不认得是卡片");
+        assert!(
+            !s.view_data(plain).is_card,
+            "一张普通贴图亮着「卡片设置…」那一行"
+        );
+
+        // ② 那一格栅窗开起来该带着的四枚读数。
+        let read = s.card_view(card);
+        assert_eq!(
+            read,
+            CardViewData {
+                is_card: true,
+                is_colour: false,
+                width: base.width,
+                font_size: base.font_size,
+                font_family: base.font_family.clone(),
+                background: base.background.clone(),
+                text: "卡片".to_string(),
+            },
+            "一张没被调过的卡片没有跟着 [card]，或那一句话的身份没记上"
+        );
+        assert_eq!(
+            s.card_view(plain),
+            CardViewData::default(),
+            "普通贴图答出了四格读数"
+        );
+
+        // ③ 四格全空 = 窗没说话：拒，且这一枚一处也不动。
+        let nothing = PinState::card_edit("", "", "   ", "");
+        assert!(nothing.is_empty(), "空格被读成了要改的那一格");
+        let said = s
+            .edit_card(card, nothing)
+            .expect_err("四格全空的那一次被接受了");
+        assert!(
+            said.contains("宽度") && said.contains("字号") && said.contains("没收到"),
+            "{said}"
+        );
+        assert_eq!(s.card_view(card), read, "拒的那一路动过了那一枚");
+
+        // 不是卡片的那一枚问的是另一件事：那一句里不许出现上一句的判据，否则一扇窗把两种失败
+        // 念成同一句，用户去找的是没填的格子，而真正的问题是这一枚压根不是卡片排出来的。
+        let wrong = s
+            .edit_card(plain, PinState::card_edit("480", "", "", ""))
+            .expect_err("图片贴图被改成了卡片");
+        assert!(wrong.contains("不是卡片"), "{wrong}");
+        assert!(!wrong.contains("没收到"), "{wrong} 与上一句混了");
+    }
+
+    /// §5.8.4 方式二那一趟的**闸**：一枚贴图同时只接一趟落下，而两种「接不了」各说各的（#453）——
+    /// 「上一张还在路上」用户能做的是等，「这一枚已经不在了」用户能做的是重开一扇窗，合成一句
+    /// 「不能落」就把两条出路说成了一条。`Gone` 那一臂还得证明它**没有**把不在册的那一枚挂上路：
+    /// 挂上去就没人来放，那一格从此永久锁住。
+    #[test]
+    fn one_pin_holds_one_drop_and_the_two_refusals_say_which_one_it_met() {
+        use super::Arming;
+        use falcon_core::geometry::PhysPoint;
+
+        let mut s = PinState::default();
+        let id = s
+            .add_captured(Frame::new(8, 8).expect("frame"), PhysPoint::new(0, 0))
+            .expect("贴图贴不出来");
+
+        assert_eq!(s.arm_drop(id), Arming::Taken);
+        assert!(s.dropping(id), "闸合上了却读不出来");
+        assert_eq!(s.arm_drop(id), Arming::Busy, "第二趟挤上了同一枚贴图");
+        s.disarm_drop(id);
+        assert!(!s.dropping(id), "放过闸的那一格没有放下来");
+
+        assert_eq!(s.arm_drop(4242), Arming::Gone);
+        assert!(!s.dropping(4242), "不在名册里的那一枚被挂上了一趟永远不会落地的路");
+    }
+
+    /// §5.8.4 第 3 步的 `Landing::Replace` 那一支：**换掉这一枚现在的那一张**时，跟着换的格子比
+    /// 「换一张位图」多。这一格钉三件在屏幕上看得见的事：① 名册不长（换不是钉，两枚变三枚就是
+    /// 用户没做的动作）；② 那一刀跟着新图走（旧的那一刀量的是旧图的像素，留着它就是拿新图的左上角
+    /// 去贴旧图的坐标）；③ 来历换成 `Volatile` —— 留着 `Cache(旧路径)`，下一份 §7.2 快照会把
+    /// **旧**那一张再写一遍，崩溃恢复就把刚换掉的那一张复活回来。
+    #[test]
+    fn a_drop_that_replaces_moves_the_crop_and_the_source_together() {
+        use super::{Arrived, Decision, Desktop, Monitor};
+        use falcon_core::encode::{self, EncodeOptions, Format};
+        use falcon_core::geometry::{PhysPoint, PhysRect, PhysSize, Scale};
+
+        let dir = sandbox("drop-replace");
+        let mut opt = EncodeOptions::default();
+        opt.format = Format::Png;
+        let picture = |name: &str, w: u32, h: u32| {
+            let path = dir.join(name);
+            let frame = Frame::filled(w, h, [9, 9, 9, 255]).expect("frame");
+            encode::save(&frame, &path, &opt).expect("write png");
+            path
+        };
+        let old = picture("old.png", 60, 40);
+        let new = picture("new.png", 30, 20);
+
+        let mut s = PinState::default();
+        s.refit_onto(Desktop::from_monitors(vec![Monitor::new(
+            PhysRect::new(0, 0, 1600, 900),
+            Scale::ONE,
+        )]));
+        let id = s
+            .add_from_file(&old.display().to_string(), PhysPoint::new(10, 10))
+            .expect("旧的那一张贴不出来");
+        s.edit(id, |p, _, _| p.crop(&PhysRect::new(10, 10, 40, 20)))
+            .expect("那一刀递不进去")
+            .expect("那一刀裁不下去");
+        let shown_before = s
+            .with_rendered(id, |f| (f.width, f.height))
+            .expect("换之前没有画出来的那一张");
+
+        let decision = Decision::at(true, 1);
+        assert_eq!(decision.landing, falcon_core::drop::Landing::Replace);
+        let line = s.land(id, &[Arrived::File(new.clone())], &decision, &[]);
+
+        // ① 屏幕上那一行认得出这是「换这一枚」，而那一句的落点字样出自 core（#281）。
+        assert!(line.contains("换这一枚"), "{line}");
+        assert!(line.contains("已换到贴图"), "{line}");
+        assert!(line.contains(&new.display().to_string()), "{line}");
+        assert_eq!(s.ids().len(), 1, "换来源换出了第二枚贴图");
+
+        // ② 源图与那一刀：新图 30×20 装不下旧的那一刀 (10,10,40,20)，跟着夹一次。
+        let p = s.set.get(id).expect("贴图不在了");
+        assert_eq!(p.source_size, PhysSize::new(30, 20), "源图还记着旧那一张的尺寸");
+        assert_eq!(p.src_rect, PhysRect::new(10, 10, 20, 10), "那一刀没跟着新图夹");
+        // ③ 来历：快照写的是**新**那一张的像素，不是旧路径。
+        assert!(
+            matches!(p.image, falcon_core::pin::ImageRef::Volatile),
+            "换过的贴图还指着旧档：{:?}",
+            p.image
+        );
+        assert_eq!(
+            s.with_rendered(id, |f| (f.width, f.height)),
+            Some((20, 10)),
+            "画出来的那一块没跟着换（换之前 {shown_before:?}）"
+        );
+    }
+
+    /// `Landing::New` 那一支：拖进来两枚就钉两枚，落位点按**拖进来的次序**阶梯排开 —— 与 §5.8.3
+    /// 那一批挑出来的文件同一个承诺（`pin::cascade_at`），三枚挤成一扇是「数量归名册管」那一族
+    /// 最容易糊过去的坏法。起点是现问指针那一格，headless 问不动（§9.1 第十条），所以这里只判
+    /// **间距**而不是绝对坐标。
+    #[test]
+    fn a_drop_that_lands_on_new_pins_cascades_in_the_order_it_came_in() {
+        use super::{Arrived, Decision, Desktop, Monitor};
+        use falcon_core::encode::{self, EncodeOptions, Format};
+        use falcon_core::geometry::{PhysPoint, PhysRect, Scale};
+
+        let dir = sandbox("drop-new");
+        let mut opt = EncodeOptions::default();
+        opt.format = Format::Png;
+        let picture = |name: &str, w: u32| {
+            let path = dir.join(name);
+            encode::save(
+                &Frame::filled(w, 6, [1, 2, 3, 255]).expect("frame"),
+                &path,
+                &opt,
+            )
+            .expect("write png");
+            path
+        };
+        let first = picture("one.png", 12);
+        let second = picture("two.png", 18);
+
+        let mut s = PinState::default();
+        s.refit_onto(Desktop::from_monitors(vec![Monitor::new(
+            PhysRect::new(0, 0, 1600, 900),
+            Scale::ONE,
+        )]));
+        let before = s
+            .add_captured(Frame::new(8, 8).expect("frame"), PhysPoint::new(0, 0))
+            .expect("桌上原来那一枚贴不出来");
+
+        // 设置关着：拖两枚进来 = 另钉两枚，原本那一枚一动不动。
+        let decision = Decision::at(false, 2);
+        assert_eq!(decision.landing, falcon_core::drop::Landing::New);
+        let line = s.land(
+            before,
+            &[Arrived::File(first.clone()), Arrived::File(second.clone())],
+            &decision,
+            &[],
+        );
+        assert!(line.contains("那枚设置没开"), "{line}");
+        assert_eq!(s.ids().len(), 3, "拖进来的两枚没有各钉一枚");
+        assert_eq!(
+            s.set.get(before).expect("原来那一枚不在了").source_size,
+            falcon_core::geometry::PhysSize::new(8, 8),
+            "另钉一枚的那一支动了原本那一张"
+        );
+
+        let step = falcon_core::pin::CASCADE_STEP_PX;
+        let fresh: Vec<u64> = s.ids().into_iter().filter(|i| *i != before).collect();
+        let at = |s: &PinState, id: u64| s.set.get(id).unwrap().pos_phys;
+        let (a, b) = (at(&s, fresh[0]), at(&s, fresh[1]));
+        assert_eq!((b.x - a.x, b.y - a.y), (step, step), "阶梯没有按次序排开");
+        assert_eq!(
+            s.set.get(fresh[0]).unwrap().source_size.w,
+            12,
+            "第一格站的是第二枚的像素"
+        );
+        assert!(
+            line.contains(&first.display().to_string()) && line.contains(&second.display().to_string()),
+            "{line}：钉成两枚却说不出是哪两枚"
+        );
+    }
+
+    /// 取回失败与读不出像素的两种坏**一枚像素也不许动**（PRD 那句「获取失败时，不得用低质量占位图
+    /// 静默替代」在落点上的形状）：`frames` 里不留东西、屏幕上仍是原来那一张，而两种坏各有一句
+    /// （`FetchError` 那句与 [`read_refusal`] 那句，#453）。这一格也钉住「一格可用的都没有」时
+    /// 屏幕上说的是「不动」而不是「另钉一枚」。
+    #[test]
+    fn a_drop_with_nothing_to_install_leaves_the_pixels_and_says_three_different_things() {
+        use super::{Arrived, Decision, Desktop, Monitor};
+        use falcon_core::geometry::{PhysPoint, PhysRect, PhysSize, Scale};
+
+        let mut s = PinState::default();
+        s.refit_onto(Desktop::from_monitors(vec![Monitor::new(
+            PhysRect::new(0, 0, 1600, 900),
+            Scale::ONE,
+        )]));
+        let id = s
+            .add_captured(
+                Frame::filled(24, 12, [7, 7, 7, 255]).expect("frame"),
+                PhysPoint::new(0, 0),
+            )
+            .expect("桌上原来那一枚贴不出来");
+        let before = s
+            .with_rendered(id, |f| (f.width, f.height))
+            .expect("画出来的那一块没有");
+
+        // ① 那一趟一枚也没取回：`plan` 在这种读数上答的是「不动」，而那一句 404 照原样上屏。
+        let none = Decision::at(true, 0);
+        let line = s.land(
+            id,
+            &[],
+            &none,
+            &["那边答的是状态码 404，不是这一趟要取的那一份".to_string()],
+        );
+        assert!(line.contains("404"), "{line}");
+        assert!(line.contains("没有可用的图片"), "{line}");
+        assert_eq!(
+            s.with_rendered(id, |f| (f.width, f.height)),
+            Some((24, 12)),
+            "一枚也没取回的一趟动了屏幕上的像素（换之前 {before:?}）"
+        );
+        assert_eq!(s.ids().len(), 1, "「没换」的那一趟还钉出了第二枚");
+
+        // ② `Replace` 那一支手上没有东西可装时说的**另一句**：那一枚贴图没被换掉。这一臂平时走不到
+        // （落点与那一批可用格子同出一格），但它正是「不许拿占位图顶上去」的那一格里最要紧的一格，
+        // 所以直接递一个 Replace 的决定进去，判它答什么。
+        let line = s.land(
+            id,
+            &[],
+            &Decision {
+                landing: falcon_core::drop::Landing::Replace,
+                said: "那枚设置开着，拖进来的那一张换到原本这一枚贴图上。",
+            },
+            &[],
+        );
+        assert!(line.contains("没被换掉"), "{line}");
+        assert!(line.contains("屏幕上还是它原来那一张"), "{line}");
+        assert_eq!(s.with_rendered(id, |f| (f.width, f.height)), Some((24, 12)));
+
+        // ③ 取回来了、但那一份不是图片：拒绝那句出自 [`read_refusal`]，主语是那一枚域名。
+        let junk = Decision::at(true, 1);
+        let line = s.land(
+            id,
+            &[Arrived::Remote {
+                bytes: b"<!doctype html><p>not a picture</p>".to_vec(),
+                host: "img.example.invalid".to_string(),
+            }],
+            &junk,
+            &[],
+        );
+        assert!(line.contains("从 img.example.invalid 取回的那一份"), "{line}");
+        assert_eq!(
+            s.set.get(id).expect("贴图不在了").source_size,
+            PhysSize::new(24, 12),
+            "一张读不出来的东西换进了贴图：{line}"
+        );
+        assert_eq!(s.with_rendered(id, |f| (f.width, f.height)), Some((24, 12)));
+
+        // ④ 拖进来的既不是文件也不是地址：那一格里没有可用的一格，屏幕上不许说「钉好了」。
+        let text = Decision::at(false, 0);
+        let line = s.land(
+            id,
+            &[],
+            &text,
+            &["那一格既不是一份文件，也不是一句可以取回的图片地址：只是一段文字".to_string()],
+        );
+        assert!(line.contains("不动"), "{line}");
+        assert!(!line.contains("钉成贴图"), "{line}");
+        assert_eq!(s.ids().len(), 1);
+    }
+
+    /// §5.9.17 步 1 那枚开关的三扇门，各说一句各的话 —— 而**没有一扇**自己带着那句话。
+    ///
+    /// 这一格量的是 `ClipDoor` 那张表本身：梯子里那句「写不出去时什么东西还在」是本节规则
+    /// （PRD 1270-1271 行）的措辞，三处读法必须互不相同、又必须由梯子那一处给出。反证是默认
+    /// 行为那一扇（#274/#453）：它没人按过，所以它**不许**说「可以再复制一次」；把三扇写成同
+    /// 一句、或让遮罩那一扇借走贴图那一句，都是这一格要红的写法。
+    ///
+    /// 同一格还钉住「梯子只有一架」：整个 `state.rs` 里递 `CF_HDROP` 出去的那一手只许出现在
+    /// 两处 —— `PinState::clip_ladder` 那一处，和 `clip_file_check` 里那一处拿**空列表**去换
+    /// 「没有可交的文件引用」那句拒绝的读数。第三处就是第二个作者（#281）。
+    ///
+    /// 这一格不写剪贴板、不落盘：读的是三枚常量与一份源码，跑在锁屏会话里也一样成立。真递出去
+    /// 那一路的证人在 `--annotate`（`annotate_check::clipboard_rows` 的 `clipboard file ref`
+    /// 那一格）与 `--pins`（`pin_check::copy_rows`）里，两档都要用户当场点一次头才跑。
+    #[test]
+    fn the_three_clipboard_doors_word_their_own_refusal() {
+        use super::ClipDoor;
+
+        let (pin, sel, auto) = (
+            ClipDoor::Pin,
+            ClipDoor::Selection,
+            ClipDoor::AutoSelection,
+        );
+        assert_eq!(pin.subject(), "贴图");
+        assert_eq!(sel.subject(), "选区");
+        assert_eq!(auto.subject(), "选区", "同一张选区不该因为没人按就换个名字");
+
+        let (p, s, a) = (pin.retry(), sel.retry(), auto.retry());
+        assert!(p.contains("贴图还在") && p.contains("可以再复制一次"), "{p}");
+        assert!(s.contains("截图还在") && s.contains("可以再复制一次"), "{s}");
+        assert!(a.contains("默认行为") && a.contains("截图"), "{a}");
+        assert!(
+            !a.contains("可以再复制一次"),
+            "{a} 替用户安排了一次他并没有按过的键"
+        );
+        assert_ne!(p, s, "贴图与遮罩那两扇说的话一模一样，就是有一扇在说谎");
+        assert_ne!(s, a, "有人按的那一扇与没人按的那一扇写成了一句");
+        assert_ne!(p, a, "贴图那一扇借走了默认行为那一句话");
+        for said in [&p, &s, &a] {
+            assert!(said.ends_with('。'), "{said} 不是一句接在错误后面还能读完整的话");
+        }
+
+        // 数出现次数的那种判据不能把针写成整串字面：`include_str!` 拿的是**整档**，本测试里
+        // 那一句字面也算这一档的一处出现。
+        let needle = format!("{}{}", "clip::write_image_with_files", "(");
+        let hits = include_str!("state.rs").matches(needle.as_str()).count();
+        assert_eq!(
+            hits, 2,
+            "递 `CF_HDROP` 的那一手在 state.rs 里数到 {hits} 处：只该有梯子那一处，加上\
+             `clip_file_check` 那一处拿空列表换拒绝读数的——第三处就是第二个作者（#281）"
+        );
     }
 }

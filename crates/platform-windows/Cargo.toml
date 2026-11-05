@@ -51,6 +51,10 @@ windows = { version = "0.62.2", features = [
     "Security_Cryptography",
     "Win32_System_Registry",
     "Win32_Globalization",
+    # §5.21.1 第 3 步那一次「真的去取那份清单」（`src/fetch.rs`）。这一枚 feature 是本项目
+    # 第一次碰网络：绑的是 `wininet.dll`，走 `windows-core` 的 raw-dylib 那一套
+    # （`#[link!("wininet.dll")]`），所以不引入新的链接库、也不需要 build script。
+    "Win32_Networking_WinInet",
     "Devices_Enumeration",
 ] }
 

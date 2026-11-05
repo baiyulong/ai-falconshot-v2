@@ -25,8 +25,8 @@ pub enum OpenError {
     Refused(String),
     /// shell 回了 `SE_ERR_*` 那一组码里的一枚。带回来的是那枚码的名字，不是编出来的解释。
     ///
-    /// 这句话两只手共用（[`browser`] 与 [`dispatch`]）：同一枚 `SE_ERR_FNF` 不该因为调用者
-    /// 是浏览器还是目标程序而说出两句话来。
+    /// 这句话三只手共用（[`browser`]、[`dispatch`] 与 [`file`]）：同一枚 `SE_ERR_FNF` 不该因为
+    /// 调用者是浏览器、目标程序还是一枚路径而说出两句话来。
     #[error("shell 不肯收下这一次请求：{0}")]
     Shell(String),
     #[error("这一台不是 Windows，没有可以打开链接的 shell")]
@@ -35,8 +35,16 @@ pub enum OpenError {
 
 /// 一枚 NUL 结尾的 UTF-16 串。`ShellExecuteW` 的四个字符串参数都是这个形状，而本模块两只手
 /// 用的编码没有第二套写法 —— 编码规则各写一遍，漂移的那一处通常正好是特殊字符。
+///
+/// `pub(crate)` 自 §5.8.3 起多了一位同 crate 的读者：[`crate::pick`] 递给 `IFileDialog` 的
+/// 标题与过滤器也是这一形状。两处各编一次宽字符，正是上面那句「漂移的那一处通常正好是特殊
+/// 字符」等着的那一天（#281）。
+///
+/// §5.21.1 第 3 步又添了第三位读者：[`crate::fetch`] 递给 `InternetOpenW` 的那串 `User-Agent`
+/// 与递给 `InternetOpenUrlW` 的那一句地址。它同样是「特殊字符那一处」的现场 —— 一句 IDN 地址
+/// 在宽字符里怎么编码，决定了它取回来的到底是哪一台机器。
 #[cfg(windows)]
-fn wide(text: &str) -> Vec<u16> {
+pub(crate) fn wide(text: &str) -> Vec<u16> {
     use std::os::windows::ffi::OsStrExt;
 
     std::ffi::OsStr::new(text)
@@ -68,7 +76,10 @@ fn shell_code(value: isize) -> String {
         SE_ERR_DDETIMEOUT => "SE_ERR_DDETIMEOUT".to_string(),
         SE_ERR_DDEFAIL => "SE_ERR_DDEFAIL".to_string(),
         SE_ERR_DDEBUSY => "SE_ERR_DDEBUSY".to_string(),
-        SE_ERR_NOASSOC => "SE_ERR_NOASSOC（这台机器上没有能开 http(s) 的关联程序）".to_string(),
+        // 这一枚码的名字是三只手共用的（浏览器、派发、以及 §5.5.9 的「用默认程序打开」），
+        // 所以解释也不能只说 URL 那一臂：一枚 `.png` 找不到关联程序时，话里出现「http(s)」
+        // 就是说错了对象。
+        SE_ERR_NOASSOC => "SE_ERR_NOASSOC（这台机器上没有能开这一枚东西的关联程序）".to_string(),
         SE_ERR_DLLNOTFOUND => "SE_ERR_DLLNOTFOUND".to_string(),
         other => format!("SE_ERR_{other}"),
     }
@@ -166,6 +177,42 @@ pub fn dispatch(exe: &str, parameters: &str) -> Result<(), OpenError> {
     Err(OpenError::Shell(shell_code(value)))
 }
 
+/// §5.5.9 那条替代分支的那一只手：把一枚**已经在盘上的图**交给系统关联的默认程序。
+///
+/// 与 [`browser`] 同一枚动词、同一次 `ShellExecuteW`，区别只在递给 shell 的那一枚 object
+/// 是一处路径而不是一条 URL —— 「用系统默认程序打开」这一句在本产品里就是 `open` + 一个
+/// 路径，没有第二种拼法。原生分享面板那一臂按 PRD 的划界不做（WinRT 的
+/// `DataTransferManager` 要包身份，本产品是未打包 exe），顶它的是这一只。
+///
+/// 这里不判存在性，与 [`dispatch`] 同一个理由：shell 那一头还有关联表，两道判据一旦不一致，
+/// 用户看到的提示就成了谎话；而真的没有这个文件时，`SE_ERR_FNF` 会从 [`shell_code`]
+/// 原样报回来。`Ok(())` 同样只到 shell 收下请求为止 —— 对面那个进程归它自己管。
+#[cfg(windows)]
+pub fn file(path: &str) -> Result<(), OpenError> {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb = wide("open");
+    let target = wide(path);
+
+    let opened = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR::from_raw(verb.as_ptr()),
+            PCWSTR::from_raw(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    let value = opened.0 as isize;
+    if value > 32 {
+        return Ok(());
+    }
+    Err(OpenError::Shell(shell_code(value)))
+}
+
 #[cfg(not(windows))]
 pub fn browser(_url: &str) -> Result<(), OpenError> {
     Err(OpenError::Unsupported)
@@ -173,6 +220,11 @@ pub fn browser(_url: &str) -> Result<(), OpenError> {
 
 #[cfg(not(windows))]
 pub fn dispatch(_exe: &str, _parameters: &str) -> Result<(), OpenError> {
+    Err(OpenError::Unsupported)
+}
+
+#[cfg(not(windows))]
+pub fn file(_path: &str) -> Result<(), OpenError> {
     Err(OpenError::Unsupported)
 }
 
@@ -263,6 +315,19 @@ mod tests {
         .unwrap_err();
         assert!(matches!(err, OpenError::Shell(_)), "wrong: {err}");
         // 那句话得说得出是哪一层回的话：`SE_ERR_` 在串里，才读得出这不是我们编的解释。
+        assert!(err.to_string().contains("SE_ERR"), "the sentence: {err}");
+    }
+
+    /// §5.5.9 替代分支那一臂的反面：一枚不在盘上的图，绝不能被报成「已经交给默认程序了」。
+    ///
+    /// 形状与上面那枚同：这一次**会**走到 shell（一次真 `ShellExecuteW`），但找不到文件时那
+    /// 只 API 回的是 `SE_ERR_*`，不建进程也不建窗，所以默认那一趟里它开不出任何人的看图程序。
+    /// 正面那一臂（真把一枚 png 交给系统关联的程序）留着手测：它会在用户的桌面上开出一扇窗。
+    #[cfg(windows)]
+    #[test]
+    fn a_picture_that_is_not_on_disk_is_never_reported_as_opened() {
+        let err = file("C:\\falconshot-not-here\\shot.png").unwrap_err();
+        assert!(matches!(err, OpenError::Shell(_)), "wrong: {err}");
         assert!(err.to_string().contains("SE_ERR"), "the sentence: {err}");
     }
 }

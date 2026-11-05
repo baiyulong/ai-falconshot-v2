@@ -31,6 +31,57 @@ pub enum Refusal {
     Write(String),
 }
 
+/// §8.3 第三句的那两条退路，写在唯一一处。
+///
+/// 门自己那半句说的是「东西还在」（截图还在 / 贴图还在，§8.3 第二句），这一格说的是
+/// 「还能怎么办」，两半接起来才是用户读到的那一句。两条都不空头：写不进去时界面不关，
+/// 遮罩那条工具栏上「保存」与「复制」两枚此刻都还按得动，贴图窗那两行菜单也各在原地。
+/// 一处作者而不是三扇门各抄一遍，是因为 P35 已经量过两份同规则漂移成两句话的代价。
+pub const SAVE_EXITS: &str = "可以换一处目录再存一次，也可以把这张图复制进剪贴板。";
+
+/// §8.3 第一句要的「提示原因」：磁盘或编码器回绝的那件事，说成用户读得懂的一行中文。
+///
+/// [`encode::EncodeError`] 自己的壳是英文的（`io: …`、`codec failed: …`），而 §10 第 37 项 ①
+/// 量过那种壳进到中文句子里是什么样子：[`crate::state::read_refusal`] 与
+/// [`crate::state::not_drawn`] 就是为了挡它才存在的两格。这一格是它们在**写**这一侧的对面 ——
+/// 读那一路问的是「那份文件怎么了」，这一路问的是「这台机器为什么不让放文件」，两问不同，
+/// 所以是两格而不是把 [`crate::state::read_refusal`] 借过来。
+///
+/// PRD 点名的三枚原因，`ErrorKind` 恰好分得出来，所以那一枚名字就是句子的开头；系统给的
+/// 错误码留在括号里当证据 —— 那是一枚数，换一台机器的显示语言也不会变成半句英文。分不出来时
+/// 不硬套进那三枚里的一枚（#453：两件事坏得不同，说的话就得不同），「说不准」自己要说得出。
+fn write_refusal(e: &encode::EncodeError, format: encode::Format) -> String {
+    use encode::EncodeError as E;
+    use std::io::ErrorKind as K;
+    match e {
+        E::Io(io) => {
+            let code = io
+                .raw_os_error()
+                .map(|c| format!("（系统返回 {c}）"))
+                .unwrap_or_default();
+            match io.kind() {
+                K::PermissionDenied => format!("权限不足，那一处不让本程序往里放文件{code}"),
+                K::StorageFull => format!("磁盘空间不足，那个盘放不下这张图{code}"),
+                K::NotFound => format!("路径无效，那个路径找不到{code}：目录可能已被移走或改了名"),
+                K::AlreadyExists | K::NotADirectory => {
+                    format!("路径无效，那个目录的位置上站着的是别的东西{code}")
+                }
+                K::InvalidFilename => format!("路径无效，那个名字不能当文件名{code}"),
+                _ => format!("写不进那个文件{code}"),
+            }
+        }
+        // 编码这一步就没过：图在内存里是好的，是这一枚格式写不出这份像素。编码器那句原话是
+        // 英文的，所以留格式名而不留它。
+        E::Codec(_) => format!("{} 的编码器写不出这张图", format.label()),
+        E::TransparencyLost(label) => {
+            format!("{label} 存不下透明像素，而 [output] 设成了不许填白")
+        }
+        E::Unsupported(x) => format!("本程序不会写 {x} 这种格式"),
+        E::TooLarge(w, h) => format!("这张图太大（{w}×{h}），写不出去"),
+        E::Frame(_) => "这张图拼不出像素".to_string(),
+    }
+}
+
 /// Turns what a dialog hands the product into the path it names.
 ///
 /// `FileDialog.selectedFile` is a `QUrl`, and this Qt gives JS no way to convert one:
@@ -299,7 +350,7 @@ pub(crate) fn write_decided(
                 ),
             ))
         }
-        Err(e) => Err(Refusal::Write(e.to_string())),
+        Err(e) => Err(Refusal::Write(write_refusal(&e, format))),
     }
 }
 
@@ -384,6 +435,17 @@ pub fn quick_to(
 mod tests {
     use super::*;
     use falcon_core::encode::Format;
+
+    /// `EncodeError` 自己那五枚壳 —— 抄的是 `annotate_check.rs` 第 37 项 ① 那一档早就在禁的
+    /// 同一串（那里量的是**读**那一侧，这里量**写**这一侧）。列出来而不是判「有没有拉丁字母」，
+    /// 因为 PNG、JPG 与一路路径名本来就都是 ASCII。
+    const ENGLISH_SHELLS: [&str; 5] = [
+        "io: ",
+        "codec failed",
+        "unsupported format",
+        "too large to decode",
+        "transparent pixels would be lost",
+    ];
 
     /// A directory under the OS temp dir, emptied first: a file the previous run of
     /// this test left behind would be read back as this one's answer to a write that
@@ -704,6 +766,12 @@ mod tests {
     /// The other arm: the encoder said yes and the disk said no. What the caller needs
     /// from this one is the picture's name *and* the fact that nothing was consumed,
     /// which is why the two arms are an enum rather than one string.
+    ///
+    /// §8.3 第一句给这一格加了第二问：那一枚原因要**说得出**。此前这一格只判「非空」，而
+    /// `EncodeError` 交回来的是 `io: Cannot create a file when that file already exists.
+    /// (os error 183)` —— 非空、有壳、半句英文，三条里两条不合格而尺子看不见。现在钉的是
+    /// 这三条：原因那一枚名字在场（这台机器的 183 说的是「那个目录的位置站着别的东西」）、
+    /// 那五枚英文壳一枚都不许在场、句子仍说的是写这件事而不是名字这件事。
     #[test]
     fn a_write_the_machine_refuses_is_not_reported_as_a_bad_name() {
         let dir = sandbox("blocked");
@@ -718,11 +786,66 @@ mod tests {
         )
         .expect_err("a write into a file was accepted");
         match err {
-            Refusal::Write(said) => assert!(!said.is_empty(), "a failure said nothing"),
+            Refusal::Write(said) => {
+                assert!(!said.is_empty(), "a failure said nothing");
+                assert!(said.contains("路径无效"), "{said} 没说它是哪一类失败");
+                for shell in ENGLISH_SHELLS {
+                    assert!(!said.contains(shell), "{shell} 混进了中文那一句：{said}");
+                }
+            }
             Refusal::BadName(said) => {
                 panic!("a disk that refused is not a name that refused: {said}")
             }
         }
+    }
+
+    /// §8.3 第一句点名的三枚原因，各自是从 `ErrorKind` 的哪一枚读出来的 —— 一台机器不一定
+    /// 同时犯得这三种，所以这里问的是**分得出分不出**，而不是这台盘上此刻有没有满。
+    /// 系统那枚码只在它存在时进括号：`io::Error::from(kind)` 没有码，句子仍然要说得完整。
+    #[test]
+    fn the_three_causes_prd_names_are_three_different_reads() {
+        use encode::EncodeError as E;
+        use std::io::ErrorKind as K;
+        let io = |k: K| E::Io(std::io::Error::from(k));
+        for (kind, head) in [
+            (K::PermissionDenied, "权限不足"),
+            (K::StorageFull, "磁盘空间不足"),
+            (K::NotFound, "路径无效"),
+            (K::AlreadyExists, "路径无效"),
+            (K::InvalidFilename, "路径无效"),
+        ] {
+            let said = write_refusal(&io(kind), Format::Png);
+            assert!(said.starts_with(head), "{kind:?} 说的是：{said}");
+            assert!(!said.contains("系统返回"), "没有码却写了码：{said}");
+        }
+        // 认不出的一枚不硬套进那三类：#453 要的是坏得不同就说得不含混成同一句。
+        let odd = write_refusal(&io(K::Other), Format::Png);
+        assert_eq!(odd, "写不进那个文件", "{odd}");
+        // 编码器那一侧同样不许留英文原话，但它留格式名 —— 那是用户认得的一枚字。
+        assert_eq!(
+            write_refusal(
+                &E::Codec("could not determine image size".into()),
+                Format::Jpg
+            ),
+            "JPG 的编码器写不出这张图"
+        );
+        assert_eq!(
+            write_refusal(
+                &E::Io(std::io::Error::from_raw_os_error(183)),
+                Format::Png
+            ),
+            "路径无效，那个目录的位置上站着的是别的东西（系统返回 183）"
+        );
+    }
+
+    /// §8.3 第三句的两条退路：一句话里两枚都要在场，而且说的是用户按得动的两件事。
+    /// 这一格钉的是常量自己（唯一作者），门那一侧的读数归 mask 那格。
+    #[test]
+    fn the_retry_offers_both_exits_it_promises() {
+        assert!(
+            SAVE_EXITS.contains("换一处目录") && SAVE_EXITS.contains("剪贴板"),
+            "{SAVE_EXITS} 只递出一条退路"
+        );
     }
 
     /// ICO is clamped to 256 px on the way out (`ICO_MAX_SIDE`), so the file and the

@@ -78,7 +78,19 @@ Window {
     readonly property color word_fill: dark ? "#F2F4F7" : "#12151B"
     readonly property color faint_fill: dark ? "#8B95A5" : "#5A6472"
     readonly property color edge_fill: dark ? "#39424F" : "#B4BEC9"
-    readonly property color accent_fill: dark ? "#4C8DF6" : "#2563B8"
+    // §5.19.2 主题色：绑 `Session.accent` 那枚**值**（桥那侧已按此刻那套餐具夹过 3:1），`=== ""`
+    // 那一臂只兜第一帧。三窗与此同一只口径，判据不许在这儿再写一遍（#281）。
+    readonly property color accent_fill: win.session.accent !== ""
+        ? win.session.accent
+        : (dark ? "#4C8DF6" : "#2563B8")
+
+    // §5.19.4 界面字体与字号：这一页上那几枚写死的 `font.pixelSize` 自此乘的是共享对象那一份
+    // 倍数（`uiFont.px(...)`），页上不自己算 `ui_font ÷ 出厂磅`，也不自己兜空族 —— 四扇画着字的
+    // 窗共读同一份（#281）。P149 之前这一格只长在设置页那一栋里，改档不动这一扇窗的像素。
+    UiFont {
+        id: uiFont
+        session: win.session
+    }
 
     // 一扇正常的对话框：有边框、进任务栏、接键盘。第 298 行写的是「对话框」，不是盖在桌面上的浮层，
     // 所以这里**不**写 `flags`：`Qt.Tool` / `FramelessWindowHint` 属于贴图与遮罩那一族。
@@ -217,7 +229,8 @@ Window {
 
                 anchors.centerIn: parent
                 text: win.startWord
-                font.pixelSize: 13
+                font.pixelSize: uiFont.px(13)
+                font.family: uiFont.family
                 color: win.word_fill
             }
 
@@ -239,7 +252,8 @@ Window {
             width: parent.width
             text: win.resultLine
             wrapMode: Text.Wrap
-            font.pixelSize: 12
+            font.pixelSize: uiFont.px(12)
+            font.family: uiFont.family
             color: win.word_fill
         }
 
@@ -252,7 +266,8 @@ Window {
             // `contentHeight` 是文本自己排版出来的高度、不看 height，环就此断，占位行为一个字没变。
             height: win.countdown > 0 ? contentHeight : 0
             text: "倒计时：" + win.countdown
-            font.pixelSize: 12
+            font.pixelSize: uiFont.px(12)
+            font.family: uiFont.family
             color: win.faint_fill
         }
 
@@ -260,7 +275,8 @@ Window {
             id: closeBtn
 
             text: "关闭"
-            font.pixelSize: 12
+            font.pixelSize: uiFont.px(12)
+            font.family: uiFont.family
             color: win.faint_fill
 
             // 关窗那一枚写的是 `custom_open`，不是 `visible`：谁造这扇窗，销毁就归谁。这里 `hide()`
@@ -343,7 +359,8 @@ Window {
         Text {
             width: 40
             text: row.name
-            font.pixelSize: 13
+            font.pixelSize: uiFont.px(13)
+            font.family: uiFont.family
             color: row.skin.word_fill
             horizontalAlignment: Text.AlignRight
             verticalAlignment: Text.AlignVCenter
@@ -354,7 +371,8 @@ Window {
 
             width: 110
             height: 26
-            font.pixelSize: 13
+            font.pixelSize: uiFont.px(13)
+            font.family: uiFont.family
             color: row.skin.word_fill
             placeholderText: row.hint
             placeholderTextColor: row.skin.faint_fill
@@ -392,7 +410,8 @@ Window {
             width: 190
             text: row.hint
             wrapMode: Text.Wrap
-            font.pixelSize: 11
+            font.pixelSize: uiFont.px(11)
+            font.family: uiFont.family
             color: row.skin.faint_fill
             verticalAlignment: Text.AlignVCenter
         }

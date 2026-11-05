@@ -83,6 +83,30 @@ pub mod qobject {
         /// `has_transparent_pixels` 同一个形状：菜单行的**可见**与按下时的**落点**共用一格，
         /// 于是「看得见按不动」与「按得动看不见」这两种骗人的门在这一层就组不出来（#494）。
         #[qproperty(bool, refreshable)]
+        /// §5.9.3、§5.9.4 与 §5.8.5/§5.8.6 那三扇**输入**对话框共用的那一格拒语。填进去的只有
+        /// [`Self::apply_size_text`]、[`Self::opacity_from_text`] 与 [`Self::apply_card_edit`]
+        /// 三只手，而串的本体是 [`falcon_core::pin::PinError`] 那六臂中文（`#[error(...)]` 那句）
+        /// 与 [`crate::state::PinState::edit_card`] 那句拒绝，桥一个字也不另写
+        /// （#281：一句话只有一个作者，见 `pin.rs` 里那段「对话框句子向来只有一个作者」）。
+        /// 成功那一臂清空它，好让下一趟开框不会带着上一趟的错字。窗侧唯一读者是页上那行
+        /// 提示，绑定 `dialog_message` 本体，不数、不判、不改写。
+        #[qproperty(QString, dialog_message)]
+        /// §5.8.5 步骤 4 / §5.8.6 步骤 4：这一枚**是不是**卡片贴出来的。菜单那一行
+        /// 「卡片设置…」的 `visible` 读的就是这一格，而它的判断本体是 core 那一格
+        /// [`falcon_core::pin::PinItem::card`] 有没有（经
+        /// [`crate::state::PinViewData::is_card`] 搬过来，桥不判第二遍，#281）。形状与
+        /// `refreshable` 同一式：「看得见、按下只会说这不是卡片」那一族门在这一层组不出来。
+        #[qproperty(bool, is_card)]
+        /// §5.8.6 步骤 4：这一枚是**颜色**卡片。页上读它只为一件事 —— 第四格那一个字段的
+        /// 题头写「背景颜色」还是写「颜色值」；两种情况下填进去的都是
+        /// [`falcon_core::colors::parse`] 读得进的那一串，拒与不拒也不由页上判。
+        #[qproperty(bool, card_colour)]
+        /// 那一格栅窗开起来带着的四枚读数：这一枚卡片**此刻**用的数，不是 `[card]` 的那四枚。
+        /// 由 [`Self::read_card`] 现读，写手只有它一只（#281）。
+        #[qproperty(i32, card_width)]
+        #[qproperty(i32, card_font_size)]
+        #[qproperty(QString, card_family)]
+        #[qproperty(QString, card_background)]
         type PinView = super::PinViewRust;
         /// Pull the state machine's current answer for `pin_id`. QML calls this
         /// when the id it was handed changes, and after every gesture below.
@@ -106,6 +130,62 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "resetZoom"]
         fn reset_zoom(self: Pin<&mut Self>);
+
+        /// §5.9.3 步骤 1–4「打开贴图菜单 → 尺寸与缩放 → 输入宽度、高度或缩放百分比 →
+        /// 按锁定比例更新结果」那一格在**这一枚窗**上的落点。三格文本原样搬进
+        /// [`falcon_core::pin::PinItem::set_size_from_text`]：等比锁定、上下界、非法输入三判
+        /// 全在 core 那一个作者手里（[`falcon_core::pin::size_zoom_request`]），桥只翻译。
+        ///
+        /// 交回的是**落在**窗上的那一枚缩放（core 的答案本体），`-1` 是被拒 —— 被拒时窗一动
+        /// 不动（core 那一头判过），而为什么拒写在 [`dialog_message`] 那一格里，页上直接绑它。
+        #[qinvokable]
+        #[cxx_name = "applySizeText"]
+        fn apply_size_text(
+            self: Pin<&mut Self>,
+            width: &QString,
+            height: &QString,
+            percent: &QString,
+        ) -> i32;
+
+        /// §5.9.4 步骤 2「或在菜单中输入透明度」那一格的**判据**门：把那一格文本交给
+        /// [`falcon_core::pin::typed_opacity`]，交回判出来的百分比（`-1` = 拒，拒语写在
+        /// [`dialog_message`]）。
+        ///
+        /// 它**不**改这枚贴图：透明度是 §5.10.3 的批量一手，「这一手改几枚」全仓只由
+        /// [`crate::state::PinState::batch_hand`] 判一次，所以按下之后页上把这一枚数交给
+        /// `Session.setPinOpacity`（与菜单那三行、Ctrl+滚轮同一只落点）。本窗不数名单，
+        /// 也不给输入那一格另开第二条透明度路（#281）。
+        #[qinvokable]
+        #[cxx_name = "opacityFromText"]
+        fn opacity_from_text(self: Pin<&mut Self>, raw: &QString) -> i32;
+
+        /// §5.8.5 步骤 4 / §5.8.6 步骤 4 那一扇「卡片设置」的窗**开起来**时的读数：现读这一枚
+        /// 卡片此刻用的那四枚数（`[card]` 打底、这一枚被调过的那几格盖上去 —— 那一路的作者是
+        /// [`crate::state::PinState::card_view`]）。
+        ///
+        /// 为什么不在页上抄 `[card]` 当初值：打开 A 卡片的窗该看见 A 现在真的是多宽。页上显示
+        /// 480 而 A 其实是 700 时，用户按 Ok 就是把 A 改回 480 —— 而那一手没人要求过。
+        #[qinvokable]
+        #[cxx_name = "readCard"]
+        fn read_card(self: Pin<&mut Self>);
+
+        /// §5.8.5 步骤 4 与 §5.8.6 步骤 4–5 那一四格文本的落点：原样交给
+        /// [`crate::state::PinState::edit_card`]（空格 = 这一格没填 = 这一枚在这一格上仍跟着
+        /// `[card]`，那一判由 [`crate::state::PinState::card_edit`] 一名作者判），排版、夹界、
+        /// 颜色解析三手全在 core。
+        ///
+        /// `false` = 被拒：这一枚一处也不动（core 被拒时不提交身份），为什么拒写在
+        /// [`dialog_message`] 那一格里，页上绑它。`true` = 改好了，新的那一张已经在窗上
+        /// （本手自己 `reload` 一次，图幅可能变）。
+        #[qinvokable]
+        #[cxx_name = "applyCardEdit"]
+        fn apply_card_edit(
+            self: Pin<&mut Self>,
+            width: &QString,
+            font_size: &QString,
+            font_family: &QString,
+            background: &QString,
+        ) -> bool;
 
         // §5.10.4 的「重置视图」不在这一列里了（P134）：它改的是**名单**，落点是
         // `Session.resetPin`，判据是 [`crate::state::PinState::batch_hand`] 那一枚。留着这一格
@@ -231,7 +311,7 @@ use core::pin::Pin;
 use cxx_qt_lib::QString;
 
 use falcon_core::geometry::{PhysPoint, PhysRect, PhysSize};
-use falcon_core::pin::{PinId, THUMB_FIXED_DEFAULT};
+use falcon_core::pin::{thumb_preset_box, PinId};
 
 use crate::state;
 
@@ -264,6 +344,13 @@ pub struct PinViewRust {
     grayscale: bool,
     inverted: bool,
     refreshable: bool,
+    is_card: bool,
+    card_colour: bool,
+    card_width: i32,
+    card_font_size: i32,
+    card_family: QString,
+    card_background: QString,
+    dialog_message: QString,
 }
 
 /// `dpr` is the one field that must not start at zero: QML divides the physical
@@ -300,6 +387,13 @@ impl Default for PinViewRust {
             grayscale: false,
             inverted: false,
             refreshable: false,
+            is_card: false,
+            card_colour: false,
+            card_width: 0,
+            card_font_size: 0,
+            card_family: QString::default(),
+            card_background: QString::default(),
+            dialog_message: QString::default(),
         }
     }
 }
@@ -339,6 +433,7 @@ impl qobject::PinView {
         self.as_mut().set_grayscale(view.grayscale);
         self.as_mut().set_inverted(view.inverted);
         self.as_mut().set_refreshable(view.refreshable);
+        self.as_mut().set_is_card(view.is_card);
     }
 
     /// One gesture done to the pin, then the properties brought back in line.
@@ -382,6 +477,110 @@ impl qobject::PinView {
         self.gesture(|o| o.reset_zoom());
     }
 
+    /// §5.9.3 那一扇「尺寸与缩放」对话框的落点。三格文本进 [`Gesture`] 之外的一条直路，
+    /// 因为这一手要交回的是 core 的 `Result` 本体（`gesture` 那一格要求 `R: Default`，
+    /// 而一枚「被拒 + 拒语」没有合法的 `Default` 形状可以塞进 `-1` 之外），形状照
+    /// [`Self::pick_alpha_bg`] 那一封：`state::with` → 落一手 → `reload`。
+    ///
+    /// 被拒那一臂窗上**一处也不动**（core 在 [`falcon_core::pin::size_zoom_request`] 那一头
+    /// 判过：拒，不钳、不替用户填没填的那一格），`reload` 因此只是把页上那三格初值取回真数。
+    pub fn apply_size_text(
+        mut self: Pin<&mut Self>,
+        width: &QString,
+        height: &QString,
+        percent: &QString,
+    ) -> i32 {
+        let id = *self.pin_id() as PinId;
+        let (w, h, p) = (width.to_string(), height.to_string(), percent.to_string());
+        let answer = state::with(|s| {
+            s.edit(id, |item, _, _| {
+                item.set_size_from_text(&w, &h, &p)
+            })
+        });
+        match answer {
+            Some(Ok(zoom)) => {
+                self.as_mut().set_dialog_message(QString::from(""));
+                self.as_mut().reload();
+                zoom as i32
+            }
+            Some(Err(why)) => {
+                self.as_mut()
+                    .set_dialog_message(QString::from(why.to_string().as_str()));
+                self.as_mut().reload();
+                -1
+            }
+            // 窗已经不在名单里（关掉了）：没有一句要替 core 编，页上那一格留原话。
+            None => -1,
+        }
+    }
+
+    /// §5.9.4 菜单输入那一格：只判，不动窗（理由见声明处那封信）。被拒时把 core 那句
+    /// 拒语留在 [`dialog_message`]，页上绑它；被接受时清空并交回百分比，由页上交给
+    /// `Session.setPinOpacity` 那只唯一的批量落点。
+    pub fn opacity_from_text(mut self: Pin<&mut Self>, raw: &QString) -> i32 {
+        match falcon_core::pin::typed_opacity(&raw.to_string()) {
+            Ok(pct) => {
+                self.as_mut().set_dialog_message(QString::from(""));
+                pct as i32
+            }
+            Err(why) => {
+                self.as_mut()
+                    .set_dialog_message(QString::from(why.to_string().as_str()));
+                -1
+            }
+        }
+    }
+
+    /// §5.8.5 步骤 4 那一扇窗**开起来**时的读数。它与 [`Self::reload`] 分开一只手，是因为这
+    /// 四格只在窗打开的那一刻被读一次 —— 塞进 `reload` 就是让每一枚贴图的每一次滚轮都多搬
+    /// 两枚字符串，而那笔钱没人要付。
+    pub fn read_card(mut self: Pin<&mut Self>) {
+        let id = *self.pin_id() as PinId;
+        let card = state::with(|s| s.card_view(id));
+        self.as_mut().set_card_colour(card.is_colour);
+        self.as_mut().set_card_width(card.width as i32);
+        self.as_mut().set_card_font_size(card.font_size as i32);
+        self.as_mut()
+            .set_card_family(QString::from(card.font_family.as_str()));
+        self.as_mut()
+            .set_card_background(QString::from(card.background.as_str()));
+    }
+
+    /// §5.8.5 步骤 4 / §5.8.6 步骤 4–5：四格文本进来，这一枚卡片自己重排。判据一处也不在
+    /// 这里 —— 「空格 = 这一格没填」归 [`crate::state::PinState::card_edit`]，排版、夹界与
+    /// 颜色解析归 core，被拒那一句也归它（[`crate::state::PinState::edit_card`]）。这一只手
+    /// 只做两件事：把那句拒语留在 `dialog_message`（页上绑它），把改好的那一张搬回窗上。
+    ///
+    /// 成功那一路交回的是 `true` 而不是 core 那句读数：屏幕上重排好了的那一张、和下一次开框
+    /// 读到的那四枚数（越界时被夹成的那一枚也在里面）就是这一手对用户的答复，而一句没人读的
+    /// 话不许为了搬它再造第二格（#433 问的是「该说话的有没有说」，不是「每一句都得有个窗」）。
+    pub fn apply_card_edit(
+        mut self: Pin<&mut Self>,
+        width: &QString,
+        font_size: &QString,
+        font_family: &QString,
+        background: &QString,
+    ) -> bool {
+        let id = *self.pin_id() as PinId;
+        let edit = state::PinState::card_edit(
+            &width.to_string(),
+            &font_size.to_string(),
+            &font_family.to_string(),
+            &background.to_string(),
+        );
+        match state::with(|s| s.edit_card(id, edit)) {
+            Ok(_) => {
+                self.as_mut().set_dialog_message(QString::from(""));
+                self.as_mut().reload();
+                true
+            }
+            Err(why) => {
+                self.as_mut().set_dialog_message(QString::from(why.as_str()));
+                false
+            }
+        }
+    }
+
     pub fn rotate_cw(self: Pin<&mut Self>) {
         self.gesture(|o| o.rotate(1));
     }
@@ -418,8 +617,13 @@ impl qobject::PinView {
         self.gesture(move |o| o.apply_smooth(on));
     }
 
+    /// §5.9.10 steps 1–3. The box is the user's `[pin]` preset, read from the
+    /// state snapshot here (the one reader that turns the config into a gesture
+    /// argument) and handed to the state machine, which owns the fit. A second
+    /// press gives the size back — the `false` that [`Self::gesture`] reloads on.
     pub fn toggle_thumbnail(self: Pin<&mut Self>) {
-        self.gesture(|o| o.toggle_thumbnail(THUMB_FIXED_DEFAULT));
+        let box_size = state::with(|s| thumb_preset_box(&s.cfg));
+        self.gesture(move |o| o.toggle_thumbnail(box_size));
     }
 
     pub fn exit_thumbnail(self: Pin<&mut Self>) {

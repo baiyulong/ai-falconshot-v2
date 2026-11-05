@@ -517,6 +517,61 @@ pub fn nudge_edge(r: &PhysRect, handle: Handle, dx: i32, dy: i32, bounds: &PhysR
     resize(r, handle, p, bounds)
 }
 
+/// PRD §5.3.9 第 4 步「放大镜同步显示边缘像素」里的那一颗**边缘点**。
+///
+/// 三个输入是同一件事的三侧：`after` 是**挪完之后**的选区，`handle` 是这一趟挪的是整块还是
+/// 哪条边（与 [`nudge_edge`] 递进去的那一枚同一个数 —— 「Alt 挪哪条边」这件事因此仍然只有一
+/// 个作者），`(dx, dy)` 是这一次按键**要求**的位移。
+///
+/// 报的是**选区自己**的那一颗像素：右/下两边取 `right() - 1` / `bottom() - 1`（`right()` 本身
+/// 是第一颗**不属于**选区的像素，报它就答非所问），左/上取 `x` / `y`。另一根轴取这一条边的中点
+/// （[`PhysRect::center`] 同一算式）而不是取端点，因为端点属于相邻的那两条边；一块放大镜罩在
+/// 边上，边界两侧各看得见一半，这正是「正要对齐的那些边缘像素」。
+///
+/// `dx == dy == 0` 时把 `cursor` 原样交回：那不是一次按键，那是指针。§5.4.1「放大镜跟指针
+/// 走」这件旧行为在这一臂里一字未改，鼠标那一路（`CaptureMask.qml` 的三处 hover/拖拽）至今
+/// 走的是这一臂。
+///
+/// **读 `after`，不读 `(dx, dy)` 算出来的那一格**：[`nudge`] 与 [`nudge_edge`] 都会夹回桌面
+/// （§5.3.9「不允许选区超出有效截图区域」），夹住的那一趟被挪掉的边就是夹住后的那条边；报
+/// 「本来要到的那一格」就是报一颗屏幕上没有的像素 —— 而这一枚点的唯一用途就是去屏幕上取像素。
+pub fn nudge_sample(
+    after: &PhysRect,
+    handle: Handle,
+    dx: i32,
+    dy: i32,
+    cursor: PhysPoint,
+) -> PhysPoint {
+    if dx == 0 && dy == 0 {
+        return cursor;
+    }
+    let (l, t, r, b) = after.ltrb();
+    // 那两枚 `max` 兜的是空矩形：`w == 0` 时 `r - 1` 会跑到左边之左。产品路径到不了这一臂
+    // （桥里 `MaskState::nudge_by` 头上有 `hole.is_empty()` 的早退），留着是为了这一手对**任何**
+    // 一枚矩形都答得出一颗点，而不是答出一颗负方向的、让下面拿它去取像素。
+    let (last_r, last_b) = ((r - 1).max(l), (b - 1).max(t));
+    // 另一根轴上取的是这一条边的中点 —— 直接问 [`PhysRect::center`]，那一位作者，而不是在这里
+    // 再写一遍 `(b - t) / 2`（那一写就成了两种"中点"，200% 屏上差的就是用户正在对的那一格）。
+    let mid = after.center();
+    let x = match handle {
+        // 整块移动时两条竖边都动了，但「正在对齐的那一条」是前进方向的那一条 leading 边。
+        Handle::Body if dx > 0 => last_r,
+        Handle::Body if dx < 0 => l,
+        Handle::E | Handle::Ne | Handle::Se if dx != 0 => last_r,
+        Handle::W | Handle::Nw | Handle::Sw if dx != 0 => l,
+        // 这一趟没挪竖边（N / S 那一档，或一次纯纵向的移动）⇒ 落在被挪的那条横边的中点上。
+        _ => mid.x,
+    };
+    let y = match handle {
+        Handle::Body if dy > 0 => last_b,
+        Handle::Body if dy < 0 => t,
+        Handle::N | Handle::Ne | Handle::Nw if dy != 0 => t,
+        Handle::S | Handle::Se | Handle::Sw if dy != 0 => last_b,
+        _ => mid.y,
+    };
+    PhysPoint::new(x, y)
+}
+
 /// Grow/shrink about a fixed anchor, used by the explicit size input and by
 /// wheel-resize of a pin.
 pub fn set_size(r: &PhysRect, w: u32, h: u32, anchor: Anchor) -> PhysRect {
@@ -716,6 +771,125 @@ mod tests {
         let r = PhysRect::new(990, 790, 10, 10);
         assert_eq!(nudge(&r, 100, 100, &b()), r);
         assert_eq!(nudge(&r, -3, -4, &b()), PhysRect::new(987, 786, 10, 10));
+    }
+
+    // §5.3.9 第 4 步「放大镜同步显示边缘像素」—— [`nudge_sample`] 是那一颗点的唯一作者，
+    // 而它是纯的：一颗点 + 一次按键的两个增量 + 一枚 handle，不碰快照、不碰 Qt、不碰锁，
+    // 所以 §9.1 第十条要的「纯函数判决由 cargo test 作证」在这一格就成立。
+
+    ///  regression 的对面：指针那一路。`dx == dy == 0` 不是按键，是 hover —— 放大镜跟着
+    /// 指针走这件 §5.4.1 的旧行为必须原样交回指针那一颗，不然鼠标那条腿会在这一轮被改口。
+    #[test]
+    fn a_nudge_of_nothing_keeps_the_pointer_as_the_sample() {
+        let r = PhysRect::new(100, 100, 200, 100);
+        let cursor = PhysPoint::new(640, 480);
+        for handle in [Handle::Body, Handle::Se, Handle::N] {
+            assert_eq!(
+                nudge_sample(&r, handle, 0, 0, cursor),
+                cursor,
+                "{handle:?} 那一档上，没挪动的这一趟不该改采样点"
+            );
+        }
+    }
+
+    /// 四枚方向键各回到**刚挪掉的那条边**上选区自己的那一颗像素。整块移动时四条边都动了，
+    /// leading 的那一条才是用户正在对齐的那一条；另一根轴取这一条边的中点。
+    #[test]
+    fn each_arrow_re_anchors_the_magnifier_to_the_edge_that_moved() {
+        let start = PhysRect::new(100, 100, 200, 100);
+        let cursor = PhysPoint::new(3, 7);
+        let cases = [
+            // (dx, dy, 期望：刚挪掉的那条边上的那一颗)
+            (1, 0, PhysPoint::new(300, 150)), // → 右边：101+200-1，不是不属于选区的 301
+            (-1, 0, PhysPoint::new(99, 150)), // ← 左边
+            (0, -1, PhysPoint::new(200, 99)), // ↑ 上边（x 取这一条边的中点）
+            (0, 1, PhysPoint::new(200, 200)), // ↓ 下边：101+100-1
+        ];
+        for (dx, dy, want) in cases {
+            let after = nudge(&start, dx, dy, &b());
+            assert_ne!(after, start, "{dx},{dy} 这一趟根本没挪，判据就量的是空集");
+            assert_eq!(
+                nudge_sample(&after, Handle::Body, dx, dy, cursor),
+                want,
+                "{dx},{dy} 之后放大镜该看挪掉的那条边"
+            );
+            // 指针那一颗不许留在答案里 —— 那正是这一轮要修的缺陷。
+            assert_ne!(
+                nudge_sample(&after, Handle::Body, dx, dy, cursor),
+                cursor,
+                "{dx},{dy} 之后还报指针，就是「键盘挪了、放大镜没同步」"
+            );
+        }
+        // 斜着挪（方向键从不发这一枚数，但这一手是全函数）：leading 的那一角。
+        assert_eq!(
+            nudge_sample(&nudge(&start, 1, 1, &b()), Handle::Body, 1, 1, cursor),
+            PhysPoint::new(300, 200)
+        );
+    }
+
+    /// 夹住的那一趟报**夹住后的**那条边，不报要求去的那一格：`(990,790,10,10)` 往右推 50，
+    /// [`nudge`] 把它留在桌面里，放大镜因此该采桌面右沿上选区自己的最后一列（999），而不是
+    /// 屏幕上根本不存在的那一列（1049）。
+    #[test]
+    fn a_nudge_clamped_at_the_desktop_edge_names_the_clamped_edge() {
+        let r = PhysRect::new(990, 790, 10, 10);
+        let after = nudge(&r, 50, 0, &b());
+        assert_eq!(after.right(), 1000, "夹具没夹在桌面右沿上，这一格量的就不是夹住那一档");
+        let p = nudge_sample(&after, Handle::Body, 50, 0, PhysPoint::new(0, 0));
+        assert_eq!(p, PhysPoint::new(999, 795));
+        assert_ne!(p.x, 1049, "报的是要求去的那一格，不是屏幕上真的那条边");
+        // 往下推那一趟同理：夹在桌面下沿上，报的是真的最后一行（799），不是要求去的那一行（849）。
+        let pushed_down = nudge(&r, 0, 50, &b());
+        assert_eq!(pushed_down, r, "夹具没夹在桌面下沿上，这一格量的就不是夹住那一档");
+        let q = nudge_sample(&pushed_down, Handle::Body, 0, 50, PhysPoint::new(0, 0));
+        assert_eq!(q, PhysPoint::new(995, 799));
+        assert_ne!(q.y, 849, "报的是要求去的那一格，不是屏幕上真的那条边");
+    }
+
+    /// Alt 那一档挪的是右下那两条边（桥里 `nudge_by` 递 [`Handle::Se`]），放大镜就只该跟着
+    /// **被挪的那一条**走：只推 dx 时报右边中点、只推 dy 时报下边中点，一动未动的上边/左边
+    /// 也不许冒充「刚挪过的那条边」。
+    #[test]
+    fn an_alt_resize_re_anchors_to_the_edge_that_grew_not_to_the_one_that_stayed() {
+        let start = PhysRect::new(100, 100, 200, 100);
+        let cursor = PhysPoint::new(3, 7);
+        let wide = nudge_edge(&start, Handle::Se, 1, 0, &b());
+        assert_eq!(
+            nudge_sample(&wide, Handle::Se, 1, 0, cursor),
+            PhysPoint::new(300, 150),
+            "dx 那一趟该落在刚挪过的那条竖边的中点"
+        );
+        let tall = nudge_edge(&start, Handle::Se, 0, 1, &b());
+        assert_eq!(
+            nudge_sample(&tall, Handle::Se, 0, 1, cursor),
+            PhysPoint::new(200, 200),
+            "dy 那一趟该落在刚挪过的那条横边的中点"
+        );
+        assert_ne!(
+            nudge_sample(&tall, Handle::Se, 0, 1, cursor).y,
+            tall.y,
+            "上边这一趟一动未动，放大镜不许报它"
+        );
+        // 只挪高度的那一趟里，左边也没动：x 取的是中点而不是那一条竖边。
+        assert_eq!(nudge_sample(&tall, Handle::Se, 0, 1, cursor).x, tall.center().x);
+    }
+
+    /// 步长不改答案：Shift 那一档只是把同一条边推得远一点（§5.3.9「更细或更大步长」），
+    /// 放大镜报的仍是那一条边 —— 这一格钉的是「handle 与边」这对关系，不是那枚 1/10 的数。
+    #[test]
+    fn a_modifier_step_names_the_same_edge_as_a_single_pixel() {
+        let start = PhysRect::new(100, 100, 200, 100);
+        let cursor = PhysPoint::new(3, 7);
+        for (one, ten) in [(1, 10), (-1, -10)] {
+            let a = nudge_sample(&nudge(&start, one, 0, &b()), Handle::Body, one, 0, cursor);
+            let big = nudge_sample(&nudge(&start, ten, 0, &b()), Handle::Body, ten, 0, cursor);
+            assert_eq!(
+                big.x - a.x,
+                ten - one,
+                "十步之后那条边就该在十格之外，别的是谁都不是"
+            );
+            assert_eq!(a.y, big.y, "同一列的中点不该跟着步长漂");
+        }
     }
 
     #[test]

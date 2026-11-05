@@ -92,6 +92,9 @@ mod capture;
 mod cli;
 mod custom;
 mod delay;
+mod drop_check;
+mod drop_in;
+mod feedback_window;
 mod group_window;
 mod guide;
 mod help;
@@ -115,6 +118,7 @@ mod settings;
 mod settings_view;
 mod state;
 mod tray_click_check;
+mod update_auto;
 mod update_check;
 mod whiteboard_check;
 
@@ -254,7 +258,8 @@ fn cli_capture_to_pin(select: cli::Select) -> Result<String, String> {
 ///
 /// P183 进来的是 `--settings-palette`：§5.7.22 步骤 1/2/3 那一格「调色板管理」，与 `--settings-io`
 /// 同一副骨架（同一扇设置窗、另一副计划、写回钉在同一枚落点上），因此**进** [`WINDOW_DOORS`]：
-/// 它写的仍是那一枚 `settings_open`，三档点的是同一扇窗 —— 并列时窗那侧说的话没有作者。
+/// 它写的仍是那一枚 `settings_open`，三档点的是同一扇窗 —— 并列时窗那侧说的话没有作者。P184 给同一
+/// 档补上步骤 4 与 5 那两枚钮：骨架一字未动，只是计划长了两段、腿多了三条。
 const EXTRA_DOORS: [&str; 9] = [
     "--reveal",
     "--autosave",
@@ -269,7 +274,7 @@ const EXTRA_DOORS: [&str; 9] = [
 
 /// `EXTRA_DOORS` 里那**三**档**要一扇真窗**的：`--settings-window` 量页上的一行跟不跟着值走
 /// （§5.20.2），`--settings-io` 量页上那两枚钮交不交得出、收不收得回一份档（§5.20.3），
-/// `--settings-palette` 量的是同一扇页上那一格调色板板条与那八枚钮（§5.7.22 步骤 1/2/3）。
+/// `--settings-palette` 量的是同一扇页上那一格调色板板条与那十二枚钮（§5.7.22 步骤 1/2/3/4/5）。
 ///
 /// 这一枚名单存在的理由是 `refusals` 那一格问的问题：那里判的不是「某一档有没有并列」，而是
 /// **「这一趟被点名了几扇窗那一档」** —— 给每档各写一条 `if`，两档同开时就会交两句同样的话
@@ -286,20 +291,25 @@ const WINDOW_DOORS: [&str; 3] = ["--settings-window", "--settings-io", "--settin
 /// 两句各说各的话（P142 / P143 那两对 `2 != 1` 正是这一个形状），而其中一句说的还是别人。
 const HISTORY_DOORS: [&str; 2] = ["--autosave", "--history-window"];
 
-/// `--settings`、`--tray`、`--whiteboard` 与 `--update-check` 这四档的共同点不是「它们读的都是配置」，而是**它们在
-/// `engine.load()` 之前打完自己的报告就 `exit`**：四档都不开遮罩、不要闹钟（所以都不在
+/// 下面这一族（`--settings`、`--tray`、`--whiteboard`、`--update-check`、`--help-menu`、`--drop-in`、
+/// `--feedback`）的共同点不是「它们读的都是配置」，而是**它们在
+/// `engine.load()` 之前打完自己的报告就 `exit`**：每一档都不开遮罩、不要闹钟（所以都不在
 /// [`EXTRA_DOORS`] 里），也因此都不许有同伴 —— 并列时后点名的那一档一次也没跑，而那一趟印出来
-/// 的只是前一档的报告，看上去像一次成功的测量。
+/// 的只是前一档的报告，看上去像一次成功的测量。枚数本身不在这里写：它由 `the_tray_door_refuses_company_and_needs_no_alarm`
+/// 那一条 `EXIT_DOORS.len()` 的断言钉着 —— 这一族的头顶那句曾点名「四档」而名单已有五枚，
+/// 数目的话从此只由名单自己与那一格单测说。
 ///
 /// 这一枚名单存在的理由与 [`WINDOW_DOORS`] 同一个：`refusals` 里判的不是「某一档有没有并列」，
 /// 而是「这一趟被点名了几扇**打完就退**的门」。给每档各写一条 `if`，`--settings --tray` 就会拿到
 /// 两句各说各的话（P142/P143 那两对 `2 != 1` 正是这个形状），而其中一句说的还是别人那一档。
-const EXIT_DOORS: [&str; 5] = [
+const EXIT_DOORS: [&str; 7] = [
     "--settings",
     "--tray",
     "--whiteboard",
     "--update-check",
     "--help-menu",
+    "--drop-in",
+    "--feedback",
 ];
 
 /// 只碰「用户点名的那一份文件」的四档命令：§5.20.3 的两档动整份 settings，§5.7.22 的两档
@@ -659,6 +669,40 @@ fn refusals(args: &[String], gauge_mode: bool) -> Vec<String> {
     orphans
 }
 
+/// `[advanced] cli_enabled` 在产品里的**唯一读者**：一趟 argv 交回 `cli::classify` 的答案之后，
+/// 问一句「这一枚开关允许命令行真的去截图吗」。
+///
+/// 只闸 `Run` 那一臂，而且是**故意**只闸它：
+/// * `NotCli` 原样放行 ⇒ 本二进制的其余每一条路（`--selftest`、十九扇量具门、`--export-config`
+///   那四档文件命令、以及常驻的那个应用）与这一枚开关无关。出厂默认是 `false`，所以「闸一切带
+///   `--` 的东西」会把整台机器关掉 —— 那不是这一枚键的意思。
+/// * `Help` 与 `Error` 原样放行 ⇒ §5.17 规则 2 要「参数错误时应输出帮助信息」，§5.21.2 要参数
+///   文档入口问得到。把开关拨到关而让帮助消失、让写错的调用得到一句与写错无关的话，是拿一枚
+///   关着的键去**藏**文档，与 #433 反着走；文档在场也让用户当场看得见「原来有这一枚开关」。
+/// * `Run` 是唯一"命令行替用户干活"的那一臂，也正是 PRD §5.17 那句「注册 snip 命令行入口」要
+///   管的东西：关着 ⇒ 不抓屏、不写文件、不动剪贴板、不开那一枚跨进程的 last-region 档，退
+///   [`cli::EXIT_FAIL`]（1）而不是 [`cli::EXIT_OK`]（0）—— 一次没办成的事绝不报成功，而这一句
+///   说的是**为什么**没办成。
+///
+/// 话里点名那枚键（`cli_enabled`）而不是只说「命令行不可用」：#453 要求「键说不要」与「这台
+/// 机器做不到」与「参数读不懂」是三种失败、三句话。第三种长在 [`cli::classify`] 的 `Error`
+/// 那一臂（尾巴是「量具档…」或「至多点一条截图命令…」，且退 3），第二种种在本仓库是抓屏那一路
+/// 自己说的「截图失败：…」（也退 1，但它说的是桌面），第一种就是这里这一句。
+///
+/// 写成递事实的纯函数、并由调用方在 [`cli::opens_region_store`] **之前**问一次：`fn main` 对
+/// `cargo test` 不可见（§10 第 40 项 ③），所以「关着的时候什么都不碰」这一半只能靠"闸在开闸之
+/// 前"这一行的位置来保证，而"两样拨法交回两样答案"那一半在这里判。
+pub fn cli_gate(enabled: bool, decision: &cli::Decision) -> Option<String> {
+    match decision {
+        cli::Decision::Run { .. } if !enabled => Some(
+            "这一趟不执行 §5.17 的命令行截图：[advanced] cli_enabled 关着（设置 → 高级 里那枚\
+             「注册 snip 命令行入口」，把它打开再调用一次）。参数文档仍然问得到：--help。"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
 fn main() {
     // The clock the cold-path split is measured from, stamped before Qt says
     // anything at all. See `state::stamp`.
@@ -692,6 +736,11 @@ fn main() {
     // `wm_settingchange reaches the theme`）⇒ 本行印的仍是启动那一刻的那一枚读数，而这一枚键
     // 自此会跟着机器动。P118 当时写的「本轮不做、无 WM_SETTINGCHANGE 监听」已被 P120 的读数作废（#332）。
     println!("[theme cfg] {}", settings::startup_theme_banner());
+    // §5.1.2 开机启动：这一行读的是**机器**那一侧的启动项（`HKCU\...\Run` 里 `ai-falconshot`
+    // 那一枚值），不是档里那一枚 bool —— 两者不一致时以机器为准回填档，页上那一枚开关从此
+    // 说的是「下一次登录会不会启动」。只读那一手在 `autostart::inspect` 里，它一个字节也不改；
+    // 改的那一手在设置页按下去的那一趟（`settings_view::write` 的机器腿）。
+    println!("[autostart cfg] {}", settings::startup_autostart_banner());
     // §5.17 那 4 枚 `[about]` 键自此有非 test 调用点（P74 起）：`about_cfg()` 一次读整段快照、
     // `format_about_banner()` 逐字回读 4 枚（2 枚 bool + 1 枚 u32 + 1 枚 String；`channel`
     // 三臂 clamp 已由 `Config::normalize` 在 cfg 加载时完成 ⇒ 本轮没有分岔本体）。证人 dichotomy
@@ -1015,6 +1064,15 @@ fn main() {
         .chain(cli::snap_flags())
         .collect();
     let cli_decision = cli::classify(&args, &cli_reserved);
+    // `[advanced] cli_enabled` 在产品里的读处就在这一行，且排在**开那一枚跨进程档之前**（下面
+    // 的 `enable_region_store`）：关着的命令行连一份 state 档都不该碰。这里现读档而不是启动时
+    // 缓存，为的是让"这一枚键管的是下一趟进程"这句话在场 —— 它同时也被标在 `RESTART_KEYS` 里
+    // （argv 在一趟进程起来那一刻就解释完了，改完档必须有一趟新进程来认，这是 PRD §5.20.2 允许
+    // 写明「需重启」的那一类），而**认的是新档**这一点只有现读才成立。
+    if let Some(said) = cli_gate(settings::advanced_cfg().cli_enabled, &cli_decision) {
+        println!("[cli] {said}");
+        std::process::exit(cli::EXIT_FAIL);
+    }
     // P169: PRD §5.17's 截取上一次区域 is addressed to "scripts, shortcuts and third
     // parties", and a script's call is a new process each time. The one line this opens
     // is what lets `--last` in process two repeat the rectangle process one captured;
@@ -1236,10 +1294,15 @@ fn main() {
     }
 
     // §5.21.1 的那一扇门：托盘那枚「检查更新」有没有归宿、那份档读不读得到、那句判决里三样东西
-    // 齐不齐。与上面三档同族（不开遮罩、不写用户的档、报告打完就退），所以它共享 `EXIT_DOORS`
-    // 那一条拒绝，也同 `--tray` 一样不带毫秒数、不进闹钟名单。
-    // 它这一趟发的是 BLOCKED（退出码 3）而不是 PASS：那枚菜单项这一档一次也没有真点过，第 4 步
-    // 「显示」里那一枚**可以点的**下载入口也还没有 —— 那两格写在自己报告的最后，不拿上面的读数冒充。
+    // 齐不齐，外加四步之外那两枚 `[about]` 键（⑯–㉑ 那六行：自动那一支的判决、戳的形状、点不点戳
+    // 的规则、以及它在 `main.rs` 里的接线位置本身）。与上面三档同族（不开遮罩、不写用户的档、报告
+    // 打完就退），所以它共享 `EXIT_DOORS` 那一条拒绝，也同 `--tray` 一样不带毫秒数、不进闹钟名单。
+    // 它这一趟发的是 BLOCKED（退出码 3）而不是 PASS：那枚菜单项这一档一次也没有真点过，页脚那两枚
+    // 钮这一档也只量到递出去的字与地址、没拿真手指按过 —— 那两格写在自己报告的最后，不拿上面的
+    // 读数冒充。第三件欠账不在那两格里，也不由本档发格：自动那一支的启动本体只跑在 `plain` 那一趟，
+    // 本档**不**跑它（跑了就让其它格子依赖这台机器此刻通不通），所以㉑ 读的是接线本身，
+    // 「真启动一次、屏幕上读到那句自动判决」至今没有真机读数。（取回那一只手不在这份欠账里：
+    // ⑫⑬⑭ 对着门自己起的那扇本机服务器真跑过。）
     if flag("--update-check") {
         let (verdict, report) = update_check::measure();
         println!("{report}");
@@ -1252,6 +1315,28 @@ fn main() {
     // 一次也没真点过，那一格写在自己报告的最后。
     if flag("--help-menu") {
         let (verdict, report) = help_menu::measure();
+        println!("{report}");
+        std::process::exit(verdict_code(0, verdict));
+    }
+
+    // §5.8.4 方式二的那一扇门：拖进来的那一串分格、判类、落点那张表与那一行的去向，各有它自己的
+    // 作者，这一档把它们对着**真的**本机 HTTP 服务器与**真的** PNG 走一遍。与上面五档同族（不开遮罩、
+    // 不写用户的档、报告打完就退），所以它共享 `EXIT_DOORS` 那一条拒绝，也不带毫秒数、不进闹钟名单。
+    // 它发 BLOCKED（退出码 3）而不是 PASS：一次真的拖放要鼠标按住浏览器里的一张图挪到窗上再松手，
+    // 而 [`crate::drop_in::start`] 本体要的 `Pin<&mut Session>` 只有 QML 线程拿得到 —— 那两格欠账
+    // 写在它自己报告的最后，不拿其余那些格读数冒充。
+    if flag("--drop-in") {
+        let (verdict, report) = drop_check::measure();
+        println!("{report}");
+        std::process::exit(verdict_code(0, verdict));
+    }
+
+    // §5.21.3 的那一扇门：四步各自的那位作者、两条隐私规则的可数形状、页绑的腿名。与上面六档同族
+    // （不开遮罩、不写用户的档、报告打完就退），所以它共享 `EXIT_DOORS` 那一条拒绝，也不带毫秒数、
+    // 不进闹钟名单。它发 BLOCKED（退出码 3）而不是 PASS：页上那枚钮本档一次也没被手指点过，而它**故意**
+    // 不替用户把剪贴板改掉 —— 那三条欠账写在它自己报告的最后，不拿其余那些格的读数冒充。
+    if flag("--feedback") {
+        let (verdict, report) = feedback_window::measure();
         println!("{report}");
         std::process::exit(verdict_code(0, verdict));
     }
@@ -1549,7 +1634,7 @@ fn main() {
         );
     }
 
-    // §5.7.22 步骤 1/2/3 那一档：还是那一扇窗、第三副计划。前置与上面两档同一形状（**写在
+    // §5.7.22 步骤 1/2/3/4/5 那一档：还是那一扇窗、第三副计划。前置与上面两档同一形状（**写在
     // `engine.load()` 之前**，窗只在 `Component.onCompleted` 读一次计划），写回也钉在同一枚落点
     // 上 —— 这一档的每一条腿都是真写 `annotation.palette` / `annotation.palette_schemes` 两枚键，
     // 用户那份 `%APPDATA%\ai-falconshot\config.toml` 不是草稿纸（§9.1 第十五条）。
@@ -1564,7 +1649,7 @@ fn main() {
         println!("[settings-palette pin] 配置写回钉到 {}", pinned.display());
         println!("[settings-palette arm] {}", settings_view::arm_pal());
         println!(
-            "[settings-palette wait] 窗与那八枚钮里的六按等 {ms} ms（计划给的那枚腿等待 {} ms，地板 {} ms）",
+            "[settings-palette wait] 窗与那十二枚钮里的九按等 {ms} ms（计划给的那枚腿等待 {} ms，地板 {} ms）",
             settings_view::LEG_MS,
             settings_view::MIN_PAL_MS
         );
@@ -1655,6 +1740,17 @@ fn main() {
     // 一点"的约定，是一个由 Rust 一侧回答的判定：`HintWindow.qml` 只有在这一格为真时才拿到
     // 锚点，`state::hint_surface` 的注释写着它的理由。
     state::set_hint_surface(plain || hint_ms.is_some());
+    // §7.2 的重启门，只在产品本体那一趟（无 flag 常驻）走：量具档各自用
+    // `process::exit` 收场、从不经过下面的退出门，若也来点戳就会把真崩溃留下的
+    // 案发现场抹掉。恢复必须排在 `engine.load` 之前——`main.qml` 的
+    // `Component.onCompleted` 按场上枚数造窗，恢复因此不需要任何新的 QML 腿。
+    // 交回的一行是启动日志（干净首启是空串，沉默就是正确读数）。
+    if plain {
+        let said = state::start_session();
+        if !said.is_empty() {
+            println!("[falconshot] {said}");
+        }
+    }
     state::stamp("engine");
     let mut engine = QQmlApplicationEngine::new();
     if let Some(engine) = engine.as_mut() {
@@ -1686,9 +1782,23 @@ fn main() {
         };
         if let Some(done) = launch.as_ref() {
             for row in &done.rows {
-                println!("[hotkey] {row}");
+                println!("[hotkey] {}", row.said);
             }
         }
+    }
+
+    // §5.21.1 那四步**之外**的那一支：`[about] auto_check_updates` 与 `check_every_days` 的读者。
+    // 只在产品本体那一趟跑（`plain`，与上面 §7.2 的恢复门同一枚判据）：量具档各自用 `process::exit`
+    // 收场，让它们在启动时联网，就是把「这一次量到的读数」变成「这一次运气」——而那一档的地板
+    // 闹钟是按本地活儿算的，一次最坏三段超时的取回随时能把它跑过。
+    //
+    // 必须排在 `hotkey::install` **之后**：起检查的那一只手要的是 QML 在 `Component.onCompleted`
+    // 里递过来的 GUI 线程句柄，而句柄在 engine.load 那一刻才可能到手。到手与否由
+    // [`update_auto::startup`] 自己说，它交回的那一句是「这一趟起了／跳过了／起不动」三者之一，
+    // 启动日志印的就是那一句 —— 一次没人读的结果不该只活在返回值里。
+    if plain {
+        let said = update_auto::startup();
+        println!("[falconshot] {said}");
     }
 
     // The presses, and the order: 贴出剪贴板 first, because the capture leg leaves the
@@ -1710,24 +1820,33 @@ fn main() {
         Some(_) => hotkey::Region::plant(),
         None => hotkey::Region::untouched(),
     };
-    let mut injected: Vec<(String, bool)> = Vec::new();
+    let mut injected: Vec<hotkey::Press> = Vec::new();
     let mut legs = hotkey::Legs {
         setting: ("", false),
         menu: ("", Err("这一档没点过菜单")),
     };
     if hotkeys_ms.is_some() {
-        // §5.1.1 / §5.20.1：这一发排在四把键之前，而次序是读数的一部分。`gate` 会让任何一次
+        // §5.1.1 / §5.20.1：这一发排在六把键之前，而次序是读数的一部分。`gate` 会让任何一次
         // 「遮罩已经开着」的工作原地退回，而 `capture` 那一支正是开遮罩的 —— 把这一发放到它们
         // 之后，这一格就成了两条线程之间谁先跑的一次赌博，而它要证的是「菜单里那一项被选中
         // 之后屏幕上出现那扇窗」本身，不是赌赢了。
         legs.menu = ("settings", hotkey::press_menu("settings"));
+        // §5.16.1 那两枚新接线的臂（`pin_edit`、`custom_task`）排在 `capture` **之前**，而这一
+        // 次序不是排版：`pin_edit` 做得成事时把遮罩开起来，而 [`hotkey`] 里那道闸（「遮罩已经
+        // 开着，这一次不动手」）会把排在它后面每一枚要冻画面的键原地挡掉 —— 那一格的读数就此
+        // 从 Pass 变 Fail。门因此**不**替 `pin_edit` 把场上的贴图选中：模型里选中只有一只手
+        // （`state::select_pin`，屏幕上点中谁就是谁），替它写一次就等于让这一趟真开一屏遮罩，
+        // 而那一半账要还给一只真的手指。于是这两格读的是 Blocked 配「场上几枚、选中几枚」那句
+        // 现读，而不是把缺席的指尖算成产品的错。
         for action in [
             "paste_pin",
             "capture_repeat",
             "capture_active_window",
+            "pin_edit",
+            "custom_task",
             "capture",
         ] {
-            injected.push((action.to_string(), hotkey::press(action)));
+            injected.push(hotkey::press_leg(action));
         }
         // §5.19.1 第 3 步：门替系统播一次「设置改了」，好让 §5.19.1 那三行读数（顶层窗口
         // 在不在、监听线程有没有接到、GUI 线程重问了什么）在这一趟里有供应商。这一发必须
@@ -1836,8 +1955,8 @@ fn main() {
     }
     if let Some(ms) = pal_ms {
         // 与上面两档同一个理由：这一趟会自己结束，而不是开一扇窗等真人。这一档的地板比
-        // `MIN_IO_MS` 高一截，多出来的那一截是**六条腿各要过一次桥**（加、挪、删、改、存、
-        // 应用），每一按都真的碰盘，收尾还原那两次也算在里面。
+        // `MIN_IO_MS` 高一截，多出来的那一截是**九条腿各要过一次桥**（加、挪、删、改、存、导出、
+        // 预览、确认应用、应用方案），每一按都真的碰盘，收尾还原那两次也算在里面。
         state::quit_after(ms);
         armed.push("--settings-palette");
     }
@@ -2248,6 +2367,17 @@ fn main() {
         );
         code = verdict_code(code, verdict);
     }
+    // §7.2 的正常退出门：体面的结束（托盘「退出」、`quit_after`、被允许关的最后一扇
+    // 窗）都要先让 `exec()` 返回，所以这一格就是「用户按自己的意思结束了这一趟」唯
+    // 一的判定点——它把会话戳收走、把快照清掉，用户亲手关掉的贴图下一次启动不会再生
+    // 回来（否则用户永远关不掉它们）。崩溃那一趟走不到这里，戳留在盘上，下一趟
+    // `start_session` 因此恢复。量具档从不点戳，这一格对它们同样交回沉默。
+    if plain {
+        let said = state::finish_session();
+        if !said.is_empty() {
+            println!("[falconshot] {said}");
+        }
+    }
     // The last thing before the process ends, whatever the mode: an unregistered key
     // and a removed icon are the difference between this run and one that left the
     // user's PrintScreen held by a process that no longer exists. A no-op when
@@ -2258,7 +2388,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{capture, cli_pinned_line, exe_stamp, refusals, unalarmed, FILE_COMMANDS};
+    use super::{
+        capture, cli, cli_gate, cli_pinned_line, exe_stamp, refusals, unalarmed, FILE_COMMANDS,
+    };
     use std::time::{SystemTime, UNIX_EPOCH};
 
     /// The field's only job is to make a log attributable to a build, and the way it
@@ -2535,9 +2667,10 @@ mod tests {
     fn the_tray_door_refuses_company_and_needs_no_alarm() {
         assert_eq!(
             crate::EXIT_DOORS.len(),
-            5,
-            "这一族的门是五枚（`--settings`、P144 的 `--tray`、P147 的 `--whiteboard`、P173 的 \
-             `--update-check` 与 P174 的 `--help-menu`）：多一枚少一枚都要先改这条再改码"
+            7,
+            "这一族的门是七枚（`--settings`、P144 的 `--tray`、P147 的 `--whiteboard`、P173 的 \
+             `--update-check`、P174 的 `--help-menu`、上一轮的 `--drop-in` 与本轮的 `--feedback`）：\
+             多一枚少一枚都要先改这条再改码"
         );
         assert!(
             refusals(&argv(&["--tray"]), false).is_empty(),
@@ -2955,8 +3088,8 @@ mod tests {
     }
 
     /// P182：这一族由两枚变四枚，而那一族拒绝读的是 [`FILE_COMMANDS`] 这一张名单而不是四条
-    /// `if`。这一格钉三件事：**枚数**（多一枚少一枚都要先改这条再改码，与 [`EXIT_DOORS`] 那五枚
-    /// 同一条规矩）、**每一档单独点名自己**（少一份档时那句里得写在场的那一枚，不能替没被点的
+    /// `if`。这一格钉三件事：**枚数**（多一枚少一枚都要先改这条再改码，与 [`EXIT_DOORS`] 那一族的
+    /// `EXIT_DOORS.len()` 断言同一条规矩）、**每一档单独点名自己**（少一份档时那句里得写在场的那一枚，不能替没被点的
     /// 同族说话），以及**任何两档并列只拒一句、双方都在句里**。上一格测的是 §5.20.3 那两枚之间
     /// 的组合；跨族的那两对（`--export-config` 与 `--import-palette`）此前不存在，本轮起它是一句
     /// 写错的调用，而写错的调用必须被拦在盘之前。
@@ -3037,5 +3170,59 @@ mod tests {
             cli_pinned_line(8, said),
             "换一枚 id 句子不动，等于没说"
         );
+    }
+
+    /// `[advanced] cli_enabled` 的读者只有一处（[`cli_gate`]），而它判的是同一份
+    /// [`cli::Decision`] 在两拨法下的两样答案：开着 ⇒ `None`（命令行照旧替人干活），关着 ⇒
+    /// 一句点名这枚键的拒绝。**闸的位置本身**（排在 `enable_region_store` 之前、退出码取
+    /// [`cli::EXIT_FAIL`] 而不是 0）写在 [`cli_gate`] 头顶与 `main` 那一行，`fn main` 对
+    /// `cargo test` 不可见（§10 第 40 项 ③），所以这里判的是分岔本体而不是那一行调用。
+    ///
+    /// 另外三格是「闸只闸 §5.17 那一臂」的证人：`NotCli`（出厂默认是 `false`，而本仓库
+    /// `--selftest`、十九扇量具门、`--export-config` 那四档、常驻应用与 `--snap` 那一族走的
+    /// 都是 `NotCli` —— 闸到它们等于关掉整台机器）、`Help` 与 `Error`（§5.17 规则 2 与 §5.21.2
+    /// 要文档与用法拒绝在场，关着的键不许把它们藏起来）在关着时也一律放行。
+    ///
+    /// 最后一格管 #453：三种失败三句话。「键说不要」（这里）、「参数读不懂」（`classify` 的
+    /// `Error`，退 3）、「这台机器截不出来」（抓屏那一路的「截图失败」，退 1）两两不重合。
+    #[test]
+    fn the_cli_switch_gates_only_the_capture_arm() {
+        use super::cli::{Decision, Output, Select};
+        let run = Decision::Run {
+            select: Select::Region(falcon_core::geometry::PhysRect::new(1, 2, 3, 4)),
+            output: Output::File("out.png".into()),
+        };
+        assert!(
+            cli_gate(true, &run).is_none(),
+            "开着 ⇒ 命令行这一路字节零改变"
+        );
+        let refused = cli_gate(false, &run).expect("关着 ⇒ 一句可读的拒绝，不是静默退 0");
+        assert!(
+            refused.contains("cli_enabled"),
+            "拒绝必须点名是哪枚键挡下的：{refused:?}"
+        );
+        assert!(refused.contains("§5.17"), "也得说清挡的是哪一路：{refused:?}");
+
+        // 其余三臂在关着时原样放行：这枚键管的是「命令行替不替人截图」，不是这台机器还剩什么。
+        for other in [
+            Decision::NotCli,
+            Decision::Help,
+            Decision::Error("参数读不懂".into()),
+        ] {
+            assert!(
+                cli_gate(false, &other).is_none(),
+                "{other:?} 被这枚键挡住了：出厂默认 `false` 会让那条路整个失灵"
+            );
+        }
+
+        // #453：三种失败三句话。第二句现取 `classify` 真交回的那一句，不抄写。
+        let usage = cli::classify(&argv(&["--last", "--mask"]), &["--mask"]);
+        let usage_said = match usage {
+            Decision::Error(msg) => msg,
+            other => panic!("`--last --mask` 该被语法拒掉，交回的是 {other:?}"),
+        };
+        assert_ne!(refused, usage_said, "「键说不要」与「参数读不懂」不能是同一句");
+        assert!(!refused.contains("量具档"), "拒绝说的是开关，不是并列的旗标");
+        assert!(!refused.contains("截图失败"), "拒绝说的不是这台机器抓不出图");
     }
 }
