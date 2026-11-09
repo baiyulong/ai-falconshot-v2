@@ -11,14 +11,14 @@
 #include <QtQuick/QQuickImageProvider>
 #include <QtQuick/QQuickWindow>
 
-// The product's thin C++ shim (plan §3.6). Everything here is unreachable from
-// Rust otherwise: QSurfaceFormat, QWindow::winId, the Win32 extended styles and
-// the QQuickImageProvider subclass. The M0 spike (spike/hello-cxxqt) proved this
+// The product's thin C++ shim - and a shim is mandatory, because everything here
+// is unreachable from Rust otherwise: QSurfaceFormat, QWindow::winId, the Win32
+// extended styles and the QQuickImageProvider subclass. The M0 spike (spike/hello-cxxqt) proved this
 // exact route against Qt 6.10.1 msvc2022_64, so nothing new is being attempted
 // here - only the spike's harness turned into the thing it was measuring.
 //
 // Pixels travel one way: Rust renders a pin through falcon_core::pin, encodes it
-// with the `image` crate (plan §3.3 bans QImage::save for product bitmaps) and
+// with the `image` crate (this repo bans QImage::save for product bitmaps) and
 // hands the PNG over. Qt only ever *decodes*.
 
 class QScreen;
@@ -51,7 +51,7 @@ QString pinSelfCheck(std::int64_t id);
 /// negative id is not addressable through the provider and a mask - which has no
 /// id at all - cannot share the pin store. Two maps, one lookup order.
 ///
-/// Raw rather than PNG-encoded because §3.3's rule is about *product bitmaps*
+/// Raw rather than PNG-encoded because the QImage::save ban is about *product bitmaps*
 /// (files, clipboard), and this is a texture crossing from one module to another
 /// inside one process. Encoding 3072x1920 to PNG and back to feed the GPU is pure
 /// cost on the path the 150 ms promise is about.
@@ -95,7 +95,7 @@ double pinDevicePixelRatio();
 /// id and no offset, returned as raw RGBA8. This is the fourth leg of the R13
 /// matrix - the one that asks Qt's own backend rather than Win32 - and it is
 /// decode-only in both directions: the bytes leave here as pixels, never as an
-/// encoded product bitmap (plan §3.3).
+/// encoded product bitmap - the QImage::save ban reaches this far, too.
 QByteArray pinScreenGrab();
 /// What that grab actually produced, as `WxH dpr=R`. The size is reported rather
 /// than assumed because the same call answers in logical pixels on some backends
@@ -121,7 +121,7 @@ QString pinTopLevels();
 QString pinDialogRect();
 
 /// Click the *default button* of the native file dialog this process is showing,
-/// and report what was clicked. §10 第 38 项 ① is the reason: until now the gauge
+/// and report what was clicked. The reason is a hole in the gauge: until now it
 /// called `accept()` on the dialog, which proves Qt can complete a dialog but not
 /// that the dialog was ever on the screen - a `BM_CLICK` on the real 保存 button is
 /// the same message the shell's own button sends, so `accepted` arrives through the

@@ -36,7 +36,7 @@ use falcon_core::config::{
 };
 
 /// 页顶那排标签的**唯一**来源。前十一枚是 §5.20.1 那一列数字（1 常规 … 11 关于与更新），
-/// 逐字逐序照抄；第十二枚「托盘」是 §5.18.2 第一步（PRD 第 1,448 行）要的那一格，放在
+/// 逐字逐序照抄；第十二枚「托盘」是 §5.18.2 操作步骤 步骤 1 要的那一格，放在
 /// 「快捷键」与「热区」之间，其余十一枚的相对次序一枚没动。
 ///
 /// 每类后面跟的是 `Config` 的**段名**而不是点分前缀：一枚键归哪一类，问的是它头一段叫什么
@@ -48,14 +48,14 @@ use falcon_core::config::{
 /// 没点过的名字 —— 能归进去的就不另开。
 ///
 /// `tray` **不**归进「快捷键」了，这一处自 P178 起改了读法，改的原因写在下面，不是随手：
-/// §5.18.2 第一步（PRD 第 1,448 行）写的是「用户打开“首选项 > 托盘”。」，而 P142 起这一档把
+/// §5.18.2 操作步骤 步骤 1 写的是「用户打开“首选项 > 托盘”。」，而 P142 起这一档把
 /// 四枚 `tray.*` 挂到了「快捷键」那一页上，理由是「§5.20.1 那十一类里没有托盘，两处不能同时
-/// 字面满足」。那次取舍读错了轻重：§5.20.1 的原话是「**建议**设置页包含：1. 常规 … 11. 关于与
-/// 更新。」（PRD 第 1,505–1,517 行）—— 它给的是一份**下限名单**，十一类一枚不许少、次序不许乱，
+/// 字面满足」。那次取舍读错了轻重：§5.20.1 整节那句原话「建议设置页包含：」后面跟着十一枚编号
+/// —— 它给的是一份**下限名单**，十一类一枚不许少、次序不许乱，
 /// 但没有一处说「只有这十一类」；§5.18.2 那一行则是规范性步骤的第一步，真人今天照着它走第一步就
 /// 走不下去（页上没有「托盘」这一格可点）。所以下限名单照旧逐字逐序全在，另加第十二类
 /// 「托盘」，两处第一次同时字面满足。代价是类号往后挪了一格，故 [`CORNER`] 是常量而不是 `6`：
-/// 「首选项 > 热区」（PRD 第 1,328 行）指的还是同一页。
+/// 「首选项 > 热区」（§5.15 操作步骤 步骤 1）指的还是同一页。
 ///
 /// `whiteboard` 归进「截图」是上面 `card` 那一条的同一个理由，且它比 `card` 更没有悬念：§5.4.4
 /// 第一步写的就是"从截图工具栏进入白板模式"，那一块板子是一张**像素由做而非抓出来的截图**，两枚
@@ -85,7 +85,7 @@ pub const CATEGORIES: [(&str, &[&str]); 12] = [
 
 /// 「关于与更新」那一页在 [`CATEGORIES`] 里的**名字**，唯一作者就是名单第 12 行自己：写成一枚
 /// 具名常量，是为了让页脚那一块（[`update_words`]）与单测问的是同一个问题——「哪一页递更新那两枚
-/// 钮」——而不是各自数一遍「第 11 类」。[`CORNER`] / [`TRAY_PAGE`] 记的是「第几类叫什么」，这一枚
+/// 钮」——而不是各自数一遍「第 11 类」。[`CORNER`] / `TRAY_PAGE` 记的是「第几类叫什么」，这一枚
 /// 记的是反过来的那一问；两处若有一天分家，红的是名单，不是窗上的一个下标。
 pub const ABOUT_PAGE: &str = CATEGORIES[11].0;
 
@@ -94,14 +94,32 @@ pub const ABOUT_PAGE: &str = CATEGORIES[11].0;
 /// 动一处的证据。
 pub const CORNER: usize = 7;
 
-/// §5.18.2 那一页在名单里的类号，与 [`CORNER`] 同一个理由：页上的行、门里的那格、单测里的断言
-/// 问的是同一件事——「托盘是第几类」。它存在的对面是 PRD 第 1,448 行那一句「用户打开“首选项 >
-/// 托盘”。」，而那一句在 P178 之前是走不下去的第一步。
+/// §5.18.2 那一页在名单里的类号：页上的行与单测里的断言问的是同一件事——「托盘是第几类」。
+/// 它存在的对面是 §5.18.2 操作步骤 步骤 1 那一句
+/// 「用户打开“首选项 > 托盘”。」，而那一句在 P178 之前是走不下去的第一步。
+///
+/// **订正**：这一枚先前与 [`CORNER`] 共用一句「页上的行、门里的那格、单测里的断言」，三样里却只有
+/// 两样是真的。今天读它的三处全在本档 `mod tests` 里，逐名是
+/// `the_prd_roster_is_in_order_and_the_tray_page_is_the_only_addition`（名单上「托盘」那一项对回这个
+/// 类号）、`the_four_tray_keys_are_rows_the_gate_can_refuse`（钉下的类号要与它相等）、
+/// `the_hotkey_page_explains_every_action_row`（`rows_of` 取那一页的四枚行，接在「快捷键」那一页后面
+/// 一起问说明）；`--tray` 那一档（`tray_click_check`）问的是四枚鼠标键各跑哪一枚动作，一次也没读过
+/// 这枚类号。它的三位同族各有各的门读者 —— `CORNER` 读在本档那几趟 `rows_of` / `row_kind` 与热区那一
+/// 档的报告串上，`ANNOT_PAGE` 读在 [`arm_pal`] / [`pal_measure`]，`ABOUT_PAGE` 读在本档那几趟
+/// `index_of` 与 `update_check` / `feedback_window` 两档里 —— 只有它没有，于是挂 `#[cfg(test)]`，
+/// 并把那句许诺收窄成实际兑现的那两样（#261 不许没有证人的判决）。
+#[cfg(test)]
 pub const TRAY_PAGE: usize = 6;
 
-/// 「标注」那一页在名单里的类号，与 [`CORNER`] / [`TRAY_PAGE`] 同一个理由：§5.7.22 那一句「用户
+/// 「标注」那一页在名单里的类号，与 [`CORNER`] 同一个理由：§5.7.22 那一句「用户
 /// 打开调色板管理」在页上的落点就是这一类（那一排色与 `[annotation]` 那两枚名单键都归它），而
 /// 页上的行、门里的那格、单测里的断言问的是同一件事——「标注是第几类」。
+///
+/// 这一枚**不**跟着 `TRAY_PAGE` 挂 `#[cfg(test)]`，因为「门里的那格」在它身上是真的：门读者是
+/// [`arm_pal`]（那枚类号既拿去 `index_of` 定位页，又原样写进报告串「开在 {ANNOT_PAGE}#{page}」）
+/// 与 [`pal_measure`]（模型那一行「窗报回 {:?}；模型说 {ANNOT_PAGE}#{page} 该有 {want_page} 行」），
+/// 两位都是常驻读腿而不是本档 `mod tests` 里的证人。`TRAY_PAGE` 是三样只兑现两样的那一例，它自己
+/// 头顶记着为什么。
 pub const ANNOT_PAGE: &str = CATEGORIES[2].0;
 
 /// 这一扇窗在机器那一侧的名字 —— 顶层窗普查用来认它的那一枚。
@@ -129,6 +147,18 @@ impl Row {
     /// 不另起一行，所以「这一类几枚」这一枚读数从头到尾没有因为加说明而变过（[`page_line`]
     /// 切出来的枚数与 [`rows`] 的行数仍然一枚不多一枚不少，
     /// `the_page_hands_the_window_one_piece_per_row` 那一格盯着）。
+    ///
+    /// §7.3 条 4「平台不支持的能力应自动隐藏或明确标记不可用」在这一格上也是同一枚位置：
+    /// [`machine_word_of`] 那一枚话缀在说明与入口之后、`（需重启）` 之前 —— 它只有
+    /// [`falcon_core::config::AUTOSTART_KEY`] 一行会说，而说的内容出自**机器**（本进程问过的那
+    /// 一次），不出自档里那一枚 bool。四枚后缀各有一位作者、各答一问（#281）：`note` 答
+    /// 「这一行点名的动作叫什么、接不接得住」，`entry` 答「这一行是不是命令行的配置」，
+    /// `machine` 答「机器那一格此刻说的是什么」，`restart` 答「改完要不要重启才算」。
+    ///
+    /// **格式串里只许出现具名的一枚 `{restart}`**：`format!` 的隐式具名捕获会把同名参数再吃
+    /// 一次，于是先写一个位置空的 `{}`、再写 `{restart}` 就是把那三个字印两遍
+    /// （`the_restart_mark_is_said_once_at_the_end_of_the_row` 盯着；这一格在本轮之前正是那样，
+    /// 而全部旧断言用的都是 `contains` / `ends_with`，所以两遍也绿）。
     pub fn text(&self) -> String {
         let note = match action_of(&self.key, &self.value) {
             Some((name, desc, wired)) => format!(
@@ -141,10 +171,11 @@ impl Row {
             Some(s) => format!("{NOTE_SEP}{s}"),
             None => String::new(),
         };
+        let machine = machine_word_of(&self.key);
         let restart = if self.restart { "（需重启）" } else { "" };
         format!(
-            "{}={}{}{note}{entry}{restart}",
-            self.key, self.value, restart
+            "{}={}{note}{entry}{machine}{restart}",
+            self.key, self.value
         )
     }
 }
@@ -223,6 +254,69 @@ pub(crate) fn doc_entry_of(key: &str) -> Option<String> {
     None
 }
 
+/// §7.3 条 4「平台不支持的能力应自动隐藏或明确标记不可用」在开机自启那一行上的**头**：
+/// 说的是「本进程问过的那一次」，一个字也不说「现在 / 此刻 / 当前」。
+///
+/// 这一枚读数出自启动腿那一次 `platform_windows::autostart::inspect`（或页上拨一下之后
+/// [`machine_leg`] 那一次复读），此后用户在页外手改了 `Run` 值它也不会自己变新。措辞因此只把
+/// **被量的是哪一次**说出来，不去猜此刻机器里是什么形状（#261：判决要配得上它的证人，而这一格
+/// 的证人是一次已经过去的查询）。
+pub const MACHINE_HEAD: &str = "（本进程问过的那一次）";
+
+/// 本进程**一次也没问过**机器的那一趟页上缀的那一枚：`--selftest` 那种压根不走启动腿的走法，
+/// 或页比启动腿先画出来的那一瞬。
+///
+/// 它与「问过了、机器答的与档里一致」那一臂的空后缀长得**必须不一样**：两臂都「页上没有机器那
+/// 一句」的话，「问到了『一致』」与「压根没问」就成了同一个形状，而后者手里没有任何读数可说
+/// （#238 一枚空读数不等于一枚判过的「不在」；#433 不许拿「没问」冒充「问到了、是一致的」）。
+pub const MACHINE_UNREAD_MARK: &str = "（本进程还没问过）";
+
+/// 机器没答上来的那两臂共用的后半句：说清这一枚开关此刻凭什么显示它显示的那一头。
+///
+/// 不许省。省了，页上就只剩「没答上来」几个字，而那一枚开关照旧按档里画着 ON —— 用户读到的是
+/// 两句并排的矛盾话（「读不到」与「开着」），中间没有一句说明哪一句作数。
+const MACHINE_FILE_WORD: &str = "；这一枚开关照档里说";
+
+/// 这一行该不该缀机器那句话、缀哪一句。**纯的**：读数由调用方递进来，于是四臂全能在一台没有
+/// 注册表的机器上问到底（与 `platform_windows::autostart::inspect_with` 把纯判据从 Windows
+/// 那条腿上拆下来是同一枚手法）。
+///
+/// 四臂里只有一臂交回空串，而那一臂是「机器答上来了、答的与档里那一枚是同一件事」：此时行尾
+/// 一句也不多缀，那枚开关自己就是读数，再缀一句「机器说：一致」就是同一句话有第二个作者
+/// （#281）。另外三臂都必须出声，一句也不许折进那一臂里去。
+fn machine_word(read: &Option<crate::settings::MachineRead>) -> String {
+    use crate::settings::MachineRead;
+    match read {
+        Some(MachineRead::Agrees) => String::new(),
+        // 原文一个字也不丢：用户要知道的正是「登录时会被启动的那一个 falconshot 是哪一个」，
+        // 而这件事只有这一串路径答得出来（`Held::Elsewhere` 自己那句「不许在这里就丢掉它」）。
+        Some(MachineRead::Elsewhere(command)) => {
+            format!("{NOTE_SEP}启动项{MACHINE_HEAD}指向别处：{command}")
+        }
+        Some(MachineRead::NoAnswer(why)) => {
+            format!("{NOTE_SEP}启动项{MACHINE_HEAD}没答上来：{why}{MACHINE_FILE_WORD}")
+        }
+        None => format!("{NOTE_SEP}启动项{MACHINE_UNREAD_MARK}{MACHINE_FILE_WORD}"),
+    }
+}
+
+/// **哪一行**该去问那一格缓存：只有 [`AUTOSTART_KEY`] 那一行。与 [`action_of`] /
+/// [`doc_entry_of`] 同一枚分工 —— 那两枚答「哪一行该有说明 / 该递入口」，这一枚答「哪一行该说
+/// 机器的话」。
+///
+/// 认的是键名而不是「这一行是不是开关」：页上开关有十几枚，只有这一枚的对面长在 HKCU 里，
+/// 给每一枚开关都缀一句「机器说」就是十几行谁也没被问过的噪音。
+///
+/// 读数取自 [`crate::settings::machine_read`] 那一格缓存，**不在这里现开注册表**：本函数长在
+/// [`Row::text`] 里，而 `Row::text` 长在 QML 的模型腿上（[`page_line`] 一次拼一整页），
+/// 每画一行开一趟 HKCU 就是把一次重绘换成一次系统调用风暴。
+fn machine_word_of(key: &str) -> String {
+    if key != AUTOSTART_KEY {
+        return String::new();
+    }
+    machine_word(&crate::settings::machine_read())
+}
+
 /// 一枚键归哪几类：**全部**命中而不是第一枚命中。
 ///
 /// 空与多是两件事。空 = 设置页上没有这一行，用户永远看不见它（§5.20.1 的分类就成了假名单）；
@@ -248,7 +342,8 @@ pub fn index_of(name: &str) -> Option<usize> {
 /// 让引导那一块整个消失，是同一形状）。
 ///
 /// 这里只答「哪一页递」，两枚字一个也不在这里起：检查那一枚是 [`falcon_core::update::TRAY_WORD`]
-/// （§5.18.1 第 1,441 行菜单项的同一名单源），下载那一枚是 [`falcon_core::update::DOWNLOAD_WORD`]。
+/// （§5.18.1「菜单建议」那一列的第 9 行菜单项的同一名单源），下载那一枚是
+/// [`falcon_core::update::DOWNLOAD_WORD`]。
 /// 与 [`action_of`] / [`doc_entry_of`] 只答「哪一行该有说明 / 该递入口」是同一枚分工（#281）：
 /// 窗里一旦自己写「关于与更新」或者「检查更新」，改一天名单第 12 行就成了页上写着旧字。
 pub fn update_words(which: usize) -> String {
@@ -265,7 +360,7 @@ pub fn update_words(which: usize) -> String {
 /// §5.21.3 那一块在页上要写的每一枚字：第 `which` 类该递的那一列，用 [`RECORD`] 连着交回；
 /// **不是**「关于与更新」那一页时空串 = 页上这一块压根不画。与 [`update_words`] 同一枚形状、同一枚
 /// 分工：这里只答「哪一页递哪几枚字」，字一枚也不在这里起 —— 名单唯一的作者住在
-/// [`crate::feedback_window::ON_PAGE`]（PRD 第 1694 行引起来的那一枚名是它的第一个，#455：措辞是读数）。
+/// [`crate::feedback_window::ON_PAGE`]（§5.21.3 步骤 1 引起来的那一枚名是它的第一个，#455：措辞是读数）。
 ///
 /// 它不并进 [`update_words`] 那两枚里，是因为那是两件事各有其主：§5.21.1 的检查与下载递的是**一次
 /// 查询的两端**，而反馈递的是**另一节的四步**。合成一段名单，页上就要自己数「第几枚是干什么的」，
@@ -1033,7 +1128,7 @@ fn expected_text(key: &str, asked: &str) -> String {
 }
 
 /// 下面这四条腿点的键，全在 §5.15 那一页（[`CORNER`]）上：这一档开着的是哪一页，判的就是
-/// PRD 第 1328 行那一句「用户打开"首选项 > 热区"」。键名钉在这一档而不是写在 QML 里，
+/// §5.15 步骤 1 那一句「用户打开“首选项 > 热区”」。键名钉在这一档而不是写在 QML 里，
 /// 换一枚键不必改界面，而窗照计划做的那件事仍然是真做。
 ///
 /// 值只是**候选**：`arm()` 会先问一次「这一枚键此刻是不是就是这个数」，是的话换下一个。
@@ -1919,7 +2014,7 @@ struct IoDoor {
     keys_at_arm: usize,
     /// 种完档那一刻，那份档「会盖掉哪几枚」—— 建议范围内与全部范围各一列**键名**。
     ///
-    /// 为什么必须记在开档时而不是读回时再问一次：这一档的腿里有一次是真的 `apply_import`，
+    /// 为什么必须记在开档时而不是读回时再问一次：这一档的腿里有一次是真的 `apply_changes`，
     /// 而 `preview_import` 对的是**内存里此刻的那一份**。等五条腿都跑完再来问，范围内那一枚
     /// 已经被应用成了档里带的数 —— 那一列行当场变成空，③④ 两格问的就不是「窗画对了没有」而
     /// 是「应用之后还剩什么可应用」。开档那一刻的数与窗在腿里看到的数是同一个时刻的数，所以对
@@ -1994,8 +2089,8 @@ fn io_takes_report() -> bool {
 
 /// 开档时在册：算出两份文件的路径、把导入那一份**现在就种在盘上**、记住两枚键开工时的值。
 ///
-/// 种档这一手为什么在 `arm` 而不是在腿里：§5.20.3 的步骤 3 是「用户在**其他设备**选择导入配
-/// 置」，这一台机器上没有第二台，所以这一档必须交出一份**不是本页导出的**档才能问出「会被盖掉
+/// 种档这一手为什么在 `arm` 而不是在腿里：§5.20.3 的步骤 3 是「用户在其他设备选择“导入配置”」，
+/// 这一台机器上没有第二台，所以这一档必须交出一份**不是本页导出的**档才能问出「会被盖掉
 /// 哪几枚」。那份档由活的 config 克隆出来、改两枚键、走 core 自己的 `export_text` 落盘 ——
 /// 于是页上那一列行的对面是一份真档，而不是本模块手写的三行 toml。
 ///
@@ -2010,7 +2105,21 @@ pub fn arm_io() -> String {
     let mut import_at = dir.clone();
     import_at.push(IO_IMPORT_NAME);
 
-    let live = crate::settings::with(|s| s.config.clone());
+    // 分母换过一次：`keys_at_arm` 必须是**导出那一手要写的枚数**，而导出带的是场上的分组
+    // （`config_export(.., Some(&machine_groups()))`）。`Config::flat()` 数的是整份文档，`[groups]`
+    // 那几行也算在里面，所以先在 `live` 上落一次机器的 roster，再数 —— 拿没落过的份数出来的数
+    // 去对②那一格，机器上有组时那个数注定不同（不同不是坏，是量错了东西）。
+    let mut live = crate::settings::with(|s| s.config.clone());
+    // 场上这几枚组名，这一族的写法装不下（名字里带着分隔符）。装不下就不能带，而档上的 roster
+    // 与机器上的不一致时，腿里那一趟导入会**照着档删掉真组** —— 一次测量改掉了被测的东西，
+    // 所以这一趟不开窗，而不是装作机器上没这几枚。
+    let unwriteable = live.set_roster(&crate::settings::machine_groups());
+    if !unwriteable.is_empty() {
+        return refuse_io(format!(
+            "场上这几枚组名在这份档里写不出：{} —— 带不上去的分组会让腿里那一趟删掉真组，这一趟不开窗",
+            unwriteable.join(", ")
+        ));
+    }
     let keys_at_arm = match live.flat() {
         Ok(f) => f.len(),
         Err(e) => return refuse_io(format!("活的 config 数不出键：{e}")),
@@ -2066,16 +2175,18 @@ pub fn arm_io() -> String {
 
     // 分母在此刻量，不在读回时量（#453 的那一族：0 必须能说是哪一种 0）。
     //
-    // 这一档的腿里有一次真的 `apply_import`，而 `preview_import` 比的是**内存里此刻那一份**
+    // 这一档的腿里有一次真的 `apply_changes`，而 `preview_import` 比的是**内存里此刻那一份**
     // 与档里那一份。五条腿跑完再来问，范围内那一枚已经成了档里带的数 —— 于是「将被覆盖」
     // 当场空掉，③ 那格问的就不再是「窗画对了没有」。这里走的是页在腿里走的**同一只手**
     // （`import_read` 读盘上那份档、过一次语法闸、再对内存里那一份），所以量到的就是窗将要
     // 看到的；差别只有时刻。两枚键都在这两列里该在的位置上，否则这一趟没有分母，当场拒。
-    let suggested = match crate::settings::import_read(&import_at, ImportScope::Suggested) {
+    // 两问都递 `machine = true`，与腿里那两只钮同一副口径：分组那一族的分母换了，那一列的
+    // 行就跟着换，这里量到的必须是窗将要画的那一列。
+    let suggested = match crate::settings::import_read(&import_at, ImportScope::Suggested, true) {
         Ok(r) => r,
         Err(e) => return refuse_io(format!("种完档再读它，读不出：{e}")),
     };
-    let all = match crate::settings::import_read(&import_at, ImportScope::All) {
+    let all = match crate::settings::import_read(&import_at, ImportScope::All, true) {
         Ok(r) => r,
         Err(e) => return refuse_io(format!("同一份档按全部范围读，读不出：{e}")),
     };
@@ -2144,9 +2255,14 @@ fn refuse_io(reason: String) -> String {
 ///
 /// 交回的是 [`crate::settings::config_export`] 那一整句，本档一个字也不改：页上写着「写出几枚
 /// 键到哪份档」，那句话与 `--export-config` 打在控制台上的必须是同一句。
+///
+/// 两句之中那句「带的是机器上那几枚分组」也是同一句，所以这里递的是 [`crate::settings::machine_groups`]
+/// 那一串：页上那一枚钮按下去时，用户屏幕上正摆着那些组，档里该带的就是他们看见的那一份，
+/// 而不是 `config.toml` 里那格从来没人写回过的旧次序（§5.12.3 欠的那笔，#55）。
 pub fn io_export(target: &str) -> String {
     let path = crate::save::local_path(target.trim());
-    match crate::settings::config_export(Path::new(path.as_ref())) {
+    let roster = crate::settings::machine_groups();
+    match crate::settings::config_export(Path::new(path.as_ref()), Some(&roster)) {
         Ok(line) => line,
         Err(e) => format!("[export] 失败：{e}"),
     }
@@ -2160,7 +2276,8 @@ pub fn io_export(target: &str) -> String {
 /// 分开印（同上面那一档把 `born` 与 `tick` 分开的那一个理由）。
 pub fn io_preview_line(target: &str) -> String {
     let path = crate::save::local_path(target.trim());
-    let read = match crate::settings::import_read(Path::new(path.as_ref()), ImportScope::Suggested)
+    let read =
+        match crate::settings::import_read(Path::new(path.as_ref()), ImportScope::Suggested, true)
     {
         Ok(r) => r,
         Err(e) => return format!("[import] 读不出那份档：{e}"),
@@ -2178,9 +2295,14 @@ pub fn io_preview_line(target: &str) -> String {
 ///
 /// 走的是 `config_import(…, confirm = true)` —— 与 `--import-config --confirm` 同一只手，
 /// 所以「页上点了确认」与「命令行加了 --confirm」之间不存在两套落盘码。
+///
+/// 那枚 `machine = true` 说的是真事：页按下去时屏幕上正摆着那些组，所以步骤 5 落完档要照着把
+/// roster 落到机器上（`sync_store_groups`），而命令行的进程里没有一台活机器。落不落的**条件**
+/// 两处仍是同一把尺：报给用户的那一列里有 `groups.` 行才动机器（见 `config_import`）。
 pub fn io_apply(target: &str) -> String {
     let path = crate::save::local_path(target.trim());
-    match crate::settings::config_import(Path::new(path.as_ref()), ImportScope::Suggested, true) {
+    match crate::settings::config_import(Path::new(path.as_ref()), ImportScope::Suggested, true, true)
+    {
         Ok(line) => line,
         Err(e) => format!("[import] 失败：{e}"),
     }
@@ -2324,7 +2446,7 @@ pub fn io_measure(want_ms: i32) -> (crate::state::Check, String) {
         .map(|l| l.split('|').collect())
         .unwrap_or_default();
     let drawn = pf.first().and_then(|v| v.parse::<usize>().ok());
-    let read = crate::settings::import_read(&import_at, ImportScope::Suggested);
+    let read = crate::settings::import_read(&import_at, ImportScope::Suggested, true);
     let model_rows = read.as_ref().ok().map(|r| r.changes.len());
     let preview_ok = previews.len() == 1 && drawn == Some(preview_at_arm);
     rep.row(
@@ -2356,7 +2478,7 @@ pub fn io_measure(want_ms: i32) -> (crate::state::Check, String) {
         .as_ref()
         .map(|r| r.changes.iter().map(|c| c.key.clone()).collect())
         .unwrap_or_default();
-    let all_names: Vec<String> = crate::settings::import_read(&import_at, ImportScope::All)
+    let all_names: Vec<String> = crate::settings::import_read(&import_at, ImportScope::All, true)
         .map(|r| r.changes.iter().map(|c| c.key.clone()).collect())
         .unwrap_or_default();
     let scope_ok = names_at_arm.iter().any(|k| k == PLANTED_KEY)
@@ -2446,7 +2568,7 @@ pub fn io_measure(want_ms: i32) -> (crate::state::Check, String) {
 /// 那一列行的抬头句：本档自己现读那份档、现拼那句总数（窗画的是同一句，两处都出自
 /// [`crate::settings::import_note`]，所以这一行只是把「桥那侧说的话」原样再印一次给读档的人）。
 fn io_preview_head(path: &Path) -> String {
-    match crate::settings::import_read(path, ImportScope::Suggested) {
+    match crate::settings::import_read(path, ImportScope::Suggested, true) {
         Ok(r) => {
             crate::settings::import_note(r.changes.len(), r.warnings.len(), ImportScope::Suggested)
         }
@@ -3753,8 +3875,24 @@ mod tests {
     /// 钉的落点是产品那一头 `main.rs` 也走的一个名字，不该为量具再造第二个。
     static DOOR_SERIAL: Mutex<()> = Mutex::new(());
 
-    fn door_serial() -> std::sync::MutexGuard<'static, ()> {
-        DOOR_SERIAL.lock().unwrap_or_else(PoisonError::into_inner)
+    /// 两把，不是三把：**这一档现在动的是一份全局模型**。
+    ///
+    /// io 这一趟自此读机器也写机器（`#55`：导出带的是场上的分组、确认那一步把 roster 落到场上），
+    /// 而 `group_window.rs` 那一族里两格会往全局 `PinState` 里建组、收尾时再把组删掉
+    /// （`hiding_a_group_...`、`..._snapshot_...`）。并行跑，io 那三问（开档数一次、窗那一问、
+    /// 模型这一问）就各自读到不同时刻的 roster —— 计数对不上不是判据坏了，是被别人正改着。
+    /// 借它那一枚现成的锁而不是新立一枚，同一份事实只许有一位作者（#281）。次序一律是
+    /// 「先模型的锁、后本门的锁」，而 group 那一族从不取本门的锁，所以没有环。
+    fn door_serial() -> (
+        std::sync::MutexGuard<'static, ()>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        (
+            crate::group_window::tests::SHARED
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            DOOR_SERIAL.lock().unwrap_or_else(PoisonError::into_inner),
+        )
     }
 
     #[test]
@@ -3768,6 +3906,620 @@ mod tests {
         );
         for k in keys.keys() {
             assert_eq!(owners(k).len(), 1, "{k} 归了 {:?} 类", owners(k));
+        }
+    }
+
+    /// 名册：`Config::default().flat()` 递出来的每一枚键，逐枚点名它的读者住哪一档、拿哪一句字样作证。
+    ///
+    /// 这一格钉两件事，两件**分开红**（#453）：
+    ///
+    /// 1. 名单与机器对得上 —— 三份名单合起来的键集必须**正好**是 `flat()` 那一刻递出来的键集，
+    ///    不多、不少、不重。于是往 `Config` 添一枚新键而不给它找读者，这一格立刻红；删一枚键而忘了
+    ///    划掉名单上那一行，也立刻红。
+    /// 2. 点名的读者还在 —— 每枚针都要在它点名那一档的正文里找得到（`include_str!` 拿的是整档）。
+    ///    读者被改名或删除 ⇒ 针落空 ⇒ 红的消息里带着是哪一枚键、哪一档、哪一句字样。
+    ///
+    /// 针**只是字样，不是行号**：行号会烂（#316/#455），字样不会 —— 它要么还在、要么不在。
+    /// 一枚针被几行共用是**如实**的而不是偷懒：`[tray]` 那四枚由 `hotkey::route` 一手整族现读，
+    /// `[hotkey] actions` 那九枚由 `install` 一手整表装上去，一族一只手就该一枚针；真要键没了，
+    /// 上面第 1 件事那一半会红，共用针不会漏掉它。
+    ///
+    /// 「哪一档」那一列点的是**读这一枚键值的那一档**，不是拿读出来的结果去画像素的那一档。这两者
+    /// 在本仓常常不同档，而 #60 那份名册当初把六枚记成了下游的消费者（`drop_replaces_current`、
+    /// `save_dir`、`naming_template`、`naming_prefix`、`format`、`jpeg_quality`、`whiteboard` 那两枚），
+    /// 逐枚重量之后订正到读键值的那一档 —— 判据是「哪一档的正文里写着这一枚字段名」，量出来才算。
+    const READERS: &[(&str, &str, &str)] = &[
+        // [general]
+        (
+            "general.launch_at_startup",
+            "qt_bridge/src/settings_view.rs",
+            // 这一枚的读者就在**本档**，而 `include_str!` 拿的是整档 —— 名单上那一行字面自己也算
+            // 一处出现，于是针必须**拼**出来，否则它永真（同一手见 `mask_view.rs` 那族名册）。
+            concat!("autostart", "::sync"),
+        ),
+        ("general.show_tray", "qt_bridge/src/hotkey.rs", "show_tray"),
+        // [capture]
+        ("capture.default_mode", "qt_bridge/src/mask.rs", "default_mode"),
+        (
+            "capture.include_cursor",
+            "qt_bridge/src/capture.rs",
+            "include_cursor",
+        ),
+        ("capture.freeze_frame", "qt_bridge/src/mask.rs", "freeze_frame"),
+        (
+            "capture.highlight_element",
+            "qt_bridge/src/mask.rs",
+            "highlight_element",
+        ),
+        (
+            "capture.magnifier_enabled",
+            "qt_bridge/src/mask.rs",
+            "magnifier_enabled",
+        ),
+        (
+            "capture.magnifier_radius",
+            "qt_bridge/src/mask.rs",
+            "magnifier_radius",
+        ),
+        (
+            "capture.magnifier_zoom",
+            "qt_bridge/src/mask.rs",
+            "magnifier_zoom",
+        ),
+        (
+            "capture.magnifier_grid",
+            "core/src/capture.rs",
+            "magnifier_grid",
+        ),
+        (
+            "capture.magnifier_coordinates",
+            "core/src/capture.rs",
+            "magnifier_coordinates",
+        ),
+        (
+            "capture.magnifier_color_format",
+            "qt_bridge/src/mask.rs",
+            "magnifier_color_format",
+        ),
+        (
+            "capture.show_dimensions",
+            "qt_bridge/src/mask.rs",
+            "show_dimensions",
+        ),
+        ("capture.size_unit", "qt_bridge/src/mask.rs", "size_unit"),
+        (
+            "capture.delay_seconds",
+            "qt_bridge/src/delay.rs",
+            "delay_seconds",
+        ),
+        (
+            "capture.snap_to_window",
+            "qt_bridge/src/mask.rs",
+            "snap_to_window",
+        ),
+        (
+            "capture.window_shadow",
+            "qt_bridge/src/capture.rs",
+            "window_shadow",
+        ),
+        (
+            "capture.window_corner",
+            "qt_bridge/src/capture.rs",
+            "window_corner",
+        ),
+        (
+            "capture.window_corner_radius",
+            "qt_bridge/src/capture.rs",
+            "window_corner_radius",
+        ),
+        // [annotation]
+        (
+            "annotation.default_tool",
+            "qt_bridge/src/annotate.rs",
+            "default_tool",
+        ),
+        (
+            "annotation.stroke_width",
+            "qt_bridge/src/annotate.rs",
+            "stroke_width",
+        ),
+        (
+            "annotation.stroke_color",
+            "qt_bridge/src/annotate.rs",
+            "stroke_color",
+        ),
+        (
+            "annotation.font_family",
+            "qt_bridge/src/annotate.rs",
+            "font_family",
+        ),
+        ("annotation.font_size", "qt_bridge/src/annotate.rs", "font_size"),
+        (
+            "annotation.blur_radius",
+            "qt_bridge/src/annotate.rs",
+            "blur_radius",
+        ),
+        (
+            "annotation.palette",
+            "qt_bridge/src/mask_view.rs",
+            "band_colors",
+        ),
+        (
+            "annotation.undo_limit",
+            "qt_bridge/src/annotate.rs",
+            "undo_limit",
+        ),
+        (
+            "annotation.undo_merge_ms",
+            "qt_bridge/src/annotate.rs",
+            "undo_merge_ms",
+        ),
+        // [pin]
+        ("pin.default_zoom", "core/src/pin.rs", "default_zoom"),
+        ("pin.default_opacity", "core/src/pin.rs", "default_opacity"),
+        ("pin.default_topmost", "core/src/pin.rs", "default_topmost"),
+        (
+            "pin.default_click_through",
+            "core/src/pin.rs",
+            "default_click_through",
+        ),
+        ("pin.alpha_bg", "core/src/pin.rs", "alpha_bg"),
+        (
+            "pin.wheel_resizes",
+            "qt_bridge/src/pin_view.rs",
+            "wheel_resizes",
+        ),
+        (
+            "pin.state_save_seconds",
+            "qt_bridge/src/state.rs",
+            "state_save_seconds",
+        ),
+        ("pin.solo_dim_opacity", "core/src/pin.rs", "solo_dim_opacity"),
+        (
+            "pin.thumb_fixed_width",
+            "core/src/pin.rs",
+            "thumb_fixed_width",
+        ),
+        (
+            "pin.thumb_fixed_height",
+            "core/src/pin.rs",
+            "thumb_fixed_height",
+        ),
+        (
+            "pin.drop_replaces_current",
+            "qt_bridge/src/settings.rs",
+            "drop_replaces_current",
+        ),
+        // [card]
+        ("card.width", "qt_bridge/src/state.rs", "card.width"),
+        ("card.font_size", "qt_bridge/src/state.rs", "card.font_size"),
+        ("card.font_family", "qt_bridge/src/state.rs", "card.font_family"),
+        ("card.background", "qt_bridge/src/state.rs", "card.background"),
+        // [groups]
+        (
+            "groups.entries",
+            "qt_bridge/src/settings.rs",
+            "sync_store_groups",
+        ),
+        // [output]
+        ("output.auto_copy", "qt_bridge/src/mask.rs", "auto_copy"),
+        ("output.auto_save", "qt_bridge/src/mask.rs", "auto_save"),
+        ("output.save_dir", "qt_bridge/src/settings.rs", "o.save_dir"),
+        (
+            "output.format",
+            "qt_bridge/src/settings.rs",
+            "config.output.format",
+        ),
+        (
+            "output.jpeg_quality",
+            "qt_bridge/src/settings.rs",
+            "config.output.jpeg_quality",
+        ),
+        (
+            "output.naming_template",
+            "qt_bridge/src/settings.rs",
+            "o.naming_template",
+        ),
+        (
+            "output.naming_prefix",
+            "qt_bridge/src/settings.rs",
+            "o.naming_prefix",
+        ),
+        ("output.collision", "core/src/naming.rs", "collision"),
+        (
+            "output.corner_radius",
+            "core/src/imageops.rs",
+            "corner_radius",
+        ),
+        (
+            "output.shadow_size",
+            "core/src/imageops.rs",
+            "shadow_size",
+        ),
+        (
+            "output.corner_fill",
+            "core/src/imageops.rs",
+            "corner_fill",
+        ),
+        (
+            "output.border_width",
+            "core/src/imageops.rs",
+            "border_width",
+        ),
+        (
+            "output.border_color",
+            "core/src/imageops.rs",
+            "border_color",
+        ),
+        (
+            "output.shadow_strength",
+            "core/src/imageops.rs",
+            "shadow_strength",
+        ),
+        (
+            "output.reveal_after_save",
+            "qt_bridge/src/mask.rs",
+            "reveal_after_save",
+        ),
+        (
+            "output.hide_pins_on_dialog",
+            "qt_bridge/src/session.rs",
+            "hide_pins_on_dialog",
+        ),
+        (
+            "output.share_targets",
+            "qt_bridge/src/mask_view.rs",
+            "pipeline_share_targets",
+        ),
+        (
+            "output.send_to_apps",
+            "qt_bridge/src/mask.rs",
+            "send_to_apps",
+        ),
+        (
+            "output.reuse_last_file",
+            "qt_bridge/src/mask.rs",
+            "reuse_last_file",
+        ),
+        ("output.copy_as_file", "qt_bridge/src/mask.rs", "copy_as_file"),
+        // [hotkey] —— 九枚绑定由 `install` 一手整表装上去，所以针是名册里那个动作名本身
+        ("hotkey.actions.capture", "qt_bridge/src/hotkey.rs", "\"capture\""),
+        (
+            "hotkey.actions.capture_custom",
+            "qt_bridge/src/hotkey.rs",
+            "\"capture_custom\"",
+        ),
+        (
+            "hotkey.actions.capture_repeat",
+            "qt_bridge/src/hotkey.rs",
+            "\"capture_repeat\"",
+        ),
+        (
+            "hotkey.actions.capture_active_window",
+            "qt_bridge/src/hotkey.rs",
+            "\"capture_active_window\"",
+        ),
+        (
+            "hotkey.actions.paste_pin",
+            "qt_bridge/src/hotkey.rs",
+            "\"paste_pin\"",
+        ),
+        (
+            "hotkey.actions.toggle_pins",
+            "qt_bridge/src/hotkey.rs",
+            "\"toggle_pins\"",
+        ),
+        (
+            "hotkey.actions.switch_group",
+            "qt_bridge/src/hotkey.rs",
+            "\"switch_group\"",
+        ),
+        ("hotkey.actions.solo", "qt_bridge/src/hotkey.rs", "\"solo\""),
+        (
+            "hotkey.actions.pin_edit",
+            "qt_bridge/src/hotkey.rs",
+            "\"pin_edit\"",
+        ),
+        ("hotkey.exclusions", "qt_bridge/src/hotkey.rs", "is_suppressed"),
+        ("hotkey.command", "qt_bridge/src/hotkey.rs", "run_custom_task"),
+        // [hot_corner]
+        ("hot_corner.enabled", "core/src/hotcorner.rs", "enabled"),
+        (
+            "hot_corner.corners.top_left",
+            "core/src/hotcorner.rs",
+            "top_left",
+        ),
+        (
+            "hot_corner.corners.top_right",
+            "core/src/hotcorner.rs",
+            "top_right",
+        ),
+        (
+            "hot_corner.corners.bottom_left",
+            "core/src/hotcorner.rs",
+            "bottom_left",
+        ),
+        (
+            "hot_corner.corners.bottom_right",
+            "core/src/hotcorner.rs",
+            "bottom_right",
+        ),
+        (
+            "hot_corner.trigger_dip",
+            "core/src/hotcorner.rs",
+            "trigger_dip",
+        ),
+        ("hot_corner.dwell_ms", "core/src/hotcorner.rs", "dwell_ms"),
+        (
+            "hot_corner.require_ctrl",
+            "core/src/hotcorner.rs",
+            "require_ctrl",
+        ),
+        (
+            "hot_corner.require_shift",
+            "core/src/hotcorner.rs",
+            "require_shift",
+        ),
+        (
+            "hot_corner.repeat_guard_ms",
+            "core/src/hotcorner.rs",
+            "repeat_guard_ms",
+        ),
+        (
+            "hot_corner.pause_on_fullscreen",
+            "qt_bridge/src/hot_corner.rs",
+            "pause_on_fullscreen",
+        ),
+        // [appearance]
+        (
+            "appearance.theme",
+            "qt_bridge/src/settings.rs",
+            "startup_theme_face",
+        ),
+        ("appearance.accent", "qt_bridge/src/settings.rs", "accent_face"),
+        (
+            "appearance.toolbar_placement",
+            "qt_bridge/src/settings.rs",
+            "toolbar_placement_face",
+        ),
+        (
+            "appearance.ui_font_size",
+            "qt_bridge/src/settings.rs",
+            "ui_font_size",
+        ),
+        (
+            "appearance.ui_font_family",
+            "qt_bridge/src/settings.rs",
+            "ui_font_family",
+        ),
+        (
+            "appearance.magnifier_border",
+            "qt_bridge/src/mask.rs",
+            "magnifier_border",
+        ),
+        (
+            "appearance.magnifier_corner_radius",
+            "qt_bridge/src/mask.rs",
+            "magnifier_corner_radius",
+        ),
+        (
+            "appearance.magnifier_foreground",
+            "qt_bridge/src/mask.rs",
+            "magnifier_foreground",
+        ),
+        (
+            "appearance.magnifier_background",
+            "qt_bridge/src/mask.rs",
+            "magnifier_background",
+        ),
+        // [tray] —— 四枚由 `route` 的 `Event::Tray` 那一臂一手整族现读（`tray_cfg().entries()`）
+        ("tray.left", "qt_bridge/src/hotkey.rs", "tray_cfg()"),
+        ("tray.double", "qt_bridge/src/hotkey.rs", "tray_cfg()"),
+        ("tray.middle", "qt_bridge/src/hotkey.rs", "tray_cfg()"),
+        ("tray.right", "qt_bridge/src/hotkey.rs", "tray_cfg()"),
+        // [history]
+        (
+            "history.enabled",
+            "qt_bridge/src/settings.rs",
+            "history_open_in",
+        ),
+        ("history.save_all", "qt_bridge/src/mask.rs", "save_all"),
+        ("history.max_items", "core/src/history.rs", "max_items"),
+        (
+            "history.max_age_days",
+            "core/src/history.rs",
+            "max_age_days",
+        ),
+        ("history.max_size_mb", "core/src/history.rs", "max_size_mb"),
+        (
+            "history.keep_originals",
+            "core/src/history.rs",
+            "keep_originals",
+        ),
+        ("history.thumb_px", "core/src/history.rs", "thumb_px"),
+        (
+            "history.exempt_locked",
+            "core/src/history.rs",
+            "exempt_locked",
+        ),
+        // [advanced]
+        ("advanced.cli_enabled", "qt_bridge/src/main.rs", "cli_enabled"),
+        (
+            "advanced.data_dir",
+            "qt_bridge/src/settings.rs",
+            "history_data_dir",
+        ),
+        (
+            "advanced.recognize_text",
+            "qt_bridge/src/mask.rs",
+            "recognize_text",
+        ),
+        (
+            "advanced.crash_recovery",
+            "qt_bridge/src/state.rs",
+            "crash_recovery",
+        ),
+        (
+            "advanced.privacy_no_temp_files",
+            "qt_bridge/src/mask.rs",
+            "privacy_no_temp_files",
+        ),
+        // [about]
+        (
+            "about.auto_check_updates",
+            "qt_bridge/src/update_auto.rs",
+            "auto_check_updates",
+        ),
+        (
+            "about.check_every_days",
+            "qt_bridge/src/session.rs",
+            "check_every_days",
+        ),
+        ("about.channel", "qt_bridge/src/session.rs", "about_keys"),
+        (
+            "about.release_feed",
+            "qt_bridge/src/session.rs",
+            "release_feed",
+        ),
+        (
+            "about.send_diagnostics",
+            "qt_bridge/src/feedback_window.rs",
+            "send_diagnostics",
+        ),
+        (
+            "about.feedback_channel",
+            "qt_bridge/src/feedback_window.rs",
+            "channel_leg",
+        ),
+        // [whiteboard]
+        (
+            "whiteboard.background",
+            "core/src/config.rs",
+            "parse(&self.background)",
+        ),
+        (
+            "whiteboard.size",
+            "core/src/config.rs",
+            "parse(&self.size)",
+        ),
+    ];
+
+    /// 只把值念回去、没有任何一只手据它分岔的那一枚。单列一份，免得它混进有读者的名单里冒充。
+    /// `log_level` 今天的读者只有开机横幅那一处：它把这一格的字**印**出来，不据它改任何行为
+    /// （这一版没有日志文件）。哪一天真的开了日志，把它挪进 [`READERS`] 并换一枚针。
+    const RECITAL: &[(&str, &str, &str)] = &[(
+        "advanced.log_level",
+        "qt_bridge/src/settings.rs",
+        "format_startup_banner",
+    )];
+
+    /// 页上有一行、场上没人读的那三枚。留着是**有意**的，理由就写在第二列；改判之前先读它。
+    const NO_READER: &[(&str, &str)] = &[
+        (
+            "general.close_to_tray",
+            "关窗收进托盘那一道拦截还没做（`settings.rs` 自己承认这一格待做）：页照旧存这一枚，存完没有人问它",
+        ),
+        (
+            "general.language",
+            "多语言加载还没做；这一枚是 RESTART_EVIDENCE 名单里唯一把读者记成 None 的，并由 core 那一格单测钉住",
+        ),
+        (
+            "annotation.palette_schemes",
+            "只服务设置窗那台配色方案编辑器：挑一套方案写出去的是 annotation.palette，这一枚自己没有人读",
+        ),
+    ];
+
+    /// 针要在里面找的正文。名字用相对 `crates/` 的路径，因为 `capture.rs` 两头各有一档。
+    const SRCS: &[(&str, &str)] = &[
+        ("qt_bridge/src/annotate.rs", include_str!("annotate.rs")),
+        ("qt_bridge/src/capture.rs", include_str!("capture.rs")),
+        ("qt_bridge/src/delay.rs", include_str!("delay.rs")),
+        (
+            "qt_bridge/src/feedback_window.rs",
+            include_str!("feedback_window.rs"),
+        ),
+        ("qt_bridge/src/hot_corner.rs", include_str!("hot_corner.rs")),
+        ("qt_bridge/src/hotkey.rs", include_str!("hotkey.rs")),
+        ("qt_bridge/src/main.rs", include_str!("main.rs")),
+        ("qt_bridge/src/mask.rs", include_str!("mask.rs")),
+        ("qt_bridge/src/mask_view.rs", include_str!("mask_view.rs")),
+        ("qt_bridge/src/pin_view.rs", include_str!("pin_view.rs")),
+        ("qt_bridge/src/session.rs", include_str!("session.rs")),
+        ("qt_bridge/src/settings.rs", include_str!("settings.rs")),
+        (
+            "qt_bridge/src/settings_view.rs",
+            include_str!("settings_view.rs"),
+        ),
+        ("qt_bridge/src/state.rs", include_str!("state.rs")),
+        ("qt_bridge/src/update_auto.rs", include_str!("update_auto.rs")),
+        ("core/src/capture.rs", include_str!("../../core/src/capture.rs")),
+        ("core/src/config.rs", include_str!("../../core/src/config.rs")),
+        ("core/src/history.rs", include_str!("../../core/src/history.rs")),
+        (
+            "core/src/hotcorner.rs",
+            include_str!("../../core/src/hotcorner.rs"),
+        ),
+        ("core/src/imageops.rs", include_str!("../../core/src/imageops.rs")),
+        ("core/src/naming.rs", include_str!("../../core/src/naming.rs")),
+        ("core/src/pin.rs", include_str!("../../core/src/pin.rs")),
+    ];
+
+    #[test]
+    fn every_default_key_names_its_reader_or_its_excuse() {
+        fn src(name: &str) -> &'static str {
+            SRCS.iter()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("SRCS 里没有 {name} 这一档，针无处可找"))
+                .1
+        }
+
+        let flat = Config::default().flat().unwrap();
+
+        let mut declared: std::collections::BTreeMap<&str, usize> = Default::default();
+        for (k, _, _) in READERS.iter().chain(RECITAL.iter()) {
+            *declared.entry(k).or_default() += 1;
+        }
+        for (k, _) in NO_READER {
+            *declared.entry(k).or_default() += 1;
+        }
+
+        let dupes: Vec<&str> = declared
+            .iter()
+            .filter(|(_, n)| **n > 1)
+            .map(|(k, _)| *k)
+            .collect();
+        assert!(dupes.is_empty(), "名单上这几枚键写了不止一行：{dupes:?}");
+
+        let missing: Vec<&str> = flat
+            .keys()
+            .map(|k| k.as_str())
+            .filter(|k| !declared.contains_key(*k))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "这几枚键名单上没有：添了键就得给它找一位读者，或者写进 NO_READER 并给出理由 {missing:?}"
+        );
+
+        let extra: Vec<&str> = declared
+            .keys()
+            .map(|k| *k)
+            .filter(|k| !flat.contains_key(*k))
+            .collect();
+        assert!(
+            extra.is_empty(),
+            "名单上这几枚键 flat() 已经不递了：键删了就划掉那一行 {extra:?}"
+        );
+
+        assert_eq!(flat.len(), 124, "出厂默认递出来的键数不是那一百二十四枚");
+        assert_eq!(READERS.len(), 120, "有读者的键数不是一百二十枚");
+        assert_eq!(RECITAL.len(), 1, "只念回去的键不是一枚");
+        assert_eq!(NO_READER.len(), 3, "没人读的键不是三枚");
+
+        for (k, file, needle) in READERS.iter().chain(RECITAL.iter()) {
+            assert!(
+                src(file).contains(needle),
+                "{k} 点名的读者找不到了：{file} 的正文里没有 {needle:?} 这一句字样"
+            );
         }
     }
 
@@ -3973,8 +4725,8 @@ mod tests {
         assert!(scribbled.refused.is_some(), "那一行竟然能被文本框写进去");
     }
 
-    /// 名单的下限是文档的：§5.20.1 那十一类逐字、逐序一枚不许动；第十二类「托盘」是 §5.18.2
-    /// 第一步（PRD 第 1,448 行）要的那一格，理由写在 [`CATEGORIES`] 头顶。这一格问两件事：
+    /// 名单的下限是文档的：§5.20.1 那十一类逐字、逐序一枚不许动；第十二类「托盘」是
+    /// §5.18.2 操作步骤 步骤 1 要的那一格，理由写在 [`CATEGORIES`] 头顶。这一格问两件事：
     /// 把「托盘」那一枚抽掉之后，剩下的串与文档那一列**逐字相同**（下限名单没被偷偷换掉），
     /// 以及每一枚都反查得到自己的类号（页顶那排标签与门里那一格问的是同一个次序）。
     #[test]
@@ -4219,9 +4971,9 @@ mod tests {
         assert!(rows.iter().all(|r| r.key.starts_with("hot_corner.")));
     }
 
-    /// §5.18.2 那四枚键在页上属于「托盘」那一类（PRD 第 1,448 行「用户打开“首选项 > 托盘”。」
-    /// 的那一格，P178 起真的存在；此前它们借住在「快捷键」上，那一处读法记在 [`CATEGORIES`]
-    /// 头顶的旧文里）。
+    /// §5.18.2 那四枚键在页上属于「托盘」那一类（§5.18.2 操作步骤 步骤 1
+    /// 「用户打开“首选项 > 托盘”。」的那一格，P178 起真的存在；此前它们借住在
+    /// 「快捷键」上，那一处读法记在 [`CATEGORIES`] 头顶的旧文里）。
     ///
     /// 这一格问的是页那侧的四件事：四枚真出现在**那一类**的行里、那一类里没有别人的键、它们在
     /// 页上不挂「需重启」（泵线程每次点击现问一次配置），以及**语法闸走的是页那一条腿** ——
@@ -5188,7 +5940,9 @@ mod tests {
             "范围外那一枚没真种进档里：下面那一问「全部范围含它」就没有分母"
         );
 
-        let scope = crate::settings::import_read(import_at, ImportScope::Suggested)
+        // 这里两问都递 `machine = true`，与下面 `io_preview_line` 那一问同一副口径：分组那一族的
+        // 分母不同则那一列的行也不同，模型与窗就得数出两个数。
+        let scope = crate::settings::import_read(import_at, ImportScope::Suggested, true)
             .unwrap_or_else(|e| panic!("建议范围内读不出那份档：{e}"));
         let names: Vec<&str> = scope.changes.iter().map(|c| c.key.as_str()).collect();
         assert!(
@@ -5199,7 +5953,7 @@ mod tests {
             !names.contains(&STRAY_KEY),
             "范围外的 {STRAY_KEY} 混进了建议范围：{names:?}"
         );
-        let all = crate::settings::import_read(import_at, ImportScope::All)
+        let all = crate::settings::import_read(import_at, ImportScope::All, true)
             .unwrap_or_else(|e| panic!("全部范围读不出那份档：{e}"));
         let all_names: Vec<&str> = all.changes.iter().map(|c| c.key.as_str()).collect();
         assert!(
@@ -5290,6 +6044,10 @@ mod tests {
         // 于是拿读回时那一问判 ④，「范围外不含 STRAY」会以「没得可含」的姿态假绿（#433）。
         // 这里用的是本地克隆：活的 config 与它的落盘次数一次也没被碰。
         let mut post = crate::settings::with(|s| s.config.clone());
+        // 分母与 `arm_io` 同一只手：分组那一族比的是**场上的名册**，不是内存里那格没人写回过的
+        // 旧次序（#55）。少了这一行，本机场上那几枚组就当场成了「档里新添的」，这一问绿不掉
+        // —— 而它问的本来是「时刻」，不是「分组比错了东西」。
+        post.set_roster(&crate::settings::machine_groups());
         let w = write_into(&mut post, PLANTED_KEY, &to);
         assert!(
             w.refused.is_none(),

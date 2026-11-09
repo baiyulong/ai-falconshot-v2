@@ -66,7 +66,13 @@ fn pinned_path() -> PathBuf {
 }
 
 /// `Settings::line()` 里那两个字段：读的是哪份、写的是哪份。
-fn read_and_write() -> (String, String) {
+///
+/// `pub(crate)` 是因为「怎么从那一行里认出这两个字段」只能有一处作者（#281）：`--mask` 与
+/// `--live` 两档也各钉一枚写回落点、也各欠同一格判据，抄第二份解析就是把同一条读法拆成迟早分家
+/// 的两处。它读的是 `line()` 印出来的那一行而不是 `Settings` 的字段本身，所以路径里有空格时这条
+/// 读法会断 —— 本仓三档钉的那几枚落点都在 `%TEMP%` 下、用户名里没有空格，而这句话在下面每一格
+/// 的 detail 里都跟着印一遍，好让断的那一天红在自己身上而不是替产品说话。
+pub(crate) fn read_and_write() -> (String, String) {
     let line = crate::settings::with(|s| s.line());
     let field = |name: &str| {
         line.split_whitespace()
@@ -111,8 +117,8 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     // `save_out`（另存为那一腿），于是两格当场红了：文件确实写成了、产品也说了"已保存到
     // …"，可 `landed` 仍是 `None`、两个计数一动不动。那两句红说的是腿而不是产品 ——
     // 通知上那一次点击读的只有 `landed`，而填它的那一步整个产品里只有快速保存有（`mask.rs`
-    // 里 `self.landed = Some(…)` 坐在 `quick_out` 内），所以 PRD 492 那句"可点击"必须
-    // 对着 `quick_out` 问，对着别的腿问出来的红都是量具自己的。
+    // 里 `self.landed = Some(…)` 坐在 `quick_out` 内），所以 §5.5.4 快速保存 操作步骤 步骤 4
+    // 那句"可点击"必须对着 `quick_out` 问，对着别的腿问出来的红都是量具自己的。
     let dir = door_dir();
     let made = std::fs::create_dir_all(&dir);
     // 命名换成这一档自己的，只换目的地：`[output] save_dir` 在那份量具配置里是空的，空着

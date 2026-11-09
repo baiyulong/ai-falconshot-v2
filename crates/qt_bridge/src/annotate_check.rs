@@ -7,7 +7,7 @@
 //! why the 橡皮 rows sit outside it:
 //!
 //! * **stroke 1 and 2 are in different places**. If the second commit never reaches
-//!   the screen - plan §3.6 constraint 8, the failure P4 measured on the spike, where
+//!   the screen - the failure P4 measured on the spike, where
 //!   a texture stored under an already-requested key simply is not re-requested - the
 //!   place only stroke 2 drew stays un-inked and the row says so.
 //! * **the last stroke is undone**. A repaint that only *adds* would leave that
@@ -532,7 +532,7 @@ pub(crate) fn census_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 /// this process owns is a `#32770`. `pushed=no` is part of it because the probe *presses*
 /// what it finds - so a quick door that opened a dialog would answer `pushed=yes`, and the
 /// run would dismiss the window it had just proved it should not have opened, which is what
-/// §10 第 38 项 ①'s self-dismissal rule asks of a probe in that case.
+/// retired ledger P38①'s self-dismissal rule asks of a probe in that case.
 pub(crate) fn census_says_no_dialog(line: &str) -> bool {
     census_field(line, "dialogs=") == Some("0") && line.starts_with("pushed=no")
 }
@@ -604,7 +604,7 @@ pub fn mask_report(line: &str) {
 /// Freeze, open, draw, undo. Must run before the QML engine, for the same reason
 /// [`mask_check::open`] must: the windows must not capture the screen they cover.
 pub fn plant(shader: bool) -> Result<String, String> {
-    // §10 第 33 项 ①, paid back before the leg that owed it. This script teaches the
+    // Retired ledger P32①, paid back before the leg that owed it. This script teaches the
     // pens it is about to measure - `select_tool`, `set_color`, `set_width` below - and
     // the flow it drives ends the way the product's does, through
     // [`crate::settings::write_back`]. Without the pin, every `--ink` run leaves the
@@ -617,7 +617,7 @@ pub fn plant(shader: bool) -> Result<String, String> {
     // true, because a pin someone later deletes is a bug that writes itself once per
     // run and never reports.
     let pinned = crate::settings::pin_writes(&gauge_config());
-    mask_check::open(shader)?;
+    mask_check::open(shader, true)?;
     // §5.5.4's door takes its directory from `[output] save_dir`, and this run's settings
     // may say nothing about it - in which case §6.2's pictures folder *is* the answer, and
     // every quick save of a gauge would land in the user's own collection. §9.1 第十五条 is
@@ -646,7 +646,7 @@ pub fn plant(shader: bool) -> Result<String, String> {
         ),
     ];
 
-    // §10 第 38 项 ①'s *other* door. The two rows below this run already grade a 另存为
+    // Retired ledger P38①'s *other* door. The two rows below this run already grade a 另存为
     // whose file Rust named and wrote itself, which is the half of the flow that never
     // touches a dialog; what was never proved is that `AnnotationToolbar.qml`'s
     // `onAccepted` runs when a pointer-equivalent closes the real one. So the toolbar gets
@@ -992,7 +992,7 @@ fn nearer(c: [u8; 4], a: [u8; 4], b: [u8; 4]) -> bool {
 /// `usable` without ever naming it. On a dark two-display desktop that unnamed bucket
 /// collected 56 of a zoom copy's 211 samples, and the line as printed could not say so:
 /// `144/211 … 11 the other ink … 0 bare desktop` leaves the reader to subtract and
-/// wonder (the P22 run, recorded in 计划 §10 第 24 项). `unexplained` is now a number
+/// wonder (the P22 run). `unexplained` is now a number
 /// the row prints, and [`Hits::examples`] prints the pixels behind the first few of
 /// them, so the count is a thing the next round can go and look at.
 #[derive(Default)]
@@ -1119,8 +1119,9 @@ impl Hits {
     }
 }
 
-/// §10 第 42 项 ②: the two ways a painting row ends up with no grade are two findings, and
-/// this round splits them into two rows because one `SKIP` word had covered both.
+/// The two ways a painting row ends up with no grade are two findings, and this round splits
+/// them into two rows because one `SKIP` word had covered both - a split the headless test
+/// `a_row_that_asked_and_a_row_the_desktop_refused_are_two_rows` pins (retired ledger P42②).
 ///
 /// A locked desktop is not the reason `ink box` went PASS→SKIP between two runs of the same
 /// binary (P39 read *better* ink on the locked run), and a leg the script never planted is
@@ -2307,12 +2308,20 @@ fn shipped_on_screen(
 ///
 /// The leg reads the user's contents before it writes anything and puts them back after,
 /// through [`crate::state::put_back`] - the same debt [`--selftest --clipboard`](crate::state)
-/// pays, in the same four branches, including the one that means "the clipboard was empty"
-/// and so has to make it empty again rather than leave the screenshot behind. A clipboard
-/// that will not open for *reading* is refused rather than written to: taking contents
-/// this gauge cannot restore is not a measurement anyone is entitled to make on someone
-/// else's desktop. The same rule covers a clipboard that holds RTF or a file list -
-/// readable, but not something this app can put back.
+/// pays, and the same one set of arms rather than a second copy of them: would-not-open,
+/// empty, image, text, html, the `CF_HDROP` list this app has no writer for, and the board
+/// that carried something of which not one leg was readable. The arm that means "the
+/// clipboard was empty" has to make it empty again rather than leave the screenshot
+/// behind - and it may only say so, because `Contents::is_empty` counts the format *names*
+/// the board carried and not just the four fields this app could read (#88). Before that
+/// field existed, a board holding nothing but `Rich Text Format` read back as empty, was
+/// wiped by that arm, and the row printed "it was empty, and is empty again" about a board
+/// nobody had looked at.
+///
+/// A clipboard that will not open for *reading* is refused rather than written to: taking
+/// contents this gauge cannot restore is not a measurement anyone is entitled to make on
+/// someone else's desktop. The same refusal covers everything
+/// [`crate::state::cannot_put_back`] names, which is where the list lives rather than here.
 ///
 /// Nothing here is compared against a stroke or a band. The claim is narrower and harder
 /// than the on-screen rows: the bytes that came back out of the clipboard are the bytes
@@ -2340,7 +2349,11 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
             return;
         }
     };
-    let formats = platform_windows::clip::formats().unwrap_or_default();
+    // The names come out of the same open as the four fields beside them
+    // (`Contents::formats`), not from a second `clip::formats()` call: two opens are two
+    // readings, and another process copying in between would leave this note describing a
+    // board that is not the one the gate below refuses or lets through.
+    let formats = &before.formats;
     rep.note(
         "clipboard before",
         format!(
@@ -2357,12 +2370,18 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
     );
     // Counts and format names only, never the contents: a log that quoted what the user
     // had copied would be a second copy of the user's clipboard.
-    if !before.is_empty() && before.image_bytes.is_none() && before.text.is_none() {
+    //
+    // What counts as "cannot be put back" is not decided here: [`crate::state::cannot_put_back`]
+    // is the one author, and this leg is one of its three readers. It used to be a
+    // hand-written condition that also asked `image_bytes.is_none() && text.is_none()`
+    // first, which meant a board holding a file list *beside* a picture was let through
+    // and the list was eaten - the loss the sentence below claims to prevent.
+    if crate::state::cannot_put_back(&before) {
         rep.row(
             "clipboard copy",
             Check::Blocked,
             format!(
-                "the clipboard holds {} , which this app cannot put back after writing over \
+                "the clipboard holds {}, which this app cannot put back after writing over \
                  it, so nothing was written",
                 formats.join(",")
             ),
@@ -2553,10 +2572,10 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
 /// PNG is what [`crate::annotate::Layer::deliver`] stitched, to the byte and including
 /// the alpha the document had, and what came back out of the JPG has no alpha left to
 /// lose - which is the second half of the same feature, because the sentence the user is
-/// owed (§5.4.5's line 447, §5.5.5's line 506) is a claim about exactly those pixels.
-/// The count in it is recomputed here from the shipped frame rather than trusted from
-/// the product's own arithmetic: a prompt that names 0 px when the document had 11684 is
-/// the defect this leg exists to catch.
+/// owed (§5.4.5 透明白板模式 规则 第 2 条, §5.5.5 另存为 支持格式要求 第 2 条) is a claim
+/// about exactly those pixels. The count in it is recomputed here from the shipped frame
+/// rather than trusted from the product's own arithmetic: a prompt that names 0 px when
+/// the document had 11684 is the defect this leg exists to catch.
 ///
 /// JPG's *colour* is not graded. The encoder is `falcon_core::encode`'s and carries its
 /// own round-trip tests; the mean drift is printed as a reading, so a run can be
@@ -2570,7 +2589,7 @@ fn clipboard_rows(rep: &mut Report, shipped: Option<&Frame>) {
 ///
 /// [`pin_save_rows`] closes the same act at the pin window's door and hangs its three rows
 /// off the files written here, and since P43 [`save_then_pin_rows`] does the two acts in
-/// one call - 另存为 and then 贴图 out of that file (§10 第 43 项 ①). A run that could not
+/// one call - 另存为 and then 贴图 out of that file (retired ledger P43①). A run that could not
 /// get this far says why for every one of them rather than printing two and being silent
 /// about the rest.
 fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
@@ -2710,10 +2729,11 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
         ),
     );
 
-    // ---- 写之前那一档提醒（§10 第 46 项 ①，PRD 447 的"应提醒用户背景**将**被填充"、506 的
-    // "包含透明背景时应推荐 PNG"、§5.5.6 第 521 行）。这一格问的是**顺序**而不是文字：提醒要在
-    // 文件还不存在的时候就已经说出口，否则它只是事后那句报告的重复。所以腿先读
-    // `remind_before_save`，当场确认 `jpg` 还没落盘（它自己也不许落），再让门真写一次。
+    // ---- 写之前那一档提醒（§10 第 46 项 ①，§5.4.5 透明白板模式 规则 第 2 条的
+    // "应提醒用户背景将被填充"、§5.5.5 另存为 支持格式要求 第 2 条的
+    // "包含透明背景时，应推荐 PNG"）。这一格问的是**顺序**而不是文字：提醒要在文件还不存在的
+    // 时候就已经说出口，否则它只是事后那句报告的重复。所以腿先读 `remind_before_save`，当场
+    // 确认 `jpg` 还没落盘（它自己也不许落），再让门真写一次。
     // 两句话只差时态：这一条把事后那句的时态换回去，要求它逐字节等于写前那一条 —— 数字、
     // 格式名、后半句都不能漂，否则用户在一扇门前听到两种说法。
     let pre_said = mask::with(|m| m.remind_before_save(&jpg.to_string_lossy(), ""));
@@ -2801,7 +2821,8 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
         ),
     );
 
-    // ---- Which format a name *without* an extension takes (§10 第 40 项 ②).
+    // ---- Which format a name *without* an extension takes: PRD §5.5.5 step 3 has the user
+    // pick the format, and `crate::save::filter_format` owns that rule (retired ledger P40②).
     //
     // One leg per filter the dialogs offer, each handed the same bare stem, so the row
     // answers "选了哪一档 → 写出的是什么格式" for every arm of the menu rather than for the
@@ -2888,7 +2909,7 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
 ///
 /// 这两档曾经是一句没有读者的承诺：`[output] corner_radius` 与 `shadow_size` 声明过、
 /// 默认过、也按范围收敛过，而 `imageops::{rounded, plate}` 在产品的调用图里一次都没有出现
-/// —— 只有单测在跑它们。所以对这一档唯一的诚实读法是"文件里到底有没有这道效果"，而六枚
+/// —— 那时只有单测在跑它们。所以对这一档唯一的诚实读法是"文件里到底有没有这道效果"，而六枚
 /// 键各自可烂，就各自占一格：出厂值不变的字节、圆角切出来的透明、按配置填进去的颜色、阴影
 /// 长出来的边距、边框落在边缘的那两行、以及 JPG 那一趟该说的数（PRD §5.5.6 规则的第二条）。
 ///
@@ -3180,7 +3201,7 @@ fn decoration_rows(rep: &mut Report, shipped: Option<&Frame>) {
 ///   kept and compared first, against the same file read again by a second route.
 /// * the panel's half - `AnnotationToolbar.qml`'s `quickSave()` is what a pointer reaches,
 ///   and every leg that calls Rust directly stays green over a cell that never forwards the
-///   call. That is §10 第 38 项 ①'s lesson, and P43's 存完再钉图 row is the same shape one
+///   call. That is retired ledger P38①'s lesson, and P43's 存完再钉图 row is the same shape one
 ///   rung away.
 /// * the series' half - `%i` counts the presses of *this flow*, and only a run that presses
 ///   more than once can tell that apart from a run that names one file and overwrites it.
@@ -3218,7 +3239,7 @@ fn quick_rows(rep: &mut Report, dir: &Path, mask_png: &Path, said_png: &str) {
     let lines = mask_with(|l| l.clone());
     let cell = said(&lines, "q-cell");
     let census_cell = said(&lines, "q-census").unwrap_or("");
-    // §10 第 47 项 ④'s lineage half: this door's claim is "I open no dialog", so a census
+    // Retired ledger P47④'s lineage half: this door's claim is "I open no dialog", so a census
     // that counts one has to say *whose* window it counted. The dialog phase's own three
     // readings ride in the same transcript, and when that phase left a door standing, the
     // quiet leg is not the one that opened it - which is exactly the reading 第 46 项 ⑥ asked
@@ -3666,7 +3687,7 @@ pub(crate) fn landed_path(said: &str) -> Option<PathBuf> {
 /// The same act at either output door, closed by a click rather than by this file.
 ///
 /// The before-half of the click's sentence pair, judged on its own so the rule below is a
-/// name a test can hit (§10 第 39 项 ①, and the same reach as 第 39 项 ⑥'s `refusals`).
+/// name a test can hit (retired ledger P39①, and the same reach as 第 39 项 ⑥'s `refusals`).
 /// An empty `accept-was` proves only that the click was the first thing ever to write this
 /// window's message - which is not the claim `onAccepted` works, since a handler that
 /// writes the sentence and one that merely arrives first both look the same from silence.
@@ -3678,10 +3699,10 @@ pub(crate) fn landed_path(said: &str) -> Option<PathBuf> {
 /// here: `gaugeSay` has exactly one destination - the report channel - so the only writer of
 /// the string both keys carry is `MaskState::save_out`, reached by `bar.view.saveSelection`.
 ///
-/// The pin door reached the same rule from the other side (§10 第 41 项 ②): there the slot is
-/// `Session::status` and its writer is `PinState::save_image`, and the equality below is what
-/// turns "another leg wrote the slot between the refusal and the click" from a sentence
-/// nobody compares into a row that goes red.
+/// The pin door reached the same rule from the other side (retired ledger
+/// P41②): there the slot is `Session::status` and its writer is `PinState::save_image`, and the
+/// equality below is what turns "another leg wrote the slot between the refusal and the click"
+/// from a sentence nobody compares into a row that goes red.
 pub(crate) fn before_is_products_own(was: Option<&str>, pre: Option<&str>) -> bool {
     match (was, pre) {
         (Some(w), Some(p)) => w == p && !w.is_empty() && !w.starts_with("已保存到"),
@@ -3690,13 +3711,13 @@ pub(crate) fn before_is_products_own(was: Option<&str>, pre: Option<&str>) -> bo
 }
 
 /// This door's leg order, in the same shape and for the same reason as
-/// [`pin_check::PIN_SCHEDULE`] (§10 第 41 项 ②). `f-jpg` sits *above* the refusal here, which
+/// [`pin_check::PIN_SCHEDULE`] (retired ledger P41②). `f-jpg` sits *above* the refusal here, which
 /// is the placement `AnnotationToolbar.qml`'s own comment asks for and the opposite of the
 /// pin's, because this door's refusal is written by the leg that reads it back rather than
-/// by an earlier one. `pin-after` is the 存完再钉图 leg (§10 第 43 项 ①) and rides along for
+/// by an earlier one. `pin-after` is the 存完再钉图 leg (retired ledger P43①) and rides along for
 /// that same reason: it overwrites `message`, so it has to be read before the refusal puts
 /// its own sentence there. `dlg-dismiss`/`dlg-rejected` are the two confessions that may be
-/// absent. `q-cell`/`q-census` are §5.5.4's 快速保存 (§10 第 44 项 ①) and sit *last* for the
+/// absent. `q-cell`/`q-census` are §5.5.4's 快速保存 (retired ledger P44①) and sit *last* for the
 /// same reason `pre-save` sits where it does: both read and write the one `message` slot, so
 /// they may only speak once the dialog's own before/after pair has been taken.
 /// `q-cellown`/`q-chord` are the same door's other two ways in (§10 第 46 项 ②): the Cell's own
@@ -3752,10 +3773,10 @@ pub(crate) const MASK_SCHEDULE: &[&str] = &[
 /// 比：本轮之前 `AnnotationToolbar.qml` 写着六枚自己挑的字面量，而这一格的期待值是十枚。
 ///
 /// 一枚也没解析出来时走 [`Check::Blocked`] 而不是 PASS：那一句"色带走了档"没有东西可带，
-/// 与 §10 第 42 项 ② 那一族的「问过了但答不了」和「压根没问」是两回事，这里说的是第三种。
+/// 与退役台账 P42② 那一族的「问过了但答不了」和「压根没问」是两回事，这里说的是第三种。
 ///
 /// 这一格说"名单走到了页上"，不说"这一枚芯片在屏幕上是什么颜色"：后者要把指针停在一颗色块
-/// 上取样，而 §10 第 35 项 ⑤ 那一族欠的正是这一只手。
+/// 上取样，而这一只手正是 §5.7.21 实现口径里记下的欠账 —— 本仓没有输入注入器（退役台账 P35⑤）。
 fn mask_band_row(rep: &mut Report, lines: &[String]) {
     let ann = crate::settings::annotation_cfg();
     let want = crate::settings::band_colors_joined(&ann.palette);
@@ -3851,8 +3872,9 @@ fn mask_band_row(rep: &mut Report, lines: &[String]) {
 /// 「拖了却没换」是两件事（[`mask_band_row`] 为空名单走 Blocked 是同一族理由）。
 ///
 /// 这一格**不**说「一次真的指针拖动会走到这只手」：页上那段 `slotOf` 换算要靠一只合成拖动才量得
-/// 到，而这一族还没有那样的基础设施（§10 第 35 项 ⑤ 欠的正是同一只手）。它说的是那只手改得动档、
-/// 页上跟着换、话留得下来 —— 拖动本身走到那只手，是屏幕上的一次人手动，本档不替它编一个已验证的说法。
+/// 到，而这一族还没有那样的基础设施 —— 欠账记在 §5.7.21 的实现口径里（退役台账 P35⑤）。
+/// 它说的是那只手改得动档、页上跟着换、话留得下来 —— 拖动本身走到那只手，是屏幕上的一次人手动，
+/// 本档不替它编一个已验证的说法。
 fn mask_band_move_row(rep: &mut Report, lines: &[String]) {
     let before_leg = said(lines, "band").unwrap_or_default().to_string();
     let before: Vec<&str> = match before_leg.splitn(3, '|').nth(2) {
@@ -3954,7 +3976,7 @@ fn mask_band_move_row(rep: &mut Report, lines: &[String]) {
 
 /// The two rows above call [`crate::mask::MaskState::save_out`] with a name this run
 /// chose, which proves the encoder and nothing about the dialog: no `FileDialog` was opened,
-/// so `AnnotationToolbar.qml`'s `onAccepted` never ran, and §10 第 38 项 ① is exactly the
+/// so `AnnotationToolbar.qml`'s `onAccepted` never ran, and retired ledger P38① is exactly the
 /// claim that a handler which is never entered cannot be said to work. What follows is the
 /// leg the pin window's own gauge proved in P38, run at this door: the toolbar opens the
 /// real dialog, the shim presses its default button once the shell has made the window, and
@@ -4067,7 +4089,7 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
     // the click did not finish the job. The filter the shell settled on rides along, since
     // this is the one file in the report whose name was not decided before the click.
     //
-    // §10 第 47 项 ④: a press the desktop never answered left nothing standing, and grading
+    // Retired ledger P47④: a press the desktop never answered left nothing standing, and grading
     // that as the gauge closing a door is what turned one refused press into four FAILs and
     // a SKIP in 第 46 项 ⑥'s pass-c cascade. The three readings now split before the column does.
     let (hy_check, hy_said) = pin_check::dialog_hygiene(
@@ -4159,7 +4181,7 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
         ),
     );
 
-    // 存完再钉图 across the same boundary (§10 第 43 项 ①). The Rust rows in
+    // 存完再钉图 across the same boundary (retired ledger P43①). The Rust rows in
     // [`save_then_pin_rows`] call the door directly and so cannot see whether QML hands the
     // second invokable over at all - a `saveAndPin` the toolbar never calls would leave
     // every one of them green. This leg is the cell's own call, made inside the event loop
@@ -4191,11 +4213,11 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
 /// P34's two rows above graded a door the pins never used. `state::save_image` had its
 /// own spelling of the same write until P35 unified it, and all three of the differences
 /// were invisible to every row this file had ever printed: it answered `saved {path}
-/// {w}x{h}` in English, it took `..Default::default()` so `[output] jpeg_quality` (PRD
-/// 507) was inert behind a floating window, and it flattened transparency without
-/// repeating PRD 447's prompt. A shared owner fixes the code; only a run that writes both
-/// doors and compares the bytes fixes the drift, and says what it cost - which is what
-/// these three rows are.
+/// {w}x{h}` in English, it took `..Default::default()` so `[output] jpeg_quality`
+/// (§5.5.5 另存为 支持格式要求 第 3 条) was inert behind a floating window, and it flattened
+/// transparency without repeating §5.4.5 透明白板模式 规则 第 2 条's prompt. A shared owner
+/// fixes the code; only a run that writes both doors and compares the bytes fixes the
+/// drift, and says what it cost - which is what these three rows are.
 ///
 /// The pin is made by the product's own `add`, which renders, encodes and hands Qt a
 /// texture - the shape §5.9's `selftest` runs in, and the reason no window appears: the
@@ -4204,7 +4226,8 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
 /// between the doors rather than between two pictures.
 ///
 /// What this does *not* reach is `PinWindow.qml`'s `另存为…` item: like the mask's, that
-/// half needs a real pointer and a real file dialog, and §10 第 35 项 ⑤ keeps the account.
+/// half needs a real pointer and a real file dialog, and [`pin_check`]'s "What it does not
+/// claim" header keeps the account (retired ledger P35⑤).
 fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, mask_jpg: &Path) {
     let pin_png = dir.join("pin.png");
     let pin_jpg = dir.join("pin.jpg");
@@ -4233,9 +4256,10 @@ fn pin_save_rows(rep: &mut Report, want: &Frame, dir: &Path, mask_png: &Path, ma
 
     let said_png = state::with(|s| s.save_image(id, &pin_png.to_string_lossy(), ""));
 
-    // ---- 写之前那一档（§10 第 47 项 ②，PRD 447 的"应提醒用户背景**将**被填充"落到贴图上的一半）。
-    // 问的是**顺序**而不是文字，所以这条腿先叫 `remind_before_save`，当场确认 jpg 还没落盘（提醒
-    // 自己也不许落），再让门真写一次。PNG 档先无话可说一次：空串是"这一档不丢透明"，不是"没提醒"。
+    // ---- 写之前那一档（退役台账 P47②，§5.4.5 透明白板模式 规则 第 2 条的
+    // "应提醒用户背景将被填充"落到贴图上的一半）。问的是**顺序**而不是文字，所以这条腿先叫
+    // `remind_before_save`，当场确认 jpg 还没落盘（提醒自己也不许落），再让门真写一次。PNG 档
+    // 先无话可说一次：空串是"这一档不丢透明"，不是"没提醒"。
     let gone = want
         .pixels
         .as_chunks::<4>()
@@ -4422,8 +4446,8 @@ fn pin_shown_matching(path: &Path) -> Vec<PinId> {
     })
 }
 
-/// 存完再钉图's own door (§10 第 43 项 ①, PRD 433 / 459), and the two refusals PRD line
-/// 910 asks of anything that reads a file.
+/// 存完再钉图's own door (retired ledger P43①, §5.4.4 白板模式 操作步骤 步骤 5), and the two
+/// refusals §5.8.3 从图片文件创建贴图 格式要求 第 2 条 asks of anything that reads a file.
 ///
 /// [`pin_check::file_pin_rows`] pairs the artifact's bytes with the window the file-pin
 /// got, and can only do that at the pin gauge: every row of *this* report is written
@@ -4439,12 +4463,12 @@ fn pin_shown_matching(path: &Path) -> Vec<PinId> {
 /// `add_from_file` that pinned something other than what it read, both show up here as a
 /// pin that matches nothing - or as nothing matching.
 ///
-/// The refusals are the same bytes twice, under two names - which is exactly the pair line
-/// 910 names, 文件损坏 and 格式不支持, and the pair the decoder itself cannot tell apart
-/// (both arrive as `Codec`, because an unknown extension only means the format had to be
-/// guessed from the bytes). So the *wording* is graded on the name as well: each arm has
-/// to say its own thing and must not say the other's, or one sentence would be passing
-/// two rows with different claims in them.
+/// The refusals are the same bytes twice, under two names - which is exactly the pair
+/// §5.8.3 从图片文件创建贴图 格式要求 第 2 条 names, 文件损坏 and 格式不支持, and the pair
+/// the decoder itself cannot tell apart (both arrive as `Codec`, because an unknown
+/// extension only means the format had to be guessed from the bytes). So the *wording* is
+/// graded on the name as well: each arm has to say its own thing and must not say the
+/// other's, or one sentence would be passing two rows with different claims in them.
 fn save_then_pin_rows(rep: &mut Report, dir: &Path) {
     let file = dir.join("then-pin.png");
     let _ = std::fs::remove_file(&file);
@@ -4483,7 +4507,7 @@ fn save_then_pin_rows(rep: &mut Report, dir: &Path) {
     //    selection is the picture several earlier rows also wrote, and pins this run made
     //    before the door are not this door's doing.
     let from_disk = falcon_core::encode::decode_file(&file);
-    // §10 第 45 项 ④：这里不再有 `usize::MAX`。那个哨兵和上面那句"没有首帧可比"是同一条
+    // 退役台账 P45④：这里不再有 `usize::MAX`。那个哨兵和上面那句"没有首帧可比"是同一条
     // 事实的两种写法，而印出来的那一个是 `不同的通道 18446744073709551615 个（要求 0）`——
     // 一个整数上限被当成通道数递给了读者，读者要的是那句人话。`None` 说的就是"没有可比
     // 的分母"，它自己带一句为什么；判定照旧是 FAIL，一个都没松。
@@ -4552,8 +4576,8 @@ fn save_then_pin_rows(rep: &mut Report, dir: &Path) {
         state::with(|s| s.close(&fresh));
     }
 
-    // 3. `EncodeError`'s own strings are English (`io: …`, `codec failed: …`), and §10 第
-    //    37 项 ① measured one of them reaching a `保存失败：` prefix. A path is
+    // 3. `EncodeError`'s own strings are English (`io: …`, `codec failed: …`), and retired ledger
+    //    P37① measured one of them reaching a `保存失败：` prefix. A path is
     //    legitimately ASCII, so the reading is these markers rather than "no latin
     //    letters".
     const CASES: [(&str, &str, &str, &str); 2] = [
@@ -4630,7 +4654,7 @@ pub fn measure() -> (Check, String) {
     // rows print are measured rather than assumed.
     state::stamp("mask end");
     let mut rep = Report::new();
-    // §10 第 41 项 ④: the scene first, because four of this report's rows are about what
+    // Retired ledger P41④: the scene first, because four of this report's rows are about what
     // the desktop was showing and none of them could say so until now.
     crate::r13::scene_row(&mut rep);
     let Some(p) = plan().lock().unwrap_or_else(PoisonError::into_inner).take() else {
@@ -4748,10 +4772,10 @@ pub fn measure() -> (Check, String) {
             }
             continue;
         };
-        // The desktop's own reading, quoted by every `readable` row of this slot. §10 第 42
-        // 项 ② wants the explanation of a skipped painting row to be a coordinate the screen
-        // answered, not a word about the session: the lock is one input of a row, not a
-        // verdict over a round, and this is the input.
+        // The desktop's own reading, quoted by every `readable` row of this slot. Retired
+        // ledger P42② wants the explanation of a skipped painting row to be a coordinate
+        // the screen answered, not a word about the session: the lock is one input of a row,
+        // not a verdict over a round, and this is the input.
         let centre = capture::centre_pixel(frozen);
 
         // Which dim path is under the ink. A shader that did not compile dims the
@@ -5126,7 +5150,7 @@ pub fn measure() -> (Check, String) {
             keys.len()
         ),
     );
-    // §10 第 33 项 ①, graded rather than assumed. This script teaches the pens it measures
+    // Retired ledger P32①, graded rather than assumed. This script teaches the pens it measures
     // and the flow it drives ends the way the product's does, so the run writes a settings
     // file - and §5.7.1 promises that file to the *user*, whose last pen it is supposed to
     // be. [`plant`] pins the writes into the temp dir; a pin somebody later deletes is a
@@ -5175,7 +5199,7 @@ mod tests {
         )
     }
 
-    /// §10 第 44 项 ①'s three reads, each against the shape the C++ probe and the product's
+    /// Retired ledger P44①'s three reads, each against the shape the C++ probe and the product's
     /// sentence really have. The two census lines below are copied out of the archived P43
     /// logs rather than invented: the first is what a quiet desktop answers, the second what
     /// the shell's 另存为 answers once it is up - and the third is the *other* `pushed=no`
@@ -5222,7 +5246,7 @@ mod tests {
         assert_eq!(landed_path("已保存到 c.png"), None);
     }
 
-    /// §10 第 43 项 ①: the door that saves and then pins answers both acts in one
+    /// Retired ledger P43①: the door that saves and then pins answers both acts in one
     /// sentence, and the id in it is the only handle the report has on the pin the product
     /// says it made. Read out of the words rather than out of the state machine, because
     /// "a pin appeared" is a fact this file can produce without the door - whether the
@@ -5245,7 +5269,7 @@ mod tests {
         assert_eq!(pin_id_in("也钉成了贴图 不是数字。"), None);
     }
 
-    /// §10 第 39 项 ①: the click's before-half has to be a sentence, and a sentence this
+    /// Retired ledger P39①: the click's before-half has to be a sentence, and a sentence this
     /// gauge dictated does not count. The two keys are the same property read at two
     /// moments - straight after the refused save, and again when a button is looked for -
     /// so a run that says one thing under each is a run whose message moved underneath it.
@@ -5273,7 +5297,7 @@ mod tests {
             Some(refused.as_str()),
             Some(refused.as_str())
         ));
-        // §10 第 41 项 ②: the same rule now covers the other door, whose refusal is the
+        // Retired ledger P41②: the same rule now covers the other door, whose refusal is the
         // state machine's own words about an id the set never handed out - the sentence
         // `pin dialog accept` compares against from this round on.
         assert!(before_is_products_own(
@@ -5339,7 +5363,8 @@ mod tests {
         );
     }
 
-    /// §10 第 42 项 ② 的判据本体：一行 painting 没有评分有两种走法，自此是两行、两句话。
+    /// 判据本体：一行 painting 没有评分有两种走法，自此是两行、两句话 —— 两句话的作者是
+    /// [`asked_row`] 与 [`readable_row`]，本测试钉它们不许共用一句（退役台账 P42②）。
     /// P39 那趟是同一条反例的两半 —— 同一枚二进制，`ink box` 一趟 PASS 一趟 SKIP，而那一个
     /// `SKIP` 同时代表"桌面给不出 30 个可用样本"和"这条腿压根没播种"。
     #[test]
@@ -5512,7 +5537,7 @@ mod tests {
     }
 
     /// ② 的另一半，也是这一格唯一会烂掉的那半：解释写成一个坐标，不写成一句关于会话的话。
-    /// 锁屏是一行的输入（§10 第 41 项 ⑤），不是盖在一轮上的结论 —— 所以 `readable` 里出现
+    /// 锁屏是一行的输入（退役台账 P41⑤），不是盖在一轮上的结论 —— 所以 `readable` 里出现
     /// "会话/锁/LockApp" 任一，就说明这行在解释一轮而不是量一个点。
     #[test]
     fn readable_quotes_the_centre_pixel_and_never_the_session() {
@@ -6947,7 +6972,7 @@ mod tests {
         // 连同 `annotate` 那头的 setter 一起是本轮新建的。
         // 35 → 37 是「编号」那一行添的两枚（更小 / 更大）：§5.7.12 步骤 2 的「设置起始编号」，
         // 与那一枚工具本身同一轮上的 —— 工位进了 `TOOLS`，起始编号才有地方按。
-        // 37 → 38 是「对象」那一行添的一枚「重排」：§5.7.12 步骤 5 的「删除中间编号时可选择是否
+        // 37 → 38 是「对象」那一行添的一枚「重排」：§5.7.12 步骤 5 的「删除中间编号时，可选择是否
         // 自动重排」。它不在编号那一排，因为它改的就是左边那一枚「删除」怎么被记 —— 亮着的删除
         // 与它带着的重排合成一条 `Command::Compound`，一次 Ctrl+Z 退的是那一次编辑而不是它的两半。
         // 38 → 40 是「文本」那一行添的两枚：§5.7.11 那句「文本描边支持颜色和宽度设置」里颜色和
@@ -6964,9 +6989,9 @@ mod tests {
         // 以包身份运行，本程序是一枚未打包 exe），于是分享由「先把这一张写成文件，再交给系统默认的
         // 看图程序」承担。它挨着 快速保存 放，因为两枚按的都是同一条落盘腿。
         // 42 → 43 是「保存」那一排添的一枚「贴图」：§5.8.1 步 2 那三个字在屏幕上第一次有了
-        // 能按的那一枚。它挨着「存完再钉图」放而**不**替了它，因为那是 PRD 433 里两件不同的事 ——
-        // 那一枚浮的是用户挑中过的**那份文件**（§10 第 43 项 ①），这一枚浮的是屏幕上这一块画面，
-        // 用户没打算为它交出目录、名字和一次磁盘。
+        // 能按的那一枚。它挨着「存完再钉图」放而**不**替了它，因为那是 §5.4.4 白板模式 操作步骤
+        // 步骤 5 里两件不同的事 —— 那一枚浮的是用户挑中过的**那份文件**（退役台账 P43①），
+        // 这一枚浮的是屏幕上这一块画面，用户没打算为它交出目录、名字和一次磁盘。
         assert_eq!(
             buttons, 43,
             "实测这一档 41 枚 Cell + 2 枚 Swatch，此刻数到 {buttons}"

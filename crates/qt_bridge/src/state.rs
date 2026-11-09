@@ -89,7 +89,7 @@ pub struct PinViewData {
     pub selected: bool,
     /// §5.11 的「这一枚是被独显藏起来的，还是被机器压住的」那一问：`live` 那一格把两件事
     /// 合成一枚布尔，而量规要分开问（藏起来的是独显干的，压住的是对话框干的），
-    /// §5.11 规则②「恢复原状态而不是无条件显示全部」也只有分开才量得出来。
+    /// §5.11 规则②「恢复原状态，而不是无条件显示全部」也只有分开才量得出来。
     /// 读的是 core 那一枚字段本体，不在这里重新判断（#281）。
     pub solo_hidden: bool,
     /// §5.9.5–§5.9.8 的「系统更新显示状态」落到窗上的四枚布尔与一枚角度。§5.9.6 规则说的
@@ -306,7 +306,7 @@ pub enum Arming {
 /// §5.9.17 那架剪贴板梯子（[`PinState::clip_ladder`]）的三扇门。
 ///
 /// 一枚类型而不是三枚字符串参数，是因为「写不出去时什么东西还在」这半句是**本节的规则**
-/// （PRD 1270-1271 行）的措辞，不是各扇门可以自拟的文案：让门递整句就会有三种拼法（#281），
+/// （§5.9.17 规则第 1、2 条）的措辞，不是各扇门可以自拟的文案：让门递整句就会有三种拼法（#281），
 /// 让门递「贴图 / 截图」这样一个名词又凑不出默认行为那一扇的话 —— 那一扇没人按过，说
 /// 「可以再复制一次」是替用户安排他没做过的动作（§5.5.1 步 3 的默认行为连一句招呼都不占
 /// [`crate::mask::MaskState::message`]，正是同一条理由）。所以这里只放"是哪一扇"，文案留在
@@ -369,7 +369,7 @@ pub struct PinState {
     holes: HashMap<PinId, bool>,
     /// §5.9.17 的那批临时文件的**持有者**：本进程交出去过、而剪贴板可能还指着它们的路径。
     ///
-    /// 这一枚字段存在的理由就是 PRD 第 1601 行那一句「应避免在退出时删除仍被剪贴板引用的
+    /// 这一枚字段存在的理由就是 §6.2 存储规则第五条那一句「应避免在退出时删除仍被剪贴板引用的
     /// 文件」：删与不删不能靠"大概没人用了"，得有一个名单。名单只在本进程自己下一次
     /// `EmptyClipboard` 真把旧内容顶掉之后才收缩（见 [`Self::copy_image_with_files`]），
     /// 顶不掉就一枚也不删。
@@ -391,7 +391,7 @@ pub struct PinState {
     /// [`Self::view_data`] 的 `live`，不动 core 的 `PinItem::visible()`：后者记的是**这枚贴图自己**
     /// 被关掉没有（§5.9.18 销毁、§5.11 独显），全局收起是叠在其上的一层理由，不是把它逐个改写。
     all_hidden: bool,
-    /// §5.9.18 / §5.10.4「销毁」交回的那一叠槽位：PRD 第 1148 行那句「应显示确认或支持撤销」
+    /// §5.9.18 / §5.10.4「销毁」交回的那一叠槽位：§5.9.18 规则第一句那句「应显示确认或支持撤销」
     /// 在桥侧落成的就是这一格 —— 没有它，[`falcon_core::pin::PinSet::restore`] 那只手永远
     /// 拿不到东西可还，撤销就只剩一句空话。
     ///
@@ -416,7 +416,7 @@ pub struct PinState {
     /// What went wrong loudly enough that a run has to report it, kept so
     /// `--selftest` can assert on an empty list instead of on stdout.
     pub problems: Vec<String>,
-    /// PRD 447's reminder, said by [`Self::remind_before_save`] and by
+    /// §5.4.5 规则第 2 条's reminder, said by [`Self::remind_before_save`] and by
     /// [`Self::save_image`]'s first rung - always the sentence about a write that has
     /// not happened yet, so it never carries the result of one. The mask's own copy of
     /// this slot is `MaskState::pre_notice`; the two are the same string by
@@ -987,8 +987,8 @@ impl PinState {
         self.close(&ids)
     }
 
-    /// §5.10.4「影响数量」：**这一手**会带走几枚，只在这一格答（PRD 第 1149 行要的就是这个
-    /// 数，而它在桥侧此前一位读者也没有）。
+    /// §5.10.4「影响数量」：**这一手**会带走几枚，只在这一格答（§5.9.18 规则第二句
+    /// 「批量销毁时应提示影响数量」要的就是这个数，而它在桥侧此前一位读者也没有）。
     ///
     /// 答的是「按下去会带走几枚」而不是「刚才带走了几枚」：菜单在用户点下去**之前**要把这句话
     /// 印在字面上，所以这一格与 [`Self::destroy_pin`] 走的是同一张 [`Self::hand_targets`] ——
@@ -1039,7 +1039,7 @@ impl PinState {
         n
     }
 
-    /// §5.9.18「若销毁不可恢复，应显示确认或支持撤销」的另一臂：把最近那一手带走的东西
+    /// §5.9.18「若“销毁”不可恢复，应显示确认或支持撤销」的另一臂：把最近那一手带走的东西
     /// 放回**它们各自离开的那一格**（core 的 `PinSlot.index` 记的就是那个位置，所以一堆
     /// 撤销回来还是原来那堆，而不是摞在最上面）。
     ///
@@ -1647,8 +1647,8 @@ impl PinState {
     /// 那两扇的中文本来就不一样 —— 见 [`ClipDoor`]。
     ///
     /// 三位读者共用一架，是因为这一节的两条规则都写在梯子里而不是写在门上 ——「临时文件在剪贴板
-    /// 失效前不得删除」（PRD 1270 行）与「文件名应遵守预设命名规则」（1271 行）。再造第二架就会
-    /// 出现两套「剪贴板此刻有没有点名这一枚」的读法（#281）。
+    /// 失效前不得删除」（§5.9.17 规则第 1 条）与「文件名应遵守预设命名规则」（规则第 2 条）。
+    /// 再造第二架就会出现两套「剪贴板此刻有没有点名这一枚」的读法（#281）。
     pub fn copy_frame_with_files(
         &mut self,
         frame: &Frame,
@@ -1836,7 +1836,7 @@ impl PinState {
     }
 
     /// [`Self::remind_before_save`]'s wording without the assignment: what this encoder is
-    /// about to cost this pin, in the future tense PRD 447 asks for.
+    /// about to cost this pin, in the future tense §5.4.5 规则第 2 条 asks for.
     ///
     /// The empty string is one answer with three comings - a format that carries alpha, a
     /// pin that was never drawn, and a name that decides no format - which is why it reads
@@ -1869,7 +1869,7 @@ impl PinState {
     /// has the user choosing 格式 in that dialog too.
     ///
     /// The first rung is [`Self::remind_before_save`]'s, in the same order and for the same
-    /// reason as the mask's `save_out`: PRD 447 says 背景**将**被填充, and
+    /// reason as the mask's `save_out`: §5.4.5 规则第 2 条 says 背景将被填充, and
     /// [`crate::save::write`] turns that into 已填成白色 the moment it returns. §10 第 46 项
     /// ③ registered this door as the one that only had the after half; this is the before
     /// half, and the write still happens.
@@ -1899,9 +1899,10 @@ impl PinState {
     /// 创建贴图" unreachable without a trip through the shell.
     ///
     /// Reading the file is the whole of the difference from [`Self::add`], and the reason
-    /// to do it here rather than at each door is the second half of PRD line 910: a
-    /// damaged or unsupported file "应显示错误信息". Spelled once, both doors answer the
-    /// same way, and neither one gets to forward `EncodeError`'s English.
+    /// to do it here rather than at each door is the second half of
+    /// §5.8.3 从图片文件创建贴图 格式要求 第 2 条: a damaged or unsupported file
+    /// "应显示错误信息". Spelled once, both doors answer the same way, and neither one gets
+    /// to forward `EncodeError`'s English.
     pub fn add_from_file(&mut self, path: &str, at: PhysPoint) -> Result<PinId, String> {
         let frame = match encode::decode_file(std::path::Path::new(path)) {
             Ok(f) => f,
@@ -2438,13 +2439,13 @@ fn card_picture(text: &str, card: &falcon_core::config::Card) -> Result<Frame, f
 
 /// What went wrong with a file, said the way the user reads it.
 ///
-/// PRD line 910 asks for a message on both shapes, and they are different answers: one says
-/// the file is broken, the other says this program does not read that kind of file. The
-/// decoder cannot tell them apart - an unrecognised extension and a damaged file both
-/// arrive as `Codec`, because `encode::decode_file` hints the format from the extension and
-/// falls back to guessing from the bytes - so the name is asked as well as the error.
-/// The file's own path is the one piece that travels through as typed: it is what the user
-/// can find in the dialog again.
+/// §5.8.3 从图片文件创建贴图 格式要求 第 2 条 asks for a message on both shapes, and they are
+/// different answers: one says the file is broken, the other says this program does not
+/// read that kind of file. The decoder cannot tell them apart - an unrecognised extension
+/// and a damaged file both arrive as `Codec`, because `encode::decode_file` hints the
+/// format from the extension and falls back to guessing from the bytes - so the name is
+/// asked as well as the error. The file's own path is the one piece that travels through
+/// as typed: it is what the user can find in the dialog again.
 fn read_refusal(path: &str, e: &encode::EncodeError) -> String {
     use encode::EncodeError as E;
     let readable = encode::IMPORT_FORMATS
@@ -2619,15 +2620,16 @@ pub fn finish_session() -> String {
 /// The screen layout pins are clamped to: every monitor the platform enumerates,
 /// in physical pixels and each with its own ratio.
 ///
-/// This is where a pin's `dpr` comes from (plan §10 第 52 项 ①). It cannot come
+/// This is where a pin's `dpr` comes from. It cannot come
 /// from QML's `Screen` attached object, which only resolves once the window is
 /// already placed - and placing the window is what needs the ratio. The
 /// enumeration reads the same screens Qt does, but in the physical space a
-/// `PhysRect` is, and costs no pixels (plan §6.1 "几何只用物理像素").
+/// `PhysRect` is, and costs no pixels, per this repo's own geometry rule
+/// "几何只用物理像素".
 ///
 /// If the enumeration itself fails, Qt's primary answers instead - after its DIP
 /// rect is converted by that screen's own ratio, because a `PhysRect` written from
-/// raw DIP is the unit leak the plan forbids. The other monitors being gone is
+/// raw DIP is the unit leak that rule forbids. The other monitors being gone is
 /// reported, not swallowed: a pin clamped to one screen behaves differently on two.
 fn desktop_from_platform(problems: &mut Vec<String>) -> Desktop {
     match capture::monitor_table() {
@@ -5044,10 +5046,23 @@ impl From<bool> for Check {
 /// Two gauges owe the machine this now: `--selftest --clipboard` writes a test picture,
 /// and `--ink`'s 复制 leg goes through the product's own clipboard call, which writes
 /// the screenshot. Both take the user's contents away in order to measure something,
-/// and the debt is paid here rather than in two copies of the same four branches -
-/// the copy that forgets the `html or a file list` case is the one that silently eats
-/// what was in front of the user, and the copy that forgets *empty* leaves its own test
-/// picture on a clipboard the user had cleared.
+/// and the debt is paid here rather than in two copies of the same branches - the copy
+/// that forgets the `a file list` case is the one that silently eats what was in front
+/// of the user, and the copy that forgets *empty* leaves its own test picture on a
+/// clipboard the user had cleared.
+///
+/// One write restores one leg, in the priority order §5.8.2 reads them: an html that
+/// rode beside an image or a text comes back as that image or text, with the markup
+/// lost - saying so is the returning gauge's job, not this function's.
+///
+/// `Err` means the board is *not* as this function found it and nothing here can make it
+/// so. Two shapes reach it: a board that would not open for reading, and a board that
+/// carried only formats this app cannot read (#88 - the second one used to fall into the
+/// `clear()` arm and come back as "it was empty", which is a sentence about a board
+/// nobody looked at). Callers grade that `Fail`, not `Blocked`: by the time this runs the
+/// caller's own write has already happened, so "the machine declined to be measured"
+/// would hide a real loss behind an excuse - the same ruling `hotkey::Clip::settle`'s doc
+/// records.
 pub fn put_back(before: &Option<platform_windows::clip::Contents>) -> Result<String, String> {
     match before {
         // `read()` answering `None` is not an empty clipboard: it is a clipboard that
@@ -5055,6 +5070,10 @@ pub fn put_back(before: &Option<platform_windows::clip::Contents>) -> Result<Str
         // leg that reports that as "it was empty" is a leg claiming to have restored
         // what it never read.
         None => Err("it would not open for reading, so what was on it is not knowable".to_string()),
+        // "It was empty" is a claim about the board, not about what this app could
+        // read, and `Contents::formats` is what makes it one (#88): `clear()` runs
+        // `EmptyClipboard`, so this arm is a licence to destroy and its guard has to
+        // mean *nothing was there*.
         Some(c) if c.is_empty() => platform_windows::clip::clear()
             .map(|_| "it was empty, and is empty again".to_string())
             .map_err(|e| e.to_string()),
@@ -5070,21 +5089,118 @@ pub fn put_back(before: &Option<platform_windows::clip::Contents>) -> Result<Str
                 platform_windows::clip::write_text(t)
                     .map(|_| format!("text ({} chars)", t.chars().count()))
                     .map_err(|e| e.to_string())
+            } else if let Some(html) = &c.html {
+                // `read` caught the *whole envelope* - the copying app's header, its
+                // markers, its document - and the user's copy is the fragment. Writing
+                // the caught blob as its own fragment would paste back the envelope's
+                // bookkeeping ("Version:0.9…") instead of the user's text, so it is cut
+                // with the same reader `classify` uses and re-enveloped by
+                // `clip::write_html`. A file list stays unput-backable: this app has no
+                // `CF_HDROP` writer, and saying so is better than dropping it silently.
+                let fragment = falcon_core::clip::html_fragment(html);
+                platform_windows::clip::write_html(fragment)
+                    .map(|_| format!("html (fragment, {} chars)", fragment.chars().count()))
+                    .map_err(|e| e.to_string())
+            } else if !c.files.is_empty() {
+                Ok("a file list, which this check cannot put back".to_string())
             } else {
-                Ok("html or a file list, which this check cannot put back".to_string())
+                // The board carried something and not one leg of it was readable here,
+                // so `is_empty` answered false and the `clear()` arm above was never
+                // licensed. Nothing is written on this path: writing would trade what
+                // the user had for a sentence about it, and the sentence would be this
+                // app's own invention about a board it never read. What is quoted is
+                // the names the board itself gave up, never bytes (§9.1).
+                // Reached on exactly the board [`cannot_put_back`]'s third clause names:
+                // the `is_empty` arm above already ruled out a board that carried
+                // nothing, and every leg that could carry something back has been tried.
+                Err(format!(
+                    "it held {}, which this app cannot read, so there is nothing of it to \
+                     put back",
+                    c.formats.join(", ")
+                ))
             }
         }
     }
+}
+
+/// Whether a board holds something [`put_back`] cannot give back - the one question every
+/// leg that writes over the user's clipboard has to answer first, asked here so that it
+/// has one author (#281) instead of one copy per gauge.
+///
+/// Three shapes, and each is a shape where the loss is total rather than partial:
+///
+/// * a `CF_HDROP` list - this app has no writer for it, so the paths are gone whether or
+///   not a picture rode beside them;
+/// * html beside an image or a text - one write restores one leg, and the leg restored is
+///   the picture or the words. Html *alone* is not in this family: since
+///   `clip::write_html`, `put_back` cuts the caught fragment and re-envelops it;
+/// * a board that carried something and not one leg of it was readable (#88). Until
+///   `Contents::formats` existed this shape read back as *empty*, so `put_back`'s `clear()`
+///   arm wiped it and reported "it was empty" - a sentence about a board nobody had looked
+///   at. Now it is named, and named is refused.
+///
+/// What is deliberately **not** in the family: a board this app can partly read whose
+/// `formats` also list things it cannot. Almost every real copy carries those - a browser
+/// puts `Chromium Web Custom MIME Data` beside the text, Word puts `Rich Text Format`
+/// beside the html - so refusing them would refuse every board a user actually has, and
+/// the gauges would measure nothing. The leg that can be restored is restored; the rest is
+/// a rendering of the same content, and the log lists the names it rode with.
+pub fn cannot_put_back(c: &platform_windows::clip::Contents) -> bool {
+    !c.files.is_empty()
+        || (c.html.is_some() && (c.image_bytes.is_some() || c.text.is_some()))
+        || (!c.is_empty() && c.image_bytes.is_none() && c.html.is_none() && c.text.is_none())
+}
+
+/// Why [`clipboard_selftest`] will not write, when it will not: three refusals folded into
+/// the one string every row of that door prints, so "somebody else holds it" and "this board
+/// cannot be refilled" and "it would not open" travel one channel and none of them can be
+/// read as another.
+///
+/// A function rather than three arms inline in the door for one reason. Inline, the only
+/// witness would be a GUI run on a machine whose clipboard happens to hold the shape being
+/// asked about, and #88 is exactly the hole that leaves behind: a board carrying nothing but
+/// `Rich Text Format` is not empty - `Contents::formats` has seen it since it existed - yet
+/// the door wrote over it, `put_back` reached its last arm, and the row that should have
+/// named a lost board named a restore that could never have happened. Both refusals that come
+/// from the board are pure, so both are testable, and
+/// `tests::the_clipboard_door_names_which_of_three_refusals_stopped_it` tests them.
+///
+/// The middle arm is this door's fourth reading of [`cannot_put_back`], after
+/// `annotate_check::clipboard_rows`, `hotkey::Clip::plant` and `autosave_check`. The last one
+/// cannot fire on a clean run - an empty board opens fine and comes back with no formats - so
+/// it speaks only when `usable` passed and `read` still failed, which is a real state and the
+/// same one `annotate_check` refuses to write into.
+fn write_refusal(
+    held_by: Option<String>,
+    before: &Option<platform_windows::clip::Contents>,
+) -> Option<String> {
+    held_by.or_else(|| match before {
+        None => Some(
+            "it would not open for reading, so this door will not write what it cannot put \
+             back"
+                .to_string(),
+        ),
+        Some(c) if cannot_put_back(c) => Some(format!(
+            "it holds {}, which this app cannot put back after writing over it, so nothing \
+             was written",
+            c.formats.join(", ")
+        )),
+        Some(_) => None,
+    })
 }
 
 pub fn clipboard_selftest() -> (Check, String) {
     // Ask first, because the clipboard can belong to somebody else. When it does,
     // the honest answer is who holds it - not a row of failures that reads as if
     // this program's clipboard code were broken.
-    let blocked = platform_windows::clip::usable()
+    let held_by = platform_windows::clip::usable()
         .err()
         .map(|e| e.to_string());
     let before = platform_windows::clip::read().ok();
+    // The names a refusal quotes come out of this same `read`, never a second open: two
+    // opens are two readings, and another process copying in between would leave the
+    // sentence describing a board the gate never judged.
+    let blocked = write_refusal(held_by, &before);
     let mut out = Vec::new();
     let mut worst = if blocked.is_some() {
         Check::Blocked
@@ -5117,29 +5233,31 @@ pub fn clipboard_selftest() -> (Check, String) {
         Err(e) => return (Check::Fail, format!("could not add a pin: {e}")),
     };
 
-    let copied = with(|s| s.copy_image(id));
+    // The write lives inside the arm that is allowed to make it. It used to sit above this
+    // `match`, which meant the door emptied the board and only then graded the row BLOCKED
+    // for having been refused. That cost nothing while `blocked` could only mean "somebody
+    // else holds it" - the OS refused that write as well - and it is the whole of #88 the
+    // moment `blocked` also means "this board cannot be refilled".
     match &blocked {
-        Some(who) => check(
-            "a pin copied itself",
-            Check::Blocked,
-            format!("clipboard held by {who}"),
-        ),
-        None => check(
-            "a pin copied itself",
-            Check::from(copied.is_ok()),
-            copied
-                .clone()
-                .map(|n| format!("{n} pixels"))
-                .unwrap_or_else(|e| e),
-        ),
+        Some(why) => check("a pin copied itself", Check::Blocked, why.to_string()),
+        None => {
+            let copied = with(|s| s.copy_image(id));
+            check(
+                "a pin copied itself",
+                Check::from(copied.is_ok()),
+                copied
+                    .map(|n| format!("{n} pixels"))
+                    .unwrap_or_else(|e| e),
+            );
+        }
     }
 
     let formats = platform_windows::clip::formats();
     match (&blocked, &formats) {
-        (Some(who), _) => check(
+        (Some(why), _) => check(
             "the clipboard carries a DIB",
             Check::Blocked,
-            who.to_string(),
+            why.to_string(),
         ),
         (None, Err(e)) => check("the clipboard carries a DIB", Check::Fail, e.to_string()),
         (None, Ok(list)) => check(
@@ -5149,29 +5267,32 @@ pub fn clipboard_selftest() -> (Check, String) {
         ),
     }
 
-    // Read it back through the same door §5.8.2 uses.
-    let back = match platform_windows::clip::read() {
-        Ok(contents) => {
-            let facts = contents.facts();
-            falcon_core::clip::classify(&facts)
-                .map(|(_kind, payload)| match payload {
-                    falcon_core::clip::ClipPayload::Image(f) => Some(f),
-                    other => {
-                        eprintln!("[clipboard] classified as {other:?}");
-                        None
-                    }
-                })
-                .map_err(|e| e.to_string())
-        }
-        Err(e) => Err(e.to_string()),
-    };
+    // Read it back through the same door §5.8.2 uses - and read it only on the path that
+    // was allowed to write. On the blocked one the board is still the user's, and the
+    // `eprintln` inside would then put a second copy of what they had copied into the log
+    // (§9.1). On this path every byte on the board is the 4x2 frame planted above.
     match &blocked {
-        Some(who) => check(
+        Some(why) => check(
             "paste-back is the same pixels",
             Check::Blocked,
-            who.to_string(),
+            why.to_string(),
         ),
         None => {
+            let back = match platform_windows::clip::read() {
+                Ok(contents) => {
+                    let facts = contents.facts();
+                    falcon_core::clip::classify(&facts)
+                        .map(|(_kind, payload)| match payload {
+                            falcon_core::clip::ClipPayload::Image(f) => Some(f),
+                            other => {
+                                eprintln!("[clipboard] classified as {other:?}");
+                                None
+                            }
+                        })
+                        .map_err(|e| e.to_string())
+                }
+                Err(e) => Err(e.to_string()),
+            };
             let round = matches!(&back, Ok(Some(frame)) if *frame == src);
             check(
                 "paste-back is the same pixels",
@@ -5184,6 +5305,99 @@ pub fn clipboard_selftest() -> (Check, String) {
                     Err(e) => e,
                 },
             );
+        }
+    }
+
+    // §5.8.2's html leg, witnessed end to end (rule #261): `clip::write_html`
+    // plants a genuine CF_HTML envelope - the only producer of one this repo has -
+    // and the verdicts read what the *product* made of it: `add_from_clipboard`
+    // does classify -> sanitize_html -> html_text -> card render on its own, and
+    // every row below reads the card's own text back through `card_view`. Nothing
+    // here calls the sanitizer or the flattener directly, because a witness that
+    // did would prove only what it itself handed in. The three rows are the three
+    // halves of 安全范围内保留基本格式: the `<script>`'s payload does not survive
+    // (安全), the `<b>`'s text survives without its boldness (范围内), and each
+    // `<li>` gets its own line (基本格式 = the line structure `html_text` draws).
+    const PLANTED: &str = "<p>lead <b>boldface</b></p><script>alert(1)</script><ul><li>first item</li><li>second item</li></ul>";
+    const HTML_ROWS: [&str; 4] = [
+        "copied markup pasted as a card",
+        "a copied <script> left no payload",
+        "a copied <b> kept text not weight",
+        "a copied <li> got its own line",
+    ];
+    match &blocked {
+        Some(why) => {
+            for row in HTML_ROWS {
+                check(row, Check::Blocked, why.to_string());
+            }
+        }
+        None => {
+            let pasted = platform_windows::clip::write_html(PLANTED)
+                .map_err(|e| e.to_string())
+                .and_then(|()| {
+                    with(|s| {
+                        s.add_from_clipboard(PhysPoint::new(30, 30)).and_then(|id| {
+                            let view = s.card_view(id);
+                            // The leg's own pin closes inside the leg so the later
+                            // "the check cleaned up after itself" row still counts one
+                            // pin: that row witnesses the picture pin, not every pin
+                            // this check ever made.
+                            let closed = s.close(&[id]);
+                            if !view.is_card {
+                                return Err(format!("pin {id} pasted, but not as a card"));
+                            }
+                            if closed != 1 {
+                                return Err(format!("the pasted card would not close ({closed} of 1)"));
+                            }
+                            Ok(view.text)
+                        })
+                    })
+                });
+            match pasted {
+                Err(e) => {
+                    check(HTML_ROWS[0], Check::Fail, e.clone());
+                    for row in HTML_ROWS.iter().skip(1) {
+                        check(
+                            *row,
+                            Check::Fail,
+                            format!("the chain left no card text to read: {e}"),
+                        );
+                    }
+                }
+                Ok(text) => {
+                    check(HTML_ROWS[0], Check::Pass, format!("card says {text:?}"));
+                    let scriptless = !text.contains("alert");
+                    check(
+                        HTML_ROWS[1],
+                        Check::from(scriptless),
+                        if scriptless {
+                            "the raw-text tag lost its contents, not just its markup".to_string()
+                        } else {
+                            format!("the card text carries it: {text:?}")
+                        },
+                    );
+                    let first = text.lines().next().unwrap_or_default();
+                    let bold_kept = first == "lead boldface" && !text.contains('<');
+                    check(
+                        HTML_ROWS[2],
+                        Check::from(bold_kept),
+                        if bold_kept {
+                            format!("first line reads {first:?}, and no markup reached the card")
+                        } else {
+                            format!("first line reads {first:?}, full text {text:?}")
+                        },
+                    );
+                    let bullets = text.lines().filter(|l| l.starts_with('\u{2022}')).count();
+                    let own_lines = bullets == 2
+                        && text.contains("\u{2022} first item")
+                        && text.contains("\u{2022} second item");
+                    check(
+                        HTML_ROWS[3],
+                        Check::from(own_lines),
+                        format!("{bullets} bulleted lines in {text:?}"),
+                    );
+                }
+            }
         }
     }
 
@@ -5214,7 +5428,7 @@ pub fn clipboard_selftest() -> (Check, String) {
     // Whatever the user had on the clipboard goes back, as far as this app can
     // represent it - and the check says which far that was.
     match &blocked {
-        Some(who) => check("the clipboard came back", Check::Blocked, who.to_string()),
+        Some(why) => check("the clipboard came back", Check::Blocked, why.to_string()),
         None => {
             let restored = put_back(&before);
             check(
@@ -5655,7 +5869,7 @@ mod tests {
     use super::{not_drawn, plant_fate_for, read_refusal, Frame, PinState};
     use falcon_core::encode::EncodeError;
 
-    /// PRD 910's two shapes are one error to the decoder - both a damaged file and an
+    /// §5.8.3 格式要求第 2 条's two shapes are one error to the decoder - both a damaged file and an
     /// unrecognised extension arrive as `Codec`, because an unknown suffix only means the
     /// format had to be guessed from the bytes - so the split lives in this file and is
     /// decided by the name. A refusal that says the wrong half is a user told to go look
@@ -5688,6 +5902,213 @@ mod tests {
         }
     }
 
+    /// The gate every clipboard-writing leg asks first, paired with the two arms of
+    /// [`super::put_back`] it exists to keep honest. Both halves are pure: neither opens a
+    /// clipboard, which is the only reason this can live in a `#[test]` at all (§9.1 第十条:
+    /// 单测不动板). Every shape that *would* write is left to the gauges.
+    ///
+    /// The pairing is the claim. Five gates (`annotate_check::clipboard_rows`,
+    /// `hotkey::Clip::plant`, two legs in `autosave_check`, and `clipboard_selftest` via
+    /// [`super::write_refusal`]) all refuse on [`super::cannot_put_back`], and refusing is
+    /// worth nothing unless the two answers
+    /// agree at the seam: a board the gate waves through has to be one `put_back` can
+    /// actually restore, and a board it refuses has to be one `put_back` cannot. The third
+    /// shape below is #88 - it used to read back as *empty*, so no gate refused it,
+    /// `put_back` took the `clear()` arm, and the row printed "it was empty, and is empty
+    /// again" about a board nobody had looked at.
+    #[test]
+    fn the_gate_refuses_exactly_the_boards_put_back_cannot_restore() {
+        use platform_windows::clip::Contents;
+
+        // A board builder rather than six literals, so that the four fields and the format
+        // names cannot drift apart between the shapes being compared.
+        let board = |files: usize, html: bool, image: bool, text: bool, formats: &[&str]| {
+            Contents {
+                image_bytes: image.then(|| vec![12u8, 34, 56, 255]),
+                html: html.then(|| "<html><body>碎</body></html>".to_string()),
+                text: text.then(|| "一句话".to_string()),
+                files: (0..files)
+                    .map(|i| std::path::PathBuf::from(format!("C:\\temp\\{i}.png")))
+                    .collect(),
+                formats: formats.iter().map(|s| (*s).to_string()).collect(),
+            }
+        };
+
+        // ---- Refused, each shape named individually (#224) rather than as "some boards".
+        // The last one is bound on its own because it is also the board `put_back` is asked
+        // about below - naming it beats pointing at a position in this list.
+        let rtf_only = board(0, false, false, false, &["Rich Text Format", "#7"]);
+        let refusals = [
+            (
+                "a file list, on its own",
+                board(2, false, false, false, &["CF_HDROP"]),
+            ),
+            (
+                // The one the four hand-written conditions used to let through: they asked
+                // `image_bytes.is_none() && text.is_none()` first, so a list riding beside a
+                // picture passed the gate and the paths were gone after the write.
+                "a file list riding beside a picture",
+                board(2, false, true, false, &["CF_HDROP", "CF_DIB"]),
+            ),
+            (
+                "html riding beside text",
+                board(0, true, false, true, &["HTML Format", "CF_UNICODETEXT"]),
+            ),
+            (
+                "html riding beside a picture",
+                board(0, true, true, false, &["HTML Format", "CF_DIB"]),
+            ),
+            // #88. `formats` is the only field that says anything here.
+            ("nothing this app can read", rtf_only.clone()),
+        ];
+        for (who, c) in &refusals {
+            assert!(
+                super::cannot_put_back(c),
+                "{who}: 这一块板过了闸，而 put_back 还不回去它"
+            );
+        }
+
+        // ---- Waved through. The first three are the shapes that matter most: a real copy
+        // almost always carries names this app cannot read beside the leg it can, and
+        // refusing those would refuse every board a user actually has.
+        let let_through = [
+            ("a board that carried nothing", board(0, false, false, false, &[])),
+            (
+                "a picture, with a stranger's names beside it",
+                board(
+                    0,
+                    false,
+                    true,
+                    false,
+                    &["CF_DIB", "Chromium Web Custom MIME Data", "Rich Text Format"],
+                ),
+            ),
+            (
+                "text out of Word, so RTF rides along",
+                board(0, false, false, true, &["CF_UNICODETEXT", "Rich Text Format", "#7"]),
+            ),
+            (
+                "html alone, which write_html can re-envelope",
+                board(0, true, false, false, &["HTML Format"]),
+            ),
+        ];
+        for (who, c) in &let_through {
+            assert!(!super::cannot_put_back(c), "{who}: 这一块板被闸拦下了，而它还得起");
+            // And the reason it is let through is a reason, not an accident of the
+            // condition: either there is nothing to give back (so `clear()` is licensed, and
+            // only `is_empty()` - which now counts `formats` - can say so), or one leg is
+            // readable and `put_back`'s chain reaches a writer for it.
+            assert!(
+                c.is_empty() || c.image_bytes.is_some() || c.text.is_some() || c.html.is_some(),
+                "{who}: 闸放它过去了，而 put_back 那架梯子上没有一枚臂够得着它"
+            );
+        }
+
+        // ---- The seam itself, on the two arms that write nothing.
+        match super::put_back(&Some(rtf_only)) {
+            Err(said) => {
+                // It names what the board gave up, which is the only thing about it this app
+                // ever knew - names, never bytes (§9.1).
+                assert!(
+                    said.contains("Rich Text Format") && said.contains("#7"),
+                    "{said} 没把那一块板上的名字点出来"
+                );
+                assert!(
+                    !said.contains("empty"),
+                    "{said} 又在替一块没人看过的板说「它本来是空的」"
+                );
+            }
+            Ok(said) => panic!("一块读不来的板被说成还回去了：{said}"),
+        }
+        // `read()` answering `None` is the other arm that writes nothing, and its sentence
+        // has to stay a different sentence: "would not open" is a fact about the machine,
+        // "cannot read" is a fact about this app.
+        match super::put_back(&None) {
+            Err(said) => assert!(
+                said.contains("would not open") && !said.contains("Rich Text Format"),
+                "{said} 与「读不来那一块板」说成了同一句话"
+            ),
+            Ok(said) => panic!("一块打不开的板被说成还回去了：{said}"),
+        }
+    }
+
+    /// The three refusals [`super::write_refusal`] folds into the one string every row of
+    /// `clipboard_selftest` prints, kept apart by what each says. Pure for the same reason
+    /// the test above is (§9.1 第十条: 单测不动板): the door itself cannot be witnessed
+    /// without writing to a real board, but the decision it makes *before* writing can be,
+    /// and #88 is the round that proved an unwitnessed decision there costs the user their
+    /// clipboard.
+    ///
+    /// What is asserted is never just 「有一句话回来了」 but which of the three it is. The
+    /// door prints this string on every row it refuses, so two refusals that read alike
+    /// would leave a user unable to tell 「别的程序占着板」 from 「本应用会毁掉板上那份东西」 -
+    /// and the first is something they can fix by closing a window.
+    #[test]
+    fn the_clipboard_door_names_which_of_three_refusals_stopped_it() {
+        use platform_windows::clip::Contents;
+
+        // #88's board: two names on it and not one leg this app can read.
+        let rtf_only = Contents {
+            formats: vec!["Rich Text Format".to_string(), "#7".to_string()],
+            ..Contents::default()
+        };
+        // The board the door *is* allowed to write over: one readable leg, and nothing owed
+        // beside it. Built twice rather than cloned so the two uses cannot be read as one
+        // board that survived a refusal.
+        let picture = || Contents {
+            image_bytes: Some(vec![12, 34, 56, 255]),
+            formats: vec!["CF_DIB".to_string()],
+            ..Contents::default()
+        };
+
+        // Somebody else holds it. The holder's own sentence goes through untouched, because
+        // §7.2 asks for the name and `ClipError::Locked` is what displays it - and it wins
+        // over whatever the board looks like, since a board nobody can open is a board this
+        // door has no business describing.
+        let held = super::write_refusal(Some("记事本".to_string()), &Some(picture()));
+        assert_eq!(held.as_deref(), Some("记事本"), "{held:?} 改写了占用者的名字");
+
+        // A board that would not open. Not the sentence below it: 「打不开」 is a fact about
+        // the machine, 「还放不回去」 is a fact about this app, and only the second one tells
+        // the user their own copy is what stopped the run.
+        let said = super::write_refusal(None, &None).expect("一块打不开的板竟然被放过去写了");
+        assert!(said.contains("would not open"), "{said}");
+        assert!(
+            !said.contains("Rich Text Format"),
+            "{said} 与「读不来那一块板」说成了同一句话"
+        );
+
+        // #88 itself. Before this arm existed the door wrote over the board, `put_back`
+        // reached its last arm, and the row that should have named a lost board named a
+        // restore that could never have happened.
+        let said =
+            super::write_refusal(None, &Some(rtf_only)).expect("一块只装 RTF 的板竟然被放过去写了");
+        assert!(
+            said.contains("Rich Text Format") && said.contains("#7"),
+            "{said} 没把那一块板上的名字点出来"
+        );
+        assert!(
+            !said.contains("empty") && !said.contains("would not open"),
+            "{said} 与另外两枚 refusal 说成了同一句话"
+        );
+        assert!(
+            said.contains("nothing was written"),
+            "{said} 没说自己一个字也没动那一块板"
+        );
+
+        // And the two boards that are owed nothing, so the door gets to measure: one with a
+        // leg this app can restore, and one that carried nothing at all - the only board
+        // `put_back`'s `clear()` arm is licensed on.
+        assert!(
+            super::write_refusal(None, &Some(picture())).is_none(),
+            "一块还得起的板被闸拦下了，那一档就什么也量不到"
+        );
+        assert!(
+            super::write_refusal(None, &Some(Contents::default())).is_none(),
+            "一块空板被闸拦下了，而 clear() 正是为它存在的"
+        );
+    }
+
     /// §10 第 37 项 ①. `session` prints this under `复制失败：` and `保存失败：`, so for
     /// as long as it was English the line a user read was one Chinese prefix wrapped
     /// around a sentence they could not use. The `--pin` gauge is the acceptance; this
@@ -5704,9 +6125,9 @@ mod tests {
         );
     }
 
-    /// A file that is simply not there is the third shape line 910 covers, and the one
-    /// this function cannot get from a name: the extension is a real one, so only the
-    /// operating system's own answer says why.
+    /// A file that is simply not there is the third shape §5.8.3 从图片文件创建贴图 格式要求 第 2 条
+    /// covers, and the one this function cannot get from a name: the extension is a real
+    /// one, so only the operating system's own answer says why.
     #[test]
     fn a_file_that_is_not_there_names_the_file() {
         let said = read_refusal(
@@ -5835,7 +6256,7 @@ mod tests {
     }
 
     /// §10 第 47 项 ②: the pin door's half of what 第 46 项 ① proved of the mask door.
-    /// PRD 447 says the user **应提醒**背景**将**被填充, so the judgment is about
+    /// §5.4.5 规则第 2 条 says 应提醒用户背景将被填充, so the judgment is about
     /// *order*: at the moment the sentence is spoken, the file must not exist yet, and the
     /// sentence itself must not create it. The second half is that the two sentences
     /// differ only in tense - one user, one door, no two ways of saying it.
@@ -5984,7 +6405,7 @@ mod tests {
         assert!(notice(third).is_none());
     }
 
-    /// §8.5 第一句里「将**不可见**贴图移动到**主显示器**可见区域」那一半，第一次在桥的这一只手
+    /// §8.5 第一句里「将不可见贴图移动到主显示器可见区域」那一半，第一次在桥的这一只手
     /// 上有读者。上面那一枚量的是一条直边（并集只剩 1600），而三块屏拔掉中间那一块时剩下的两块
     /// 上下错开：贴图仍在并集那只盒子里，却没有任何一台显示器在放它，`keep_visible` 对它一个字也
     /// 不说。落点写死成主屏右缘留 `MIN_VISIBLE_PX` 的那一个数（1000 − 24 = 976），不是
@@ -7293,7 +7714,7 @@ mod tests {
     /// §5.9.17 步 1 那枚开关的三扇门，各说一句各的话 —— 而**没有一扇**自己带着那句话。
     ///
     /// 这一格量的是 `ClipDoor` 那张表本身：梯子里那句「写不出去时什么东西还在」是本节规则
-    /// （PRD 1270-1271 行）的措辞，三处读法必须互不相同、又必须由梯子那一处给出。反证是默认
+    /// （§5.9.17 规则第 1、2 条）的措辞，三处读法必须互不相同、又必须由梯子那一处给出。反证是默认
     /// 行为那一扇（#274/#453）：它没人按过，所以它**不许**说「可以再复制一次」；把三扇写成同
     /// 一句、或让遮罩那一扇借走贴图那一句，都是这一格要红的写法。
     ///

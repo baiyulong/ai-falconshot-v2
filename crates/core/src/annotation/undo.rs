@@ -1,9 +1,12 @@
 //! The undo/redo stack over [`Command`]s.
 //!
-//! 计划 §6.4 fixes both numbers: 200 steps, and a style edit landing within 400
-//! ms of the previous step merges into it. §5.7.19 supplies the rule behind the
-//! first number — when the stack is full the *oldest* step goes, so the work the
-//! user is in the middle of is never the part that is lost.
+//! 两个数（200 步、400 毫秒）由档里那两枚键递进来
+//! （`qt_bridge` 的 `Settings::apply_to` 把 `annotation.undo_limit` / `undo_merge_ms` 交下来）；
+//! [`UndoStack::CAP`] 与 [`UndoStack::MERGE_MS`] 因此只剩一个身份：**出厂那一格写着的数**，
+//! 而它必须与 `Config::default()` 的那两枚一字不差，否则「什么都不改的用户」会拿到另一副深浅。
+//! §5.7.19 supplies the rule behind the first number — when the stack is full the *oldest*
+//! step goes, so the work the user is in the middle of is never the part that is lost.
+//! 换数那一手是 [`UndoStack::set_limits`]：它按同一句规则修剪已经在栈里的那些步。
 //!
 //! The stack never applies anything. By the time [`UndoStack::record`] runs the
 //! document is already written: a live stroke goes through `Document::add` as it
@@ -40,9 +43,9 @@ impl Default for UndoStack {
 }
 
 impl UndoStack {
-    /// 计划 §6.4: 200 steps.
+    /// 出厂那一格的深浅（`annotation.undo_limit` 写的就是这个数）。
     pub const CAP: usize = 200;
-    /// 计划 §6.4: 400 ms of style merging.
+    /// 出厂那一格的合并窗口（`annotation.undo_merge_ms` 写的就是这个数）。
     pub const MERGE_MS: u64 = 400;
 
     pub fn new() -> Self {
@@ -56,6 +59,18 @@ impl UndoStack {
             redo: Vec::new(),
             cap: cap.max(1),
             merge_ms,
+        }
+    }
+
+    /// 把这一台已经记着步子栈换成另一副数：档里那两枚键改了，而正在标注的这一场不该
+    /// 因此丢掉手里的工作。修剪走的是 [`Self::record`] 同一句规则 —— 从**最旧**那一头剪，
+    /// §5.7.19 的「优先保留最近操作」在两副数字之间也成立；加深的那一头什么都不还，
+    /// 撤销过的步不会因为它而回来（那需要的不是一枚数，是一段没人记着的过去）。
+    pub fn set_limits(&mut self, cap: usize, merge_ms: u64) {
+        self.cap = cap.max(1);
+        self.merge_ms = merge_ms;
+        while self.done.len() > self.cap {
+            self.done.remove(0);
         }
     }
 
@@ -296,6 +311,91 @@ mod tests {
         );
         assert_eq!(stack.depth(), 0);
         assert!(stack.undo(&mut doc).is_none());
+    }
+
+    /// 档里那两枚键自此有人递：换数不换**已经记着的工作**，剪短走的还是「最旧那一头」，
+    /// 加深那一头不还过去（撤销过的步不因为一枚数变大就回来 —— 那缺的不是上限，是一段
+    /// 没人记着的过去），而合并窗口那一枚问的是**下一次**记录，不是把已经合好的一条拆开。
+    ///
+    /// 三面各占一支（#453）：剪短、加深、换窗口；再加 `0` 那一格 —— 尺要读得出空（#274），
+    /// `set_limits(0, …)` 必须是 1 步而不是「这一场再没有一步可退」。
+    #[test]
+    fn the_two_numbers_from_the_file_re_limit_a_stack_that_already_holds_work() {
+        let mut doc = Document::new(400, 400);
+        let mut stack = UndoStack::with_limits(5, 400);
+        let ids: Vec<_> = (0..5u64)
+            .map(|i| {
+                let t = (i + 1) * 1_000;
+                stroke(&mut doc, &mut stack, t)
+            })
+            .collect();
+        assert_eq!(stack.depth(), 5);
+
+        // ① 剪短：留下的是最近那两步，掉的是最旧那三步，与栈满时同一句规则。
+        stack.set_limits(2, 400);
+        assert_eq!(stack.cap(), 2);
+        assert_eq!(stack.depth(), 2, "剪短剪掉的只能是最旧的那些");
+        stack.undo(&mut doc);
+        stack.undo(&mut doc);
+        assert_eq!(
+            doc.elements.iter().map(|e| e.id).collect::<Vec<_>>(),
+            vec![ids[0], ids[1], ids[2]],
+            "退两步该退掉最近那两枚，留在场上的该是最旧那三枚"
+        );
+        assert!(stack.undo(&mut doc).is_none(), "被剪掉的三步不再欠着一次撤销");
+
+        // ② 加深那一头不还过去任何一步：上面退掉的那两步留在退掉的地方，不因为一枚数变
+        // 大就回来 —— 那缺的不是上限，是一段没人记着的过去。
+        stack.set_limits(9, 400);
+        assert_eq!(stack.cap(), 9);
+        assert_eq!(stack.depth(), 0, "上限变大把退过的步还回来了");
+        // 而它也不剪：栈里还记着的那些，加深前后一条不少。
+        let mut held = Document::new(400, 400);
+        let mut deep = UndoStack::with_limits(5, 400);
+        for i in 0..3u64 {
+            stroke(&mut held, &mut deep, (i + 1) * 1_000);
+        }
+        deep.set_limits(9, 400);
+        assert_eq!(deep.depth(), 3, "加深那一头不该剪掉记着的那几条");
+
+        // ③ 换窗口问的是下一次记录。同一枚对象、隔 100 毫秒的两笔样式：窗口 400 合一条，
+        // 窗口 0 各是一条 —— 这一支若读不到那枚数，两种窗口给出的答案是同一个。
+        let mut doc2 = Document::new(400, 400);
+        let id = doc2.add(Kind::Rect, rect(0, 0, 4, 4), Style::default()).id;
+        let mut merged = UndoStack::with_limits(20, 400);
+        assert!(merged.record(
+            style_command(&doc2, &[id], &pen(3)).unwrap(),
+            1_000
+        ));
+        assert!(
+            !merged.record(
+                style_command(&doc2, &[id], &pen(4)).unwrap(),
+                1_100
+            ),
+            "窗口 400 时那两笔该合进一条"
+        );
+        assert_eq!(merged.depth(), 1);
+
+        merged.set_limits(20, 0);
+        assert_eq!(merged.merge_window(), 0, "页上写的 0 就是 0，不是出厂那一格");
+        assert!(
+            merged.record(
+                style_command(&doc2, &[id], &pen(5)).unwrap(),
+                1_200
+            ),
+            "窗口 0 时连着的两笔不该再合进同一条"
+        );
+        assert_eq!(merged.depth(), 2);
+
+        // ④ `0` 那一格：深浅为 0 是「这一步不记」，不是「这一场一步也退不了」。
+        let mut zero = UndoStack::new();
+        zero.set_limits(0, 400);
+        assert_eq!(zero.cap(), 1, "0 枚的档读成 1 步，与 with_limits 同一副夹法");
+        assert!(zero.record(
+            style_command(&doc2, &[id], &pen(6)).unwrap(),
+            2_000
+        ));
+        assert_eq!(zero.depth(), 1);
     }
 
     #[test]

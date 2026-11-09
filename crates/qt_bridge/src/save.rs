@@ -6,11 +6,12 @@
 //! `[output]` instead of from a user typing one. Until P35 the first two spelled the
 //! same act twice,
 //! and the two spellings had drifted: the pin took `..Default::default()` so
-//! `[output] jpeg_quality` was inert on that half of the product (PRD 507 asks for a
-//! configurable JPG quality, not a half-configurable one), it answered in English, and
-//! it flattened transparency without saying so (PRD 506/447/521). A third door would
-//! drift the same way, so the sentence, the format choice and the count live here and
-//! the doors only say what a refusal costs *their* user.
+//! `[output] jpeg_quality` was inert on that half of the product (§5.5.5 另存为
+//! 支持格式要求 第 3 条 asks for a configurable JPG quality, not a half-configurable
+//! one), it answered in English, and it flattened transparency without saying so
+//! (§5.5.5 另存为 支持格式要求 第 2 条 / §5.4.5 透明白板模式 规则 第 2 条). A third door
+//! would drift the same way, so the sentence, the format choice and the count live
+//! here and the doors only say what a refusal costs *their* user.
 
 use std::borrow::Cow;
 
@@ -41,7 +42,7 @@ pub const SAVE_EXITS: &str = "可以换一处目录再存一次，也可以把�
 
 /// §8.3 第一句要的「提示原因」：磁盘或编码器回绝的那件事，说成用户读得懂的一行中文。
 ///
-/// [`encode::EncodeError`] 自己的壳是英文的（`io: …`、`codec failed: …`），而 §10 第 37 项 ①
+/// [`encode::EncodeError`] 自己的壳是英文的（`io: …`、`codec failed: …`），而退役台账 P37①
 /// 量过那种壳进到中文句子里是什么样子：[`crate::state::read_refusal`] 与
 /// [`crate::state::not_drawn`] 就是为了挡它才存在的两格。这一格是它们在**写**这一侧的对面 ——
 /// 读那一路问的是「那份文件怎么了」，这一路问的是「这台机器为什么不让放文件」，两问不同，
@@ -143,7 +144,7 @@ fn percent_decode(text: &str) -> String {
 /// spellings. PRD §5.5.5's third step is "选择目录、文件名和格式", so the filter is
 /// part of what the user chose and it outranks `[output] format`; the configured one
 /// is what is left when no filter names a format this app can write, which includes
-/// the empty text a dialog answers with before anything is selected (§10 第 40 项 ②
+/// the empty text a dialog answers with before anything is selected (retired ledger P40②
 /// measured that shape as `||-1`: no name, no extensions, index -1).
 ///
 /// First recognizable wins rather than the most frequent: a filter that offers
@@ -159,7 +160,7 @@ pub fn filter_format(chosen: &str) -> Option<encode::Format> {
 ///
 /// The name says what the door *meant* to write; this says what landed. Both gauges need
 /// the second, because a row that only looked for `shot.jpg` would pass on a PNG written
-/// under a JPEG name - which is exactly the failure §10 第 40 项 ② is out to catch, since
+/// under a JPEG name - which is exactly the failure retired ledger P40② is out to catch, since
 /// the configured format is PNG on this machine and a door that ignored the dialog's
 /// filter would still answer "已保存到 …jpg" if the suffix were the only evidence.
 ///
@@ -181,7 +182,7 @@ pub fn written_as(path: &std::path::Path) -> Option<encode::Format> {
 ///
 /// This is [`write_to`] with the name left out, which is enough for every door whose user
 /// just typed that name into a dialog. It is not enough for a door that has to hand the
-/// *file* to something else: §10 第 43 项 ①'s 存完再钉图 pins what landed on disk, and an
+/// *file* to something else: retired ledger P43①'s 存完再钉图 pins what landed on disk, and an
 /// extension may have been appended below - from the dialog's filter, or from the
 /// configured format - so a caller that re-derived the name would be guessing at a rule it
 /// does not own. Two spellings of that rule is how the two doors came to disagree about one
@@ -220,10 +221,10 @@ pub fn write_to(
 /// Which file this name means, and which encoder that file selects - the half of
 /// [`write_to`] that needs no bytes.
 ///
-/// It is a function of its own because the pre-write reminder (§10 第 46 项 ①, PRD 447's
-/// "背景**将**被填充") has to answer the same two questions the write answers, and an
-/// extension rule spelled twice is how the two doors came to disagree about one picture
-/// once already. This is that rule's only owner.
+/// It is a function of its own because the pre-write reminder (§10 第 46 项 ①,
+/// §5.4.5 透明白板模式 规则 第 2 条's "背景将被填充") has to answer the same two questions
+/// the write answers, and an extension rule spelled twice is how the two doors came to
+/// disagree about one picture once already. This is that rule's only owner.
 fn decide(
     typed: &str,
     chosen: &str,
@@ -273,8 +274,9 @@ pub fn transparency_lost(frame: &Frame, format: encode::Format) -> usize {
 }
 
 /// What a format without alpha is about to do to this picture, said before anything is
-/// written. PRD 447 ("不支持透明度的输出格式**应提醒**用户背景**将**被填充") asks for a
-/// reminder, not a gate: the write still happens, and the caller shows both sentences.
+/// written. §5.4.5 透明白板模式 规则 第 2 条 ("不支持透明度的输出格式应提醒用户
+/// 背景将被填充") asks for a reminder, not a gate: the write still happens, and the caller
+/// shows both sentences.
 ///
 /// An empty string is the honest answer when nothing is lost, and it is why this returns
 /// the text rather than a count - a door that prints "有 0 px 透明" about a PNG would be
@@ -405,12 +407,11 @@ pub fn quick_to(
         facts,
         format.ext(),
     );
-    // The probe is the one `resolve_on_disk` uses, spelled out here because the name this
-    // function computed is also what a refusal has to quote, and a second call that
-    // re-derives it is the same duplicated rule P35 is about.
-    let target = match naming::resolve(quick.dir, &asked, quick.collision, |p: &std::path::Path| {
-        p.exists()
-    }) {
+    // The on-disk probe has one author: `naming::resolve_on_disk` is the real-filesystem
+    // variant of `resolve`, so this path asks it instead of spelling out a private
+    // `p.exists()` closure of its own. `asked` is computed once above and is still the name
+    // the refusal below quotes.
+    let target = match naming::resolve_on_disk(quick.dir, &asked, quick.collision) {
         Some(path) => path,
         // `None` means one of two opposite things, and which one it was is readable from
         // the setting rather than guessed. `Overwrite` cannot answer `None` at all, so
@@ -622,7 +623,7 @@ mod tests {
         }
     }
 
-    /// The filter outranks the setting (§10 第 40 项 ②, PRD §5.5.5 step 3's "选择目录、文件名
+    /// The filter outranks the setting (retired ledger P40②, PRD §5.5.5 step 3's "选择目录、文件名
     /// 和格式"). Every leg below is graded against a `[output] format` that *disagrees* with
     /// the filter handed to it, because the config pinned for these runs says
     /// `format = "png"`: a rule that ignored the dialog and answered PNG would pass a leg
@@ -960,7 +961,7 @@ mod tests {
     /// form in which a second act can be handed this picture. A caller that re-derived
     /// the name from the text the user typed would be guessing at the extension rule -
     /// and when the filter appended a `.jpg` nobody typed, it would go and pin (or show,
-    /// or promise) a file that was never written. §10 第 43 项 ① is the reason this
+    /// or promise) a file that was never written. Retired ledger P43① is the reason this
     /// exists: 存完再钉图 has to pin what landed, not what was asked for.
     #[test]
     fn the_path_it_returns_is_the_file_that_exists() {
@@ -1036,7 +1037,7 @@ mod tests {
     /// the file it produces is the one `[output]` describes. The name is asserted as a
     /// name - template, prefix and extension all read out of the settings - because that
     /// is the half of this door a dialog never exercised, and the sentence is asserted
-    /// against the path it returned for the same reason §10 第 43 项 ① asserted the dialog
+    /// against the path it returned for the same reason retired ledger P43① asserted the dialog
     /// door's: a promise about a file the caller does not hold is a promise nobody can
     /// keep.
     #[test]

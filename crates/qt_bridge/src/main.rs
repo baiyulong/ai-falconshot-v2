@@ -85,6 +85,7 @@
 //!   is turned off here — the mask is the only window, and closing it must not take the
 //!   registered keys and the icon away with it.
 
+mod access_check;
 mod annotate;
 mod annotate_check;
 mod autosave_check;
@@ -260,7 +261,15 @@ fn cli_capture_to_pin(select: cli::Select) -> Result<String, String> {
 /// 同一副骨架（同一扇设置窗、另一副计划、写回钉在同一枚落点上），因此**进** [`WINDOW_DOORS`]：
 /// 它写的仍是那一枚 `settings_open`，三档点的是同一扇窗 —— 并列时窗那侧说的话没有作者。P184 给同一
 /// 档补上步骤 4 与 5 那两枚钮：骨架一字未动，只是计划长了两段、腿多了三条。
-const EXTRA_DOORS: [&str; 9] = [
+///
+/// 最后进来的是 `--live`：§5.2.1 步 2 后半支那一档，`[capture] freeze_frame` **关着**跑一整场
+/// 遮罩，量实时背景那一支自己（两阶段自检 → `falcon_core::capture::live_gate` → 约每 333 ms 回灌
+/// 一帧）。它要数字同 ⑭，而且它要的数字比别的档都长（`mask_check::MIN_LIVE_MS`）：判据是
+/// `revision` 与 `live_frames` 之间的一条算术，两帧以下咬不住。它与 `--hotcorner` 同一族留在
+/// `GAUGE_FLAGS` 之外（`gauge_run` 只闸 `select`，而这一档压根不 select），但它**不进**
+/// [`WINDOW_DOORS`]（它不开一扇正常的窗，它开的还是那几扇遮罩窗）、也**不进** [`HISTORY_DOORS`]
+/// （它不种历史行）—— 它自己的「拒一切并列」那一格写在 `refusals` 里，理由有三条，逐条都在那儿。
+const EXTRA_DOORS: [&str; 10] = [
     "--reveal",
     "--autosave",
     "--hotcorner",
@@ -270,6 +279,7 @@ const EXTRA_DOORS: [&str; 9] = [
     "--custom-window",
     "--history-window",
     "--group-window",
+    "--live",
 ];
 
 /// `EXTRA_DOORS` 里那**三**档**要一扇真窗**的：`--settings-window` 量页上的一行跟不跟着值走
@@ -527,6 +537,46 @@ fn refusals(args: &[String], gauge_mode: bool) -> Vec<String> {
             "--autosave 不能和 --reveal 一起用：两档各自开遮罩、各自数目录，并列时那两次普查数的不是同一张图"
                 .to_string(),
         );
+    }
+    // §5.2.1 步 2 后半支那一档：`--live` 要的是一整场**只有它自己在读的桌面**，所以它拒一切并列。
+    // 三条理由，每一条都能单独把读数变成别人的：
+    // * `live frame of` 那一族判的是 `revision == 1 + live_frames`，前提是这一趟进程里
+    //   `mask_check::open` 只跑过一次（`next_revision` 从 0 起，`open()` 拿走的就是 1）—— 而
+    //   `--mask` / `--ink` / `--reveal` / `--autosave` 各开一张自己的遮罩，第二张开起来那条算术
+    //   就不成立了，而且它们钉的是 `freeze_frame = true`，会把本档在内存里翻过去的那一位翻回来。
+    // * 刷新线程在整个循环里持有 `WDA_EXCLUDEFROMCAPTURE`（`mask.rs` 的 `live_thread`，
+    //   `restore_all()` 只在循环断了之后才跑），把遮罩那几扇窗从**所有**屏幕读取里摘出去；任何
+    //   另一档读屏、读窗清点或读"前台是谁"的读数，读到的都是被这一档改过的那一场。
+    // * 闹钟是 `pinQuitAfter` 里两枚**独立**的 `QTimer::singleShot`：并列时先响的那一枚替另一档
+    //   收工，而本档要的毫秒数（`main` 抬到不低于 `mask_check::MIN_LIVE_MS`）被静默截短 ——
+    //   一份看上去跑满了的报告，量的是半趟（#433 的反面）。
+    //
+    // 名单**不含** [`EXIT_DOORS`] / [`WINDOW_DOORS`] / [`FILE_COMMANDS`] 那三族：`--live` 在
+    // [`EXTRA_DOORS`] 里，而那三族各自的「不与任何门同开」读的正是这张表，本档一进去它们就先拦了，
+    // 那一句照样点名双方；同一件并列在此处再拦一次就是同一枚判据写两份（#281），而两份各交一句正是
+    // P142/P143 那两对 `2 != 1` 的形状。`--warm-rounds` / `--mask-soft` / `--hint-hold` 与那四档
+    // `--selftest` 附加档同理不在名单里：它们各自那条「需要和 --mask / --ink / --hint / --selftest
+    // 一起用」已经把并列拦下了，而拦下的那一句说的是**它们**没有可修饰的东西，不是本档。
+    if flag("--live") {
+        let mut others: Vec<&str> = mask::GAUGE_FLAGS.to_vec();
+        others.extend([
+            "--reveal",
+            "--autosave",
+            "--hotcorner",
+            "--history-window",
+            "--custom-window",
+            "--group-window",
+            "--selftest",
+            "--desktop",
+            "--hotkeys",
+        ]);
+        let hit: Vec<&str> = others.into_iter().filter(|n| flag(n)).collect();
+        if !hit.is_empty() {
+            orphans.push(format!(
+                "--live 要一整场只有它自己在读的桌面，不与 {hit:?} 同开：并列时遮罩开了不止一次、\
+                 屏幕读取被 WDA_EXCLUDEFROMCAPTURE 改过，而先响的那枚闹钟替另一档收工"
+            ));
+        }
     }
     // 装热键的那一步在 `engine.load()` 之后，而这两类档都在它之前就走完了：`--selftest`
     // 与 `--desktop` 打印完就 `exit`，量具档读的是自己开的那张遮罩。和它们并列时，这一档
@@ -982,8 +1032,13 @@ fn main() {
     //
     // 退出码照 §5.17 的三条规则：成功 0、失败 1、参数错 3；「文件写入失败时不得返回成功状态」
     // 在这里不是口号 —— `config_export` 把 `std::fs::write` 的 Err 原样递回来，那一支退 1。
+    //
+    // 这两档递的是 `None` / `false` 那一枚「问不到机器」：这一支排在 `app.exec()` 之前，退了进程
+    // 就没了场上的贴图，`PinSet` 是 `new()` 那份空的。「拿空集合去同步一台不存在的机器」会印出一句
+    // 「新建 0、删除 0」像是量过，而它什么也没读（#261）。分组那一族在此刻是谁的，由报告里那一行
+    // 原样说出来（`settings::export_groups_note` / `config_import` 的最后一支）。
     if let Some(p) = path_after("--export-config") {
-        match settings::config_export(std::path::Path::new(&p)) {
+        match settings::config_export(std::path::Path::new(&p), None) {
             Ok(line) => {
                 print!("{line}");
                 std::process::exit(0);
@@ -1001,7 +1056,7 @@ fn main() {
         } else {
             falcon_core::config::ImportScope::Suggested
         };
-        match settings::config_import(std::path::Path::new(&p), scope, flag("--confirm")) {
+        match settings::config_import(std::path::Path::new(&p), scope, flag("--confirm"), false) {
             Ok(line) => {
                 print!("{line}");
                 std::process::exit(0);
@@ -1309,10 +1364,10 @@ fn main() {
         std::process::exit(verdict_code(0, verdict));
     }
 
-    // §5.21.2 / §5.18.1 的那一扇门：托盘第 1440 行那枚「帮助」有没有归宿、PRD 那一节点名的四行是不是
-    // 还各有作者。与上面四档同族（不开遮罩、不写用户的档、报告打完就退），所以它共享 `EXIT_DOORS`
-    // 那一条拒绝，也不带毫秒数、不进闹钟名单。它发 BLOCKED（退出码 3）而不是 PASS：那枚菜单项本档
-    // 一次也没真点过，那一格写在自己报告的最后。
+    // §5.21.2 / §5.18.1 的那一扇门：§5.18.1「菜单建议」那一列的第 8 行那枚「帮助」有没有归宿、
+    // PRD 那一节点名的四行是不是还各有作者。与上面四档同族（不开遮罩、不写用户的档、报告打完
+    // 就退），所以它共享 `EXIT_DOORS` 那一条拒绝，也不带毫秒数、不进闹钟名单。它发 BLOCKED
+    // （退出码 3）而不是 PASS：那枚菜单项本档一次也没真点过，那一格写在自己报告的最后。
     if flag("--help-menu") {
         let (verdict, report) = help_menu::measure();
         println!("{report}");
@@ -1495,7 +1550,13 @@ fn main() {
     let ink_ms = ink_want.map(|ms| ms.max(annotate_check::DIALOG_MIN_MS));
     let shader_on = !flag("--mask-soft");
     if mask_ms.is_some() {
-        match mask_check::open(shader_on) {
+        // 钉在开遮罩之前，和 `--reveal` / `--autosave` 那两档同一条协议（§9.1 第十五条）：`close()`
+        // 里那句 `write_back` 是产品的腿，量具拦不住它，只能给它换地方。`measure()` 里那一格
+        // `pinned settings writes` 判的就是这件事——钉子要是哪天被人删了，它得红在这一趟上，
+        // 而不是静默地往用户 `%APPDATA%\ai-falconshot\config.toml` 里写一版量具自己翻过的档。
+        let pinned = mask_check::pin_settings();
+        println!("[mask pin] 配置写回钉到 {}", pinned.display());
+        match mask_check::open(shader_on, true) {
             Ok(line) => println!("[mask] {line}"),
             Err(e) => println!("[mask] 开不起来：{e}"),
         }
@@ -1547,7 +1608,7 @@ fn main() {
         // `write_back` 是产品的，腿拦不住它，只能给它换地方。
         let pinned = reveal_check::pin();
         println!("[reveal pin] 配置写回钉到 {}", pinned.display());
-        match mask_check::open(!flag("--mask-soft")) {
+        match mask_check::open(!flag("--mask-soft"), true) {
             Ok(line) => {
                 reveal_opened = true;
                 println!("[reveal mask] {line}（被要求等 {ms} ms）");
@@ -1565,7 +1626,7 @@ fn main() {
     if let Some(ms) = auto_ms {
         let pinned = autosave_check::pin();
         println!("[autosave pin] 配置写回钉到 {}", pinned.display());
-        match mask_check::open(!flag("--mask-soft")) {
+        match mask_check::open(!flag("--mask-soft"), true) {
             Ok(line) => {
                 auto_opened = true;
                 println!("[autosave mask] {line}（被要求等 {ms} ms）");
@@ -1583,6 +1644,33 @@ fn main() {
                 }
             }
             Err(e) => println!("[autosave] 遮罩开不起来：{e}"),
+        }
+    }
+
+    // §5.2.1 步 2 后半支那一档：`[capture] freeze_frame` **关着**开一整场遮罩，量实时背景那一支
+    // 自己（两阶段自检 → `falcon_core::capture::live_gate` → 约每 333 ms 回灌一帧）。骨架与
+    // `--reveal` / `--autosave` 同一副：先钉写回，再开遮罩，报告等 `app.exec()` 回来之后才读。
+    // 与那两档分开的只有一枚参数 —— `open` 的第二枚 `false`：它在**内存里**把 `freeze_frame`
+    // 翻过去，而上面那枚钉子保证翻过去的那一份不会在 `close()` 写回用户 `%APPDATA%` 里那份档
+    // （§9.1 第十五条）。翻内存而不翻 `MaskState.capture`，是因为 `MaskState::open` 里有一句
+    // `self.capture = crate::settings::capture_cfg()`，它会把事先摆在状态上的任何值冲掉。
+    //
+    // 毫秒数抬到不低于 `mask_check::MIN_LIVE_MS`，与 `--ink` / `--pin` / `--reveal` 同一条口径
+    // （§10 第 38 项 ②）：被要求的那个数与真等的那个数是两条读数，两条都印。这一档抬得比谁都高，
+    // 因为它判的是 `revision` 与 `live_frames` 之间的一条算术，两帧以下咬不住；那个数怎么来的
+    // 写在 `MIN_LIVE_MS` 头上，是从 2026-11-07 那趟 `--ignored` 探针的整屏读取读数推的。
+    let live_want = after("--live");
+    let live_ms = live_want.map(|ms| ms.max(mask_check::MIN_LIVE_MS));
+    let mut live_opened = false;
+    if let Some(ms) = live_ms {
+        let pinned = mask_check::pin_settings();
+        println!("[live pin] 配置写回钉到 {}", pinned.display());
+        match mask_check::open(shader_on, false) {
+            Ok(line) => {
+                live_opened = true;
+                println!("[live mask] {line}（被要求等 {ms} ms）");
+            }
+            Err(e) => println!("[live] 遮罩开不起来：{e}"),
         }
     }
 
@@ -1617,7 +1705,7 @@ fn main() {
 
     // §5.20.3 那一档：同一扇窗，另一副计划。前置与上面那一档同一形状（**写在 `engine.load()`
     // 之前**，窗只在 `Component.onCompleted` 读一次计划），写回也钉在同一枚落点上 —— 这一档的
-    // 腿里有一次是真的 `apply_import` 加一次真的 `save`，用户那份 `%APPDATA%` 档不是草稿纸。
+    // 腿里有一次是真的 `apply_changes` 加一次真的 `save`，用户那份 `%APPDATA%` 档不是草稿纸。
     //
     // `arm_io` 会把要导入的那份档**现在就种在盘上**（一行日志说出种了哪两枚键），因为步骤 3 说
     // 的是「在另一台设备上选一份档」：本机上没有第二台，只有种出来的这一份能问出「会盖掉哪几枚」。
@@ -1925,6 +2013,15 @@ fn main() {
         state::quit_after(ms);
         armed.push("--autosave");
     }
+    if let Some(ms) = live_ms {
+        // 与上面 `--autosave` 那一格同一条债（P58）：这一档进了 `numbered`（少了 `<ms>` 会被
+        // ⑭ 拒），所以它也必须进这张"谁点了就设闹钟"的表 —— 缺了这一行，`app.exec()` 就变成
+        // 一次等真人的产品会话，日志停在 `[live mask]` 那一行再也不回来，与一次挂死分不开。
+        // 等的是刷新腿自己：两阶段自检那两次整屏读取（这台机器上 2026-11-07 量到约 620 ms）
+        // 加上之后那约十帧回灌，两个数都在 `mask_check::MIN_LIVE_MS` 头上算过。
+        state::quit_after(ms);
+        armed.push("--live");
+    }
     if let Some(ms) = corner_ms {
         // 这一档等的不是任何一条腿：它要的只是「这一趟会自己结束」，而不是把一个只读指针的门
         // 变成一次等真人的会话。真正的采样跑在 `exec()` 之后，所以这一趟的墙钟是 `ms + live`
@@ -1970,7 +2067,8 @@ fn main() {
     if let Some(ms) = custom_ms {
         // 这一档的地板比上面两档高一截，多出来的那一截是**延时那一条腿**：它要真的数满
         // `DELAY_LEG_SECONDS` 枚秒（`delay::STEP_MS` 一枚一秒），而不是把倒计时写成一句读数。
-        // 「画面冻在数满那一刻」这一条只有让表真的走完才量得到（§5.2.4 第 420 行同一条时刻）。
+        // 「画面冻在数满那一刻」这一条只有让表真的走完才量得到（§5.4.3 规则 第 2 条
+        // 「延时截图应捕获倒计时结束时的指针状态」同一条时刻）。
         state::quit_after(ms);
         armed.push("--custom-window");
     }
@@ -2204,6 +2302,25 @@ fn main() {
         println!(
             "[autosave after {ms} ms] 要求 {} ms 生效 {ms} ms qml_loaded={} {} {}",
             auto_want.unwrap_or(ms),
+            state::qml_loaded(),
+            exe_stamp(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
+    }
+    if let Some(ms) = live_ms {
+        // §5.2.1 步 2 后半支那一档。报告放在 `app.exec()` 之后读，与 `--reveal` / `--autosave`
+        // 同一个理由：刷新那一支的读数是**时间**换来的（两阶段自检 + 约每 333 ms 一帧），在闹钟响
+        // 之前读等于读半趟。`live_measure` 自己会 `close()`，所以这里不需要再收一遍。
+        let (verdict, report) = if live_opened {
+            mask_check::live_measure(ms)
+        } else {
+            mask_check::open_failed("上面那行 [live] 说了为什么")
+        };
+        println!("{report}");
+        println!(
+            "[live after {ms} ms] 要求 {} ms 生效 {ms} ms qml_loaded={} {} {}",
+            live_want.unwrap_or(ms),
             state::qml_loaded(),
             exe_stamp(),
             state::desktop_summary()
@@ -2448,8 +2565,8 @@ mod tests {
         doors.extend(crate::EXTRA_DOORS);
         assert_eq!(
             doors.len(),
-            15,
-            "本轮的门是十五枚（P183 加进 `--settings-palette`）：多一枚少一枚都要先改这条再改代码"
+            16,
+            "本轮的门是十六枚（§5.2.1 步 2 后半支那一档 `--live` 进来）：多一枚少一枚都要先改这条再改代码"
         );
 
         for name in doors {

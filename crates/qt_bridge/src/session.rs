@@ -17,7 +17,7 @@ pub mod qobject {
 
     // The product's thin C++ shim (cpp/pin_shim.h). QSurfaceFormat, QWindow::winId,
     // the Win32 extended styles and the QQuickImageProvider subclass are all
-    // C++-only, which is why plan §3.6 declares a shim mandatory.
+    // C++-only, which is why a C++ shim is mandatory here.
     unsafe extern "C++" {
         include!("qt_bridge/pin_shim.h");
 
@@ -109,7 +109,7 @@ pub mod qobject {
         /// The same slot the mask's toolbar binds to as `pre_notice`: what a format
         /// without alpha is about to do to this pin, in the future tense, and empty when
         /// nothing is being lost. Kept off `status` because `status` is one line and the
-        /// pair has to survive together - PRD 447 asks for the warning, §5.9.13 for the
+        /// pair has to survive together - §5.4.5 规则第 2 条 asks for the warning, §5.9.13 for the
         /// result, and a door that overwrites one with the other can only report half.
         #[qproperty(QString, pre_notice)]
         /// Rounds the `--mask` gauge still owes, after the first one. A qproperty and
@@ -236,7 +236,7 @@ pub mod qobject {
         /// 用两枚控制字符而不是 `,`／`|`：分组名是用户自己打的，任何可见分隔符都可能出现在名字里，
         /// 而名字里出现控制字符的可能性能忽略 —— 这一串是给机器读的，不是给人读的。
         ///
-        /// 顺序就是那一格返回的顺序（core 的 `groups` vec 本体），于是 §5.12.3 那句「排序变化
+        /// 顺序就是那一格返回的顺序（core 的 `groups` vec 本体），于是 §5.12.3 那句「排序变化应
         /// 同步反映到快捷切换菜单」在界面一侧只是**重读**这一串，不重排。谁改了这一串：下面六只
         /// 分组手各改一次，改完重写它 ⇒ 每次重写自会 notify，QML 的 `Repeater` 就重建那些菜单项。
         #[qproperty(QString, groups)]
@@ -272,7 +272,7 @@ pub mod qobject {
         #[qproperty(i32, custom_open)]
         /// 对话框**自己那一场**倒计时还剩几枚数。它与 [`Self::delay_left`] 不是一格：那一格数的是
         /// 「按下截图到遮罩出现」那一段（§5.2.4，数完开遮罩），这一格数的是「按下开始截图到真的
-        /// 截这一块」（§5.3.5 第 301 行 + 第 302 行，数完截填好的那块）。两场的算术同源
+        /// 截这一块」（§5.3.5 操作步骤 步骤 4 与步骤 5，数完截填好的那块）。两场的算术同源
         /// （[`crate::delay::Countdown`]、同枚 `STEP_MS`），实例各是一个。
         ///
         /// 页上那枚 `Timer` 的 `running` 绑的是这枚**值**而不是一次调用（[`Self::warm_left`] 那条
@@ -283,18 +283,20 @@ pub mod qobject {
         /// [`Self::custom_tick`]）。窗不许自己拼一句「已截图」：那句子的作者在上面那一档，而门判的
         /// 就是窗递回来的那一串与现算的那一串逐字节相同（#281）。
         #[qproperty(QString, custom_note)]
-        /// §5.14.4 第 1309 行那扇「历史记录管理」窗「该不该在场」的唯一读数：`1` 是开、`0` 是关。
-        /// 与 [`Self::settings_open`]、[`Self::custom_open`] 同一副骨架：写它的是桥
+        /// §5.14.4 操作步骤 步骤 1 那扇「历史记录管理」窗「该不该在场」的唯一读数：`1` 是开、
+        /// `0` 是关。与 [`Self::settings_open`]、[`Self::custom_open`] 同一副骨架：写它的是桥
         /// （[`crate::hotkey::Work::History`]：托盘里那一点）与窗自己（「关闭」那一枚钮），读的只有
         /// `main.qml` 那一条 `syncHistory`。桥这侧一次 `show()` 也不叫：谁造这扇窗，销毁就归谁。
         #[qproperty(i32, history_window_open)]
-        /// §5.12.3 / §5.12.4 第 1218 行与第 1236 行那一扇「图片分组管理」窗「该不该在场」的唯一
-        /// 读数：`1` 是开、`0` 是关。与上面两格同一副骨架 —— 写它的是桥
-        /// （[`crate::hotkey::Work::Groups`]：§5.18.1 第 1437 行托盘里那一点）与窗自己（那枚「关闭」钮，
-        /// 名字出自 [`crate::group_window::CLOSE_WORD`]），读的只有 `main.qml` 那一条 `syncGroup`。PRD 第 1251 行那三个入口
-        /// （托盘菜单 / 分组面板 / 快捷键）里，「分组面板」这一格自此在盘上有一扇窗可对；
-        /// 「快捷键」那一格自 P186 起是 [`crate::hotkey::Work::SwitchGroup`] —— 它做的是「轮流切
-        /// 显」那件事，不开这一扇窗，所以它不写这一格。
+        /// §5.12.1 操作步骤 步骤 1 与 §5.12.3 操作步骤 步骤 1 那一扇「图片分组管理」窗「该不该在场」
+        /// 的唯一读数：`1` 是开、`0` 是关。与上面两格同一副骨架 —— 写它的是桥
+        /// （[`crate::hotkey::Work::Groups`]：§5.18.1「菜单建议」那一列的第 5 行「图片分组」
+        /// 托盘里那一点）与窗自己（那枚「关闭」钮，名字出自 [`crate::group_window::CLOSE_WORD`]），
+        /// 读的只有 `main.qml` 那一条 `syncGroup`。
+        /// §5.12.4 步骤 1「用户从托盘菜单、分组面板或快捷键选择分组」那三个入口里，「分组面板」
+        /// 这一格自此在盘上有一扇窗可对；「快捷键」那一格自 P186 起是
+        /// [`crate::hotkey::Work::SwitchGroup`] —— 它做的是「轮流切显」那件事，不开这一扇窗，
+        /// 所以它不写这一格。
         #[qproperty(i32, group_window_open)]
         #[qproperty(i32, all_hidden)]
         /// §5.6.1 步骤 2 的**结果**那一格：识别出来的整段字，`\n` 分行。
@@ -320,6 +322,23 @@ pub mod qobject {
         /// 哪一步），桥不替它想一句好听的话；§5.6.1 规则要「允许重新框选」—— 那一半由遮罩
         /// 本来就还开着来满足，不在这里另开一扇门。空串 = 这一趟没失败。
         #[qproperty(QString, ocr_error)]
+        /// §7.3 条 4 的 C2 那一格：本机**没有**文字识别引擎时，这里是一句可以直接接在标签
+        /// 后头的标注；有引擎时是空串。
+        ///
+        /// 与 [`Self::ocr_error`] 分两格而不是一格：那一格说的是「**这一次**点了、没跑成、
+        /// 原因是这句」，本格说的是「**这一台**上点也没用」—— 后者要在点下之前就摆在界面上，
+        /// 前者要等一趟识别回来才有内容（#281：两件事挤进一格，读的人分不出是哪一件）。
+        ///
+        /// 为什么在构造那一刻填一次、而不是一枚 invokable：条 4 要的是「点下之前就看得见」，
+        /// 而一次调用只答一次 —— 界面要的是**绑**上去，绑得住的只能是一格属性（同
+        /// [`Self::ocr_text`] 那条教训）。判据本身由平台层问一次并缓存
+        /// （[`platform_windows::ocr::unavailable`]），所以这一格在一趟运行里不会有两个答案；
+        /// 那一枚缓存的代价（装上语言包要重启才在这里生效）也记在它那儿。
+        ///
+        /// 句子由 Rust 写、QML 只把它接在标签后头，不许自己另拼一句「本机不支持」（#281）。
+        /// 也**不隐藏**那枚按钮：条 4 给了「隐藏」与「标注」两条路，这里选标注 —— 一枚灰掉并
+        /// 划掉的「文字提取」还能回答「它去哪儿了」，一枚凭空消失的按钮不能。
+        #[qproperty(QString, ocr_unavailable)]
         /// §5.6.2 步骤 4 与 §5.6.3 步骤 3 的那一张表：一枚码一行。编码与 [`Self::groups`]
         /// 同一族 —— 字段之间 `\u{1c}`、行之间 `\u{1d}`，一串机器字给 QML 的 `Repeater` 读，
         /// 人要读的那句在 [`Self::codes_error`] 与 [`Self::status`]。
@@ -440,9 +459,9 @@ pub mod qobject {
         #[cxx_name = "refreshDelay"]
         fn refresh_delay(self: Pin<&mut Self>);
 
-        /// §5.2.4 步骤 4/5：数一枚。**最后一枚就是快门** —— 它冻画面、开遮罩，于是 PRD 第 420
-        /// 行那句「倒计时结束时的指针状态」在像素和指针上同时成立（指针那一问自 P107 起长在
-        /// [`crate::capture::freeze`] 里）。前面几枚只报还剩几秒，一格也不许冻。
+        /// §5.2.4 步骤 4/5：数一枚。**最后一枚就是快门** —— 它冻画面、开遮罩，于是
+        /// §5.4.3 规则 第 2 条那句「倒计时结束时的指针状态」在像素和指针上同时成立（指针那一问
+        /// 自 P107 起长在 [`crate::capture::freeze`] 里）。前面几枚只报还剩几秒，一格也不许冻。
         #[qinvokable]
         #[cxx_name = "delayRound"]
         fn delay_round(self: Pin<&mut Self>);
@@ -540,7 +559,7 @@ pub mod qobject {
         #[cxx_name = "destroyPin"]
         fn destroy_pin(self: Pin<&mut Self>, id: i64) -> i32;
 
-        /// PRD 第 1149 行「批量销毁时应提示影响数量」的那一位读者：**这一手**会带走几枚。
+        /// §5.9.18 规则第 2 句「批量销毁时应提示影响数量」的那一位读者：**这一手**会带走几枚。
         ///
         /// 它按 id 问而不是全局报一个数，因为「销毁这一枚」在名单里有一枚和有两枚时带走的
         /// 数量不同；而窗上不许自己算（那是 `batch_hand` 的第二份，#281）。它与
@@ -635,7 +654,7 @@ pub mod qobject {
         // 重命名」只能靠数出来；名字的作者在 [`crate::group_window`]，页与门共读同一处。
         // 与 [`Self::historyWindowTitle`] 那一族同一分工。
 
-        /// 窗标题（PRD 第 1218 行那一串字「图片分组管理」的唯一作者）。
+        /// 窗标题（§5.12.1 步骤 1「用户打开“图片分组管理”」那一串字的唯一作者）。
         #[qinvokable]
         #[cxx_name = "groupWindowTitle"]
         fn group_window_title(self: &Self) -> QString;
@@ -645,15 +664,19 @@ pub mod qobject {
         #[cxx_name = "groupWindowButtons"]
         fn group_window_buttons(self: &Self) -> QString;
 
-        /// 「显示中 / 已隐藏」那两串字（第 1252 行那一读的两种态）。
+        /// 「显示中 / 已隐藏」那两串字（§5.12.4 操作步骤 步骤 2 那一读的两种态）。
         #[qinvokable]
         #[cxx_name = "groupWindowStateWords"]
         fn group_window_state_words(self: &Self) -> QString;
 
-        /// 规则 1（第 1243 行）那一句问与两枚答钮：`问|退回未分组|随组销毁`。
+        /// §5.12.3 规则第 1 条那一问的两副面孔，`问|答一|答二|取消` 四串：非空那一臂是
+        /// `还有贴图…怎么处理|退回未分组|随组销毁|取消`，空那一臂是 `没有贴图，删除它吗|删除|(空)|取消`。
+        /// `count` 是**页上那一行此刻写着的枚数**（`GroupWindow.qml` 的 `countOf`），亮起那一问那一刻
+        /// 现问现绑 —— 页不判「空不空」，它只把那个数递过来，而把数说成一句问的人住在
+        /// [`crate::group_window::delete_words`]。
         #[qinvokable]
         #[cxx_name = "groupWindowDeleteWords"]
-        fn group_window_delete_words(self: &Self) -> QString;
+        fn group_window_delete_words(self: &Self, count: i32) -> QString;
 
         /// 窗自己那枚「关闭」钮的名字。
         #[qinvokable]
@@ -676,8 +699,9 @@ pub mod qobject {
         #[cxx_name = "groupWindowReport"]
         fn group_window_report(self: &Self, line: &QString);
 
-        /// 一枚贴图**此刻**显不显（1/0）：第 1253 行「系统统一更新该分组内贴图的可见状态」在界面
-        /// 一侧唯一可读的那一眼，读的是 [`crate::state::PinState::view_data`] 的 `live` 本体 ——
+        /// 一枚贴图**此刻**显不显（1/0）：§5.12.4 操作步骤 步骤 3
+        /// 「系统统一更新该分组内贴图的可见状态」在界面一侧唯一可读的那一眼，读的是
+        /// [`crate::state::PinState::view_data`] 的 `live` 本体 ——
         /// 与 `PinWindow.qml` 那一眼同一格，桥侧不数第二遍。不在集里的那一枚也答 0，那是「没了」
         /// 与「藏起来」共用的一眼，分界问下面那一枚。
         #[qinvokable]
@@ -883,7 +907,7 @@ pub mod qobject {
         #[cxx_name = "historyLock"]
         fn history_lock(self: Pin<&mut Self>, id: i64, locked: bool) -> QString;
 
-        /// §5.14.3 step 4「恢复该截图内容或**重新进入原选区**」里**选区**那一半（P102 建的
+        /// §5.14.3 step 4「恢复该截图内容或重新进入原选区」里**选区**那一半（P102 建的
         /// [`crate::mask::MaskState::restore_history_selection`] 自此有了界面读者，P103 起）：
         /// 把历史里第 `id` 行记着的那一枚矩形交回遮罩，并把那一行说的话交给 `status`。
         /// 它与 [`Self::history_replay`] 是同一句需求里的两半相反的腿：那一枚往盘上多落一张图，
@@ -930,10 +954,10 @@ pub mod qobject {
         #[cxx_name = "historyFlip"]
         fn history_flip(self: Pin<&mut Self>, back: bool) -> QString;
 
-        /// 那扇窗的标题（PRD 第 1309 行那一串字）、那四枚钮的名字、表头那枚全选的两个字、
-        /// 二次确认那一问与两答：全部出自 [`crate::history_window`]。页上抄一份中文名单，
-        /// 改一天「钮上写着删除、递进产品的却是清空」只能靠数出来（#281，与
-        /// [`Self::customLabels`] 那一族同一个理由）。
+        /// 那扇窗的标题（§5.14.4 步骤 1「用户打开“历史记录管理”」那一串字）、那四枚钮的名字、
+        /// 表头那枚全选的两个字、二次确认那一问与两答：全部出自 [`crate::history_window`]。
+        /// 页上抄一份中文名单，改一天「钮上写着删除、递进产品的却是清空」只能靠数出来（#281，
+        /// 与 [`Self::customLabels`] 那一族同一个理由）。
         #[qinvokable]
         #[cxx_name = "historyWindowTitle"]
         fn history_window_title(self: &Self) -> QString;
@@ -1018,7 +1042,7 @@ pub mod qobject {
         #[cxx_name = "historyWindowReport"]
         fn history_window_report(self: &Self, line: &QString);
 
-        /// §5.14.2 step 4「用户可重新**复制**、保存、标注或贴图」里 **复制** 那一半的输入腿
+        /// §5.14.2 step 4「用户可重新复制、保存、标注或贴图」里 **复制** 那一半的输入腿
         /// （P116 建的 [`crate::mask::MaskState::copy_history_content`] 自此有了第一位真人能点到的
         /// 读者）：把历史第 `id` 行**自己存着的那张图**递回剪贴板。
         ///
@@ -1042,7 +1066,7 @@ pub mod qobject {
         #[cxx_name = "historyPin"]
         fn history_pin(self: Pin<&mut Self>, id: i64) -> QString;
 
-        /// §5.14.2 step 4 里 **标注** 那一半的输入腿，也是 §5.14.3 step 4「恢复该截图**内容**」
+        /// §5.14.2 step 4 里 **标注** 那一半的输入腿，也是 §5.14.3 step 4「恢复该截图内容」
         /// 唯一把内容放回屏幕上的那一腿：
         ///
         /// 冻一帧（[`crate::capture::freeze`]）→ 把那一行的图像进它原选区的位置
@@ -1260,9 +1284,14 @@ pub mod qobject {
         fn settings_import_preview(self: &Self, target: &QString) -> QString;
 
         /// §5.20.3 步骤 5：用户确认之后才真写。与 `--import-config --confirm` 同一只手。
+        ///
+        /// 交回的那一句之后还叫一次 [`Self::refresh`]：那一趟可能把档上的名册落到了场上的组
+        /// （`#55`，`settings::config_import` 里那一手 `sync_store_groups`），而场上那几枚组的
+        /// 名字与「组里几枚」绑的就是 [`Self::groups`] 那一格。叫在手这一侧而不是摊给页去记，
+        /// 与 `group_close` 每一手都自己叫一次同一理由（#281）。
         #[qinvokable]
         #[cxx_name = "settingsImportApply"]
-        fn settings_import_apply(self: &Self, target: &QString) -> QString;
+        fn settings_import_apply(self: Pin<&mut Self>, target: &QString) -> QString;
 
         // ── §5.7.22 步骤 1/2/3 那一格「调色板管理」。桥这一侧一处也不判事：哪一枚色在排里、
         // 能不能加、能不能挪、方案存不存得进，全在 [`crate::settings_view`] 那几只手里，而它们
@@ -1472,8 +1501,9 @@ pub mod qobject {
         #[cxx_name = "customSet"]
         fn custom_set(self: Pin<&mut Self>, which: i32, text: &QString) -> QString;
 
-        /// 按下「开始截图」（PRD 第 302 行）。交回这一刻说给用户的那句话：延时为 0 就是截出来的
-        /// 那一块（或那一句拒绝），延时 > 0 就是「还剩几枚数」并挂上 [`Self::custom_left`]。
+        /// 按下「开始截图」（§5.3.5 步骤 5「点击开始截图」）。交回这一刻说给用户的那句话：
+        /// 延时为 0 就是截出来的那一块（或那一句拒绝），延时 > 0 就是「还剩几枚数」并挂上
+        /// [`Self::custom_left`]。
         #[qinvokable]
         #[cxx_name = "customStart"]
         fn custom_start(self: Pin<&mut Self>) -> QString;
@@ -1483,8 +1513,8 @@ pub mod qobject {
         #[cxx_name = "customTick"]
         fn custom_tick(self: Pin<&mut Self>) -> QString;
 
-        /// 第 `which` 格往上（`delta = 1`）或往下（`delta = -1`）挪一枚 —— PRD 第 309 行「应支持
-        /// 键盘方向键微调数值」。页上那两枚键 handler 只叫这一句并把交回的字回填进那一格，
+        /// 第 `which` 格往上（`delta = 1`）或往下（`delta = -1`）挪一枚 —— §5.3.5 校验规则第 3 句
+        /// 「应支持键盘方向键微调数值」。页上那两枚键 handler 只叫这一句并把交回的字回填进那一格，
         /// **不在页里算**：算术留在 [`crate::custom::nudge`]，那里它有单测、也有门可问。
         #[qinvokable]
         #[cxx_name = "customNudge"]
@@ -1608,6 +1638,12 @@ pub mod qobject {
     // thread ask this object - which lives on the GUI thread and is not `Send` - to
     // open a mask. Proven against 6.10.1 in `spike/hello-cxxqt/src/pump.rs`.
     impl cxx_qt::Threading for Session {}
+
+    // §7.3 条 4 那一格要在**构造**那一刻就填好，而不是等谁记得叫一句 invokable。QML 里
+    // `Session {}` 走的正是默认构造，这一行把默认构造接到下面那个 `impl cxx_qt::Initialize`
+    // 上（桥内的 `Initialize` 是 `Constructor<()>` 的简写，构造完 Rust 半边后再叫 `initialize`）。
+    // 与上面那枚 `Threading` 同一个位置、同一个道理：都是「告诉桥这个 QObject 要什么」。
+    impl cxx_qt::Initialize for Session {}
 }
 
 use core::pin::Pin;
@@ -1657,6 +1693,9 @@ pub struct SessionRust {
     ocr_text: QString,
     ocr_busy: bool,
     ocr_error: QString,
+    /// §7.3 条 4 那一格的镜像。Rust 侧不读它 —— 说这句话的是平台层，读它的是 QML，
+    /// 桥在这一件事上只是那枚缓存的搬运工。
+    ocr_unavailable: QString,
     /// §5.6.2 / §5.6.3 那三格读数（表、忙、故障），加上下面那一份权威向量。
     codes_rows: QString,
     codes_busy: bool,
@@ -1693,6 +1732,25 @@ fn group_encode(rows: &[(u64, String, bool, usize)]) -> String {
         })
         .collect::<Vec<_>>()
         .join("\u{1d}")
+}
+
+/// 会话**出生**那一刻要填的读数。
+///
+/// 只有 §7.3 条 4 那一格走这里，因为它问的是「这台机器上有没有引擎」—— 一枚平台层的
+/// `OnceLock` 缓存担保它一趟运行里不会变（[`platform_windows::ocr::unavailable`]），
+/// 于是它属于「出生时问一次」，不属于 `refresh` 那一族：那一族各枚都是「随某件事发生而变」
+/// 的读数，各由那件事叫。
+///
+/// 摊给 `main.qml` 的 `Component.onCompleted` 叫一句 invokable 也能跑，但那样「有没有填过」
+/// 就取决于页上记不记得那一句 —— 没人叫时它静默停在空串上，而空串正是「有引擎」那一读
+/// （#433：不许静默降级；这里连降级的响声都没有）。放在构造里，这一格就没有「忘了叫」这一态。
+impl cxx_qt::Initialize for qobject::Session {
+    fn initialize(mut self: Pin<&mut Self>) {
+        // 空串 = 有引擎，标签上一个字都不贴；非空 = 平台层写好的那一句标注（连那对全角括号
+        // 一起）。句子由平台层作，桥与窗都不重写一遍（#281）。
+        let said = platform_windows::ocr::unavailable().unwrap_or_default();
+        self.as_mut().set_ocr_unavailable(QString::from(said.as_str()));
+    }
 }
 
 impl qobject::Session {
@@ -1866,10 +1924,10 @@ impl qobject::Session {
                 // 归零 → QML handler `hint.shown = false` → `hide()`。cxx-qt 的 qproperty setter
                 // 是**同步** notify（同线程 direct connection），所以这一行走完之时 HintWindow
                 // 已经叫过 `hide()`；下一行才 `open_mask`，再下一层 `mask::open_from_freeze` 里
-                // 才真的 `capture::freeze()`。PRD 第 420 行「倒计时结束时的指针状态」这条时刻
-                // 断言之外，还有一件同一轮要保的事：**「画面到手之前不存在任何我们的窗」**
-                // （`crates/qt_bridge/src/capture.rs` 头顶那条规则）⇒ 倒计时自己那一句必须在
-                // `freeze` 之前收走，否则屏幕上那一枚数字会进图。这一行与下一行之间的这条
+                // 才真的 `capture::freeze()`。§5.4.3 规则第 2 句「延时截图应捕获倒计时结束时的
+                // 指针状态」这条时刻断言之外，还有一件同一轮要保的事：**「画面到手之前不存在任何
+                // 我们的窗」**（`crates/qt_bridge/src/capture.rs` 头顶那条规则）⇒ 倒计时自己那一句
+                // 必须在 `freeze` 之前收走，否则屏幕上那一枚数字会进图。这一行与下一行之间的这条
                 // 同步语义就是那半件事的担保。
                 self.as_mut().set_delay_left(0);
                 crate::hotkey::open_mask("延时截图", self.as_mut());
@@ -1947,7 +2005,7 @@ impl qobject::Session {
         gone
     }
 
-    /// PRD 第 1149 行那一句「批量销毁时应提示影响数量」的读者：菜单在点下去**之前**问一次。
+    /// §5.9.18 规则第 2 句「批量销毁时应提示影响数量」的读者：菜单在点下去**之前**问一次。
     ///
     /// 这一格不重算任何事，它只是把 [`crate::state::PinState::destroy_answer`] 那一格的答复
     /// 抬过桥 —— 与 [`Self::destroy_pin`] 读的是同一份 `hand_targets`，所以字面上印着的数与
@@ -2180,8 +2238,8 @@ impl qobject::Session {
         QString::from(crate::group_window::state_words().as_str())
     }
 
-    pub fn group_window_delete_words(&self) -> QString {
-        QString::from(crate::group_window::delete_words().as_str())
+    pub fn group_window_delete_words(&self, count: i32) -> QString {
+        QString::from(crate::group_window::delete_words(count as usize).as_str())
     }
 
     pub fn group_window_close_word(&self) -> QString {
@@ -2889,8 +2947,11 @@ impl qobject::Session {
         QString::from(crate::settings_view::io_preview_line(&target.to_string()).as_str())
     }
 
-    pub fn settings_import_apply(&self, target: &QString) -> QString {
-        QString::from(crate::settings_view::io_apply(&target.to_string()).as_str())
+    pub fn settings_import_apply(mut self: Pin<&mut Self>, target: &QString) -> QString {
+        let line = QString::from(crate::settings_view::io_apply(&target.to_string()).as_str());
+        // 落没落机器，`io_apply` 交回的那一句里已经说着了；这一手只管把场上的账重新取一遍。
+        self.as_mut().refresh();
+        line
     }
 
     // ── §5.7.22 那一格「调色板管理」。与上面同一族：桥这一侧只把 `settings_view` 那几只手自己

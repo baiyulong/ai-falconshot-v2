@@ -3,31 +3,35 @@ import QtQuick.Controls
 import QtQuick.Window
 import dev.falconshot 1.0
 
-// §5.14.4 的那一扇「历史记录管理」窗（PRD 第 1305–1317 行）。
+// §5.14.4 整节（清理历史）的那一扇「历史记录管理」窗。
 //
 // 这一页上**没有一份判据、没有一枚字节数、也没有一句拒绝的措辞**。页顶那四枚钮的名字
 // （`historyWindowButtons()`）、每一行那五枚动作钮的名字（`historyWindowActions()`）、翻页那两枚
-// （`historyWindowFlipWords()`）、窗标题（`historyWindowTitle()` = PRD 第 1309 行那一串字）、表头那枚
+// （`historyWindowFlipWords()`）、窗标题（`historyWindowTitle()` = §5.14.4 步骤 1 那一串字）、表头那枚
 // 全选的两个字（`historyWindowSelectAll()`）、二次确认那一问与两枚答（`historyWindowConfirmWords()`）
 // 全部出自 [`crate::history_window`]；页上抄一份中文，改一天「钮上写着删除、递进产品的却是清空」
 // 就只能靠数出来（#281，与 `CustomCaptureWindow.qml` 头顶那封信同一个理由，而门里
 // `history window` 那一格判的正是「页上真的造出几枚钮 == 名单长度」，页顶与行上各数一枚）。
 //
 // 删与清也一次也不在这一页上判：
-// * 「选择单条、多条或全部记录」（第 1310 行）+「点击删除」（第 1311 行）叫的是
-//   `session.historyDelete(ids)` —— 那句话的作者仍是 [`crate::mask::MaskState::delete_history`]，
-//   页上显示的就是它交回的原话，不是页自己拼的「删除成功」；
-// * 「系统释放相应磁盘空间」（第 1312 行）那枚字节数住在产品那句话里，页上不数第二遍；
-//   占用那一行 `historyWindowUsage()` 的算术与措辞唯一作者是 [`crate::settings::history_usage_line`]；
+// * 「选择单条、多条或全部记录」（§5.14.4 操作步骤 步骤 2）+
+//   「点击删除」（§5.14.4 操作步骤 步骤 3）叫的是 `session.historyDelete(ids)` ——
+//   那句话的作者仍是 [`crate::mask::MaskState::delete_history`]，页上显示的就是它交回的原话，
+//   不是页自己拼的「删除成功」；
+// * 「系统释放相应磁盘空间」（§5.14.4 操作步骤 步骤 4）那枚字节数住在产品那句话里，
+//   页上不数第二遍；占用那一行 `historyWindowUsage()` 的算术与措辞唯一作者是
+//   [`crate::settings::history_usage_line`]；
 // * §8.7「提示用户清理历史或调整存储上限」那一问在占用**顶到上限**时才亮：那一行的字出自
 //   `historyWindowAdvice()`（措辞唯一作者 [`crate::settings::history_pressure_line`]，「顶到没有」
 //   那一判住在 core `Retention::at_cap`），没顶到就是空串、整格连高度一起没有；
-// * 「清空全部历史前应二次确认」（第 1316 行）在这里是**两把闸**：页上先亮一问（这一页唯一的
-//   状态机），真人点「确认清空」才轮到 `historyClear(true)`；点「取消」递出去的是 `false`，而页上
-//   把这一下答的**产品原话**显示出来 ——「二次确认没点头，一行也不动。」窗自己吞掉那一次点击、
-//   屏幕上什么都不说，就是让页与产品各说一句（#281 的反面）；
-// * 「不得删除用户明确收藏或锁定的记录」（第 1317 行）里「用户明确锁定」那一半的对面是每一行
-//   右边那枚「锁上 / 解开」，它叫的是 `historyLock(id, locked)`。
+// * 「清空全部历史前应二次确认」（§5.14.4 规则 第 1 条）在这里是**两把闸**：
+//   页上先亮一问（这一页唯一的状态机），真人点「确认清空」才轮到 `historyClear(true)`；
+//   点「取消」递出去的是 `false`，而页上把这一下答的**产品原话**显示出来 ——「二次确认
+//   没点头，一行也不动。」窗自己吞掉那一次点击、屏幕上什么都不说，
+//   就是让页与产品各说一句（#281 的反面）；
+// * 「不得删除用户明确收藏或锁定的记录」（§5.14.4 规则 第 2 条）里
+//   「用户明确锁定」那一半的对面是每一行右边那枚「锁上 / 解开」，它叫的是
+//   `historyLock(id, locked)`。
 //
 // 回放的五条腿也一次也不在这一页上判（§5.14.2 第 4 步「用户可重新复制、保存、标注或贴图」加
 // §5.14.3 第 4 步「重新进入原选区」）：每一行右边那一排五枚钮，钮上的名字是 [`crate::history_window::ACTIONS`]
@@ -136,8 +140,8 @@ Window {
         session: win.session
     }
 
-    // 一扇正常的管理窗：有边框、进任务栏、接键盘。第 1309 行写的是「历史记录管理」那样一扇窗，
-    // 不是盖在桌面上的浮层，所以这里**不**写 `flags`。
+    // 一扇正常的管理窗：有边框、进任务栏、接键盘。§5.14.4 操作步骤 步骤 1 写的是
+    // 「历史记录管理」那样一扇窗，不是盖在桌面上的浮层，所以这里**不**写 `flags`。
     title: win.headerText
     width: 760
     height: 520
@@ -160,8 +164,9 @@ Window {
         return Number.isFinite(n) ? n : -1
     }
 
-    /// 重读清单与占用。每一次删 / 清 / 锁之后都叫它：第 1312 行那句「释放相应磁盘空间」在这一页上
-    /// 必须**跟着动**，而它动的对面是 SQLite 现读的那一份，不是页上自己减出来的一枚数。
+    /// 重读清单与占用。每一次删 / 清 / 锁之后都叫它：§5.14.4 操作步骤 步骤 4 那句
+    /// 「释放相应磁盘空间」在这一页上必须**跟着动**，而它动的对面是 SQLite 现读的那一份，
+    /// 不是页上自己减出来的一枚数。
     ///
     /// 它同时把清单换回**第一页**：`tailed` 与那一行话跟着清掉。删过一行之后手里那份"到底了"
     /// 不再作数 —— 底下也许正空出一个位置，而页上不许拿上一趟的读数回答这一趟的问题。
@@ -214,8 +219,9 @@ Window {
         win.picked = out
     }
 
-    /// 表头那一枚「全选」：勾上就是把清单里每一枚行号都点齐（第 1310 行「…**或全部**记录」），
-    /// 取消勾就是把这一串清空。行号从清单推出来，页上不抄一个 200、也不抄一个枚数。
+    /// 表头那一枚「全选」：勾上就是把清单里每一枚行号都点齐
+    /// （§5.14.4 操作步骤 步骤 2「…**或全部**记录」），取消勾就是把这一串清空。行号
+    /// 从清单推出来，页上不抄一个 200、也不抄一个枚数。
     function selectAll(on) {
         if (!on) {
             win.picked = []
@@ -243,8 +249,8 @@ Window {
         win.readRows()
     }
 
-    /// 「清空全部」那一枚钮：它**不**清任何东西，它只把那一问亮出来。第 1316 行那句
-    /// 「应二次确认」在这一页上的形状就是这一句。
+    /// 「清空全部」那一枚钮：它**不**清任何东西，它只把那一问亮出来。§5.14.4
+    /// 规则 第 1 条那句「应二次确认」在这一页上的形状就是这一句。
     function askClear() {
         win.asking = true
     }
@@ -337,8 +343,8 @@ Window {
     }
 
     /// 清单里此刻有没有写着这一行锁着。门里 `lock a row` 那一格读的就是这一枚 —— 它问的是
-    /// **页上看得见的那一句**，而不是库里那一列，因为第 1317 行那句「用户明确锁定」要的是
-    /// 用户看得见自己锁过什么。
+    /// **页上看得见的那一句**，而不是库里那一列，因为 §5.14.4 规则 第 2 条那句「用户
+    /// 明确锁定」要的是用户看得见自己锁过什么。
     function lockedShown(id) {
         return win.rowIndexOf(id) >= 0 && String(win.rows[win.rowIndexOf(id)]).indexOf("已锁定") >= 0 ? 1 : 0
     }
@@ -351,15 +357,17 @@ Window {
     /// `--history-window` 的八条腿，一次跑完。每一格都读**页这一侧**看得见的数
     /// （`visible` / delegate 的 `count` / 清单行数），而不是「我们叫过哪只手」。
     function runGauge() {
-        // ① 第 1309 行「用户打开“历史记录管理”」：窗在、标题是那一串字、页顶四枚与行上五枚
-        //    真造出来了、清单列了几行。行上那一排读的是**第一行 delegate 里**那一枚 Repeater 的
-        //    `count`（`itemAtIndex` 交回的是真造出来的那一个对象，不是名单长度）。
+        // ① §5.14.4 操作步骤 步骤 1「用户打开“历史记录管理”」：窗在、标题是那一串字、
+        //    页顶四枚与行上五枚真造出来了、清单列了几行。行上那一排读的是
+        //    **第一行 delegate 里**那一枚 Repeater 的 `count`（`itemAtIndex` 交回的是真造出来的
+        //    那一个对象，不是名单长度）。
         const first = list.itemAtIndex(0)
         win.report("open|" + (win.visible ? 1 : 0) + "|" + buttonRows.count + "|"
                    + (win.title === win.headerText && win.headerText.length > 0 ? 1 : 0) + "|"
                    + win.rows.length + "|" + (first ? first.actionCount : 0))
 
-        // ② 第 1310 行「选择…全部记录」：表头那一枚点下去，勾上的枚数与清单枚数一并递回。
+        // ② §5.14.4 操作步骤 步骤 2「选择…全部记录」：表头那一枚点下去，勾上的枚数
+        //    与清单枚数一并递回。
         win.selectAll(true)
         win.report("select-all|" + win.checkedCount() + "|" + win.rows.length)
         win.selectAll(false)
@@ -384,7 +392,8 @@ Window {
         const refused = win.cancelClear()
         win.report("clear-unconfirmed|" + refused + "|" + asked + "|" + win.rows.length)
 
-        // ④ 第 1311 行「点击删除」的单条那一档：只勾计划点名的那一枚，走的是页上那枚钮同一只手。
+        // ④ §5.14.4 操作步骤 步骤 3「点击删除」的单条那一档：只勾计划点名的那一枚，
+        //    走的是页上那枚钮同一只手。
         win.picked = [Number(win.plan[1])]
         win.doDelete()
         win.report("delete-one|" + win.note + "|" + win.rows.length)
@@ -404,7 +413,8 @@ Window {
         const said = win.confirmClear()
         win.report("clear-confirmed|" + said + "|" + win.rows.length + "|" + win.survivor())
 
-        // ⑧ 第 1312 行「释放相应磁盘空间」：删完之后的占用那一行，页上此刻看得见的那一串。
+        // ⑧ §5.14.4 操作步骤 步骤 4「释放相应磁盘空间」：删完之后的占用那一行，
+        //    页上此刻看得见的那一串。
         win.report("usage-after|" + win.usage)
     }
 

@@ -77,7 +77,8 @@ fn force_utf8_sources() {
 /// Failure is fatal, deliberately: a missing `qtshadertools` or a `qsb` that
 /// errors produces a build that compiles, runs, and silently draws the mask
 /// without the shader - `ShaderEffect.status` becomes `Error` at runtime, which
-/// is exactly the "green CI, no shader in the package" hole plan §9.1 closes.
+/// is exactly the "green CI, no shader in the package" hole this fatal-on-purpose
+/// step closes.
 /// The spike returned `None` and warned; the product does not.
 fn bake_shaders(out_dir: &Path) -> PathBuf {
     const SOURCES: [&str; 1] = ["dim_hole.frag"];

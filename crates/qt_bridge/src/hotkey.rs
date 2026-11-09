@@ -90,7 +90,7 @@ type Gui = CxxQtThread<session::qobject::Session>;
 pub enum Work {
     /// §5.2.1: freeze and cover the screens.
     Capture,
-    /// §5.3.5：PRD 第 298 行那一扇「自定义截图」对话框。P166 之前这一枚动作名（默认
+    /// §5.3.5 步骤 1「用户打开“自定义截图”对话框」那一扇窗。P166 之前这一枚动作名（默认
     /// `ctrl+shift+f`）是**未接线**那一族里最清楚的一例 —— 它名的那扇窗不存在，注册了就是把
     /// 那串组合从用户手里拿走而没人应答。窗现在住在 [`crate::custom`] 与
     /// `qml/CustomCaptureWindow.qml`，这一臂写的仍是「该不该有一扇窗」那一格，造与毁归
@@ -160,7 +160,7 @@ pub enum Work {
     /// 与 `show_all_pins` / `hide_all_pins` / `custom_task` 同一形状（理由与代价都写在
     /// [`falcon_core::config`] 那一份默认表旁边）。
     ReleaseClickThrough,
-    /// §5.12.4 第 1251 行那三个入口里的**第三个**「快捷键」：`switch_group` 自 P186 起有手了。
+    /// §5.12.4 操作步骤 步骤 1 那三个入口里的**第三个**「快捷键」：`switch_group` 自 P186 起有手了。
     ///
     /// 前面两枚（托盘菜单、分组面板）自 P172 起有对面 —— [`crate::group_window`] 与
     /// `qml/GroupWindow.qml`；第三枚一直是「`config::ACTIONS` 名单上、设置页里成行、按下去
@@ -169,8 +169,8 @@ pub enum Work {
     ///
     /// 做的确实是那一枚动作**本来**的样子，而不是「开那一扇管理窗」：[`falcon_core::config`]
     /// 名册里 `switch_group` 的说明写的就是「在贴图分组之间轮流切换显示哪一组」—— 叫
-    /// [`Work::Groups`] 那一手就把它读成了第二枚入口，而 §5.12.4 第 1252 行「执行显示、隐藏或
-    /// 切换」与第 1253 行「系统统一更新该分组内贴图的可见状态」两句里都没有「窗」。轮流的那一判
+    /// [`Work::Groups`] 那一手就把它读成了第二枚入口，而 §5.12.4 操作步骤 步骤 2「执行显示、隐藏或
+    /// 切换」与步骤 3「系统统一更新该分组内贴图的可见状态」两句里都没有「窗」。轮流的那一判
     /// 住在 [`group_cycle`]（纯函数、有单测），动手的那一只手是 [`crate::session::qobject::
     /// Session::toggle_group_shown`] —— 分组窗上「切换显隐」那枚钮叫的就是它，本层不拧模型、
     /// 不数第二遍成员（#281）。
@@ -178,7 +178,7 @@ pub enum Work {
     /// 默认绑定 `ctrl+shift+g` 在 [`falcon_core::config`] 那份出厂表里，所以出厂这一枚键**就**
     /// 有对面；注册与否仍由 [`plan`] 那一判答（reserved / 解析不了 / 被前台静音都各有自己那一行）。
     SwitchGroup,
-    /// §5.16.1「可绑定范围」第 1410 行那一句「贴图编辑操作」，名册给它的是「让**选中的贴图**进入
+    /// §5.16.1「可绑定范围」第 9 条那一句「贴图编辑操作」，名册给它的是「让**选中的贴图**进入
     /// 标注编辑」（[`falcon_core::config::ACTION_TEXTS`] 里 `pin_edit` 那一枚，默认 `ctrl+shift+e`）。
     ///
     /// 做的是那一句话**字面**上的事，走的是这一 build 已有的那一条标注路，而**不铺任何像素**：
@@ -197,7 +197,7 @@ pub enum Work {
     /// 靠的是把历史那一族的腿（[`crate::mask::MaskState::annotate_history_row`] 同一副次序）搬到
     /// 贴图这一头来，一条也没新造。
     PinEdit,
-    /// §5.16.1「可绑定范围」第 1411 行那一句「自定义命令行任务」，名册给它的是「跑一条用户自己
+    /// §5.16.1「可绑定范围」第 10 条那一句「自定义命令行任务」，名册给它的是「跑一条用户自己
     /// 写好的命令行任务」。那一串字住在档上 `[hotkey] command`（现问的读者是
     /// [`crate::settings::hotkey_cfg`]），出厂**空着** —— 替用户写一条示例就是让一枚出厂动作
     /// 对着别人机器上的程序。
@@ -222,32 +222,34 @@ pub enum Work {
     /// 是替 §5.16.1 那一张表发明第十二名。归宿是 [`session::qobject::Session::settings_open`]
     /// 那一格：Rust 只写「该不该有一扇窗」，造与毁都在 `main.qml`。
     Settings,
-    /// §5.18.1 第 1438 行那枚「历史记录」。与 [`Work::Settings`]、[`Work::Whiteboard`]、
-    /// [`Work::Quit`] 同族：**只从托盘抵达**、也不给它编一枚可绑定动作名 —— §5.16.1 那张表里
-    /// 没有「打开历史记录」这一行，而给一扇窗发一个第十四名就是替那张表决定它自己没决定的事。
-    /// 归容是 [`session::qobject::Session::history_window_open`] 那一格（§5.14.4 第 1309 行「用户打开
-    /// “历史记录管理”」的那扇窗，落点是 [`crate::history_window`]）。
+    /// §5.18.1「菜单建议」那一列的第 6 行那枚「历史记录」。与 [`Work::Settings`]、
+    /// [`Work::Whiteboard`]、[`Work::Quit`] 同族：**只从托盘抵达**、也不给它编一枚可绑定动作名
+    /// —— §5.16.1 那张表里没有「打开历史记录」这一行，而给一扇窗发一个第十四名就是替那张表
+    /// 决定它自己没决定的事。
+    /// 归容是 [`session::qobject::Session::history_window_open`] 那一格（§5.14.4 操作步骤 步骤 1
+    /// 「用户打开“历史记录管理”」的那扇窗，落点是 [`crate::history_window`]）。
     History,
-    /// §5.18.1 第 1437 行那枚「图片分组」。与上面三臂同族：**只从托盘抵达**，也不给它编一枚
-    /// 可绑定动作名 —— §5.16.1 那张表里没有「打开分组管理」这一行（那张表有的是 `switch_group`
-    /// 「切换分组」，那是 §5.12.4 第 1251 行那三个入口里的**第三个**「快捷键」，自 P186 起有手，
-    /// 见 [`Work::SwitchGroup`]），把两者混成一枚就是替那张表决定它自己没决定的事。归宿是
-    /// [`session::qobject::Session::group_window_open`] 那一格（窗本体在 [`crate::group_window`]
-    /// 与 `qml/GroupWindow.qml`）。
+    /// §5.18.1「菜单建议」那一列的第 5 行那枚「图片分组」。与上面三臂同族：**只从托盘抵达**，
+    /// 也不给它编一枚可绑定动作名 —— §5.16.1 那张表里没有「打开分组管理」这一行（那张表有的是
+    /// `switch_group`「切换分组」，那是 §5.12.4 操作步骤 步骤 1 那三个入口里的**第三个**「快捷键」，
+    /// 自 P186 起有手，见 [`Work::SwitchGroup`]），把两者混成一枚就是替那张表决定它自己没决定的
+    /// 事。归宿是 [`session::qobject::Session::group_window_open`] 那一格（窗本体在
+    /// [`crate::group_window`] 与 `qml/GroupWindow.qml`）。
     Groups,
-    /// §5.18.1 第 1441 行那枚「检查更新」，也是 §5.21.1 那四步的第一到第三步。与上面四臂同族：
-    /// **只从托盘抵达**，不给它编一枚可绑定动作名 —— §5.16.1 那张表里没有「检查更新」这一行，
-    /// 而给一次查询发一个可绑键，是替那张表决定它自己没决定的事（与 `settings` / `history` /
-    /// `groups` 同一枚理由）。归宿是 [`falcon_core::update::check`] 那一枚纯函数：读的是档上那
-    /// 两枚 `[about]` 键（`release_feed` 与 `channel`）与包自己的版本号，交回产品自己那句判决
-    /// （[`falcon_core::update::Answer::sentence`]）—— 它写进 `status` 那一格，而屏幕上那扇
-    /// [`crate::hint_check`] 量过的浮窗绑的就是 `status`。第 4 步「显示」的另一半（一列可点的
-    /// 下载入口）不在这一臂里，记作本轮结转。
+    /// §5.18.1「菜单建议」那一列的第 9 行那枚「检查更新」，也是 §5.21.1 那四步的第一到第三步。
+    /// 与上面四臂同族：**只从托盘抵达**，不给它编一枚可绑定动作名 —— §5.16.1 那张表里没有
+    /// 「检查更新」这一行，而给一次查询发一个可绑键，是替那张表决定它自己没决定的事（与
+    /// `settings` / `history` / `groups` 同一枚理由）。归宿是 [`falcon_core::update::check`]
+    /// 那一枚纯函数：读的是档上那两枚 `[about]` 键（`release_feed` 与 `channel`）与包自己的版本号，
+    /// 交回产品自己那句判决（[`falcon_core::update::Answer::sentence`]）—— 它写进 `status` 那一格，
+    /// 而屏幕上那扇 [`crate::hint_check`] 量过的浮窗绑的就是 `status`。第 4 步「显示」的另一半
+    /// （一列可点的下载入口）不在这一臂里，记作本轮结转。
     Update,
-    /// §5.18.1 第 1440 行那枚「帮助」，也是 §5.21.2 那四行的唯一入口。与上面五臂同族：
-    /// **只从托盘抵达**，也不给它编一枚可绑定动作名 —— §5.16.1 那张表里没有「打开帮助」这一行。
-    /// 归宿是 [`crate::help`]：四行各自的作者现取来的四枚数拼成一句话写进 `status`，它不把那四行重新
-    /// 发明一遍（#281）。「真人点中它」仍没有证人，记在 [`crate::help_menu`] 的 Blocked 那一格里。
+    /// §5.18.1「菜单建议」那一列的第 8 行那枚「帮助」，也是 §5.21.2 那四行的唯一入口。
+    /// 与上面五臂同族：**只从托盘抵达**，也不给它编一枚可绑定动作名 —— §5.16.1 那张表里没有
+    /// 「打开帮助」这一行。归宿是 [`crate::help`]：四行各自的作者现取来的四枚数拼成一句话写进
+    /// `status`，它不把那四行重新发明一遍（#281）。「真人点中它」仍没有证人，记在
+    /// [`crate::help_menu`] 的 Blocked 那一格里。
     Help,
     /// §5.1.1's tray menu entry. Tray-only: no key binding means "quit", because a
     /// binding that could end the resident process from the keyboard is not
@@ -323,26 +325,27 @@ impl Work {
                 // §5.4.4 要的正是这一枚托盘入口 —— 两处不一致时按**功能那一节**办：那张表是建议
                 // 名单，这一节是一条要有对面的操作。冲突记进台账，不当作已解决。
                 Work::Whiteboard => "白板",
-                // PRD 第 1439 行那一列菜单建议里的写法就是「首选项」，而 §5.15 步骤 1 写的也是
+                // §5.18.1「菜单建议」那一列里的写法就是「首选项」，而 §5.15 步骤 1 写的也是
                 // 「用户打开"首选项 > 热区"」。这一枚名字不叫「设置」：文档自己用的那一列字，
                 // 在这一档里就是判据的一部分（#455 的反面 —— 措辞在这里是读数，不是读数之外的修饰）。
                 // 但那三个字不住在这一行，它住在 core 那张表里 `settings` 那一枚：页上那一行与
                 // 托盘里那一项问的是同一枚名，这里递出去的只是**词**。
                 Work::Settings => name_of("settings"),
-                // §5.18.1 第 1438 行那一列写的就是这四个字，而唯一作者住在
+                // §5.18.1「菜单建议」那一列的第 6 行写的就是这四个字，而唯一作者住在
                 // [`crate::history_window::TRAY_WORD`] 那里：托盘这一项与那一档的 ⑨ 那一格问的是
                 // 同一枚名，这里再抄一遍中文就是两个作者（#281）。
                 Work::History => crate::history_window::TRAY_WORD,
-                // §5.18.1 第 1437 行那一列写的就是「图片分组」四个字，唯一作者住在
+                // §5.18.1「菜单建议」那一列的第 5 行写的就是「图片分组」四个字，唯一作者住在
                 // [`crate::group_window::TRAY_WORD`]：托盘这一项与 `--group-window` 门里 ⑪ 那一格
                 // 问的是同一枚名，这里再抄一遍中文就是两个作者（#281，与上面那一臂同一枚理由）。
                 Work::Groups => crate::group_window::TRAY_WORD,
-                // §5.18.1 第 1441 行那一列写的就是「检查更新」四个字，唯一作者住在
+                // §5.18.1「菜单建议」那一列的第 9 行写的就是「检查更新」四个字，唯一作者住在
                 // [`falcon_core::update::TRAY_WORD`]：托盘这一项与 `--update-check` 门里那一格问的
                 // 是同一枚名（#281，与上面两臂同一枚理由）。
                 Work::Update => falcon_core::update::TRAY_WORD,
-                // §5.18.1 第 1440 行写的就是「帮助」两个字，唯一作者住在 [`crate::help::TRAY_WORD`]：
-                // 托盘这一项与 `--help-menu` 门里那一格问的是同一枚名（#281）。
+                // §5.18.1「菜单建议」那一列的第 8 行写的就是「帮助」两个字，唯一作者住在
+                // [`crate::help::TRAY_WORD`]：托盘这一项与 `--help-menu` 门里那一格问的是
+                // 同一枚名（#281）。
                 Work::Help => crate::help::TRAY_WORD,
                 Work::Quit => "退出",
                 // 上面这八臂（含 `OpenPicturePins`）就是 `action()` 为 `None` 的全部；这一臂只为让
@@ -688,7 +691,7 @@ fn plan(actions: &std::collections::BTreeMap<String, String>) -> Plan {
 
 /// §5.18.1 的托盘菜单：把「本 build 真做得动、且 PRD 明写要一个托盘入口」的那几件逐一列出，
 /// 末尾接 退出。P138 之前这里只有 截图 / 贴出剪贴板 两只可键启动的工作，于是 PRD 菜单建议里
-/// 「显示或隐藏全部贴图」那一条、以及 §5.2.5 第 215 行明写「重复上次截图快捷键**或托盘菜单**」
+/// 「显示或隐藏全部贴图」那一条、以及 §5.2.5 操作步骤 步骤 2 明写「用户使用“重复上次截图”快捷键或托盘菜单」
 /// 那一条，都在托盘上无处可点 —— P137 已给 `toggle_pins` 装上真归宿（[`Work::TogglePins`]），
 /// 这一轮把这两枚接到托盘。
 ///
@@ -699,23 +702,25 @@ fn plan(actions: &std::collections::BTreeMap<String, String>) -> Plan {
 /// 是因为它是下一枚菜单项进门时的那道门，不是因为还欠着东西。
 ///
 /// 「检查更新」自 P173 起不算在这一列里了：它的手是 [`Work::Update`]，落点是 §5.21.1 那四步里的
-/// 前三步（第 1441 行那一枚菜单项 → [`falcon_core::update::check`] → 产品自己那句判决写进
-/// `status`，而屏幕上那扇浮窗绑的就是它）。第 4 步那句「显示版本号、更新说明和下载入口」里那一枚
-/// **可以点的**入口，自 P179 起住在「关于与更新」那一页的页脚（`qml/SettingsWindow.qml` 的
-/// `updateRow`，地址出自同一次判决的 [`falcon_core::update::Answer::download_url`]）；托盘这一臂
-/// 落地的仍是那句判决写进 `status` —— 它不替用户把那扇页打开，也不在菜单里长出一枚下载钮。
+/// 前三步（§5.18.1「菜单建议」那一列的第 9 行那一枚菜单项 → [`falcon_core::update::check`] →
+/// 产品自己那句判决写进 `status`，而屏幕上那扇浮窗绑的就是它）。第 4 步那句「显示版本号、
+/// 更新说明和下载入口」里那一枚**可以点的**入口，自 P179 起住在「关于与更新」那一页的页脚
+/// （`qml/SettingsWindow.qml` 的 `updateRow`，地址出自同一次判决的
+/// [`falcon_core::update::Answer::download_url`]）；托盘这一臂落地的仍是那句判决写进 `status`
+/// —— 它不替用户把那扇页打开，也不在菜单里长出一枚下载钮。
 ///
 /// 「图片分组」自 P172 起不算在这一列里了：它的手是 [`Work::Groups`]、落点是 §5.12.3 / §5.12.4
-/// 那一扇 [`crate::group_window`] 与 `qml/GroupWindow.qml`，第 1437 行那一行自此在托盘上有点得动的
-/// 一项。§5.12.4 第 1251 行那三个入口自此三个都有对面：托盘这一枚、分组面板那一枚，与
-/// 「快捷键」那一枚 —— 后者自 P186 起是 [`Work::SwitchGroup`]，它做的是名册说的那件事（在几组之间
-/// 轮流切显），不是「开那一扇管理窗」。它**不在这一列菜单里**，理由写在 `run` 那一臂头顶。
+/// 那一扇 [`crate::group_window`] 与 `qml/GroupWindow.qml`，
+/// §5.18.1「菜单建议」那一列的第 5 行自此在托盘上有点得动的一项。§5.12.4 操作步骤 步骤 1
+/// 那三个入口自此三个都有对面：托盘这一枚、分组面板那一枚，与「快捷键」那一枚 —— 后者
+/// 自 P186 起是 [`Work::SwitchGroup`]，它做的是名册说的那件事（在几组之间轮流切显），不是
+/// 「开那一扇管理窗」。它**不在这一列菜单里**，理由写在 `run` 那一臂头顶。
 ///
 /// 「自定义截图」自 P166 起不在这份欠账里了：它的那只手是 [`Work::CustomCapture`]，落点是 §5.3.5
 /// 那扇对话框窗（[`crate::custom`]），而 §5.16.1 的默认组合 `ctrl+shift+f` 自此也真的有东西应答。
 ///
-/// 「历史记录」自 P171 起不在这份欠账里了：它的那只手是 [`Work::History`]，落点是 §5.14.4
-/// 第 1309 行那扇「历史记录管理」窗（[`crate::history_window`]）。
+/// 「历史记录」自 P171 起不在这份欠账里了：它的那只手是 [`Work::History`]，落点是
+/// §5.14.4 操作步骤 步骤 1 那扇「历史记录管理」窗（[`crate::history_window`]）。
 ///
 /// 「首选项」自 P142 起不在这份欠账里了：它的那只手是 [`Work::Settings`]，落点是 §5.20.1 那扇
 /// 窗。它进的是下面那个**有归宿者**的循环，而不是一枚 Rust 自己 `show()` 的窗 —— 托盘写的只是
@@ -725,7 +730,7 @@ fn plan(actions: &std::collections::BTreeMap<String, String>) -> Plan {
 /// because the icon is the other way to reach the same feature - and the only way to reach 退出.
 /// 装配出来的那份托盘菜单里每一项的**原名**（不带快捷键尾巴的那一枚 `work.label()`）。
 ///
-/// §5.18.1 第 1438 行那枚「历史记录」到底在不在菜单上，问的必须是这一份——即
+/// §5.18.1「菜单建议」那一列的第 6 行那枚「历史记录」到底在不在菜单上，问的必须是这一份——即
 /// [`tray_menu`] 真的把它装配出来了，而不是 `Work::History` 这一枞枚举存在。另抄一份
 /// 「托盘里有哪些名字」就是 #281；这里走的是同一只函数，它多一行这里就多一行。
 ///
@@ -784,28 +789,28 @@ fn tray_menu(plan: &mut Plan) -> Vec<(u32, String)> {
         // 它也不带括起来的按键名：`action()` 是 `None`，场上没有一枚键通向它（理由见那一臂）。
         Work::OpenPicturePins,
         Work::TogglePins,
-        // §5.9.13 规则第一句那一条退出。PRD 第 1436 行「显示或隐藏全部贴图」与第 1437 行
-        // 「图片分组」之间没有这一行 —— 它不在 §5.18.1 那一列里，它来自 §5.9.13 第三步点名的
+        // §5.9.13 规则第一句那一条退出。§5.18.1「菜单建议」那一列里，「显示或隐藏全部贴图」与
+        // 「图片分组」之间没有这一行 —— 它不在那一列里，它来自 §5.9.13 第三步点名的
         // 「托盘菜单」那一枚入口，与下面那枚白板同族（两处不一致时按**功能那一节**办，冲突记进
         // 报告、不当作已解决）。站在这里而不贴在菜单末尾的理由是形状：这一枚与 `TogglePins`
         // 都是「场上那一批贴图」的全局一手，而它是这一列里唯一一枚不必点中贴图就能按到的撤销。
         Work::ReleaseClickThrough,
-        // PRD 第 1436 行「显示或隐藏全部贴图」与第 1438 行「历史记录」之间那一行就是第 1437 行
+        // §5.18.1「菜单建议」那一列里，「显示或隐藏全部贴图」与「历史记录」之间那一行就是
         // 「图片分组」，所以它排在 TogglePins 之后 —— 菜单这一列的次序由文档那一列决定，不是由
         // 哪一枚先落地决定。（白板不在那一列里，它来自 §5.4.4 那一节，见上面那臂记的冲突。）
         Work::Groups,
         Work::Whiteboard,
-        // 第 1438 行「历史记录」在文档那一列里就排在第 1439 行「首选项」**之前**，这里因此先排
+        // §5.18.1 那一列里「历史记录」就排在「首选项」**之前**，这里因此先排
         // 历史记录。P174 之前这两行的次序是按谁先落地排的（首选项 P142、历史记录 P171），而
         // `--help-menu` 那扇门把「次序由文档那一列决定」这条一直写在注释里的判据真的量了一遍，
         // 它当场判出 FAIL：帮助 落在第 9 位、它上面那一行是历史记录而不是首选项。修的是装配的
         // 次序，不是那一格的判据。
         Work::History,
         Work::Settings,
-        // §5.18.1 第 1440 行「帮助」自 P174 起有了手（[`Work::Help] → [`crate::help`]），就排回文档
+        // §5.18.1 那一列里的「帮助」自 P174 起有了手（[`Work::Help] → [`crate::help`]），就排回文档
         // 给它的那一列上：首选项之后、检查更新之前。次序仍由那一列决定，不是由谁先落地决定。
         Work::Help,
-        // 第 1441 行那一枚排在第 1442 行「退出」之前；P173 时它上面那行「帮助」没有手，所以它直接
+        // 「检查更新」那一枚排在「退出」之前；P173 时它上面那行「帮助」没有手，所以它直接
         // 接在 History 之后。现在那一行有手了，它回到自己原来的位子上。
         Work::Update,
     ] {
@@ -980,6 +985,95 @@ const fn click_through_watch(prev: usize, now: usize) -> Option<usize> {
     }
 }
 
+/// `pinWindowReport` 的一行是不是**一枚贴图窗**。
+///
+/// 判据是「工具窗 + 没有标题」这一对，而不是标题本身：本仓九扇顶层窗里 `qml/PinWindow.qml`
+/// 那一扇从头到尾没给根 `Window` 写过 `title:`，所以 `describe` 打出来的是一枚空值。另外那几扇
+/// 要么有固定标题（`falconshot-hint`、`falconshot-settings`、`falconshot-mask-*`、识别结果、
+/// 扫码结果），要么标题取自 `headerText` —— 而历史、分组、自定义截图那三扇**开机头一格也是空的**。
+/// 真正把那三扇分开的是 `Qt.Tool` 那一位：贴图窗有、它们没有，而 `describe` 打的正是
+/// `TOOLWINDOW=`。少了这一位，一扇还没写上标题的历史窗就会被当成一枚贴图数进去。
+fn pin_shaped(line: &str) -> bool {
+    let field = |key: &str| crate::pin_check::probe_field(Some(line), key);
+    field("TOOLWINDOW").as_deref() == Some("1") && field("title").as_deref() == Some("")
+}
+
+/// 采样腿从 `pinWindowReport` 那一叠行里读回来的三种答案。
+///
+/// 三格、不是两格，是 #238 直接要的：「这一格没法判」与「判了、对得上」是两件不同的事。把它们
+/// 并成 `Option<usize>` 的那个 `None`，就等于说「没消息就是好消息」—— 而非 Windows 的平台上
+/// `describe` 压根不打 `TRANSPARENT`/`LAYERED` 两枚字段，那时的沉默必须沉默得**有理由**。
+#[derive(Debug, PartialEq, Eq)]
+enum Taken {
+    /// 名册里说要穿透的那几枚，窗上那两枚位都读回来了。
+    Yes,
+    /// 差 `usize` 枚没吃下。这一格是 §7.3 第 4 条那句「明确标记不可用」唯一的触发者。
+    Missing(usize),
+    /// 这一格判不了：报告里没打那两枚字段，或者名册点名的窗还没起齐。
+    Unjudged,
+}
+
+/// 名册说要 `want` 枚穿透，而 `report` 那一叠行里真读回来几枚。
+///
+/// 数的是**枚数**、不是逐枚配对：报告里没有任何一枚字段点得出贴图的身份（`describe` 不打 id，
+/// 而它打的 `size=` 是逻辑像素、设备像素的 `phys=` 又只长在 `pinTopLevels` 那一路），所以
+/// 「哪一枚没吃下」这一问这一手答不出；答得出的是「至少差几枚」，而 `want > have` 这个方向的
+/// 推论站得住：名册点名的每一枚都该有一扇带着位的窗，带位的窗比点名的少，就至少少了那么多枚。
+/// 反方向（`have > want`，位还挂着而名册已经放开）不是这一格的事实，它归
+/// [`crate::pin_check::ct_rows`] 的收梢那一臂判，两处不互相替对方作答（#261）。
+///
+/// 两枚位一起读走 [`crate::pin_check::native_pass_through`]，与那扇量具门同一把尺（#281）。
+///
+/// `Unjudged` 的两条来路都是**故意**的：
+/// * 一扇贴图窗的行里读不出那两枚位 —— 非 Windows 的平台、没有 hwnd 的窗。缺席不是 0（#238）。
+/// * 名册点名 `want` 枚而窗只起了不到 `want` 扇 —— 崩溃恢复那一趟会把一批 `click_through` 一次
+///   写进名册，而 QML 那头的窗还在路上。此时「差几枚」说的是窗没起齐，不是位没写上；把这一格
+///   判成 `Missing`，就是在启动的头几格里对用户喊一句假话。
+fn click_through_taken(report: &str, want: usize) -> Taken {
+    if want == 0 {
+        return Taken::Yes;
+    }
+    let pins: Vec<&str> = report.lines().filter(|line| pin_shaped(line)).collect();
+    if pins.len() < want {
+        return Taken::Unjudged;
+    }
+    let mut have = 0usize;
+    for line in &pins {
+        match crate::pin_check::native_pass_through(Some(line)) {
+            Some(true) => have += 1,
+            Some(false) => {}
+            // 长得像贴图窗、却没打那两枚字段：这一格判不了，而不是「它没穿透」。
+            None => return Taken::Unjudged,
+        }
+    }
+    if want > have {
+        Taken::Missing(want - have)
+    } else {
+        Taken::Yes
+    }
+}
+
+/// §7.3 第 4 条「平台不支持的能力应自动隐藏或明确标记不可用」在这一格里说出来的那一句。
+///
+/// 说的是**量到的那件事**（窗上那两枚原生位读回来是关的），不是猜的原因：`cpp/pin_shim.cpp` 的
+/// `applyStyle` 把 `SetWindowLongPtrW` 的返回值丢掉了，所以这一手只知道位不在那儿，不知道是
+/// Win32 拒了这一手、还是这一台机器压根没有那一位可写。替用户编一个原因，就是把一句没有证人的
+/// 话塞进他眼里（#261）。
+///
+/// 也不带「怎么出去」那一列 —— 与 [`click_through_entry_hint`] 正相反：穿透没吃下，鼠标就还落在
+/// 贴图上，用户点得到贴图自己的菜单，那一列在这里没有读者。
+fn click_through_refused_said(missing: usize) -> String {
+    format!("{missing} 枚贴图的鼠标穿透没有生效：窗上那两枚原生位读回来是关的，鼠标仍会落在贴图上")
+}
+
+/// 「穿透没吃下」那一句说过没有。与 [`CornerPoll::missing_said`] 同一个形状：一件事说一遍，
+/// **改口**（读回来又对上了）才算第二件事实。
+///
+/// 为什么这一枚记性不长在 `CornerPoll` 里：判据要在 GUI 线程上读 `pinWindowReport`（Qt 的顶层窗
+/// 名册只有那条线程碰得），而 `queue` 递进去的那一手交不回值，所以翻转只能在闭包里发生。
+/// GUI 线程上的闭包一个接一个跑，一枚 `Mutex<bool>` 就够。
+static CLICK_REFUSED_SAID: Mutex<bool> = Mutex::new(false);
+
 /// [`click_through_exits`] 在 `install` 那一刻判出来的那一份，留着给采样腿念。
 ///
 /// 为什么是快照而不是每格现判：那一判要 `&Plan`，而 `Plan` 的路由表在 `install` 结束时就被
@@ -992,39 +1086,45 @@ fn click_exits() -> Vec<&'static str> {
     held(&CLICK_EXITS).clone()
 }
 
-// ── §5.12.4 第 1251 行那三个入口里的第三枚「快捷键」 ─────────────────────────────────
+// ── §5.12.4 操作步骤 步骤 1 那三个入口里的第三枚「快捷键」 ───────────────────────────
 //
 // 三格里前两格（托盘菜单、分组面板）自 P172 起有对面，第三格一直是台账 ⑫。下面这三枚纯函数
 // 要的就是「轮流」那一判能在一台没有屏幕、也没有一双手的机器上被问一遍（§9.1 第十条那一族）。
 
-/// 这一枚键上一次把显示切到了第几组，[`group_cycle`] 的输入。`None` = 这一场还没切过。
+/// 这一枚键上一次把显示切到了**哪一组**（组编号），[`group_cycle`] 的输入。`None` = 这一场还没切过。
 ///
 /// 为什么这一枚记性留在这一层而不是搬进名册：core 那一份 `PinSet` 记的是**每组显不显**
 /// （[`falcon_core::pin::PinSet::group_shown`]），压根没有「第几组是当前组」那一格 —— 而
 /// 「轮流」要的恰恰是那个**上一次**。替别人家添一枚没人要的字段是 #281 的另一面，留在这一层
-/// 就是这一枚键自己的记性：删了组、换了序，下一按从第一组重新开始。
-static GROUP_CURSOR: Mutex<Option<usize>> = Mutex::new(None);
+/// 就是这一枚键自己的记性。
+///
+/// 记的是**编号**而不是上一轮的**序号**：序号这一格会说谎。分组窗里把乙挪到甲之前（§5.12.3
+/// 规则 3，PRD 那句「排序变化应同步反映到快捷切换菜单」）之后，同一枚序号指的是另一组，下一按
+/// 就切到用户根本没走过的那一组上。编号跟着那一组走，于是挪到哪一轮到的都是**上一次那一组在
+/// 新次序里的下一个**；那一组被删了 ⇒ 编号在场上对不上号 ⇒ 从第一组重新开始。
+static GROUP_CURSOR: Mutex<Option<u64>> = Mutex::new(None);
 
-/// §5.12.4 那一按把显示切到哪一组：交回 `(目标那一组的序号, 要顺手关掉的序号)`。
+/// §5.12.4 那一按把显示切到哪一组：交回 `(目标那一格的序号, 要顺手关掉的序号)`。
 /// `None` = 场上压根没有分组，这一按没事可做（那一支有自己的那句话，见 [`no_group_said`]）。
 ///
 /// 读的是 [`crate::state::PinState::group_rows`] 交回的那一份，**顺序就是 core `groups` vec
-/// 本体** —— PRD 第 1245 行那句「排序变化应同步反映到快捷切换菜单」要的就是这一条：分组窗里把
-/// 乙组移到甲组之前，下一按轮到的就是新的那一个后继，这一层一格也不重排（#281）。
+/// 本体** —— PRD 那句「排序变化应同步反映到快捷切换菜单」要的就是这一条：分组窗里把乙组移到
+/// 甲组之前，下一按轮到的就是甲在新次序里的那一个后继，这一层一格也不重排（#281）。正因为
+/// 后继是**在新次序里现找的**，`cursor` 交进来的必须是编号：拿序号找后继，重排一次就找错人。
 ///
-/// 「切到哪一组」与「哪些组要关掉」分两样交回，是因为 §5.12.4 第 1253 行那句「系统**统一**更新
-/// 该分组内贴图的可见状态」在这一枚键上有两种读法，而名册里那句说明（「轮流切换显示**哪一组**」）
-/// 定死了这一种：一次只有一组在场。目标本来就在显示中时 `off` 也不把它算进来，于是 [`switch_group`]
+/// 「切到哪一组」与「哪些组要关掉」分两样交回，是因为 §5.12.4 那句「系统统一更新该分组内
+/// 贴图的可见状态」在这一枚键上有两种读法，而名册里那句说明（「轮流切换显示哪一组」）定死了
+/// 这一种：一次只有一组在场。目标本来就在显示中时 `off` 也不把它算进来，于是 [`switch_group`]
 /// 那一手一枚也不叫，交回的是「已经就在这一组上」那句实话（[`already_on_said`]）。
-fn group_cycle(rows: &[(u64, String, bool, usize)], cursor: Option<usize>) -> Option<(usize, Vec<usize>)> {
+fn group_cycle(rows: &[(u64, String, bool, usize)], cursor: Option<u64>) -> Option<(usize, Vec<usize>)> {
     if rows.is_empty() {
         return None;
     }
-    // 上一场记着的那一格可能已经不存在（真人把组删了）：从第一组重新开始，而不是拿一枚越界的
-    // 序号去取模出一个看起来随机的后继。
-    let at = match cursor {
-        Some(last) if last < rows.len() => (last + 1) % rows.len(),
-        _ => 0,
+    // 上一场记着的那一枚编号可能已经不在场上（真人把那一组删了）：从第一组重新开始，而不是拿
+    // 一个对不上号的数去猜后继。
+    let at = match cursor.and_then(|id| rows.iter().position(|row| row.0 == id)) {
+        Some(last) => (last + 1) % rows.len(),
+        None => 0,
     };
     let off = (0..rows.len())
         .filter(|idx| *idx != at && rows[*idx].2)
@@ -1446,6 +1546,13 @@ struct CornerPoll {
     /// `status`（本轮的边界不许动那一家），而这条腿是全进程里唯一既常驻、又不占 GUI 线程、
     /// 又肯每秒醒十二次的地方。§5.9.13 要的「启用时」那一眼，只有这里给得出。
     last_through: usize,
+    /// §7.3 第 4 条那一手要的**上一格名册读数**：上一格场上有几枚贴图说要穿透。
+    ///
+    /// 与 `last_through` 是同一个数、却是另一件事的另一半：`last_through` 判的是「变多了吗」
+    /// （变了才说「已开启」），这一枚判的是「**没变**吗」——名册里这一格刚刚动过的那一格里，
+    /// 窗上那两枚位可能还是上一格的读数，此时去比对就是拿一个没有证人的时差判用户。
+    /// `None` = 这一条腿还没数过第一格，所以第一格一律不说。
+    last_taken_want: Option<usize>,
 }
 
 impl CornerPoll {
@@ -1457,6 +1564,7 @@ impl CornerPoll {
             last_snapshot: None,
             missing_said: false,
             last_through: 0,
+            last_taken_want: None,
         }
     }
 
@@ -1487,17 +1595,72 @@ impl CornerPoll {
         }
     }
 
+    /// §7.3 第 4 条在**穿透**这一格的那一只手：名册说要穿透的那几枚，窗上那两枚原生位真的写上了
+    /// 没有。没写上就当场对用户说一句（[`click_through_refused_said`]），而不是让一枚「鼠标穿透」
+    /// 的勾在那儿亮着、鼠标却照样落在贴图上 —— 那正是 `qml/PinWindow.qml` 里 `restyle()` 头上
+    /// 那笔明账指名要补的话路。
+    ///
+    /// 为什么这一问排在 GUI 线程上：`pinWindowReport` 念的是 `QGuiApplication::topLevelWindows()`，
+    /// Qt 只许那条线程碰；而这一档整条采样腿跑在 `listen` 那条泵线程上。所以判据在闭包里，这一手
+    /// 只负责「名册这一格稳不稳」与「要不要递」。
+    ///
+    /// 「稳」由 `last_taken_want` 判：名册刚动过的那一格，窗上那两枚位可能还是上一格的读数
+    /// （`restyle()` 挂在 `onClickThroughChanged` 上，从别的线程改 `PinItem` 时那一手还在队列里），
+    /// 此时比对就是拿一个没有证人的时差去判用户。等一格，名册自己不再动了再问 —— 这一格不写死一个
+    /// 毫秒数，因为要等的东西是「名册停没停」，而它每一格都能读到（#261 不许没有证人的间隔）。
+    ///
+    /// `want == 0` 在泵线程上就短路回去：场上没有一枚说要穿透时不必每秒十二次让 GUI 线程把整份
+    /// 顶层窗名册拼一遍。顺手清 [`CLICK_REFUSED_SAID`]，为的是下一次真有枚没吃下时那一句还能再说。
+    fn watch_click_through_taken(&mut self, handle: &Gui) {
+        let want = state::with(|s| s.set.items().iter().filter(|p| p.click_through).count());
+        let settled = self.last_taken_want == Some(want);
+        self.last_taken_want = Some(want);
+        if want == 0 {
+            *held(&CLICK_REFUSED_SAID) = false;
+            return;
+        }
+        if !settled {
+            return;
+        }
+        if let Err(e) = handle.queue(move |mut session| {
+            // 这一格写全名，是因为闭包那枚形参也叫 `session`，把模块名挡住了。
+            let report = crate::session::shim::window_report();
+            match click_through_taken(&report, want) {
+                Taken::Yes => *held(&CLICK_REFUSED_SAID) = false,
+                // 判不了不算改口，也不算说了：把它当成「说过」去动那一枚记性的话，一份时好时坏的
+                // 报告就能把同一句话对用户说两遍（#238）。原样留着，下一格再问。
+                Taken::Unjudged => {}
+                Taken::Missing(missing) => {
+                    if std::mem::replace(&mut *held(&CLICK_REFUSED_SAID), true) {
+                        return;
+                    }
+                    let said = click_through_refused_said(missing);
+                    session.as_mut().set_status(QString::from(&*said));
+                    note(format!(
+                        "GUI 线程 穿透没吃下：名册 {want} 枚、窗上少 {missing} 枚 → {said}"
+                    ));
+                }
+            }
+        }) {
+            note(format!("穿透回读 {want} 枚：GUI 线程没接住（{e}）"));
+        }
+    }
+
     fn tick(&mut self, handle: &Gui) {
         if !self.plain {
             // 一扇门借了这条泵的闹钟，不等于这一扇门的读数里该有角落。见 [`install`] 的 `plain`。
-            // 上面那一格 `watch_click_through` 也一起不做：`status` 在量具门里是给判据用的，
-            // 采样腿往里写一句「已开启穿透」就会污染那一档正在读的那一行。
+            // 上面那两格穿透的腿也一起不做：`status` 在量具门里是给判据用的，采样腿往里写一句
+            // 「已开启穿透」或「没吃下」就会污染那一档正在读的那一行。
             return;
         }
         // 这一问排在角落那三问**之前**，因为它要的只是名册里那一格布尔，而下面那条腿在
         // `[hot_corner] enabled = false`（出厂默认那一侧）时会整个 `return`。§5.9.13 那一句
         // 「启用时可显示短暂状态提示」不该跟着热区那一族的开关一起关掉 —— 两件事没有因果关系。
         self.watch_click_through(handle);
+        // 排在 `watch_click_through` **之后**，为的是同一格里两句都成立时，「没吃下」那一句是
+        // 后递进队列的那一枚 —— `queue` 是先进先出，`set_status` 写的是同一格，后写的说了算，
+        // 而「勾亮着却没生效」比「已开启」更是用户此刻该看见的那件事。
+        self.watch_click_through_taken(handle);
         let now = delay::clock_ms();
         let due = self
             .last_snapshot
@@ -1714,7 +1877,7 @@ fn open_picture_pins(tag: &str, mut session: Pin<&mut session::qobject::Session>
     ));
 }
 
-/// §5.12.4 第 1251 行那三个入口里的第三枚，在拥有 Qt 的这一条线程上的那一趟：现读那一份分组
+/// §5.12.4 操作步骤 步骤 1 那三个入口里的第三枚，在拥有 Qt 的这一条线程上的那一趟：现读那一份分组
 /// 快照 → [`group_cycle`] 定这一按轮到哪一组 → 叫**已经存在**的那一只手把组切过去。
 ///
 /// 一格模型也不拧：`off` 里每一组与目标那一组走的都是
@@ -1725,7 +1888,7 @@ fn open_picture_pins(tag: &str, mut session: Pin<&mut session::qobject::Session>
 ///
 /// `status` 那一格在这一趟里会被写好几枚：session 那一只手每次切换都先落一句「已显示该分组」/
 /// 「已隐藏该分组」，而那两句**不认组名**；本层在最后写一句完整的（[`group_switch_said`]），因为
-/// §5.12.4 第 1253 行要用户看得见的那一件事是「哪一组在场」。屏幕那一侧读的是最后一格，
+/// §5.12.4 操作步骤 步骤 3 要用户看得见的那一件事是「哪一组在场」。屏幕那一侧读的是最后一格，
 /// `qml/HintWindow.qml` 的 `onStatusChanged` 每写一次重新计时一次 —— 浮窗因此不会带着上一组的
 /// 名字停在那里。
 fn switch_group(tag: &str, mut session: Pin<&mut session::qobject::Session>) {
@@ -1737,8 +1900,10 @@ fn switch_group(tag: &str, mut session: Pin<&mut session::qobject::Session>) {
         note(format!("GUI 线程 {tag}：{said}"));
         return;
     };
-    *held(&GROUP_CURSOR) = Some(at);
     let target = &rows[at];
+    // 记的是**这一组的名字牌**而不是它此刻站在第几格：下一按要在（可能已经挪过的）次序里认出
+    // 上一按落到过谁。
+    *held(&GROUP_CURSOR) = Some(target.0);
     // 什么也没改的那一支：目标已在显示中，而场上没有别的组要关。仍要有话（#433），仍不许叫
     // 那一手 —— 叫了就会把一组本来显示着的贴图闪一次隐藏再显示，而那一闪是这一按凭空造出来的。
     if off.is_empty() && target.2 {
@@ -1780,7 +1945,7 @@ fn switch_group(tag: &str, mut session: Pin<&mut session::qobject::Session>) {
     ));
 }
 
-/// §5.16.1 第 1410 行那一枚「贴图编辑操作」：一枚也没被选中时的那一句拒绝。
+/// §5.16.1「可绑定范围」第 9 条那一枚「贴图编辑操作」：一枚也没被选中时的那一句拒绝。
 ///
 /// 纯函数、与 [`no_group_said`] 同族 —— 「按下去而场上没有对象」这一问不需要桌面，而这一档里
 /// 每一句要递给屏幕的话都得先在单测里被读一遍（#433 的形状不是「没做事」，是「没做事且没话说」）。
@@ -1908,7 +2073,8 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
             // 那唯一一位行为读者。0（默认那一侧）走的还是下面那条与 P108 之前逐字相同的路；
             // >0 把遮罩交给 `main.qml` 里那枚绑在 `delay_left` 上的定时器，由它在数完的那一刻
             // 回调 [`session::SessionRust::delay_round`]，于是画面和指针都冻在倒计时结束那一刻
-            // （PRD 第 420 行要的正是这个时刻，而 P107 已把指针那一问安在冻结那一格里）。
+            // （§5.4.3 规则第 2 句「延时截图应捕获倒计时结束时的指针状态」要的正是这个时刻，
+            // 而 P107 已把指针那一问安在冻结那一格里）。
             match delay::arm_from_config() {
                 delay::Arm::Immediate => open_mask(&tag, session.as_mut()),
                 delay::Arm::Waiting { left, step_ms } => {
@@ -1945,21 +2111,23 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
         // 记的就是这一条）。挪到泵线程去跑会把整条链锁死，这也是这一臂不叫 `state::` 而叫一只
         // `session` 的手的原因。
         Work::OpenPicturePins => open_picture_pins(&tag, session.as_mut()),
-        // §5.12.4 第 1251 行那三个入口里的第三枚。整趟（现读快照 → 轮到哪一组 → 叫那五只已有的
-        // 手之一切过去）住在 [`switch_group`]，那一手头顶记着为什么本层一格模型也不拧。
+        // §5.12.4 操作步骤 步骤 1 那三个入口里的第三枚。整趟（现读快照 → 轮到哪一组 → 叫那五只
+        // 已有的手之一切过去）住在 [`switch_group`]，那一手头顶记着为什么本层一格模型也不拧。
         //
         // 它**不在托盘菜单那一列里**，这不是漏：`Work::Groups`（「图片分组」）那一行才是
-        // §5.18.1 第 1437 行点名的那一枚，而把 `switch_group` 也列成一枚扁平的菜单项，读回来的
-        // 会是「切一次」而用户以为自己在「选一组」—— 逐组那一列要的是 shell 那一头的子菜单
-        // （`TraySpec.items` 是一列扁平的 `(id, 名)`，泵那一侧 `AppendMenuW` 一枚 `POPUP` 也不建，
-        // 且菜单是 `install` 那一刻定死的），本轮没有那一件东西，记在报告里而不是冒充成有。
+        // §5.18.1「菜单建议」那一列的第 5 行点名的那一枚，而把 `switch_group` 也列成一枚扁平的
+        // 菜单项，读回来的会是「切一次」而用户以为自己在「选一组」—— 逐组那一列要的是 shell 那一头的
+        // 子菜单（`TraySpec.items` 是一列扁平的 `(id, 名)`，泵那一侧 `AppendMenuW` 一枚
+        // `POPUP` 也不建，且菜单是 `install` 那一刻定死的），本轮没有那一件东西，记在报告里
+        // 而不是冒充成有。
         Work::SwitchGroup => switch_group(&tag, session.as_mut()),
-        // §5.16.1 第 1410 行那一枚「贴图编辑操作」，出厂 `ctrl+shift+e`。它开的是**遮罩**，所以
-        // 与 [`Work::Capture`] 同一族：必须在拥有 Qt 的这一条线程上跑（`open_from_freeze` 要铺
+        // §5.16.1「可绑定范围」第 9 条那一枚「贴图编辑操作」，出厂 `ctrl+shift+e`。它开的是**遮罩**，
+        // 所以与 [`Work::Capture`] 同一族：必须在拥有 Qt 的这一条线程上跑（`open_from_freeze` 要铺
         // 纹理、要 `show()` 窗），本层只剩两问 —— 选中了哪几枚、它们占桌面上哪一块。
         Work::PinEdit => pin_edit(&tag, session.as_mut()),
-        // §5.16.1 第 1411 行那一枚「自定义命令行任务」。整趟（现读档上那一串字 → 判 → 递）住在
-        // [`run_custom_task`]，那一手头顶记着本层只剩哪三件事、以及为什么这一臂可以真起一枚进程。
+        // §5.16.1「可绑定范围」第 10 条那一枚「自定义命令行任务」。整趟（现读档上那一串字 →
+        // 判 → 递）住在 [`run_custom_task`]，那一手头顶记着本层只剩哪三件事、以及为什么这一臂
+        // 可以真起一枚进程。
         //
         // 它**不在托盘菜单那一列里**，与 `switch_group` 同一枚理由：§5.18.1 那一列十行没有这一行，
         // 而 [`tray_menu`] 头顶「只接有归宿的」反读也成立 —— 有归宿不等于该长出一枚菜单项。
@@ -2092,7 +2260,7 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
                 "GUI 线程 {tag}：自定义截图窗 custom_open {before} -> {said}（延时那格起自 [capture] delay_seconds）"
             ));
         }
-        // §5.14.4 第 1309 行的那扇窗，与上面两臂同一分工：这一路只写「该不该有一扇窗」那一格，
+        // §5.14.4 操作步骤 步骤 1 的那扇窗，与上面两臂同一分工：这一路只写「该不该有一扇窗」那一格，
         // 造与毁都在 `main.qml`。这一扇窗**不需要一次 seed()**：页上唯一的起手数是那份清单，
         // 而它每一次出生都现问 SQLite（[`crate::session::qobject::Session::historyRows`]），
         // 没有一格可以在这里替用户先填上。
@@ -2104,8 +2272,8 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
                 "GUI 线程 {tag}：历史记录管理窗 history_window_open {before} -> {said}"
             ));
         }
-        // §5.12.3 / §5.12.4 第 1218 行那一扇「图片分组管理」窗，与上面两臂同一分工：只写
-        // 「该不该有一扇窗」那一格，造与毁都在 `main.qml`。这一臂比它们多一只手 ——
+        // §5.12.3 / §5.12.4、§5.12.1 操作步骤 步骤 1 那一扇「图片分组管理」窗，与上面两臂
+        // 同一分工：只写「该不该有一扇窗」那一格，造与毁都在 `main.qml`。这一臂比它们多一只手 ——
         // 页上那一列的名字来自 [`crate::session::qobject::Session::groups`] 那一串字，而它只由
         // 分组那五只手与 [`crate::session::qobject::Session::refresh`] 写；托盘这一径上没有任何
         // 一只手改过模型，所以开之前先重读一次，否则真人从贴图菜单建好组再点托盘时，页上列的
@@ -2119,8 +2287,9 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
                 "GUI 线程 {tag}：图片分组管理窗 group_window_open {before} -> {said}（清单先重读 session.groups）"
             ));
         }
-        // §5.21.1 那四步里的前三步：第 1441 行那一枚按下 → 读**此刻**档上那两枚 `[about]` 键 →
-        // 交给 core 那一层唯一的判决函数 → 产品自己那句话写进 `status`。这里一次也不写档。
+        // §5.21.1 那四步里的前三步：§5.18.1「菜单建议」那一列的第 9 行那一枚按下 → 读**此刻**
+        // 档上那两枚 `[about]` 键 → 交给 core 那一层唯一的判决函数 → 产品自己那句话写进
+        // `status`。这里一次也不写档。
         //
         // 「获取」自取回那一只手落地起**会**联网（[`platform_windows::fetch`]：档上那枚键写成
         // `http(s)` 地址时真的去取），因此这一臂不再自己跑完那一趟，只把它**起出去** ——
@@ -2223,14 +2392,25 @@ impl Clip {
                 }
             }
         };
-        let formats = platform_windows::clip::formats().unwrap_or_default();
-        if !before.is_empty() && before.image_bytes.is_none() && before.text.is_none() {
+        // 什么算「写下去就还不回来」不由这一格自己决定：`state::cannot_put_back` 是唯一的
+        // 作者（#281），本腿是它三名读者之一（另两处 `annotate_check::clipboard_rows`、
+        // `autosave_check`）。名字取自刚才那一次 `read` 里的 `before.formats`，不再单叫一次
+        // `clip::formats()`：两次开板就是两份读数，中间若有别的进程拷了东西，这句话里印的
+        // 名字就不是下面这道闸拦下或放过的那块板上的名字。
+        //
+        // 这一格原先自己写着条件，还多要 `image_bytes.is_none() && text.is_none()`：一块
+        // 图**旁边**挂着一列文件的板因此被放过去，写下去之后那一列文件就没了 —— 正是它上面
+        // 那句话声称拦住的损失（#88）。族里现在有三形：`CF_HDROP` 那一列文件（本应用没有写它
+        // 的那只手）、骑在图或文本上的 html（`put_back` 一次只还一条腿）、以及一块什么可读的
+        // 都没有的板（只装着 `Rich Text Format` 这类本应用认不来的格式，`Contents::formats`
+        // 看得见它，所以不许再被叫成「空的」然后清掉）。
+        if state::cannot_put_back(&before) {
             return Self {
                 planted: (
                     state::Check::Blocked,
                     format!(
-                        "剪贴板上是 {}，本应用不认这些格式，写下去就还不回来——一个字也没动它",
-                        formats.join(",")
+                        "剪贴板上是 {}，本应用还放不回去，写下去就还不回来——一个字也没动它",
+                        before.formats.join(",")
                     ),
                 ),
                 before: None,
@@ -2280,6 +2460,9 @@ impl Clip {
                      不是用户之前拷的东西",
                     frame.width,
                     frame.height,
+                    // 「空的」与「还得起的」自此是这一格唯一可能的两种读数：上面那道闸
+                    // （`state::cannot_put_back`）已经把第三种——装着东西而一条腿都还回不去
+                    // ——拦在写之前了。所以这个 else 不是一句希望，是闸的结论（#88）。
                     if before.is_empty() {
                         "空的"
                     } else {
@@ -2405,8 +2588,14 @@ impl Region {
 /// 它是**自己那一手的读数**，不是第二份运行状态：独显在不在、留几枚，永远由调用方从 core 那张
 /// `Solo::kept` 表上现读现递（见 [`crate::state::PinState::solo_pin`]），这一格只回答「屏幕上那一枚
 /// 图标此刻写的是哪一句」。留这一格为的是 §9.1 第十条之外还有一句真话要说：`Pump::set_tip` 投出的
-/// 是消息，`apply_tip` 在另一条线程上把它 `take()` 走，本层没有任何把手能问回来，于是门要读的那一格里
-/// 「这一层写了什么」只能由写的那一手自己记（与 `MaskState::history_list_last` 同一形状）。
+/// 是消息，`apply_tip` 在另一条线程上把它 `take()` 走，本层没有任何把手能问回来，于是「这一层写了
+/// 什么」只能由写的那一手自己记（与 `MaskState::history_list_last` 同一形状）。
+///
+/// **读者**：`--tray` 那一档（`tray_click_check` 的 `tray tip reflects state` 那一格）走
+/// [`replay_tip`] 三趟再逐字读回来，与单测 `the_solo_hand_is_the_only_writer_of_the_tip` 两处；
+/// 这一格先前欠的那条真门腿（§5.1.1「正确反映应用运行状态」/ §5.11 规则③）自此还上了，所以
+/// `tip_last` 不再挂 `#[cfg(test)]`。**它量的仍是「这一层交出去的那一句」**，不是图标上真画出来的
+/// 字 —— 那一档没有泵（`install` 一次也没跑），它的天花板写在同一份报告的 Blocked 行里。
 static TIP_LAST: Mutex<String> = Mutex::new(String::new());
 /// 外壳真的收下几枚键，供 Solo 那一手事后重写同一句话时不必再问一遍 `Started`（那一份在 `install`
 /// 返回后就搬进 [`Launch`] 交出去了，不是本层的常驻读数）。
@@ -2416,8 +2605,13 @@ static TIP_KEYS: Mutex<usize> = Mutex::new(0);
 const TIP_TAIL: &str = "菜单里有截图";
 /// Win32 `NOTIFYICONDATAW.szTip` 那一格的宽度（`TCHAR[128]`，留一格给终止符）。`write_wide` 是按
 /// UTF-16 单元**静默截断**的：句子写长了，用户看到的是前半句而不是任何一句报错，所以这一枚上限由
-/// 单测钉住，不许哪天有人往 tip 上再挂一件事。
-const TIP_CAP: usize = 127;
+/// 判据钉住，不许哪天有人往 tip 上再挂一件事。
+///
+/// **两处读者，都不在装配那一侧**：单测 `the_tip_sentence_has_one_author` 按最坏的读数
+/// `tip_line(9999, Some(9999))` 量，`--tray` 那一档按这一趟真交出去的三句量。真正截断的是
+/// `write_wide`，而那一手读的是 `szTip` 自己的长度，不读这一枚 —— 所以这一枚是判据的尺，不是产品
+/// 的闸；它不挂 `#[cfg(test)]` 只因为门也要读它，而门读的必须是同一个数（#281）。
+pub const TIP_CAP: usize = 127;
 
 /// tooltip 那一句的**唯一作者**：`keys`＝外壳此刻真收下的全局热键枚数（§5.1.1「正确反映应用运行
 /// 状态」），`solo`＝这一场在不在独显里、在的话留着几枚（§5.11 规则③「应显示当前处于 Solo 状态」）。
@@ -2463,7 +2657,11 @@ pub fn replay_tip(solo: Option<usize>) {
     ));
 }
 
-/// 本层最后一次交出去的那一句，逐字交回（[`TIP_LAST`] 头顶记的是为什么非得由写的那一手记）。
+/// 本层最后一次交出去的那一句，逐字交回（[`TIP_LAST`] 头顶记的是为什么非得由写的那一手记，也记着
+/// 它的读者是哪两处）。
+///
+/// 读者：单测 `the_solo_hand_is_the_only_writer_of_the_tip`，与 `--tray` 那一档的
+/// `tray tip reflects state` 一格。
 pub fn tip_last() -> String {
     held(&TIP_LAST).clone()
 }
@@ -3244,7 +3442,7 @@ mod tests {
             (Work::HideAllPins, "隐藏全部贴图"),
             // §5.9.13 第三步那一枚「取消穿透」。它的名与说明都不在本行：与上面八枚同一张表。
             (Work::ReleaseClickThrough, "解除鼠标穿透"),
-            // §5.12.4 第 1251 行那三个入口里的第三枚。自 P186 起它有手（[`switch_group`]），
+            // §5.12.4 操作步骤 步骤 1 那三个入口里的第三枚。自 P186 起它有手（[`switch_group`]），
             // 而它的名字早就在 `ACTION_TEXTS` 里 —— 这一对判的是「接上的那一天名与说明不必再改」，
             // 因为名册那一行写的本来就是它要做的那件事。
             (Work::SwitchGroup, "切换分组"),
@@ -3293,8 +3491,8 @@ mod tests {
     /// `config::Tray::label` 从前自己写着八句中文，其中三句与表里同名的几枚**不一样**
     /// （`paste_pin` 那里叫「贴图」、这里叫「贴出剪贴板」；`settings` 是「打开设置页」对「首选项」；
     /// `none` 是「不做任何事」对「不绑定」），而名单只有八枚 —— 其余四枚落进 `other` 那一臂，
-    /// 交回英文 id 本身。它在整个仓里只有一枚读者：`--tray` 那份报告里的 `tray labels` 一行
-    /// （`tray_click_check.rs` 第 373 行），而且改码之前**没有任何一格断言比过它**，所以这一族
+    /// 交回英文 id 本身。它在整个仓里只有一枚读者：`--tray` 那份报告末尾的 `tray labels` 一行
+    /// （`tray_click_check::measure`），而且改码之前**没有任何一格断言比过它**，所以这一族
     /// 分歧不会红，只会让同一份证词与同一只托盘各叫一个名。
     ///
     /// 这一格走的是两条不同的路再合到一处：配置那一层拿 id 直接问表，装配那一层拿 `Work` 反查
@@ -3413,6 +3611,11 @@ mod tests {
     ///    各自改一遍就是两个作者，漏改一条就是图标与屏幕各说一套）；
     /// ② 递下去的是 core 的读数而不是桥侧新存的布尔（`Some(self.solo_kept())` 那一枚），
     ///    泵不在时账上说的是「泵不在」而不是「改了」。
+    ///
+    /// ①「只有一处」量的是 **`state.rs` 这一份档**（`include_str!` 读的就是它），不是一次全仓扫描：
+    /// `--tray` 那一档也调 [`replay_tip`]，可它是把这一手当**读数重放**来量交出去的那一句，不在产品
+    /// 的接线上，所以它不是第二个作者。这一句写在这里，是为了不让「只有一处」被读成比它实际量到的
+    /// 更多（#261）。
     #[test]
     fn the_solo_hand_is_the_only_writer_of_the_tip() {
         let state = include_str!("state.rs");
@@ -3580,6 +3783,142 @@ mod tests {
         assert_ne!(some, none, "0 枚与 3 枚同一句 = 数目是装饰");
     }
 
+    /// 一行 `describeWindow` 的样子，照 `cpp/pin_shim.cpp` 里那一串拼接原样拼出来。
+    ///
+    /// 字段**顺序**也跟着真机走，尽管本手读的是 `key=value`、顺序对它无所谓：真机那一行哪天换了
+    /// 形状（少打一枚字段、把 `title=` 挪走），这一格里拼出来的行就会跟着读不出东西，而不是继续
+    /// 用一份自己想象出来的报告判绿。
+    fn described(title: &str, layered: &str, transparent: &str, tool: &str) -> String {
+        format!(
+            "  class=QQuickWindow title={title} visible=1 size=200x120 opacity=1.00 \
+             alphaBufferSize=8 qtFlags=0x800 hwnd=0x1a0e2e style=0x94000000 \
+             exStyle=0x80088 FRAMELESS=1 CAPTION=0 LAYERED={layered} \
+             TRANSPARENT={transparent} TOPMOST=1 TOOLWINDOW={tool} NOACTIVATE=0 APPWINDOW=0"
+        )
+    }
+
+    /// 一枚穿透中的贴图窗，与一枚没穿透的贴图窗。
+    fn pin_through() -> String {
+        described("", "1", "1", "1")
+    }
+    fn pin_solid() -> String {
+        described("", "1", "0", "1")
+    }
+
+    /// `pinWindowReport` 那一枚头，以及它为什么在每一趟里都得在场：报告的第一行是
+    /// `topLevelWindows=3 dpr=2.00`，它没有 `TOOLWINDOW=` 也没有 `title=`，所以不该被数成一枚
+    /// 贴图窗。这一格钉的是**头不被当成窗**，而不是窗不被当成头。
+    fn describe_report(rows: &[String]) -> String {
+        let mut out = format!("topLevelWindows={} dpr=2.00\n", rows.len());
+        for row in rows {
+            out.push('\n');
+            out.push_str(row);
+        }
+        out
+    }
+
+    /// §7.3 第 4 条那一手的判据本体：**名册说要穿透的那几枚，窗上那两枚原生位真读回来了没有**。
+    ///
+    /// 七臂各判一件不同的事，缺任何一臂这一格就有一处能静默撒谎：
+    /// ① 全吃下 ⇒ `Yes`，一句话也不说（说一句「没问题」也是往屏幕上写字）。
+    /// ② 差一枚 ⇒ `Missing(1)`，而且数目得是**差几枚**、不是名册一共几枚。
+    /// ③ `TRANSPARENT=1` 而 `LAYERED=0` ⇒ 仍判 `Missing`。这一臂是 Win32 那一对位的**唯一证人**：
+    ///    少了 `WS_EX_LAYERED` 的 `WS_EX_TRANSPARENT` 不兑现「鼠标事件穿透窗口」，而
+    ///    `applyStyle` 是把两枚一起或上去的（[`crate::pin_check::native_pass_through`] 那一段）。
+    /// ④ 长得像贴图窗却没打那两枚字段 ⇒ `Unjudged`，**不是** `Missing`。非 Windows 的平台上
+    ///    `describe` 压根不打那两枚，把沉默读成「没生效」就是替一台机器编一句它没说过的话（#238）。
+    /// ⑤ 名册点名的窗还没起齐 ⇒ `Unjudged`。崩溃恢复会把一批 `click_through` 一次写进名册，
+    ///    而 QML 那头的窗还在路上；这一臂挡住的是「启动头几格对用户喊一句假话」。
+    /// ⑥ 一扇**有标题**的工具窗（历史/分组/自定义截图那三扇开机头一格标题也是空的，靠 `Qt.Tool`
+    ///    与空标题这一对分开）⇒ 不数进贴图。这一臂反着走：把它数进去，`have` 就会替一枚压根
+    ///    没说要穿透的窗顶上一格，②那一判当场失灵。
+    /// ⑦ 名册一枚也没有 ⇒ `Yes`，且**在报告里那两枚字段读不出来的时候也是** `Yes`。
+    #[test]
+    fn the_native_bits_are_read_back_before_anyone_is_told_it_worked() {
+        // ①
+        assert_eq!(
+            click_through_taken(&describe_report(&[pin_through(), pin_through()]), 2),
+            Taken::Yes,
+            "两枚都读回来了却判成没吃下 = 对用户说一句假话"
+        );
+        // ②
+        assert_eq!(
+            click_through_taken(&describe_report(&[pin_through(), pin_solid()]), 2),
+            Taken::Missing(1),
+            "差几枚要照实说：名册 2 枚、窗上只 1 枚带位"
+        );
+        // ③
+        assert_eq!(
+            click_through_taken(&describe_report(&[described("", "0", "1", "1")]), 1),
+            Taken::Missing(1),
+            "只读透明那一枚就把「分层 + 透明」那一对读成了一半 —— 用户的鼠标照样落在贴图上"
+        );
+        // ④ 一枚没有那两枚字段的贴图窗行（非 Windows 的 `applyStyle` 只有三行 `Q_UNUSED`）。
+        let bare = "  class=QQuickWindow title= visible=1 size=200x120 opacity=1.00 \
+                    alphaBufferSize=8 qtFlags=0x800";
+        assert_eq!(
+            click_through_taken(&describe_report(&[bare.to_string()]), 1),
+            Taken::Unjudged,
+            "没问出那两枚位 = 判不了，不是「判了、没生效」"
+        );
+        // ⑤
+        assert_eq!(
+            click_through_taken(&describe_report(&[pin_through(), pin_through()]), 3),
+            Taken::Unjudged,
+            "窗还没起齐时差的那一枚说的是窗，不是位"
+        );
+        // ⑥
+        let history = described("falconshot-history", "1", "0", "1");
+        assert_eq!(
+            click_through_taken(&describe_report(&[pin_through(), history]), 1),
+            Taken::Yes,
+            "一扇有标题的工具窗被当成贴图数进去了 —— 它替一枚没说要穿透的窗顶了一格"
+        );
+        // ⑦
+        assert_eq!(
+            click_through_taken(&describe_report(&[bare.to_string()]), 0),
+            Taken::Yes,
+            "名册一枚也没有时压根不必读那两枚位"
+        );
+        assert_eq!(
+            click_through_taken("", 0),
+            Taken::Yes,
+            "空报告 + 空名册也要答得出：这一格不许因为没窗就闭嘴"
+        );
+    }
+
+    /// §7.3 第 4 条那一句「明确标记不可用」在这一格里的措辞。判的是**说了什么**，三臂各一件事：
+    /// 数目得在句子里（屏幕上说的是这一趟）、说的是量到的那件事（不是替 Win32 编一个原因，
+    /// #261）、以及**不带**「怎么出去」那一列 —— 穿透没吃下时鼠标还落在贴图上，用户点得到贴图
+    /// 自己的菜单，[`click_through_entry_hint`] 那一列在这里没有读者，抄过来就是一句废话。
+    #[test]
+    fn the_refusal_names_what_was_measured_and_no_guessed_cause() {
+        let said = click_through_refused_said(2);
+        assert!(said.contains('2'), "{said}：差几枚得在句子里");
+        assert!(said.contains("穿透"), "{said}：浮窗那一行要认得出是哪件事");
+        assert!(
+            said.contains("原生位") || said.contains("窗上"),
+            "{said}：要说的是量到的那件事（回读那两枚位），不是猜的原因"
+        );
+        for guess in ["被拒绝", "权限", "系统不支持", "显卡"] {
+            assert!(
+                !said.contains(guess),
+                "{said}：`applyStyle` 把 `SetWindowLongPtrW` 的返回值丢掉了，这一手不知道是谁拒的"
+            );
+        }
+        assert_ne!(
+            said,
+            click_through_refused_said(1),
+            "1 枚与 2 枚同一句 = 数目是装饰"
+        );
+        let hint = click_through_entry_hint(2, &click_exits());
+        assert!(
+            !said.contains("退出") && !said.contains("怎么出去"),
+            "{said}：穿透没吃下时鼠标还在贴图上，那一列没有读者"
+        );
+        assert_ne!(said, hint, "两句说的是相反的事，不许是同一句");
+    }
+
     /// The wiring table, and the promise it keeps: an action this build cannot
     /// perform is left alone rather than taken over. `capture_custom` used to be the
     /// row that made the difference visible - a shipped default whose coordinates
@@ -3620,9 +3959,10 @@ mod tests {
         assert!(planned.rows.is_empty(), "出厂绑定里还有一行没归宿：{:?}", planned.rows);
         assert_eq!(planned.next, 10, "id 从 1 连续发到注册的下一个");
         // `solo` 走出这一列靠 P135、`toggle_pins` 靠 P137、`capture_custom` 靠 P166 那扇对话框窗
-        // （§5.3.5）、`switch_group` 靠 P186 那一手（§5.12.4 第 1251 行那三个入口里的第三枚）、
-        // `pin_edit` 靠 [`Work::PinEdit`]（把洞交回选中的那几枚占的那一块，不铺像素）、`custom_task`
-        // 靠 [`Work::CustomTask`]（判归 [`falcon_core::tasks`]，跑归 `open::dispatch`）。
+        // （§5.3.5）、`switch_group` 靠 P186 那一手（§5.12.4 操作步骤 步骤 1 那三个入口里的
+        // 第三枚）、`pin_edit` 靠 [`Work::PinEdit`]（把洞交回选中的那几枚占的那一块，不铺像素）、
+        // `custom_task` 靠 [`Work::CustomTask`]（判归 [`falcon_core::tasks`]，跑归
+        // `open::dispatch`）。
         let unwired: Vec<&str> = planned
             .rows
             .iter()
@@ -3796,12 +4136,11 @@ mod tests {
     /// 那件曾经没有归宿的手（帮助）自 P174 起也在列，因为 [`Work::Help`] 那一只手此刻真住在
     /// [`crate::help`] 里 —— 「历史记录」自 P171 起
     /// 在列，因为那一枚 [`Work::History`] 有真手 —— 有真手的才列，列一枚没有归宿的进来就是这一句
-    /// 要防的死行（#433）。「图片分组」自 P172 起在列，按的是 PRD 第 1437 行那一列的**位置**：
-    /// 它紧跟第 1436 行「显示或隐藏全部贴图」，所以排在 `TogglePins` 之后、白板之前
+    /// 要防的死行（#433）。「图片分组」自 P172 起在列，按的是 §5.18.1「菜单建议」那一列的**位置**：
+    /// 它紧跟「显示或隐藏全部贴图」，所以排在 `TogglePins` 之后、白板之前
     /// （白板不在那一列里，它来自 §5.4.4，见 [`Work::Whiteboard`] 那一臂记的两处冲突）。
-    /// 「检查更新」自 P173 起在列，按的是第 1441 行那一列的**位置**：它上面那一行是第 1440 行「帮助」，
-    /// 而 P173 那一代「帮助」还没有手、不列，所以它当时直接接在第 1438 行「历史记录」之后、
-    /// 第 1442 行「退出」之前。
+    /// 「检查更新」自 P173 起在列，按的是同一列的**位置**：它上面那一行是「帮助」，
+    /// 而 P173 那一代「帮助」还没有手、不列，所以它当时直接接在「历史记录」之后、「退出」之前。
     /// 「首选项」自 P142 起、「自定义截图」自 P166 起在列：
     /// 它们列的是 [`Work::Settings`] 与 [`Work::CustomCapture`] 那两枚有归宿的手；前者**不带括起来的
     /// 按键名** —— `action()` 是 `None`，场上没有一枚键通向它，写一个名字进去就是替 §5.16.1 那张表
@@ -3811,8 +4150,8 @@ mod tests {
     /// 那张表里没有这一名。它不在 §5.18.1 那一列十行里，与白板、解除穿透记的是同一处冲突，
     /// 见上面 `tray_menu` 与那一臂各自记下的那句。
     ///
-    /// 这一格下面那份名单的**次序**也是判据的一部分，而 P174 使它露了一次真：那一列里第 1438 行
-    /// 「历史记录」排在第 1439 行「首选项」之前，而这份装配到 P174 之前一直按落地先后排（P142 的
+    /// 这一格下面那份名单的**次序**也是判据的一部分，而 P174 使它露了一次真：§5.18.1 那一列里
+    /// 「历史记录」排在「首选项」之前，而这份装配到 P174 之前一直按落地先后排（P142 的
     /// 首选项在 P171 的历史记录之前）。`--help-menu` 门把「次序由文档那一列决定」量了一遍，当场
     /// FAIL；改的是上面 `tray_menu` 的装配次序。名字与文档不同的那两行（「贴图」在这里叫
     /// 「贴出剪贴板」、文档「显示或隐藏全部贴图」在这里叫「隐藏/显示全部贴图」）不在本格之内，
@@ -3942,9 +4281,10 @@ mod tests {
         // 七枚的名字逐个判，而不是只数一个格数：`len()==N` 单独站着时，一枚挤进来一枚溜出去
         // 会互相抵消成一句假绿。这一族此刻是 `Settings`（§5.20.1 那扇窗）、`Quit`（§5.1.1）、
         // `Whiteboard`（§5.4.4 第一步的托盘入口）、`History`（§5.14.4 那扇窗）、自 P172 起的
-        // `Groups`（§5.12.3 那扇窗）、自 P173 起的 `Update`（§5.21.1 那一次查询，第 1441 行那一枚）
-        // 、自 P174 起的 `Help`（§5.21.2 那四行的入口，第 1440 行那一枚），与自本轮起的
-        // `OpenPicturePins`（§5.8.3 第一步那一枚托盘项）—— 八枚都有真手，都没有可绑定动作名。
+        // `Groups`（§5.12.3 那扇窗）、自 P173 起的 `Update`（§5.21.1 那一次查询，
+        // §5.18.1「菜单建议」那一列的第 9 行那一枚）、自 P174 起的 `Help`（§5.21.2 那四行的入口，
+        // §5.18.1「菜单建议」那一列的第 8 行那一枚），与自本轮起的 `OpenPicturePins`（§5.8.3
+        // 第一步那一枚托盘项）—— 八枚都有真手，都没有可绑定动作名。
         for work in &unnamed {
             assert!(
                 matches!(
@@ -4245,5 +4585,95 @@ mod tests {
         // 上限读 [`SAID_MAX`] 而不是抄一个数字：改天放宽到四句，上面 3/5 两例的算术当场对不上，
         // 而这一例跟着常量走 —— 一句措辞的第二个作者就是这么来的（#455）。
         assert_eq!(three.len(), SAID_MAX, "上限变了，上面那两例的算术也要跟着改");
+    }
+
+    /// [`group_rows`](crate::state::PinState::group_rows) 那一行的形状：`(编号, 组名, 显不显, 成员数)`。
+    /// 这一格不抄 `成员数` 的第二份意思 —— 轮流那一判压根不看它，填 0 就是为了钉住「它不参与这一判」。
+    fn a_group(id: u64, name: &str, shown: bool) -> (u64, String, bool, usize) {
+        (id, name.to_string(), shown, 0)
+    }
+
+    /// 场上没有分组时那一按交回 `None`，而不是「第 0 组」 —— 空表上算 `(last+1)%0` 会当场炸，
+    /// 而把它算成 0 就是替用户切到一扇不存在的组上（那一支说的话在 [`no_group_said`]）。
+    #[test]
+    fn the_cycle_has_nothing_to_do_when_the_roster_is_empty() {
+        assert_eq!(group_cycle(&[], None), None);
+        // 记性里还留着上一场那一枚编号、而那一组已经被删光：同一支 `None`，不许从「第 0 组」编起。
+        assert_eq!(group_cycle(&[], Some(7)), None);
+    }
+
+    /// §5.12.3 规则 3「排序变化应同步反映到快捷切换菜单」在**这一枚键**上的那一格：下一按轮到的
+    /// 是「上一次那一组」在当下这份次序里的后继。
+    ///
+    /// 这一格挡的是「记序号」那一版，而它在没挪过序的机器上与本格逐字相同 —— 只有用户挪一次之后
+    /// 才现形：把刚看过的那一组挪到队首，序号那一版算出来的后继正是**它自己**，于是这一按走到
+    /// `already_on_said` 那一句（屏幕上闪的是「已经在显示中」），用户按了一次没换组。编号跟着
+    /// 那一组走，挪到哪一格都找得回它的后继。
+    #[test]
+    fn the_next_press_follows_the_group_and_not_the_slot_number() {
+        let before = vec![a_group(1, "甲", false), a_group(2, "乙", false), a_group(3, "丙", true)];
+        // 上一按落在丙：它此刻站在第 2 格（最后一格），场上也只有它显示着。
+        assert_eq!(group_cycle(&before, Some(3)), Some((0, vec![2])));
+        // 用户在分组窗里把丙从队尾挪到队首（`move_group` 那一手，PRD 那句「排序变化应同步反映」
+        // 就是它）。挪完之后丙在第 0 格，甲与乙依次在后。
+        let after = vec![a_group(3, "丙", true), a_group(1, "甲", false), a_group(2, "乙", false)];
+        let (at, off) = group_cycle(&after, Some(3)).expect("场上有三组");
+        assert_eq!(after[at].1, "甲", "轮到的该是丙在新次序里的后继");
+        assert_ne!(after[at].0, 3, "序号那一版（记着 2、算出 0）在这里切回的是刚看过的那一组");
+        assert_eq!(off, vec![0], "丙仍正显示着，这一按要顺手把它关掉");
+        // 没有挪动的那一趟：四按走完一轮，每按都换一组，一枚也不重复落回当前那组。
+        let mut cursor = None;
+        let mut seen = vec![];
+        for _ in 0..4 {
+            let (at, _) = group_cycle(&before, cursor).expect("场上有三组");
+            seen.push(before[at].1.clone());
+            cursor = Some(before[at].0);
+        }
+        assert_eq!(seen, vec!["甲", "乙", "丙", "甲"], "环上的后继：最后一组的下一按回到第一组");
+    }
+
+    /// 那一枚编号在场上对不上号（真人把那一组删了、或这一场头一回按）：从第一组重新开始，
+    /// 而不是拿对不上号的数去猜后继。`None` 与「对不上号」走的是同一支，因为这两问的答案相同。
+    #[test]
+    fn a_group_that_is_no_longer_there_restarts_at_the_first_one() {
+        let rows = vec![a_group(1, "甲", false), a_group(2, "乙", true)];
+        for cursor in [None, Some(99)] {
+            let (at, off) = group_cycle(&rows, cursor).expect("场上有两组");
+            assert_eq!(at, 0, "{cursor:?} 该从第一组重新开始");
+            assert_eq!(off, vec![1], "别的组里正显示着的那一枚要一起关掉");
+        }
+    }
+
+    /// 「一次只有一组在场」那一判的两格：目标自己不算进 `off`（它本来显示着，这一按不该把它关掉），
+    /// 而没显示的组也不进去（关掉一枚没显示的会在账上留一次凭空的动作）。
+    #[test]
+    fn only_the_other_visible_groups_get_closed() {
+        let rows = vec![a_group(1, "甲", true), a_group(2, "乙", true), a_group(3, "丙", false)];
+        // 上一按落在乙（第 1 格），轮到丙（第 2 格）：甲与乙都显示着，两枚都要顺手关掉。
+        assert_eq!(group_cycle(&rows, Some(2)), Some((2, vec![0, 1])));
+        // 上一按落在丙（最后一格），环回到甲。甲自己正显示着，`off` 里不许有它 —— 有它就会被
+        // `toggle_group_shown` 关一次再开一次，而那一闪是这一按凭空造出来的；丙没显示，也不进去。
+        assert_eq!(group_cycle(&rows, Some(3)), Some((0, vec![1])));
+    }
+
+    /// 三句话各说各的对象（#453）：「没有分组」「本来就在这一组」「切成了」是三种不同的读数，
+    /// 谁也不许被读成谁。它们都是纯函数，所以一台没有屏幕的机器也要能被问一遍（§9.1 第十条）。
+    #[test]
+    fn each_group_sentence_names_its_own_case() {
+        let none = no_group_said();
+        let on = already_on_said("甲");
+        let done = group_switch_said("甲");
+        assert!(
+            none.contains(crate::group_window::TRAY_WORD),
+            "「去哪儿建组」读的是那一枚唯一作者，不是这里重打的一串字：{none}"
+        );
+        assert!(none.contains("这一枚键"), "没说这一按之后该干什么：{none}");
+        assert!(on.contains("甲") && on.contains("已经在显示中"), "{on}");
+        assert!(
+            done.contains("甲") && done.contains("只显示这一组"),
+            "§5.12.4 要用户看得见的那一件是「哪一组在场」：{done}"
+        );
+        assert_ne!(none, on, "场上没分组 ≠ 已经在这一组上");
+        assert_ne!(on, done, "什么也没改 ≠ 切成了");
     }
 }

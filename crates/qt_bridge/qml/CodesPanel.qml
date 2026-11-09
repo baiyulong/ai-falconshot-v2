@@ -124,6 +124,11 @@ Rectangle {
             anchors.centerIn: parent
             text: chip.label
             font.pixelSize: 12
+            // §7.4 第 3 条：「禁用」不许只靠颜色说。灰字是颜色通道，删除线是形状通道。与
+            // `AnnotationToolbar` 的 `Cell` 同一枚手法、同一个理由：删除线不改
+            // `implicitWidth`，所以一枚码此刻能不能填，这一排的宽度与每一枚芯片的位置
+            // 一动不动。
+            font.strikeout: !chip.usable
             color: chip.usable ? "#f2f2f2" : "#6a6a70"
         }
 

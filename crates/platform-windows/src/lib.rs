@@ -10,6 +10,12 @@ pub mod clip;
 /// [`Registry`]: autostart::Registry
 pub mod autostart;
 
+/// §5.2.1 步 2 后半支（`[capture] freeze_frame` 关着）要的那一只手：把一扇窗从**屏幕读取**里
+/// 摘出去。像 [`uia`] 一样无条件声明 —— 「这一台没有这一格」也是一个答（[`affinity::current`]
+/// 的非 Windows 那一臂交 `None`），而不是一句没有声明；判「读回来的图里能不能有自己的窗」始终
+/// 不在这里。
+pub mod affinity;
+
 pub mod cursor;
 
 #[cfg(windows)]
@@ -31,6 +37,10 @@ pub mod print;
 pub mod proc;
 pub mod reveal;
 pub mod theme;
+/// §5.3.3/§5.3.4 的那一只手：UIA 客户端的元素链。像 [`ocr`] 与 [`pick`] 一样无条件声明 ——
+/// 「这一台没有 UIA」也是一个答（[`uia::chain`] 的非 Windows 那一臂交空链），而不是一句
+/// 没有声明；判「问上来的那一串能不能当选区」始终在 `falcon_core::capture`。
+pub mod uia;
 pub mod win;
 
 /// The font here is DirectWrite's, and the MVP is Windows-only. Same arrangement as
@@ -70,6 +80,10 @@ pub mod clip {
         pub html: Option<String>,
         pub text: Option<String>,
         pub files: Vec<PathBuf>,
+        /// Field-for-field the Windows one, so a caller compiled against either asks
+        /// the same two questions and gets the same shapes of answer. On this platform
+        /// `read` refuses before it can name anything, so it is always empty.
+        pub formats: Vec<String>,
     }
 
     impl Contents {
@@ -87,6 +101,7 @@ pub mod clip {
                 && self.html.is_none()
                 && self.text.is_none()
                 && self.files.is_empty()
+                && self.formats.is_empty()
         }
     }
 
@@ -114,6 +129,10 @@ pub mod clip {
     }
 
     pub fn write_text(_text: &str) -> Result<(), ClipError> {
+        Err(absent())
+    }
+
+    pub fn write_html(_fragment: &str) -> Result<(), ClipError> {
         Err(absent())
     }
 

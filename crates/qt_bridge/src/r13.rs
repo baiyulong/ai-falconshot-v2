@@ -169,26 +169,40 @@ impl Report {
     }
 }
 
-/// The scene row, §10 第 41 项 ④: what the desktop is showing at its own centre, printed by
+/// The scene note, §10 第 41 项 ④: what the desktop is showing at its own centre, printed by
 /// every gauge rather than only by `--r13`. Until this round a lone `--ink` run left no
 /// witness of the session behind it - the batch file's `tasklist` was the only one, and it
 /// had been misspelled (`//FI`) for three rounds, so it printed nothing.
 ///
-/// `Blocked` and not `Fail` when the shell answers nothing: an unreadable scene is a property
-/// of the machine, which is the standing rule for an environment refusal. The verdict is
-/// [`crate::capture::Scene::hwnd`], not a word of the sentence, so the row cannot go green on
-/// this crate's own phrasing (§10 第 41 项 ⑥).
+/// A **note** and not a scored row, and the first two `--live` runs (2026-11-08, both on a
+/// locked desktop) are why. The first printed `desktop scene PASS (1536,960) 上是 LockApp.exe
+/// 「Windows Default Lock Screen」 … 会话锁屏=true`: the centre of a locked session *is* a
+/// window, with a title and a process name, so `hwnd.is_some()` read green over a run in
+/// which no screen-reading row could mean anything - a ruler that cannot read empty is not a
+/// ruler (#274), which is what gave [`crate::capture::Scene::read`] its `locked` half. The
+/// second run, with that half in place, printed `desktop scene FAIL` and so `live check:
+/// FAIL`, exit 1 - "this code failing" - about a machine that was locked. `verdict_code`'s
+/// whole reason to keep 1 and 3 apart is that an environment block is not a defect.
 ///
-/// It is one function rather than three copies because the *rule* is the thing that must not
-/// drift between the doors, and it is called first in each report because what the desktop
+/// `Blocked` is not the fix either, because this note is printed by doors that never look at
+/// the screen: §10 第 41 项 ⑧ records `--pin` going green on both the locked and the unlocked
+/// run, and ⑤ records the ink row reading *better* locked than unlocked, so a lock is neither
+/// monotone with nor equivalent to "this round does not count". A row that cannot tell those
+/// two apart has no business deciding the exit code of twenty-odd doors, so it reports the
+/// reading and hands it back.
+///
+/// A door whose whole subject *is* the screen grades the returned [`crate::capture::Scene`]
+/// itself - [`crate::mask_check::live_measure`] does, as a `Blocked` premise, because there a
+/// lock genuinely voids the answer the gate gives. That is the split: the scene is context for
+/// every row and a premise for only some.
+///
+/// It is one function rather than a copy per door because the *rule* is the thing that must
+/// not drift between them, and it is called first in each report because what the desktop
 /// was doing is context for every row that follows it.
-pub(crate) fn scene_row(rep: &mut Report) {
+pub(crate) fn scene_row(rep: &mut Report) -> crate::capture::Scene {
     let scene = crate::capture::desktop_scene();
-    rep.row(
-        "desktop scene",
-        Check::from(scene.hwnd.is_some()),
-        scene.line,
-    );
+    rep.note("desktop scene", scene.line.clone());
+    scene
 }
 
 /// Plant the control. Must run before the QML engine, so the pin window exists

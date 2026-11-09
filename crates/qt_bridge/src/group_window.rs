@@ -1,27 +1,27 @@
-//! §5.12.3 与 §5.12.4 的那一扇「图片分组管理」窗（PRD 第 1232–1253 行），与 §5.18.1 第 1437 行
-//! 那枚托盘项。
+//! §5.12.3 与 §5.12.4 的那一扇「图片分组管理」窗，与 §5.18.1 菜单建议里那枚
+//! 「图片分组」托盘项。
 //!
-//! **这一档存在的原因**：PRD 第 1218 行写「用户打开“图片分组管理”。」、第 1236 行写
-//! 「用户进入分组管理页。」、第 1251 行写「用户从托盘菜单、分组面板或快捷键选择分组。」，而
+//! **这一档存在的原因**：§5.12.1 步骤 1 写「用户打开“图片分组管理”。」、§5.12.3 步骤 1 写
+//! 「用户进入分组管理页。」、§5.12.4 步骤 1 写「用户从托盘菜单、分组面板或快捷键选择分组。」，而
 //! `hotkey.rs` 头顶那封欠账信自己记着 §5.18.1 那十枚菜单建议里的「图片分组」在本 build 没有对面
 //! （「菜单建议里的 图片分组 / 帮助 / 检查更新 三条，本 build 都还没有能跑的那只手」，
 //! 前置档 `p172_pre_A.txt` 第 41–46 行逐档现读它那六处）。要说清楚的是：**§5.12 那四节的每一条
 //! 规则都不缺一只手**，缺的是那扇窗：
-//! * 「新建分组 / 输入分组名称 / 保存后创建空分组」（第 1219–1221 行）对面是
+//! * 「新建分组 / 输入分组名称 / 保存后创建空分组」（§5.12.1 步骤 2–4）对面是
 //!   [`falcon_core::pin::PinSet::create_group`]，桥侧读者是
 //!   [`crate::session::qobject::Session::create_group`]；
-//! * 「将贴图加入分组」那四步（第 1227–1230 行）对面是 [`crate::state::PinState::assign_selection_to_group`]；
-//! * 「执行删除、重命名或拖动排序」（第 1238 行）对面是 `rename_group` / `delete_group` / `move_group`；
-//! * 「删除非空分组时，应询问贴图如何处理」（第 1243 行）对面是 [`crate::state::PinState::delete_group`]
+//! * §5.12.2「将贴图加入分组」那四步对面是 [`crate::state::PinState::assign_selection_to_group`]；
+//! * 「执行删除、重命名或拖动排序」（§5.12.3 步骤 3）对面是 `rename_group` / `delete_group` / `move_group`；
+//! * 「删除非空分组时，应询问贴图如何处理」（§5.12.3 规则 1）对面是 [`crate::state::PinState::delete_group`]
 //!   的 `destroy` 那一枚布尔；
-//! * 「排序变化应同步反映到快捷切换菜单」（第 1245 行）对面是 [`crate::state::PinState::group_rows`]
+//! * 「排序变化应同步反映到快捷切换菜单」（§5.12.3 规则 3）对面是 [`crate::state::PinState::group_rows`]
 //!   —— 它返回的就是 core 那个 `groups` vec 本体的顺序，桥侧一格不重排；
-//! * 「执行显示、隐藏或切换」与「系统统一更新该分组内贴图的可见状态」（第 1252–1253 行）对面是
+//! * 「执行显示、隐藏或切换」与「系统统一更新该分组内贴图的可见状态」（§5.12.4 步骤 2–3）对面是
 //!   [`falcon_core::pin::PinSet::toggle_group_shown`] 加 `PinItem::group_hidden`。
 //!
 //! 也就是说：这六格全部只被**量具与贴图窗自己**递过（`PinWindow.qml` 那一枚「分组」子菜单、
 //! `state.rs` 的 selftest 那一格、以及 `the_group_hands_cross_the_bridge_and_answer_apart` 那枚单测），
-//! 一次也没有被**一枚用户能从托盘点开的窗**递过。PRD 第 1218 行与第 1251 行要的是后者。
+//! 一次也没有被**一枚用户能从托盘点开的窗**递过。§5.12.1 步骤 1 与 §5.12.4 步骤 1 要的是后者。
 //! 这一档因此不重新发明任何一只手：窗上那几枚钮叫的是 `session.createGroup / renameGroup /
 //! deleteGroup / moveGroup / toggleGroupShown` 那五枚**已经存在**的 invokable，本页**不写第二份
 //! 判据、不数第二遍成员**。
@@ -30,12 +30,15 @@
 //! 1. 「用户打开」这一格第一次有了被打开的东西 —— 一扇由 Rust 决定存在与否的窗
 //!    （[`crate::session::qobject::Session::group_window_open`]，与 `settings_open` / `custom_open` /
 //!    `history_window_open` 同一副骨架：谁造这扇窗，销毁就归 `main.qml`）；
-//! 2. 规则 1（第 1243 行）自此有了**页上那一问**：窗上的「删除」不直接递 `destroy`，它先亮出
-//!    [`DELETE_ASK`] 那一句，真人点两枚答钮之一才轮到产品收到那枚布尔。产品那枚 `bool` 与页上
+//! 2. §5.12.3 规则 1 自此有了**页上那一问**：窗上的「删除」不直接递 `destroy`，它先亮出
+//!    [`delete_words`] 交回的那一句，真人点两枚答钮之一才轮到产品收到那枚布尔。产品那枚 `bool` 与页上
 //!    那一问是**两把闸**而不是同一把闸写两遍；取消那一臂递回一句实话而不是把这一次点击吞掉。
 //!    两枚答钮的名字住在本档（[`KEEP_WORD`] / [`DESTROY_WORD`]），而 `session.rs` 里那句成功话
 //!    **也读这两枚常数** —— 一处写「随组销毁」另一处写「随组销毁」就是两个作者（#281）。
-//! 3. §5.12.4 第 1251 行那三个入口里的**三个**自此都有对面：托盘菜单与分组面板是本档那两枚，
+//!    规则 1 问的是「删除**非空**分组时贴图如何处理」，所以那一问有两副面孔：空组上亮「这一组里
+//!    还有贴图」是替产品说一句它自己不会同意的话（答完之后 `session.rs` 说的是「组里没有贴图」），
+//!    [`EMPTY_ASK`] / [`DELETE_WORD`] 就是那一臂的另一副面孔，选哪一副由**页上那一行此刻的枚数**答。
+//! 3. §5.12.4 步骤 1 那三个入口里的**三个**自此都有对面：托盘菜单与分组面板是本档那两枚，
 //!    第三个「快捷键」自 P186 起是 [`crate::hotkey::Work::SwitchGroup`]（`switch_group` 自此
 //!    不再在「未接线」那一列里）。
 //!
@@ -50,39 +53,54 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::state::Check;
 
-/// PRD 第 1218 行那一串字，**窗标题的唯一作者**。这一档把它当判据的一部分而不只是措辞：那一行
+/// §5.12.1 步骤 1 那一串字，**窗标题的唯一作者**。这一档把它当判据的一部分而不只是措辞：那一行
 /// 写的不是「分组管理」也不是「图片分组」，而是「图片分组管理」六个字；门里 `open` 那一格判的
-/// 正是「页上那扇窗的 title 是不是这一串」。§5.12.3 第 1236 行那句「分组管理页」要的那一页，
+/// 正是「页上那扇窗的 title 是不是这一串」。§5.12.3 步骤 1 那句「分组管理页」要的那一页，
 /// 在盘上就是这一扇窗，两处 PRD 共用一个对面。
 pub const TITLE: &str = "图片分组管理";
 
-/// §5.18.1 第 1437 行那一列菜单建议里的写法就是「图片分组」四个字，**托盘那一项的名字唯一作者**
+/// §5.18.1 菜单建议那一列里的写法就是「图片分组」四个字，**托盘那一项的名字唯一作者**
 /// 是这一枚常数：[`crate::hotkey::Work::Groups`] 的 `label()` 读它，门里 ⑩ 那一格也判它。
 /// 窗标题（[`TITLE`]）与菜单名分家是有意的两件事 —— 菜单要说「这里是分组」，窗标题要念的是
-/// PRD 第 1218 行给那一页起的名。
+/// §5.12.1 步骤 1 给那一页起的名。
 pub const TRAY_WORD: &str = "图片分组";
 
 /// 页上那六枚钮的名字，加窗自己那一枚「关闭」：次序就是 §5.12 那四节说话的样子 ——
-/// 新建（第 1219 行）、重命名 / 上移 / 下移 / 删除（第 1238 行那三件，排序拆成两臂）、
-/// 切换显隐（第 1252 行）、关闭。名单住在这一档而不长在 `.qml` 里，与 [`crate::history_window::BUTTONS`]
+/// 新建（§5.12.1 步骤 2）、重命名 / 上移 / 下移 / 删除（§5.12.3 步骤 3 那三件，排序拆成两臂）、
+/// 切换显隐（§5.12.4 步骤 2）、关闭。名单住在这一档而不长在 `.qml` 里，与 [`crate::history_window::BUTTONS`]
 /// 同一理由：页上抄一份名单，改一天「钮上写着删除、递进产品的却是重命名」只能靠数出来（#281）。
-pub const BUTTONS: [&str; 6] = ["新建分组", "重命名", "上移", "下移", "切换显隐", "删除"];
+/// 最后一枚写的是 [`DELETE_WORD`] 而不是又一串「删除」：这一串字在**同一页上**有两个用处（清单
+/// 那一行的钮、空组那一问的答），两处读同一枚常数才是那一句「一处一个作者」。
+pub const BUTTONS: [&str; 6] = ["新建分组", "重命名", "上移", "下移", "切换显隐", DELETE_WORD];
 
 /// 页上那一列「关闭」那一枚：它与上面六枚不是一族（六枚改的是模型，这一枚改的是窗自己在不在），
 /// 所以不混进 [`BUTTONS`] 让门数错 delegate 的枚数。
 pub const CLOSE_WORD: &str = "关闭";
 
-/// 每行右边那一句「这一组此刻显不显」（第 1252 行「显示、隐藏」在两态上的读数）。两个词都由
+/// 每行右边那一句「这一组此刻显不显」（§5.12.4 步骤 2「显示、隐藏」在两态上的读数）。两个词都由
 /// 本档递出去：页上写死一份，`group_shown` 与界面那一眼就有两套词汇。
 pub const SHOWN_WORD: &str = "显示中";
 pub const HIDDEN_WORD: &str = "已隐藏";
 
-/// 规则 1（第 1243 行「删除非空分组时，应询问贴图如何处理」）在**页上那一半**的形状：
+/// §5.12.3 规则 1（「删除非空分组时，应询问贴图如何处理」）在**页上那一半**的形状：
 /// 一句问，两枚答。答钮的两串字同时是产品成功话里的那两串（见本档头顶第 2 格），
 /// 所以「钮上写的」与「产品说的」自始至终是一个名。
 pub const DELETE_ASK: &str = "这一组里还有贴图，删除时它们怎么处理？";
 pub const KEEP_WORD: &str = "退回未分组";
 pub const DESTROY_WORD: &str = "随组销毁";
+
+/// 上面那一问的**另一副面孔**：空组。规则 1 问的是「删除**非空**分组时贴图如何处理」，所以一枚
+/// 空组没有「怎么处理」可问——而产品对它另有自己的一句（`session.rs`「已删除分组（组里没有贴图）」），
+/// 屏幕上先说一句「这一组里还有贴图」、答完又一句「组里没有贴图」，是同一页上两句互相打脸。
+///
+/// 它不是新造的谨慎，只是把那一问改成它在这一组上真问得出的那件事：删不删。两枚归宿此刻是同一件
+/// 事（组里没有贴图可搬），所以这一臂**只给一枚答**（[`DELETE_WORD`]）与取消 —— 递进产品的仍是
+/// 那一枚 `false`（`GroupFate::Ungroup`），因为空组上两臂等价，而那一手是现成的、不必为量具再造。
+pub const EMPTY_ASK: &str = "这一组里没有贴图，删除它吗？";
+/// 空组那一问的唯一那枚答。它与 [`BUTTONS`] 最后一枚是同一串字的两个用处，所以名单那边读的就是
+/// 这一枚（一名一作者，#281）；递进产品的仍是 `false` 那一臂 —— 空组上两枚归宿等价，而
+/// 「退回未分组」这四个字在一组零枚贴图上是把一件没发生的事说成发生了。
+pub const DELETE_WORD: &str = "删除";
 
 /// 那一问的**第三**枚答：不删。它与上面两枚归宿不同族 —— 两枚归宿递进产品的是一枚 `bool`，
 /// 这一枚什么都不递（页上把问收起来，一次调用也没有）。门里 ⑧ 那一格判的正是这一臂：
@@ -199,10 +217,22 @@ pub fn state_words() -> String {
     [SHOWN_WORD, HIDDEN_WORD].join("|")
 }
 
-/// 删除那一问与三枚答钮的四串字，按 [`DELETE_ASK`]、[`KEEP_WORD`]、[`DESTROY_WORD`]、
-/// [`CANCEL_WORD`] 次序。第四枚不是第三种归宿：它什么都不递（见 [`CANCEL_WORD`] 头顶那封信）。
-pub fn delete_words() -> String {
-    [DELETE_ASK, KEEP_WORD, DESTROY_WORD, CANCEL_WORD].join("|")
+/// 删除那一问与答钮的四串字，按「问 | 归宿一 | 归宿二 | 取消」次序。**哪一副面孔由枚数答**：
+/// 页在亮起那一问的那一刻把自己那一行现数出的成员枚数递进来（`GroupWindow.qml` 的 `countOf`，
+/// 与门上 ① 那一格读的是同一个数），于是问句说的是这一组此刻的事，而不是这一族通用的一句话。
+///
+/// 四格这个形状两臂都用，空那一臂的第三格交**空串**而不删掉那一格：页只需要 `split("|")`
+/// 按位绑，少一格就会把「取消」绑到「销毁」的位置上——那是比打脸更坏的一种坏。空串由页读成
+/// 「这一枚钮不亮」。名字不许有 `|` 由单测钉着（下面那一格）。
+///
+/// 非空那一臂的四串一字未改（[`DELETE_ASK`]、[`KEEP_WORD`]、[`DESTROY_WORD`]、[`CANCEL_WORD`]），
+/// 门上 ⑧⑨⑩ 三格量的就是这一臂，本轮改的是空组那一支它自己没问过的态。
+pub fn delete_words(count: usize) -> String {
+    if count == 0 {
+        [EMPTY_ASK, DELETE_WORD, "", CANCEL_WORD].join("|")
+    } else {
+        [DELETE_ASK, KEEP_WORD, DESTROY_WORD, CANCEL_WORD].join("|")
+    }
 }
 
 /// core `groups` 那个 vec 本体此刻的次序，编码成 `id,id,id`。门里 ⑤ 那一格把它与**页上**
@@ -341,7 +371,7 @@ fn said_fate(said: &str) -> Option<(usize, bool)> {
 }
 
 /// 一枚贴图此刻在不在场上。走的是 [`crate::state::PinState::view_data`] 那一格 `live`
-/// —— 它与 `PinWindow.qml` 里那一眼绑的是同一格（第 1253 行「统一更新该分组内贴图的可见状态」
+/// —— 它与 `PinWindow.qml` 里那一眼绑的是同一格（§5.12.4 步骤 3「统一更新该分组内贴图的可见状态」
 /// 在界面上的落点就是这一枚 `live`），本档不数第二遍。
 fn live_of(id: i64) -> bool {
     crate::state::with(|s| s.view_data(id as u64).live)
@@ -528,7 +558,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         seg(&p, 6),
     );
 
-    // ① 第 1218 行「用户打开“图片分组管理”」与第 1236 行「分组管理页」那一格的全部对面：
+    // ① §5.12.1 步骤 1「用户打开“图片分组管理”」与 §5.12.3 步骤 1「分组管理页」那一格的全部对面：
     //    窗在不在、标题是不是那一串字、页上真的造出几枚钮、这一趟列出几行。`visible` 是窗自己
     //    问 Qt 的那一枚数而不是「我们叫过 show()」，`btns` 是 delegate 的 `count` 而不是名单长度。
     //    尾两枚是**页自己数的那两行的成员数**（甲组几枚、丙组几枚）：本档在 `arm()` 里数过一遍
@@ -564,7 +594,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ② 第 1219–1221 行「点击“新建分组”→ 输入分组名称 → 保存后创建空分组」：新组真的**空**。
+    // ② §5.12.1 步骤 2–4「点击“新建分组”→ 输入分组名称 → 保存后创建空分组」：新组真的**空**。
     //    判的是页上那一新行的成员数读到 0，而不是 Rust 说「我建了一枚」。编号也不许是种下的那三枚
     //    之一：「新建」如果是把已有的一组读了回来，页上那一行照样是空的、照样能骗过 `count == 0`。
     //    这一枚编号留到 ⑤ 用：那一腿挪的必须是新建出来的这一组。
@@ -592,7 +622,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ③ 第 1244 行「分组名称不能为空」：页上那一只手交回 -1，而清单**没有**多出一行。
+    // ③ §5.12.3 规则 2「分组名称不能为空」：页上那一只手交回 -1，而清单**没有**多出一行。
     //    这一格判的是拒绝的那一臂 —— 只测成功就等于没测那条规则。
     if let Some(blank) = counted(&mut rep, "create-blank") {
         let s: Vec<&str> = blank.split('|').collect();
@@ -612,7 +642,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ④ 第 1238 行「重命名」：改完页上那一行**自己**写着新名，而且写的是产品那句话里的名。
+    // ④ §5.12.3 步骤 3「重命名」：改完页上那一行**自己**写着新名，而且写的是产品那句话里的名。
     if let Some(rename) = counted(&mut rep, "rename") {
         let s: Vec<&str> = rename.split('|').collect();
         let rc = s.first().and_then(|v| v.parse::<i64>().ok()).unwrap_or(-1);
@@ -629,7 +659,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ⑤ 第 1245 行「排序变化应同步反映到快捷切换菜单」：页面上移一次之后，页上的次序与
+    // ⑤ §5.12.3 规则 3「排序变化应同步反映到快捷切换菜单」：页面上移一次之后，页上的次序与
     //    core `groups` 那个 vec 本体的次序**逐位相同**。这一格判的是「两处一样」，而两处读的
     //    是同一拍 —— 桥侧一重排就露馅（`group_rows` 头顶那句 #281）。
     //
@@ -670,7 +700,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ⑥⑦ 第 1252–1253 行「执行显示、隐藏或切换」与「系统统一更新该分组内贴图的可见状态」。
+    // ⑥⑦ §5.12.4 步骤 2–3「执行显示、隐藏或切换」与「系统统一更新该分组内贴图的可见状态」。
     //    两臂各判一次：藏下去那一拍，甲组那两枚自己 `live=false` 而**不属于甲组的第三枚（在乙组）
     //    照旧**；翻回来那一拍三枚全在场上。缺第二臂就是只测了一半。
     //
@@ -718,7 +748,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ⑧ 规则 1（第 1243 行）的第一臂：按下「删除」而**没答**那一问 ⇒ 产品一次也没收到。
+    // ⑧ §5.12.3 规则 1 的第一臂：按下「删除」而**没答**那一问 ⇒ 产品一次也没收到。
     if let Some(asked) = counted(&mut rep, "delete-asked") {
         let s: Vec<&str> = asked.split('|').collect();
         let asking = s.first().and_then(|v| v.parse::<i64>().ok()).unwrap_or(-1);
@@ -742,7 +772,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
     }
 
     // ⑨⑩ 那一问的两臂。`held` 是**这一枚编号还在不在集里**：退回的还在、销毁的没了，
-    //    这正是第 1243 行「贴图如何处理」要分的两件事。`live` 是页上现读的那一眼。
+    //    这正是 §5.12.3 规则 1「贴图如何处理」要分的两件事。`live` 是页上现读的那一眼。
     //    两臂也各对一份本档在那一拍抄下的模型快照：⑨ 之后三枚都还在集里、⑩ 之后第三枚没了 ——
     //    页上说「退回了」而模型说「销毁了」是这一档最坏的一种对上。
     if let Some(ungroup) = counted(&mut rep, "delete-ungroup") {
@@ -833,7 +863,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         }
     }
 
-    // ⑪ §5.18.1 第 1437 行那枚「图片分组」：判的是**装配出来的那份菜单**里有它，而不是
+    // ⑪ §5.18.1 菜单建议里那枚「图片分组」：判的是**装配出来的那份菜单**里有它，而不是
     //    `Work::Groups` 这一枚枚举存在。菜单的唯一作者是 `hotkey::tray_menu`，本档只问它要一份名字。
     let menu = crate::hotkey::tray_labels();
     let has = menu.iter().any(|name| name == TRAY_WORD);
@@ -856,16 +886,22 @@ pub fn measure(want_ms: i32) -> (Check, String) {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// 这一族改的是**同一份全局模型**（`crate::state` 那一枚 `PinState`）与**同一枚全局 gate**，
     /// 并行跑就是互相顶：本 round 第一趟读回 `arm` 数到兄弟那格种下的组（`[2,1,0,2,1]`），
     /// 而 `report` 递上来的行被另一格收尾时的 `lines.clear()` 抹掉，快照读成 `None`。
     /// 串行一把锁是这一族唯一的实话 —— 与 `pin_check.rs` 那一族「一扇门一份全局状态」同一分工；
-    /// 只有两枚不碰模型也不碰 gate 的字面单测（`the_two_fates_are_read_out_of_the_products_own_sentence`
-    /// 与 `the_words_the_page_shows_have_one_author`）不取这枚锁。
-    static SHARED: Mutex<()> = Mutex::new(());
+    /// 只有三枚不碰模型也不碰 gate 的字面单测（`the_two_fates_are_read_out_of_the_products_own_sentence`、
+    /// `the_words_the_page_shows_have_one_author` 与 `the_ask_says_what_the_group_actually_holds`）
+    /// 不取这枚锁。
+    ///
+    /// `pub(crate)` 不是因为这一族要被人看见，是因为**场上那一台机器只有一个**：
+    /// `settings_view` 的 io 门现在读也读它、写也写它（`#55` 那一步：导入落到的分组归机器），
+    /// 所以它必须与这一族排开 —— 借同一枚锁而不是再造一枚，理由与它自己那封信里「一把锁把两档
+    /// 排开，比给每一档配一份草稿纸少一处权威」同一句（#281）。
+    pub(crate) static SHARED: Mutex<()> = Mutex::new(());
 
     fn shared() -> std::sync::MutexGuard<'static, ()> {
         SHARED.lock().unwrap_or_else(PoisonError::into_inner)
@@ -894,13 +930,17 @@ mod tests {
         assert_eq!(title(), TITLE);
         assert_eq!(buttons().split('|').count(), BUTTONS.len());
         assert_eq!(state_words().split('|').count(), 2);
-        assert_eq!(delete_words().split('|').count(), 4);
+        assert_eq!(delete_words(2).split('|').count(), 4);
+        assert_eq!(delete_words(0).split('|').count(), 4);
         assert_eq!(planted_names().split('|').count(), 2);
         // 名字里不许有 `|`：页上只需要 `split("|")`，混进去就少一枚钮。
         for w in BUTTONS.iter().copied().chain([
             TITLE,
             TRAY_WORD,
             CLOSE_WORD,
+            DELETE_ASK,
+            EMPTY_ASK,
+            DELETE_WORD,
             KEEP_WORD,
             DESTROY_WORD,
             CANCEL_WORD,
@@ -911,6 +951,41 @@ mod tests {
         }
         assert_eq!(TRAY_WORD, "图片分组");
         assert_eq!(TITLE, "图片分组管理");
+    }
+
+    /// 规则 1 那一问的两副面孔各说各的事：空组那句不许有「还有贴图」，非空那一臂四串一字未改
+    /// （门上 ⑧⑨⑩ 三格量的就是它），四格这个形状两臂都不许多一格也不许少一格 —— 页按位绑，
+    /// 少一格就会把「取消」绑到「销毁」的位置上。空那一臂的第三格交**空串**（销毁答的是一件这一组
+    /// 没有的事），页读成「这一枚钮不亮」。这一格也不跑桌面：它问的是两串字的分岔，不是屏幕。
+    #[test]
+    fn the_ask_says_what_the_group_actually_holds() {
+        let full_s = delete_words(2);
+        let empty_s = delete_words(0);
+        let full: Vec<&str> = full_s.split('|').collect();
+        let empty: Vec<&str> = empty_s.split('|').collect();
+        assert_eq!(
+            full,
+            vec![DELETE_ASK, KEEP_WORD, DESTROY_WORD, CANCEL_WORD],
+            "非空那一臂的四串被这一轮动了：{full:?}"
+        );
+        assert_eq!(
+            empty,
+            vec![EMPTY_ASK, DELETE_WORD, "", CANCEL_WORD],
+            "空组那一臂递的不是那副面孔：{empty:?}"
+        );
+        assert!(
+            EMPTY_ASK.contains("没有贴图") && !EMPTY_ASK.contains("还有贴图"),
+            "{EMPTY_ASK}"
+        );
+        assert!(
+            DELETE_ASK.contains("还有贴图") && !DELETE_ASK.contains("没有贴图"),
+            "{DELETE_ASK}"
+        );
+        assert_ne!(empty[0], full[0], "两臂同一句问，打脸那句就还在原地");
+        assert!(
+            !empty[1].is_empty() && !empty[3].is_empty(),
+            "删除与取消两枚里空了一枚：{empty:?}"
+        );
     }
 
     /// 门的前置：种三组三枚、按角色分好，计划七段读回来正是那六枚编号。跑完把这一档钉回
@@ -973,7 +1048,7 @@ mod tests {
         assert!(!window_wanted());
     }
 
-    /// 第 1253 行那句「统一更新该分组内贴图的可见状态」在**没有窗的一趟**里也判得出来：
+    /// §5.12.4 步骤 3 那句「统一更新该分组内贴图的可见状态」在**没有窗的一趟**里也判得出来：
     /// 藏下去那一拍组内两枚 `live=false`、组外那一枚照旧。这一枚是本档 `live_of` 那位读者的
     /// 单测证人（与门里 ⑥⑦ 两格同一判据、同一只手）。
     #[test]

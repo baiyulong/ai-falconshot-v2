@@ -26,6 +26,12 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",
     "Win32_UI_HiDpi",
+    # §5.3.3/§5.3.4 的那一只手（`src/uia.rs`）：UIA 客户端的 COM 接口全部发在
+    # `Win32::UI::Accessibility` 这一族里（`CUIAutomation` / `IUIAutomation` /
+    # `IUIAutomationElement` / `IUIAutomationTreeWalker`）。不引新的链接库：这一族只用
+    # 接口指针的 vtable，工厂是 `CoCreateInstance`（ole32，本来就在使用面上），
+    # `UIAutomationCore.dll` 由 CLSID 在运行时加载。
+    "Win32_UI_Accessibility",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_Input_KeyboardAndMouse",
@@ -37,6 +43,10 @@ windows = { version = "0.62.2", features = [
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_StationsAndDesktops",
+    # 屏幕读取那一条腿的读数要知道自己站在哪一块桌面上（`src/desktop.rs` 的 `display_reach`）：
+    # `WTSGetActiveConsoleSessionId` / `ProcessIdToSessionId` 都在 `RemoteDesktop` 这一族，绑的是
+    # `kernel32.dll`（`WTSGetActiveConsoleSessionId` 文档就写在 kernel32 名下），不引新的链接库。
+    "Win32_System_RemoteDesktop",
     "Win32_System_WinRT",
     "Win32_Storage_FileSystem",
     "Win32_Storage_Xps",

@@ -1,6 +1,8 @@
-//! Bitmap encode/decode. The rule from plan §3.3 is absolute: **every** encoded
-//! pixel goes through `image` here — `QImage::save` is banned because P5/P6
-//! measured it writing nothing at all for TGA/GIF/TIFF.
+//! Bitmap encode/decode. The rule is absolute: **every** encoded pixel goes
+//! through `image` here — `QImage::save` is banned because the Qt this product
+//! ships has no writer for TGA, GIF or TIFF at all
+//! (`spike/hello-cxxqt/p5-qt-audit.log`: `fmt_tga=reader=0 writer=0`,
+//! `fmt_gif=reader=1 writer=0`, `fmt_tiff=reader=0 writer=0`).
 
 use crate::frame::Frame;
 use image::{DynamicImage, ExtendedColorType, ImageEncoder, ImageFormat, ImageReader};

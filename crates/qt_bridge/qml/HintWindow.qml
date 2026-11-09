@@ -53,7 +53,8 @@ Window {
     /// The warning that belonged to the sentence now showing. Captured rather than bound:
     /// `pre_notice` is written *before* a save and `status` after it, so binding both live
     /// would pair a stale warning with the next unrelated sentence. It is read at the moment
-    /// the sentence arrives, which is the pairing PRD 447 and §5.9.13 together describe.
+    /// the sentence arrives, which is the pairing §5.4.5 透明白板模式 规则 第 2 条 and
+    /// §5.9.13 together describe.
     property string warn: ""
 
     // A banner, not a dialog: fixed size, centred on the primary screen's bottom edge, and

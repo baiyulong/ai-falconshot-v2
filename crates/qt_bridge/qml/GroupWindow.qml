@@ -3,33 +3,37 @@ import QtQuick.Controls
 import QtQuick.Window
 import dev.falconshot 1.0
 
-// §5.12.3 与 §5.12.4 的那一扇「图片分组管理」窗（PRD 第 1232–1253 行），托盘第 1437 行那枚
-// 「图片分组」点开的就是它。
+// §5.12.3 与 §5.12.4 的那一扇「图片分组管理」窗（§5.12 整章），托盘 §5.18.1「菜单建议」
+// 那一列的第 5 行那枚「图片分组」点开的就是它。
 //
 // 这一页上**没有一条判据、没有一次计数、也没有一句中文是页自己写的**。窗标题（`groupWindowTitle()`
-// = PRD 第 1218 行那六个字）、六枚钮的名字（`groupWindowButtons()`）、每行右边那句
-// 「显示中 / 已隐藏」（`groupWindowStateWords()`）、删除那一问与三枚答（`groupWindowDeleteWords()`）、
+// = §5.12.1 步骤 1 那六个字）、六枚钮的名字（`groupWindowButtons()`）、每行右边那句
+// 「显示中 / 已隐藏」（`groupWindowStateWords()`）、删除那一问与它的答（`groupWindowDeleteWords(count)`，
+// 亮起那一刻现问，两副面孔见 `crate::group_window::delete_words`）、
 // 关掉这一页那一枚（`groupWindowCloseWord()`）与新建 / 改名那两名（`groupWindowNames()`）
 // 全部出自 [`crate::group_window`]；页上抄一份，改一天「钮上写着重命名、递进产品的却是删除」
 // 就只能靠数出来（#281，与 `HistoryWindow.qml` 头顶那封信同一个理由，而门里 `the page opens`
 // 那一格判的正是「页上真的造出几枚钮 == 名单长度」）。
 //
 // 分组那一族的事也一次也不在这一页上判：
-// * 「输入分组名称 → 保存后创建空分组」（第 1219–1221 行）叫的是 `session.createGroup(name)`，
-//   页上不判空名、不查重名 —— 那一格的真值在 core（`group_name` / `name_taken`），
-//   失败时页上摆的是产品 `status` 那句原话，不是页自己拼的「名字不能用」；
-// * 「删除、重命名或拖动排序」（第 1238 行）是 `renameGroup` / `moveGroup` / `deleteGroup`；
-// * 「分组名称不能为空」（第 1244 行）与「排序变化应同步反映到快捷切换菜单」（第 1245 行）
-//   这两格在这页上没有对面 —— 前者由产品那句话回答，后者由 `session.groups` 那**一串字的次序**
-//   回答：本页与 `PinWindow.qml` 的快捷切换菜单解的是同一串，谁也没重排；
-// * 「删除非空分组时，应询问贴图如何处理」（第 1243 行）在这里是**两把闸**：页上先亮一问
+// * 「输入分组名称 → 保存后创建空分组」（§5.12.1 操作步骤 步骤 2–4）叫的是
+//   `session.createGroup(name)`，页上不判空名、不查重名 —— 那一格的真值在 core
+//   （`group_name` / `name_taken`），失败时页上摆的是产品 `status` 那句原话，
+//   不是页自己拼的「名字不能用」；
+// * 「删除、重命名或拖动排序」（§5.12.3 操作步骤 步骤 3）是 `renameGroup` /
+//   `moveGroup` / `deleteGroup`；
+// * 「分组名称不能为空」（§5.12.3 规则 第 2 条）与「排序变化应同步反映到快捷切换菜单」
+//   （§5.12.3 规则 第 3 条）这两格在这页上没有对面 —— 前者由产品那句话回答，后者
+//   由 `session.groups` 那**一串字的次序**回答：本页与 `PinWindow.qml` 的快捷切换菜单
+//   解的是同一串，谁也没重排；
+// * 「删除非空分组时，应询问贴图如何处理」（§5.12.3 规则 第 1 条）在这里是**两把闸**：页上先亮一问
 //   （这一页唯一的状态机），真人点「退回未分组」才递 `destroy=0`、点「随组销毁」才递 `1`；
 //   点「取消」什么都不递 —— 门里 `the ask comes before the cut` 那一格判的就是「按了删除而一次
 //   也没答」之后清单少没少一行。页上把这一下答的产品原话显示出来，窗自己吞掉那一次点击、
 //   屏幕上什么都不说，就是让页与产品各说一句（#281 的反面）；
-// * 「系统统一更新该分组内贴图的可见状态」（第 1253 行）页上不数：那一枚 `live` 的真值在模型里，
-//   页上只在量具那一趟现问一次 `groupWindowLive(id)` 把数递回去，而本档另在**同一拍**抄一份
-//   模型自己的读数对它（`crate::group_window::Snap`）。
+// * 「系统统一更新该分组内贴图的可见状态」（§5.12.4 操作步骤 步骤 3）
+//   页上不数：那一枚 `live` 的真值在模型里，页上只在量具那一趟现问一次 `groupWindowLive(id)`
+//   把数递回去，而本档另在**同一拍**抄一份模型自己的读数对它（`crate::group_window::Snap`）。
 //
 // 这一扇窗与 `SettingsWindow.qml` / `CustomCaptureWindow.qml` / `HistoryWindow.qml` 一样，是本进程里
 // 由 **Rust 决定存在与否**的窗：`Session.group_window_open` 那一格是 0 就没有这个对象
@@ -54,8 +58,12 @@ Window {
     property string headerText: ""
     property string closeWord: ""
     property string askWord: ""
-    property string keepWord: ""
-    property string destroyWord: ""
+    /// 那一问的两枚答按**位置**起名，不按归宿起名：非空那一臂这两格写着「退回未分组 / 随组销毁」，
+    /// 空那一臂写着「删除 / （不亮）」。同一格读两种句子，名字就得是位置而不是归宿——叫
+    /// `keepWord` 的那一枚在空组上写着「删除」，就是页自己造的第二句谎（#455 那一族：
+    /// 名字对不上它读的那一格，早晚有一句在骗另一句）。
+    property string answerOne: ""
+    property string answerTwo: ""
     property string cancelWord: ""
     property string newName: ""
     property string renamedName: ""
@@ -105,8 +113,8 @@ Window {
         session: win.session
     }
 
-    // 一扇正常的管理窗：有边框、进任务栏、接键盘。第 1218 行写的是「图片分组管理」那样一扇窗，
-    // 不是盖在桌面上的浮层，所以这里**不**写 `flags`。
+    // 一扇正常的管理窗：有边框、进任务栏、接键盘。§5.12.1 操作步骤 步骤 1 写的是
+    // 「图片分组管理」那样一扇窗，不是盖在桌面上的浮层，所以这里**不**写 `flags`。
     title: win.headerText
     width: 720
     height: 500
@@ -138,8 +146,9 @@ Window {
         return out
     }
 
-    /// 重读清单。**每一只手之后都叫它**：第 1245 行那句「排序变化同步反映到快捷切换菜单」要的是
-    /// 页上的次序跟着 core 动，而它跟着动的对面是桥现递的那一串，不是页自己挪的一行。
+    /// 重读清单。**每一只手之后都叫它**：§5.12.3 规则 第 3 条那句「排序变化应同步反映
+    /// 到快捷切换菜单」要的是页上的次序跟着 core 动，而它跟着动的对面是桥现递的那一串，
+    /// 不是页自己挪的一行。
     function readRows() {
         win.rows = win.decodeGroups(win.session.groups)
     }
@@ -231,10 +240,24 @@ Window {
         return n
     }
 
+    /// 那一问的四串字（问 | 答一 | 答二 | 取消）**在亮起的那一刻现问桥**。空不空不是页的判据：
+    /// 页递的是这一行此刻写着的枚数（`countOf`，作者仍是模型那一侧的 `group_rows`），写那句问的人
+    /// 是 `crate::group_window::delete_words` —— 页上一句中文也不自己写（#281）。
+    function bindAsk(count) {
+        const words = win.splitPipe(win.session.groupWindowDeleteWords(count))
+        win.askWord = words.length > 0 ? String(words[0]) : ""
+        win.answerOne = words.length > 1 ? String(words[1]) : ""
+        win.answerTwo = words.length > 2 ? String(words[2]) : ""
+        win.cancelWord = words.length > 3 ? String(words[3]) : ""
+    }
+
     /// 「删除」那枚钮：**它一次也不删**，它只把那一问亮出来，并把问的是哪一组记住。
+    /// 规则 1 问的是「删除**非空**分组时贴图如何处理」，所以一枚空组收到的必须是另一副面孔，
+    /// 而不是同一句「这一组里还有贴图」——答完之后产品自己会说「组里没有贴图」。
     function askDelete(id) {
         if (win.rowIndexOf(id) < 0)
             return
+        win.bindAsk(win.countOf(id))
         win.askId = id
         win.asking = true
     }
@@ -266,30 +289,33 @@ Window {
         const pb = Number(win.plan[5])
         const pc = Number(win.plan[6])
 
-        // ① 第 1218 行「用户打开“图片分组管理”」与第 1236 行「分组管理页」那一格的全部对面：
-        //    窗在不在、标题是不是那一串字、页上真的造出几枚钮、这一趟列出几行。
+        // ① §5.12.1 操作步骤 步骤 1「用户打开“图片分组管理”」与
+        //    §5.12.3 操作步骤 步骤 1「分组管理页」那一格的全部对面：窗在不在、标题是不是那一串字、页上
+        //    真的造出几枚钮、这一趟列出几行。
         //    `visible` 是窗自己问 Qt 的那一枚数而不是「我们叫过 show()」，`buttonRows.count` 是
         //    delegate 的枚数而不是名单长度。
         win.report("open|" + (win.visible ? 1 : 0) + "|" + buttonRows.count + "|"
                    + (win.title === win.headerText && win.headerText.length > 0 ? 1 : 0) + "|"
                    + win.rows.length + "|" + win.countOf(ga) + "|" + win.countOf(gc))
 
-        // ② 第 1219–1221 行「新建分组 → 输入分组名称 → 保存后创建空分组」：新行真的一枚成员也没有。
+        // ② §5.12.1 操作步骤 步骤 2–4「新建分组 → 输入分组名称 → 保存后创建空分组」：
+        //    新行真的一枚成员也没有。
         const made = win.doCreate(win.newName)
         const fresh = win.rowOf(made)
         win.report("create|" + made + "|" + (fresh === null ? -1 : fresh.count) + "|"
                    + (fresh === null ? "" : fresh.name) + "|" + win.rows.length)
 
-        // ③ 第 1244 行的那一臂：页上不拦空名，所以拒绝的话是产品说的，而清单**没多**一行。
+        // ③ §5.12.3 规则 第 2 条的那一臂：页上不拦空名，所以拒绝的话是产品说的，
+        //    而清单**没多**一行。
         const blank = win.doCreate("")
         win.report("create-blank|" + blank + "|" + win.rows.length + "|" + win.note)
 
-        // ④ 第 1238 行「重命名」：改完页上那一行**自己**写着新名。
+        // ④ §5.12.3 操作步骤 步骤 3「重命名」：改完页上那一行**自己**写着新名。
         const rn = win.doRename(made, win.renamedName)
         const renamed = win.rowOf(made)
         win.report("rename|" + rn + "|" + (renamed === null ? "" : renamed.name) + "|" + win.note)
 
-        // ⑤ 第 1245 行「排序变化应同步反映到快捷切换菜单」：把最后一行**上移**一格。
+        // ⑤ §5.12.3 规则 第 3 条「排序变化应同步反映到快捷切换菜单」：把最后一行**上移**一格。
         //  为什么不是下移：`move_group` 越界时交回 `Ok(())` 而一动不动，下移最后一格会量不出
         //  「挪过」；页上递动之前与动之后两串次序，本档再自己去读 core 那一串对第三遍。
         //  尾部那一枚是页挪的**哪一组** —— 本档拿它与 ② 新建回来的编号对，挪错一组就红。
@@ -297,10 +323,11 @@ Window {
         const mv = win.doMove(made, -1)
         win.report("move|" + mv + "|" + win.orderText() + "|" + before + "|" + made)
 
-        // ⑥⑦ 第 1252–1253 行「执行显示、隐藏或切换」与「统一更新该分组内贴图的可见状态」：
-        //    甲组那两枚跟着走，没进这一组的第三枚照旧。三枚 `live` 都是**页现问桥**的那一眼。
-        //    尾部那四枚编号是页自己交回来的**它按的是哪一组、问的是哪三枚** —— 本档拿它与
-        //    `arm()` 写进计划的那六枚逐个对：页去点了别的组、这一格就红，而不是把别人的数读成绿的。
+        // ⑥⑦ §5.12.4 操作步骤 步骤 2–3「执行显示、隐藏或切换」与
+        //    「统一更新该分组内贴图的可见状态」：甲组那两枚跟着走，没进这一组的第三枚照旧。
+        //    三枚 `live` 都是**页现问桥**的那一眼。尾部那四枚编号是页自己
+        //    交回来的**它按的是哪一组、问的是哪三枚** —— 本档拿它与 `arm()` 写进计划的那六枚逐个对：
+        //    页去点了别的组、这一格就红，而不是把别人的数读成绿的。
         const hid = win.doToggle(ga)
         win.report("toggle-hide|" + hid + "|" + win.wordOf(ga) + "|"
                    + win.session.groupWindowLive(pa) + "|" + win.session.groupWindowLive(pb) + "|"
@@ -503,11 +530,14 @@ Window {
             Row {
                 spacing: 10
                 Button {
-                    text: win.keepWord
+                    text: win.answerOne
                     onClicked: win.confirmAsk(0)
                 }
                 Button {
-                    text: win.destroyWord
+                    // 空那一臂交回的是空串：销毁答的是一件这一组没有的事，那一枚钮不亮。
+                    // 「不亮」与「没有这一格」在这里是同一件事，页不替它编第三种说法。
+                    text: win.answerTwo
+                    visible: win.answerTwo !== ""
                     onClicked: win.confirmAsk(1)
                 }
                 Button {
@@ -522,11 +552,9 @@ Window {
         win.headerText = String(win.session.groupWindowTitle())
         win.buttons = win.splitPipe(win.session.groupWindowButtons())
         win.stateWords = win.splitPipe(win.session.groupWindowStateWords())
-        const words = win.splitPipe(win.session.groupWindowDeleteWords())
-        win.askWord = words.length > 0 ? String(words[0]) : ""
-        win.keepWord = words.length > 1 ? String(words[1]) : ""
-        win.destroyWord = words.length > 2 ? String(words[2]) : ""
-        win.cancelWord = words.length > 3 ? String(words[3]) : ""
+        // 删除那一问不在这里绑：它问的是**哪一组**，而窗开工时还没有那一组。绑它的时刻就是亮它的
+        // 时刻（`askDelete` 里那一手 `bindAsk`），面板在 `asking` 之外一律不亮，页上因此没有一句
+        // 「还没人问就写好的问句」。
         win.closeWord = String(win.session.groupWindowCloseWord())
         const names = win.splitPipe(win.session.groupWindowNames())
         win.newName = names.length > 0 ? String(names[0]) : ""

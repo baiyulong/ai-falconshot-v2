@@ -629,7 +629,7 @@ pub fn remove_command(doc: &Document, ids: &[u64]) -> Option<Command> {
 /// 本模块的作者只**描述**这一步、不落笔，落笔的是调用它的 `Command::apply`。
 ///
 /// 四臂各有其词：串里没有在场的 id ⇒ `None`（无事可做，也就不该多一条栈）；这一趟删的**不是
-/// 编号** ⇒ 只交回那条 `Remove` —— PRD 那句是「删除中间**编号**时可选择是否自动重排」，删一枚
+/// 编号** ⇒ 只交回那条 `Remove` —— PRD 那句是「删除中间编号时，可选择是否自动重排」，删一枚
 /// 矩形不该把上一次留着的那串空档填上，那是另一次删除或另一枚钮的事；场上没有编号、或留着的
 /// 那几枚本来就顺 ⇒ 同样只交回 `Remove`，一趟没改动的重排不配第二条记录；两件都改了
 /// ⇒ [`Command::Compound`]。
@@ -942,7 +942,7 @@ mod tests {
     #[test]
     fn a_deletion_that_removed_no_number_touches_no_numbers() {
         // 上一趟删除留着的那个空档（场上只剩 1 与 3）不是这一趟的理由：PRD 那句问的是
-        // 「删除中间**编号**时」，删一枚矩形就把号补齐，是替另一枚从没按过的钮落笔。
+        // 「删除中间编号时」，删一枚矩形就把号补齐，是替另一枚从没按过的钮落笔。
         let mut doc = three_numbers();
         doc.take(2);
         doc.add(Kind::Rect, rect(80, 10, 4, 4), Style::default());

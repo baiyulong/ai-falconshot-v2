@@ -15,6 +15,7 @@
 //! 天书似的原因。
 
 use std::borrow::Cow;
+use std::sync::OnceLock;
 
 use falcon_core::frame::Frame;
 
@@ -39,23 +40,44 @@ pub fn extract(frame: &Frame) -> Result<String, OcrError> {
     Ok(recognize(frame)?.join("\n"))
 }
 
+/// 本机**此刻**有没有可调用的文字识别引擎 —— 没有就交回一句能直接贴在标签后头的话。
+///
+/// PRD §7.3 条 4 要「平台不支持的能力应自动隐藏或明确标注不可用」，这一枚选的是**标注**
+/// 而不是隐藏：界面上那枚灰掉并划掉的「文字提取」还能回答「它去哪儿了」，一枚凭空消失的
+/// 按钮不能。而标注要成立，判据必须在**点下之前**就在手边 —— 所以这一格由会话构造那一刻
+/// 问一次、经 `Session::ocr_unavailable` 交进 QML，不再由点下之后那条错误路径来交代。
+///
+/// 至多问一次由 [`OnceLock`] 担保而不是由注释担保（与 [`crate::theme`] 那枚同一口径）：
+/// 造一枚引擎是一次 WinRT 往返，而遮罩、贴图、面板各问一次就是让同一趟运行里存在三个
+/// 「机器的答案」（#281）。代价写在这里，不藏：**装上语言包要重启才在这一格里生效** ——
+/// 这一格没有失效点，因为「光学字符识别」这一选件的增删不播 `WM_SETTINGCHANGE`，
+/// 手上没有机器给的信号可以叫它重问。
+///
+/// `None` 是「有引擎，标签上一个字都不必贴」；`Some(句子)` 是「贴这一句」。
+pub fn unavailable() -> Option<String> {
+    static PROBED: OnceLock<Option<String>> = OnceLock::new();
+    PROBED.get_or_init(|| unavailable_with(probe_engine())).clone()
+}
+
+/// [`unavailable`] 里**判断**的那半截，与**探测**的那半截分开，好让单元测注入一次读数
+/// 就能问（`autostart::inspect_with` 的同一形状）：测里既不造引擎，也不碰一次 WinRT。
+///
+/// 句子不是这里写的：全角括号里是 [`OcrError`] 自己的 `Display`，那对括号只把它标成
+/// 「附在标签后头的记号」（`settings_view` 那枚 `（未接线）` 的同形状）。另写一句好听的
+/// 话就是让同一件事有了两个作者（#281）。
+fn unavailable_with(probe: Result<(), OcrError>) -> Option<String> {
+    probe.err().map(|err| format!("（{err}）"))
+}
+
 /// 识别并按引擎给出的行分段交出。 [`extract`] 也走这一条，分段口径因此只有一处。
 #[cfg(windows)]
 pub fn recognize(frame: &Frame) -> Result<Vec<String>, OcrError> {
     use windows::Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap};
     use windows::Media::Ocr::OcrEngine;
     use windows::Security::Cryptography::CryptographicBuffer;
-    use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
 
-    // WinRT 的每一次调用都要求调用线程先进过套间。这一枚既可能落在 Qt 的主线程上，
-    // 也可能落在识别自己的工作线程上，还可能撞上别的库已经初始化过的那一个：已经初始化
-    // 返回 S_FALSE，套间模型不合返回 RPC_E_CHANGED_MODE，两种都不必在这里中止，后面的
-    // 调用会自己给出真正的错。与 reveal.rs 待 CoInitializeEx 同一个道理 —— 这个返回值
-    // 说的是套间状态而不是成败，丢掉它是有意的，不是把码吞了。
-    let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
-
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages()
-        .map_err(|err| OcrError::NoEngine(err.to_string()))?;
+    enter_apartment();
+    let engine = create_engine()?;
 
     // 天花板问不到就当它不限，让后面那一次真调用去回答；不去猜一个数。本机量到的是
     // 10000（`.qoder/scratch/p146_ocr_test5.txt`），比一张全屏截图宽得多 —— 但这枚数
@@ -94,6 +116,47 @@ pub fn recognize(frame: &Frame) -> Result<Vec<String>, OcrError> {
 
 #[cfg(not(windows))]
 pub fn recognize(_frame: &Frame) -> Result<Vec<String>, OcrError> {
+    Err(OcrError::Unsupported)
+}
+
+/// 让本线程进过 WinRT 的套间 —— 后面每一次 WinRT 调用都以它为前提。
+///
+/// 这一枚既可能落在 Qt 的主线程上，也可能落在识别自己的工作线程上，还可能撞上别的库
+/// 已经初始化过的那一个：已经初始化返回 S_FALSE，套间模型不合返回 RPC_E_CHANGED_MODE，
+/// 两种都不必在这里中止，后面的调用会自己给出真正的错。与 reveal.rs 待 CoInitializeEx
+/// 同一个道理 —— 这个返回值说的是套间状态而不是成败，丢掉它是有意的，不是把码吞了。
+#[cfg(windows)]
+fn enter_apartment() {
+    use windows::Win32::System::WinRT::{RoInitialize, RO_INIT_MULTITHREADED};
+    let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+}
+
+/// 造一枚引擎：「本机有没有引擎」这一问的唯一一把手。
+///
+/// [`recognize`] 与 [`probe_engine`] 都从这里取。共用一处不是省字：点下之前用来标注的那枚
+/// 判据，与点下之后真调用撞上的那堵墙，必须是**同一次调用**交出来的答案 —— 否则界面上
+/// 标的是甲、崩的是乙（#461：形状像不算数）。
+#[cfg(windows)]
+fn create_engine() -> Result<windows::Media::Ocr::OcrEngine, OcrError> {
+    use windows::Media::Ocr::OcrEngine;
+    OcrEngine::TryCreateFromUserProfileLanguages()
+        .map_err(|err| OcrError::NoEngine(err.to_string()))
+}
+
+/// 只问「引擎造不造得出来」，一张像素都不送进去。
+///
+/// 这一问要在会话构造那一刻就答得出来（[`unavailable`] 是它的门面），而那一刻手上一张图
+/// 也没有 —— 所以它不能是 [`recognize`] 的副产品。
+#[cfg(windows)]
+fn probe_engine() -> Result<(), OcrError> {
+    enter_apartment();
+    create_engine().map(|_| ())
+}
+
+/// 这一台不是 Windows：没有引擎可问，答案与 [`recognize`] 那一条同一支 —— 「这里没有可做
+/// 的东西」不许被读成「有，只是这一趟没跑成」。
+#[cfg(not(windows))]
+fn probe_engine() -> Result<(), OcrError> {
     Err(OcrError::Unsupported)
 }
 
@@ -173,6 +236,43 @@ mod tests {
     #[test]
     fn a_partial_pixel_at_the_end_is_not_swizzled() {
         assert_eq!(to_bgra(&[7, 8, 9]), Vec::<u8>::new());
+    }
+
+    /// 引擎在：交回 `None`，界面上一个字都不贴。
+    ///
+    /// 这一支同样要断言 —— 「有引擎时不标注」与「有引擎时忘了标注」在界面上看不出分别，
+    /// 只有这一格 `None` 把前者钉住（否则一枚永远说「不可用」的探针也照样能让另一支绿）。
+    #[test]
+    fn an_engine_that_answers_leaves_the_label_alone() {
+        assert_eq!(unavailable_with(Ok(())), None);
+    }
+
+    /// 引擎不在：交回的那一句是 [`OcrError`] **自己的** `Display`、套上一对全角括号，
+    /// 不是这里另写的一句。
+    ///
+    /// 断言写成 `format!("（{err}）")` 而不是把那句话抄一遍：抄一遍就是让这句话有了第二个
+    /// 作者（#281），改一处忘一处，界面与错误路径各说一句。两支错都问：不是 Windows 的那支
+    /// 也要在点下之前就说出来，不许被读成「有引擎、只是这一趟没跑成」。
+    #[test]
+    fn a_missing_engine_hands_over_its_own_sentence_wrapped_in_parens() {
+        for err in [
+            OcrError::NoEngine("当前显示语言没装「光学字符识别」".to_string()),
+            OcrError::Unsupported,
+        ] {
+            let got = unavailable_with(Err(err.clone()))
+                .unwrap_or_else(|| panic!("{err} 这一支该交回一句标注，交回的却是 None"));
+            assert_eq!(got, format!("（{err}）"), "这一句被重写过了");
+        }
+    }
+
+    /// 门面那一枚 [`unavailable`] 不是句子的第二个作者：它交回的就是**一次真探测**过一遍
+    /// 那个纯分类函数的结果。
+    ///
+    /// 这一枚要碰真 WinRT（造一次引擎），因此它问的不是「本机有没有引擎」—— 那答案换台
+    /// 机器就翻 —— 而是「缓存里存的那一句与现问现判的那一句是不是同一句」。
+    #[test]
+    fn the_cached_face_is_the_classifier_over_a_real_probe() {
+        assert_eq!(unavailable(), unavailable_with(probe_engine()));
     }
 
     /// 这一台不是 Windows 时回答"没有这一号"，而不是假装识别过并且图上没字。

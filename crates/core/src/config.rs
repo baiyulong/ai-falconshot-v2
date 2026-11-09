@@ -341,7 +341,7 @@ pub fn action_texts(id: &str) -> Option<(&'static str, &'static str)> {
 /// `qt_bridge::hot_corner::check` 的逐名判据）。
 ///
 /// 末尾那一枚 `release_click_through` 是个**例外，不是新的一行**：§5.18.1 那一列压根没有
-/// 「解除鼠标穿透」，而 §5.9.13 第三步明写「用户通过预设快捷键、**托盘菜单**或热区取消穿透」，
+/// 「解除鼠标穿透」，而 §5.9.13 第三步明写「用户通过预设快捷键、托盘菜单或热区取消穿透」，
 /// 规则第一句还要这条退出**明确且可靠**。两处不一致时按功能那一节办（与
 /// `qt_bridge::hotkey::Work::Whiteboard` 在 §5.4.4 上记的是同一枚冲突、同一枚办法），冲突记进
 /// 台账、不当作已解决。列进这里而不只是列进托盘菜单，是因为 §5.18.2 那四枚鼠标键是**另一只
@@ -500,32 +500,6 @@ impl AlphaBg {
     }
 }
 
-/// §5.2.2: the tool the annotation stage opens with. The config has to reject a
-/// typo without knowing how to draw, so the id list lives here.
-pub const ANNOTATION_TOOLS: &[&str] = &[
-    "rect",
-    "ellipse",
-    "line",
-    "arrow",
-    "curve",
-    "polyline",
-    "polygon",
-    "text",
-    "number",
-    "highlighter",
-    "blur",
-    "mosaic",
-    "pen",
-    "eraser",
-    "counter",
-    "stamp",
-    "callout",
-    "crop",
-    "spotlight",
-    "measure",
-    "select",
-];
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct General {
@@ -534,11 +508,9 @@ pub struct General {
     /// 机器、以机器为准回填它（两边各说一面的那一种漂移在这里没有写法）。见
     /// `platform_windows::autostart` 与 `qt_bridge::settings::startup_autostart_banner`。
     pub launch_at_startup: bool,
-    pub start_minimized: bool,
     pub show_tray: bool,
-    /// §5.1.3 closing the window keeps the app running.
+    /// §5.1.1 预期结果「应用在后台持续运行」：关窗不退、驻留下去。
     pub close_to_tray: bool,
-    pub confirm_exit: bool,
     /// `auto`, or a BCP 47 tag such as `zh-CN` / `en`.
     pub language: String,
 }
@@ -548,10 +520,8 @@ impl Default for General {
         Self {
             // PRD §5.1.2 makes autostart a user choice, never a default.
             launch_at_startup: false,
-            start_minimized: true,
             show_tray: true,
             close_to_tray: true,
-            confirm_exit: false,
             language: "auto".into(),
         }
     }
@@ -598,9 +568,9 @@ pub struct Capture {
     pub delay_seconds: u32,
     /// §5.3.6 snap selection edges to the window under the cursor.
     pub snap_to_window: bool,
-    /// §5.2.6 规则第一句「可按设置决定是否包含**窗口阴影**」的那一格。
+    /// §5.2.6 规则第一句「可按设置决定是否包含窗口阴影」的那一格。
     ///
-    /// 曾经是一枚没有读者的句子（PRD 第 238 行）：窗口截图的框一直是 DWM 可见边，
+    /// 曾经是一枚没有读者的句子（§5.2.6 规则第一句）：窗口截图的框一直是 DWM 可见边，
     /// 而可见边天生不含阴影，所以「包含阴影」从来无处生效。自 [`crate::capture::window_picture`]
     /// 起这一枚有读者：开着 ⇒ 每边外扩一圈并把阴影画进那一圈（宽度见
     /// [`crate::capture::window_shadow_margin`]），关着 ⇒ 就是今天那张图。
@@ -679,15 +649,15 @@ pub struct ToolStyle {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Annotation {
-    /// Tool id activated on entry (§5.7); empty = keep the last used tool.
+    /// §5.7.1 步 2 那一问「进场时手里先拿哪一支笔」：`[annotation] default_tool`。空 =
+    /// 不动，留在 `Layer::begin` 给出的那一枚上；非空必须认得 [`crate::annotation::model`]
+    /// 那一串 `key()`，`validate()` 把认不出的清成空串并说明。读者只有一位：`qt_bridge` 的
+    /// `Layer::apply_default_tool`，它走 `select_tool` 而不是自己换 `tool`（#281）。
     pub default_tool: String,
     pub stroke_width: u32,
     pub stroke_color: String,
-    pub fill_color: String,
     pub font_family: String,
     pub font_size: u32,
-    /// `straight` | `elbow` | `curve` (§5.7.4).
-    pub arrow_style: String,
     /// §5.7.7 mosaic / §5.7.8 blur strength in pixels.
     pub blur_radius: u32,
     /// §5.20.3 the palette travels with exported settings.
@@ -699,11 +669,13 @@ pub struct Annotation {
     /// entry would silently become a second scheme, and a space is what a colour list never
     /// contains. Empty by default: a band nobody has saved is not a scheme the file invents.
     pub palette_schemes: Vec<String>,
-    /// §7.2 undo depth; plan §6.4 fixed 200 steps and a 400 ms merge window.
+    /// §5.7.19 的两枚数：能反悔几步，与连着几毫秒之内的样式改动算一条。`validate()` 把步数
+    /// 钳进 10..=5000（那一手若写 0，撤销栈会变成一个「记不住任何东西」的静默洞）。读者是
+    /// `qt_bridge` 的 `Layer::apply_undo_limits` → [`crate::annotation::UndoStack::set_limits`]；
+    /// 出厂那一格 200/400 与 [`crate::annotation::UndoStack::CAP`] /
+    /// [`crate::annotation::UndoStack::MERGE_MS`] 必须是同一对数，有单测钉着。
     pub undo_limit: usize,
     pub undo_merge_ms: u32,
-    /// §5.7.1 keep the toolbar visible while hovering the selection.
-    pub show_toolbar_on_hover: bool,
     /// §5.7.1 记忆该工具最近一次使用的样式 / §9.2 样式记忆重启有效. One entry per
     /// tool the user has actually taught, keyed by the tool's own spelling
     /// ([`crate::annotation::model::Kind::key`]).
@@ -716,7 +688,6 @@ impl Default for Annotation {
             default_tool: String::new(),
             stroke_width: 3,
             stroke_color: "#E81123".into(),
-            fill_color: "#00000000".into(),
             // The family §5.7.11's 中文 annotations are laid out in, which is
             // [`crate::annotation::model::Style`]'s default as well. The two have to be
             // the same word from the moment this key is read by anything: while nothing
@@ -725,13 +696,11 @@ impl Default for Annotation {
             // default pen to a family chosen for Latin text.
             font_family: "Microsoft YaHei UI".into(),
             font_size: 18,
-            arrow_style: "straight".into(),
             blur_radius: 12,
             palette: default_palette(),
             palette_schemes: Vec::new(),
             undo_limit: 200,
             undo_merge_ms: 400,
-            show_toolbar_on_hover: true,
             tool_style: BTreeMap::new(),
         }
     }
@@ -795,10 +764,11 @@ pub struct Pin {
     pub default_topmost: bool,
     pub default_click_through: bool,
     pub alpha_bg: AlphaBg,
-    /// §5.9.6 the mouse wheel changes size.
+    /// §5.9.2 步骤 2「滚动鼠标滚轮」那一臂的开关（原文那一行给的是两条并列出路，关掉滚轮不动
+    /// `+`/`-` 那一臂）。读者只有一位：`crates/qt_bridge/src/pin_view.rs` 的 `wheel_zoom`，它在
+    /// 进 `gesture` 之前现问一次 `qt_bridge` 的 `settings::wheel_resizes`。此前这一枚在档里有键、设置页
+    /// 里有行、帮助页里有名字，运行期没有读者（§8.3 那一族）。
     pub wheel_resizes: bool,
-    /// §5.10.4 clicking a stacked pin cycles instead of raising.
-    pub cycle_on_click: bool,
     /// §6.3 crash-recovery snapshot cadence in seconds; 0 disables.
     pub state_save_seconds: u32,
     /// §5.11.1 Solo dims the others instead of hiding them.
@@ -828,7 +798,6 @@ impl Default for Pin {
             default_click_through: false,
             alpha_bg: AlphaBg::Transparent,
             wheel_resizes: true,
-            cycle_on_click: false,
             state_save_seconds: 5,
             solo_dim_opacity: 35,
             thumb_fixed_width: crate::pin::THUMB_FIXED_DEFAULT.w,
@@ -1426,7 +1395,7 @@ pub struct Output {
     /// with (black) and only its alpha moves — inventing a fifth key would be a setting
     /// the requirement never asked for.
     pub shadow_strength: u32,
-    /// PRD 491（§5.5.4 快速保存）步骤 4 那一档：落盘之后自动把目标打开一次。
+    /// §5.5.4 快速保存 操作步骤 步骤 4 那一档：落盘之后自动把目标打开一次。
     ///
     /// 曾经是一枚没有读者的键（第 35 项 ⑨），P45 起由 `MaskState::quick_out` 读取；
     /// 成功通知上那一次点击不受它管，开关关着通知照样点得开。
@@ -1437,15 +1406,15 @@ pub struct Output {
     /// 它**的贴图临时藏起来，对话框关闭后放回。判断本体在 [`crate::dialog_link`]，这里只有
     /// 用户那一格。`Default` 是 `false`：PRD 把这一条写成"用户在设置中开启"，不是一枚默认行为。
     ///
-    /// 本节号是对着 PRD 的目录数的（575 行那一节），因此它与下面两枚邻居**不同源**：
-    /// `share_targets` 标的 §5.5.11、`send_to_apps` 标的 §5.5.12 都少了一格，真号是 §5.5.9 /
-    /// §5.5.10 —— 全线错号那一笔账是计划第 175 项，至今 52 处产品码未订正，本轮不顺手改。
+    /// 本节号对着 PRD 的目录核过：§5.5.11 正是「文件保存对话框联动」。下面三枚邻居的号从前
+    /// 是错的（标着 §5.5.11 / §5.5.12 / §5.5.10，而 PRD 里根本没有 §5.5.12 这一节），本轮已按
+    /// 目录逐节改回 §5.5.9 / §5.5.10 / §5.5.8。本文件其余各节的号这一轮没有重核。
     pub hide_pins_on_dialog: bool,
-    /// §5.5.11 share targets shown in the toolbar.
+    /// §5.5.9 share targets shown in the toolbar.
     pub share_targets: Vec<String>,
-    /// §5.5.12 "send to app" entries: `name|executable`.
+    /// §5.5.10 "send to app" entries: `name|executable`.
     pub send_to_apps: Vec<String>,
-    /// §5.5.10 refresh the last output instead of making a new one.
+    /// §5.5.8 refresh the last output instead of making a new one.
     pub reuse_last_file: bool,
     /// PRD §5.9.17 步骤 1 的那一格开关：「复制图片时同时提供文件」。
     ///
@@ -1456,7 +1425,7 @@ pub struct Output {
     ///
     /// 它与一枚闲着的键 [`Advanced::privacy_no_temp_files`] **不是**同一问：那枚标的是 §7.5，
     /// 而 §7.5 那四条（域名提示、响应大小、参数注入、路径校验）里没有一句说"不许落盘"，
-    /// 本轮不替它编读者。这一枚管的是 §6.2 第 1600-1601 行：「临时文件应按策略自动清理」+
+    /// 本轮不替它编读者。这一枚管的是 §6.2 存储规则 第 4、5 条：「临时文件应按策略自动清理」+
     /// 「应避免在退出时删除仍被剪贴板引用的文件」—— 持有与清理的规则在
     /// `qt_bridge::state::PinState::clip_pending_files` 那一侧，不在这里。
     pub copy_as_file: bool,
@@ -1742,6 +1711,13 @@ pub fn toolbar_edge(placement: &str, sel_w: i32, sel_h: i32) -> &'static str {
 /// 这一句是 §5.19.4「支持调整工具栏方向和位置」里"方向"那一半的全部读法：摆在上下就是一排
 /// （horizontal），摆在左右就是一列（vertical）。分开出第二枚键会让两枚键各说一面 ——
 /// 用户把方向设成 horizontal、位置设成 left，界面只能违反其中一句。
+///
+/// **这一手今天没有生产读者，那是决定不是漏接**：§5.19.4 底下那枚实现口径的牌子记着，"方向"
+/// 那一半本轮不做。落到标注工具栏那一排上，`left`/`right` ⇒ 一列不是换一根轴而是换一个形状
+/// ——哪几枚进那一列、其余的从哪里出来（折叠、二级面板、还是按工具现出）是本句答不出的产品
+/// 决定，所以它单独留一项，不被一次布局重写顺带做掉。算术先答在这里，等那一半真做时桥那侧
+/// `Session` 上添一枚 `toolbarSide` 就能读到它（算术仍归本档，#281）；钉它的是本档底下那一格
+/// 单测，[`TOOLBAR_SIDES`] 那份名单也只有这一个读者。
 pub fn toolbar_side(placement: &str, sel_w: i32, sel_h: i32) -> &'static str {
     match toolbar_edge(placement, sel_w, sel_h) {
         "left" | "right" => TOOLBAR_SIDES[1],
@@ -2516,7 +2492,7 @@ impl Config {
     ///
     /// 为什么这一族不能跟着 `flat()` 那一枚一枚比：那只有「两边的同一格值不同」的手，对这一族
     /// 只会给出一行 `groups.entries = "甲=1 2, 乙=" → "甲=1 2"` —— 一整串字符，而 §5.20.3 第四句
-    /// 要的是「显示将被覆盖的**项目**」：用户看得懂的应该是「乙 这一组要没了（它现在带着 1、2 枚
+    /// 要的是「显示将被覆盖的项目」：用户看得懂的应该是「乙 这一组要没了（它现在带着 1、2 枚
     /// 贴图）」这一句。逐键那一手也看不见次序变了而值没变的那种挪序。所以这一族自己开一张 diff，
     /// 一枚组一行（`groups.added.<名>` / `groups.removed.<名>` / `groups.members.<名>`，外加一行
     /// 排序 `groups.order`）。
@@ -2588,7 +2564,7 @@ impl Config {
     ///
     /// 与 [`Config::apply_import`] 的分别是这一列由调用方递进来，而不是在这里重新算一次。为的是
     /// 步骤 4 与步骤 5 之间那一句「用户确认后应用」：用户确认的是他看见的那一列，而桥那一侧会在
-    /// 中间把档里**没有的那一族**挑掉（[`missing_families`]：一份没写 `[groups]` 的档不该把本机的
+    /// 中间把档里**没有的那一族**挑掉（[`prune_missing`]：一份没写 `[groups]` 的档不该把本机的
     /// 分组清成空的）。在这里重新 preview 一遍就会把挑掉的那几行又加回来，报的与做的就不是
     /// 同一件事了。
     pub fn apply_changes(
@@ -2712,6 +2688,11 @@ impl Config {
     /// 它就是「preview 那一列，然后原样应用」：本体在 [`Config::apply_changes`] 里，这里只是把
     /// 两半接起来。要在步骤 4 与步骤 5 之间对那一列动手（比如把档里压根没写的那一族挑掉），
     /// 走 `apply_changes` 递那一列进去，不要重算 preview —— 用户确认的是他看见的那一列。
+    ///
+    /// **两扇生产门走的都是 `apply_changes`，这一手今天没有生产读者**——那是照上面那句做的
+    /// 决定，不是漏接的线：`settings::config_import` 在步骤 4 之后还要拿 `prune_missing` 挑掉
+    /// 档里没写的那一族，重算一次 preview 就会把它们加回来。留着它是给「不必挑」的调用方
+    /// 一步到位，钉它的是本档底下那几格单测。
     pub fn apply_import(
         &mut self,
         incoming: &Config,
@@ -2971,11 +2952,6 @@ impl Config {
                 "#E81123",
             ),
             (
-                "annotation.fill_color",
-                &mut self.annotation.fill_color,
-                "#00000000",
-            ),
-            (
                 "appearance.accent",
                 &mut self.appearance.accent,
                 ACCENT_DEFAULT,
@@ -3075,8 +3051,18 @@ impl Config {
             }
         }
 
+        // `[annotation] default_tool` 认得的串就是 [`Kind::key`] 那几串，判据不在这里第二位：
+        // 这一行从前比的是本文件里手抄的一份 `ANNOTATION_TOOLS`，而那份名单抄的是 PRD §5.7 那一章
+        // 的**目录** —— `curve` / `polygon` / `highlighter` / `pen` / `counter` / `stamp` /
+        // `callout` / `crop` / `spotlight` / `measure` 十串没有一支笔对应得上，真画得出的
+        // `rounded_rect` / `double_arrow` / `marker` / `zoom` 四串反倒不在名单上。放行前者的代价一直
+        // 是隐藏的（没有读者，填什么都不发生）；接上读者之后，"清成空"落在 `marker` 那一串上就是
+        // 「这一格白填」，而认不出的串要到标注层才发现没人画得出它 —— 话该在这里说，档还在眼前。
+        //
+        // 「进场手里不拿笔」的写法是空串（[`Annotation::default`] 那一格），不是 `"select"`：
+        // 选择那一手在标注层里是 `tool = None`，不是一种 `Kind`，也就不需要一个词去命名它。
         if !self.annotation.default_tool.is_empty()
-            && !ANNOTATION_TOOLS.contains(&self.annotation.default_tool.as_str())
+            && Kind::from_key(&self.annotation.default_tool).is_none()
         {
             w.push(format!(
                 "annotation.default_tool: unknown {:?}, cleared",
@@ -3140,16 +3126,6 @@ impl Config {
                 }
             }
             self.annotation.tool_style.insert(key, kept);
-        }
-        if !matches!(
-            self.annotation.arrow_style.as_str(),
-            "straight" | "elbow" | "curve"
-        ) {
-            w.push(format!(
-                "annotation.arrow_style: unknown {:?}, using straight",
-                self.annotation.arrow_style
-            ));
-            self.annotation.arrow_style = "straight".into();
         }
         if !TOOLBAR_PLACEMENTS.contains(&self.appearance.toolbar_placement.as_str()) {
             w.push(format!(
@@ -3521,7 +3497,7 @@ pub const FAMILIES: &[&str] = &[
     "about",
 ];
 
-/// §5.20.3 步骤 4「系统**校验文件**并显示将被覆盖的项目」里前那半句的账。
+/// §5.20.3 步骤 4「系统校验文件并显示将被覆盖的项目」里前那半句的账。
 ///
 /// 三样各一格，因为它们要办的是三件不同的事：
 /// * [`FileReport::blocking`] —— 这一份档**不能**拿来导入（版本比本机新）。桥那一侧要挡住
@@ -3544,17 +3520,33 @@ impl FileReport {
         !self.blocking.is_empty()
     }
 
+    /// 「档里没写这些族，导入不动它们：X」那一句的**唯一作者**。
+    ///
+    /// 它从 [`Self::says`] 里抽出来是因为这一句现在有两个读者：`says` 自己，与桥那一侧
+    /// `settings::render_file_check`（命令行 `--import-config` 与设置页「导入配置」那一格两处
+    /// 都从它走）。两处各拼一遍中文，早晚会有一句在骗另一句（#281）。空名单交 `None` 而不是空句 —— 「每一族都写到了」与
+    /// 「没去看」得长得不一样。
+    pub fn unwritten_line(missing: &[String]) -> Option<String> {
+        if missing.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "档里没写这些族，导入不动它们：{}",
+            missing.join(", ")
+        ))
+    }
+
     /// 校验文件那一句要说的一切，按「先挡住、再没写、再提醒」的次序。
     ///
-    /// 它住在 core 是因为这一句有两个读者（命令行 `--import-config` 与设置页那一格），而两处
-    /// 各拼一遍中文就会有一句在骗另一句（#281）。
+    /// 这一**次序**的唯一作者是这里，钉它的是本档底下那几格单测。**两扇生产门今天都不叫它**：
+    /// 它们走的是桥那一侧 `render_import_preview` → `render_file_check` → `render_unnamed`
+    /// 那一路，序不一样（先「将被覆盖」那一列，再挡下的与档里没写的，再那几枚名字写不出的组），
+    /// 把它接进门就会改掉用户在屏幕上看见的行序，那是产品决定，不是接线。两扇门真正共用的是
+    /// **那一句中文**，作者是 [`Self::unwritten_line`]（#281），本手是它的另一个读者。
     pub fn says(&self) -> Vec<String> {
         let mut out = self.blocking.clone();
-        if !self.missing.is_empty() {
-            out.push(format!(
-                "档里没写这些族，导入不动它们：{}",
-                self.missing.join(", ")
-            ));
+        if let Some(line) = Self::unwritten_line(&self.missing) {
+            out.push(line);
         }
         out.extend(self.warnings.iter().cloned());
         out
@@ -3658,9 +3650,38 @@ fn flatten(tbl: &Table, prefix: &str, out: &mut BTreeMap<String, String>) {
             Item::Value(v) => {
                 out.insert(path, render(v));
             }
+            // `[[hotkey.exclusions]]` 那副形状也只占**一枚键**，条目之间 "; "。绝不递归出
+            // `hotkey.exclusions.app` 那样的子键：页上没有任何 widget 绑得住它们，多出来的行
+            // 会让报的与做的又不是同一张名单（#281）；而整个落进 `_ => {}` 就是键悄悄消失
+            // ——用户添了第一条规则的那一天，页上那一行没了（§8.3 不许静默）。
+            Item::ArrayOfTables(aot) => {
+                out.insert(
+                    path,
+                    aot.iter().map(render_entry).collect::<Vec<_>>().join("; "),
+                );
+            }
             _ => {}
         }
     }
+}
+
+/// 一枚 `[[条目]]` 照 `Value::InlineTable` 那副 `k=v`、", " 连接的形状 render。与 `render` 的
+/// InlineTable 那一臂是同一副形状的两位读者：一串表的 `[[x]]` 与内联的 `[{…}]` 是同一件事实
+/// 的两种 TOML 写法，各自拼一遍，序列化器换形状的那天页上那一行就会悄悄换字（#281）。
+fn render_entry(tbl: &Table) -> String {
+    let mut parts = Vec::new();
+    for (k, item) in tbl.iter() {
+        let v = match item {
+            Item::Value(v) => render(v),
+            Item::Table(t) => render_entry(t),
+            Item::ArrayOfTables(aot) => {
+                aot.iter().map(render_entry).collect::<Vec<_>>().join("; ")
+            }
+            Item::None => String::new(),
+        };
+        parts.push(format!("{k}={v}"));
+    }
+    parts.join(", ")
 }
 
 fn flatten_inline(tbl: &InlineTable, prefix: &str, out: &mut BTreeMap<String, String>) {
@@ -3682,7 +3703,17 @@ fn render(v: &Value) -> String {
         Value::Float(f) => f.value().to_string(),
         Value::Boolean(b) => b.value().to_string(),
         Value::Datetime(d) => d.value().to_string(),
-        Value::Array(a) => a.iter().map(render).collect::<Vec<_>>().join(", "),
+        // 内联表条目之间用 "; "：`hotkey.exclusions` 非空时序列化器交出来的正是
+        // `[{…}, {…}]` 这一形状，一律 ", " 会让「一条规则到哪为止」读不出来，也与
+        // `flatten` 的 `[[表]]` 那一臂对同一串规则各拼一句话（#281）。
+        Value::Array(a) => {
+            let parts = a.iter().map(render).collect::<Vec<_>>();
+            if a.iter().any(|v| matches!(v, Value::InlineTable(_))) {
+                parts.join("; ")
+            } else {
+                parts.join(", ")
+            }
+        }
         Value::InlineTable(t) => {
             let mut parts = Vec::new();
             for (k, v) in t.iter() {
@@ -3835,7 +3866,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), ConfigError> {
     f.as_file_mut()
         .write_all(bytes)
         .map_err(|e| ConfigError::Io(format!("{}: {e}", path.display())))?;
-    // `commit` is fsync + rename, which is exactly the rule in plan §6.1.
+    // `commit` is fsync + rename, so a half-written `config.toml` can never be read back.
     f.commit()
         .map_err(|e| ConfigError::Io(format!("{}: {e}", path.display())))?;
     Ok(())
@@ -4596,7 +4627,6 @@ actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
     fn validate_fixes_values_and_says_so() {
         let mut c = Config::default();
         c.pin.default_opacity = 900;
-        c.annotation.arrow_style = "spiral".into();
         c.annotation.palette = ["#FFFFFF", "not-a-colour"]
             .iter()
             .map(|s| s.to_string())
@@ -4611,7 +4641,6 @@ actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
             .insert("top_left".into(), "nope".into());
         let warnings = c.validate();
         assert_eq!(c.pin.default_opacity, 100);
-        assert_eq!(c.annotation.arrow_style, "straight");
         assert_eq!(c.annotation.palette, ["#FFFFFF"]);
         assert_eq!(c.annotation.stroke_color, "#E81123");
         assert_eq!(c.output.jpeg_quality, 1);
@@ -4621,7 +4650,6 @@ actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
         assert_eq!(c.hot_corner.corners["top_left"], "");
         for needle in [
             "pin.default_opacity",
-            "arrow_style",
             "palette",
             "stroke_color",
             "jpeg_quality",
@@ -4642,6 +4670,70 @@ actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
         empty.annotation.palette.clear();
         assert!(empty.validate().is_empty());
         assert_eq!(empty.annotation.palette, default_palette());
+    }
+
+    /// `[annotation] default_tool` 认得的串与「画得出的那几支笔」是同一份名单。
+    ///
+    /// 这一档从前没有证人，而它一直在错：判的是本文件里手抄的一份 `ANNOTATION_TOOLS`，抄的是
+    /// PRD §5.7 那一章的**目录** —— `curve` / `polygon` / `highlighter` / `pen` / `counter` /
+    /// `stamp` / `callout` / `crop` / `spotlight` / `measure` 十串没有一支笔对应得上，真画得出的
+    /// `rounded_rect` / `double_arrow` / `marker` / `zoom` 四串反倒被清掉。抄错没有代价的唯一前提
+    /// 是「没人读这一格」；接线那一刻两个方向都成了用户看得见的错：放行 = 进了标注层才发现手里
+    /// 没这支笔，清掉 = 名字填对了、设置却没生效。
+    #[test]
+    fn the_tool_names_the_file_accepts_are_the_tools_someone_can_draw() {
+        for kind in crate::annotation::model::KINDS {
+            let mut c = Config::default();
+            c.annotation.default_tool = kind.key().to_string();
+            let w = c.validate();
+            assert!(w.is_empty(), "{kind:?} 的名字被自己的 validate 拒了: {w:?}");
+            assert_eq!(
+                c.annotation.default_tool,
+                kind.key(),
+                "{kind:?} 的名字走了一圈回来变了"
+            );
+        }
+
+        // 认不出的那几串照样报、照样清 —— 包括 `"select"`：那一手在标注层是 `tool = None`，
+        // 不是第 17 种 `Kind`，而"进场不拿笔"的正确写法是空串（出厂那一格就是它）。
+        for ghost in ["highlighter", "pen", "curve", "select", "MARKER"] {
+            let mut c = Config::default();
+            c.annotation.default_tool = ghost.into();
+            let w = c.validate();
+            assert!(
+                w.iter().any(|x| x.contains("default_tool")),
+                "{ghost} 被放行了: {w:?}"
+            );
+            assert!(
+                c.annotation.default_tool.is_empty(),
+                "{ghost} 留在档里,等下一位读者去猜"
+            );
+        }
+    }
+
+    /// 出厂那一格的两个数与撤销栈自己的两个数，必须是同一对。
+    ///
+    /// 两枚数从「只有撤销栈一处写死的常量」变成「档里的键 + 常量只剩出厂那一格的身份」之后，
+    /// 它们第一次有了各写一次的可能 —— 改一处忘另一处，得到的是「出厂设置写着 200 步，实际
+    /// 那台栈只有 50」这一种没人会去数的漂移。
+    #[test]
+    fn the_factory_undo_rows_and_the_stack_s_own_numbers_are_one_pair() {
+        use crate::annotation::UndoStack;
+        let c = Config::default();
+        assert_eq!(
+            c.annotation.undo_limit,
+            UndoStack::CAP,
+            "出厂那一格的步数与栈的出厂步数不是一对"
+        );
+        assert_eq!(
+            c.annotation.undo_merge_ms as u64,
+            UndoStack::MERGE_MS,
+            "出厂那一格的合并毫秒与栈的出厂合并毫秒不是一对"
+        );
+        // 而那一台出厂的栈确实按这两个数开起来：新栈读到的就是这一对。
+        let stack = UndoStack::new();
+        assert_eq!(stack.cap(), c.annotation.undo_limit);
+        assert_eq!(stack.merge_window(), c.annotation.undo_merge_ms as u64);
     }
 
     /// §5.9.10 的「预设尺寸」是配置而不是常量：两枚键有默认、能被 `validate` 夹回
@@ -5145,6 +5237,76 @@ actions = []
         assert!(applied
             .get_str(EXCLUSION_KEY)
             .is_some_and(|v| v.contains("notepad.exe")));
+    }
+
+    /// §5.16.2 页上那一行在**添过规则之后**还得在：空列是一个空数组（`Item::Value`），一枚
+    /// 规则起就是一串表（`[[hotkey.exclusions]]`，`Item::ArrayOfTables`）—— 两种形状在
+    /// `flat()` 里必须占**同一枚键**。`flatten` 少认一串表的那一支，用户点「添加当前前台
+    /// 程序」添进第一条规则的那一天，页上这一行就没了：报的与做的不是同一张名单（#281），
+    /// 而键悄悄消失正是 §8.3 不许的那枚静默。
+    #[test]
+    fn one_exclusion_rule_keeps_exactly_one_row_in_flat() {
+        // 出厂的空列：一枚键，值为空串（设置页「quiet」那一列钉的就是这一形状）。
+        let empty = Config::default().flat().unwrap();
+        assert_eq!(
+            empty.get(EXCLUSION_KEY).map(String::as_str),
+            Some(""),
+            "空列在 flat() 里就得占一枚键"
+        );
+
+        // 走产品自己的那枚门添一条规则：形状自此是 `[[hotkey.exclusions]]`。
+        let mut c = Config::default();
+        c.add_exclusion("game.exe").unwrap();
+        let flat = c.flat().unwrap();
+        let rows: Vec<&str> = flat
+            .keys()
+            .filter(|k| k.starts_with(EXCLUSION_KEY))
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![EXCLUSION_KEY],
+            "一串表也只占这一行，不许裂出子键：{rows:?}"
+        );
+        assert_eq!(flat[EXCLUSION_KEY], "app=game.exe, actions=");
+
+        // 两条规则仍是一行：条目之间 "; "，条目之内照 `Value::InlineTable` 那副 k=v 形状。
+        c.hotkey.exclusions.push(AppExclusion {
+            app: "boss.exe".to_string(),
+            actions: vec!["capture".to_string(), "solo".to_string()],
+        });
+        let flat = c.flat().unwrap();
+        assert_eq!(
+            flat[EXCLUSION_KEY],
+            "app=game.exe, actions=; app=boss.exe, actions=capture, solo"
+        );
+
+        // 人手工写进档里的 `[[表]]` 形状也要认得：同一枚键、同一句话。今天 `to_document`
+        // 交出来的是 `[{…}]` 那一副（上面量过），这一支是形状一旦变回来时的门——静默丢键
+        // 在那一天不许重演（§8.3）。
+        let doc = "\
+[[hotkey.exclusions]]
+app = \"game.exe\"
+actions = []
+
+[[hotkey.exclusions]]
+app = \"boss.exe\"
+actions = [\"capture\", \"solo\"]
+"
+        .parse::<DocumentMut>()
+        .unwrap();
+        let mut out = BTreeMap::new();
+        flatten(doc.as_table(), "", &mut out);
+        assert_eq!(
+            out.get(EXCLUSION_KEY).map(String::as_str),
+            Some("app=game.exe, actions=; app=boss.exe, actions=capture, solo")
+        );
+        assert_eq!(
+            out.keys().filter(|k| k.starts_with(EXCLUSION_KEY)).count(),
+            1,
+            "一串表不许裂出子键：{:?}",
+            out.keys().collect::<Vec<_>>()
+        );
     }
 
     /// §5.16.1 第十三名 `[hotkey] command` 的存储形状：命令行是**一枚**字符串，不是一串参数。

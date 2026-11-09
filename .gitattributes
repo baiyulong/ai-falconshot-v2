@@ -1,5 +1,5 @@
 # 行尾在这里钉死，不依赖每台机器的 core.autocrlf。
-# 依据：实施计划 §B.3 —— 带 goto/标签的 .cmd 在 CRLF 下才可靠工作。
+# 依据：带 goto/标签的 .cmd 在 CRLF 下才可靠工作。
 * text=auto
 
 *.cmd  text eol=crlf

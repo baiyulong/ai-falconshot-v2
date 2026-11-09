@@ -123,6 +123,18 @@ pub mod qobject {
         #[qproperty(i32, hover_y)]
         #[qproperty(i32, hover_w)]
         #[qproperty(i32, hover_h)]
+        /// §5.3.4 规则第一句「应显示当前层级变化的即时反馈」：那一行字本身（「元素 第 2 / 4 层」），
+        /// 作者是 [`crate::mask::MaskState::element_line`]。过桥走的是 `ratio_spec` 那同一条腿：
+        /// [`crate::mask::MaskViewData`] 是 `Copy` 的几何样本，装不动一串字，所以 reload 在
+        /// **同一次锁里**直接向 `MaskState` 问这一格，与高亮框那五格同一份样本。
+        ///
+        /// 页上**只绑这一格、不自己拼「第几层」**：`elem_index` 与链长都留在 Rust 那一侧，跨桥
+        /// 搬两枚数字再在 QML 里做除法与加减，就会有两处「第几层」的写法可以各说各的（#281），
+        /// 而「最上级」那种尾巴本来就不是数字能拼出来的。
+        ///
+        /// 空串 = 此刻没有链，页上那一行整个不画。与 [`Self::hover_live`] 同一口径：别看尺寸、
+        /// 别看 0，**「不画」要有它自己的读数**。
+        #[qproperty(QString, element_line)]
         #[qproperty(i32, revision)]
         #[qproperty(QString, key)]
         #[qproperty(QString, name)]
@@ -168,7 +180,7 @@ pub mod qobject {
         /// 一颗序号（`annotate` 里 `BRUSH_SHAPES` 那一行数的），读回来的同 `arrow_head`。
         #[qproperty(bool, brush_tool)]
         #[qproperty(i32, brush_shape)]
-        /// §5.7.6 step 2「选择单向、双向或**其他箭头样式**」里的那其他样式：三档一颗序号，
+        /// §5.7.6 step 2「选择单向、双向或其他箭头样式」里的那其他样式：三档一颗序号，
         /// 加上「手里这支笔是不是箭头」那扇门（单向与双向都算 —— 它们本是 `TOOLS` 上两枚工具，
         /// 样式才是这一格）。门与序号都是读回来的，同 `brush_tool` 的理由。
         #[qproperty(bool, arrow_tool)]
@@ -181,7 +193,7 @@ pub mod qobject {
         /// 不是界面自己记的数，所以撤销一枚编号之后屏上那一格仍然对得上。
         #[qproperty(bool, number_tool)]
         #[qproperty(i32, counter_start)]
-        /// §5.7.12 step 5「删除中间编号时可选择是否自动重排」的那一枚选择键。亮着的下一次删除
+        /// §5.7.12 step 5「删除中间编号时，可选择是否自动重排」的那一枚选择键。亮着的下一次删除
         /// 记的是**一条**装着「删除 + 重排」的编辑（[`crate::annotate::Layer::delete_selected`]）；
         /// 读回来而不是界面自己记，同 `counter_start` 的理由 —— 这一格只有一个作者，就是层上那一个。
         #[qproperty(bool, auto_renumber)]
@@ -261,14 +273,27 @@ pub mod qobject {
         #[qproperty(i32, picked_count)]
         #[qproperty(i32, picked_rotation)]
         #[qproperty(bool, marquee_mode)]
-        /// §5.7.3 step 4 的那一枚圆角把手在这一扇窗上的位置（window-local DIP），外加「此刻
-        /// 有没有一枚可画」。页上只把它**画**出来，与上面那八枚同规（drawn, never clicked）：
-        /// 一次按下归谁，是 `pressAt` 里 core 那一位作者（`grip_at_any`）判的，页上再摆一枚
-        /// MouseArea 就是让光标与拖拽起点各答一次「用户握住了哪一枚」。位置本身也在 core
-        /// （`grip_point`）与 [`crate::mask::MaskState::view_data`] 那一次除法，界上一处也不算。
-        #[qproperty(bool, radius_live)]
-        #[qproperty(i32, radius_x)]
-        #[qproperty(i32, radius_y)]
+        /// 标注对象自己那些把手在**这一扇窗**上的位置（window-local DIP），按长相分成两族：
+        /// `grip_squares` 是方的（§5.7.17 那八枚、§5.7.15 的旋转把手、一段线那两个头），
+        /// `grip_dots` 是圆的（只有 §5.7.3 步 4 的圆角把手）。两串各是 `x,y,w,h` 若干段用 `|`
+        /// 联起来，空串就是「这一族此刻一枚也不画」。
+        ///
+        /// 与上面那八枚选区把手同规（drawn, never clicked）：一次按下归谁，是 `pressAt` 里
+        /// core 那一位作者（`grip_at_any`）判的，页上再摆一枚 MouseArea 就是让光标与拖拽起点
+        /// 各答一次「用户握住了哪一枚」。
+        ///
+        /// 递的是**矩形**而不是一枚点，理由不是省事：那四边就是 core 量出来、`grip_at_any` 拿去
+        /// 答一次按下的同一条命中带（`grip_box`），于是「画出来的 = 命中得了的」在屏幕上是同
+        /// 一个数，页上一处坐标也不算、连"画多大"都不归它（#281）。早先这一格只有圆角那一枚、
+        /// 而且递的是点，八枚角把手因此可命中、可拖动、却从来没有被画出来过 —— 用户握的是一枚
+        /// 看不见的把手（#86）。
+        ///
+        /// 两串**必须是 `qproperty` 而不是一枚 invokable**：拖动时每一枚事件都要重读一次这一列，
+        /// 而 QML 对一次函数调用不做依赖跟踪，绑上去就再也更不动（与 `live_wanted`／
+        /// `band_revision` 那两枚同一条理由）。它们与上面那个文本框在同一次锁里问出来，所以拖
+        /// 一次把手不会出现「框是这一趟的、把手是上一趟的」。
+        #[qproperty(QString, grip_squares)]
+        #[qproperty(QString, grip_dots)]
         /// §5.5.2's answer to the last 复制: the pixel count when the picture got
         /// through, and who was holding the clipboard when it did not. Rust owns the
         /// sentence (`MaskState::message`) because the writing owns it, and it arrives
@@ -282,9 +307,16 @@ pub mod qobject {
         #[qproperty(QString, landed)]
         /// 最近一次揭示的话，与 `message` 分着放：一句反馈不许把另一句证据挤掉。
         #[qproperty(QString, reveal_last)]
-        /// 写之前那一档提醒（PRD 447 的"将被填充"）。它和 `message` 分着，正是因为
+        /// 写之前那一档提醒（§5.4.5 规则第 2 条的"将被填充"）。它和 `message` 分着，正是因为
         /// 一个槽位里"将被"会被"已保存"顶掉——那就不算在写之前说过。空串 = 这一档不丢透明。
         #[qproperty(QString, pre_notice)]
+        /// §5.2.1 实时背景那一支：页侧那枚 `Timer` 的 `running` 绑的就是这一格，判据本体在
+        /// [`crate::mask::MaskState::live_wanted`] —— `freeze_frame` 开着、遮罩不在场、闸答了
+        /// 「不许」，三样都是假；闸**还没答**时是真，为的是那一句拒绝能被取走说出去（#433）。
+        ///
+        /// 与 `band_revision` 同一条理由要一枚**真的会变**的数：`liveWanted()` 若是一枚函数，
+        /// QML 的绑定不会为一次函数调用重发，闸答完「不许」那枚定时器也停不下来。
+        #[qproperty(bool, live_wanted)]
         /// §5.14.1 那一行的话，与上面三条分着放：`record_history` 的五格分岔（拼不出图 /
         /// `enabled` 是关的 / 打不开 `history.db` / 那一行没写进去 / 写进去而 §5.14.4 的
         /// 清理没跑成）各说各的话，合并成一句就输掉"落盘成了而历史没记"这一整格证据。
@@ -368,7 +400,7 @@ pub mod qobject {
         /// `ShaderEffect.status`, kept so `--mask` can assert the value P6 measured
         /// for a compiled shader (`0`) instead of going to look for the `.qsb` in the
         /// package. `2` is Error, and an error here while the rectangle path still
-        /// draws is exactly plan §9.1's hole.
+        /// draws is exactly the "green build, no shader in the package" hole.
         #[qinvokable]
         #[cxx_name = "noteShaderStatus"]
         fn note_shader_status(self: Pin<&mut Self>, status: i32);
@@ -378,6 +410,17 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "noteSwap"]
         fn note_swap(self: Pin<&mut Self>);
+
+        /// §5.2.1 实时背景那一支的**取货口**：页侧那枚 `Timer`（`running: view.live_wanted`，
+        /// 333 ms 一拍）每拍来一次，把读取腿那一趟线程攒在邮箱里的东西取走 —— 一句话（闸的
+        /// 拒绝或整屏读取失败）、一份读数、一帧新桌面图，三样都可能在同一拍里到。
+        ///
+        /// 交回的那一枚码是四件不同的事（#453）：`0` 邮箱空的 / `1` 只灌了一帧 / `2` 只有一句
+        /// 话 / `3` 两样都有。页上不读它（话进 `message`、帧进 `key`，各自都有绑定），读它的
+        /// 是 `--mask` 那扇门与单测。
+        #[qinvokable]
+        #[cxx_name = "liveTick"]
+        fn live_tick(self: Pin<&mut Self>) -> i32;
 
         /// The selection, in physical desktop pixels - the same space a pin's crop
         /// arrives in. Window-local device-independent pixels are derived per screen.
@@ -679,7 +722,7 @@ pub mod qobject {
         #[cxx_name = "saveSelection"]
         fn save_selection(self: Pin<&mut Self>, path: &QString, filter: &QString) -> bool;
 
-        /// PRD 433 / 459's 贴图 after 保存: the same write as
+        /// §5.4.4 操作步骤 步骤 5's 贴图 after 保存: the same write as
         /// [`crate::mask::MaskState::save_out`], then a pin made from the file that
         /// landed. `true` is "the file is there *and* it is floating"; the one case
         /// where those disagree is named in `message` rather than collapsed into a
@@ -738,14 +781,19 @@ pub mod qobject {
         #[cxx_name = "updateMagnifier"]
         fn update_magnifier(self: Pin<&mut Self>, x: f64, y: f64);
 
-        /// §5.3.2 第二、三步 —— 指针走到 `(x, y)`（窗内 DIP）时，哪一扇窗该被高亮。
+        /// §5.3.2 第二、三步 + §5.3.3/§5.3.4 —— 指针走到 `(x, y)`（窗内 DIP）时，哪一扇窗、
+        /// 窗里哪一枚控件该被高亮。
         ///
-        /// 一次调用改齐 [`Self::hover_live`] 那五格（同一次锁、同一份
-        /// [`crate::mask::MaskState`]），与 [`Self::updateMagnifier`] 十七格一次改齐同一条
+        /// 一次调用改齐 [`Self::hover_live`] 那五格加 [`Self::element_line`] 一共六格（同一次锁、
+        /// 同一份 [`crate::mask::MaskState`]），与 [`Self::updateMagnifier`] 十七格一次改齐同一条
         /// 口径：分两趟问就会问出「框是这一趟的、缩放是上一趟的」那一族。
         ///
-        /// **返回** `true` = 这一趟光标落在了一扇**可截**的窗上。页上不需要读它（五格都在
-        /// 那五个属性里），留这一枚是给量具的：`--mask` 那一扇门没有指针注入器（第 46 项 ②），
+        /// 链不是每动一次问一遍：要不要钻（以及钻哪一扇窗）由
+        /// [`crate::mask::MaskState::element_ask_at`] 那四条判据决定，一次询问的上界写在
+        /// `falcon_core::capture` 那一侧。
+        ///
+        /// **返回** `true` = 这一趟光标落在了一扇**可截**的窗上。页上不需要读它（六格都在
+        /// 那六个属性里），留这一枚是给量具的：`--mask` 那一扇门没有指针注入器（第 46 项 ②），
         /// 而「这一枪到底命中没有」是这一路唯一一句能被外面读到的答案。
         ///
         /// 命中哪一扇、可截图边界是哪一块、不可见与全透的怎么排除 —— 一概不在这里，也不在
@@ -754,6 +802,18 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "hoverWindow"]
         fn hover_window(self: Pin<&mut Self>, x: f64, y: f64) -> bool;
+
+        /// §5.3.4 步 3-4 —— 滚轮在父元素与子元素之间换一层：`up` = 往**外头**（父级）走。
+        ///
+        /// **返回** `true` = 换动了，页上 `win.grabbed()` 吃掉这一格滚轮；`false` = 已经到了
+        /// 最上级或最下级（或此刻根本没有链），这一格原样交回 Qt —— §5.3.4 规则第二句「达到
+        /// 最上级或最下级时，应停止切换」说的就是不许绕回，而不是不许滚。
+        ///
+        /// 换层之后屏幕上跟着变的还是 [`Self::hoverWindow`] 那同一族六格（同一只手写的，见
+        /// [`Self::publish_hover`]），所以「高亮框」与「第几层」那句永远是同一个数。
+        #[qinvokable]
+        #[cxx_name = "cycleElement"]
+        fn cycle_element(self: Pin<&mut Self>, up: bool) -> bool;
 
         /// §5.4.2 —— 裸按 `C` 把光标所在那一点的颜色按 [`crate::mask::MaskState::capture`]
         /// 的 `magnifier_color_format` 复制进剪贴板。`true` 是"这一串已经在剪贴板上了"，
@@ -798,27 +858,43 @@ pub mod qobject {
         fn pick_ratio(self: Pin<&mut Self>, index: i32) -> bool;
 
         /// §5.3.8 第二步的后半：「或输入自定义比例」。那句话**总是**被记下（屏幕上显示的就是
-        /// 用户打的字），返回值只说锁上没上 —— `false` 之后 [`Self::ratio_live`] 也是 `false`，
-        /// 文本框点灰绑的就是这一枚读数（与 [`Self::ratio_index`] 同一次锁里交出的那三格）。
+        /// 用户打的字），返回值说的是**锁上没上**：锁上了交回空串，锁不上交回
+        /// [`crate::mask::RATIO_REFUSAL`] 那一句 —— 与 [`Self::applySize`] 同一形状。
+        /// [`Self::ratio_live`] 也跟着变 `false`，文本框点灰绑的就是这一枚读数（与
+        /// [`Self::ratio_index`] 同一次锁里交出的那三格）。
+        ///
+        /// **为什么是一句而不是一枚 `bool`**：§7.4 第 3 条不许状态只靠颜色表达，而点灰分不出
+        /// 它的邻居 —— 用户还没按回车时框也是不灰的，按了回车锁上了也不灰，于是"不灰"同时是
+        /// "还没提交"和"提交了"。一条在两个状态里都成立的读数不是通道。
+        ///
+        /// **刻意不走现成的 `message` 那一格**：它在 QML 里的唯一读者是 `AnnotationToolbar.qml`
+        /// （那一行自己写着 `message is one slot`），于是这句话会落在屏幕底部的工具栏里，而被打回
+        /// 的是这张遮罩上的文本框 —— 说话的地方得在挨说的那一格旁边。返回一句也就没有"上一句
+        /// 什么时候清掉"这条协议要发明：句子活在这一枚返回值里，下一次提交自己盖掉它。
         ///
         /// `apply_` 而不是 `set_`：[`Self::ratio_spec`] 那枚 qproperty 已经生成了 associated
         /// function `set_ratio_spec`（与 [`Self::apply_shader`] 同一条理由）。
         #[qinvokable]
         #[cxx_name = "applyRatioSpec"]
-        fn apply_ratio_spec(self: Pin<&mut Self>, spec: &QString) -> bool;
+        fn apply_ratio_spec(self: Pin<&mut Self>, spec: &QString) -> QString;
 
         /// §5.3.6 第三、四步：把 W 与 H 两格里打进来的数字换成选区尺寸，从
         /// [`Self::size_anchor`] 那一角扩展，超出桌面的那一头让路。
         ///
-        /// 返回 `false` = **选区一点没动**（还没拖出选区 / 那对数不是正数 / 装不进 `u32`），
-        /// 与 [`Self::pickRatio`] 的 `false` 同一条口径：门把手不许在"没做成"的时候顺手清掉
-        /// 别的格子。返回 `true` 也不等于"这就是你打的数"—— 夹过的会变小，那是第二条规则。
+        /// 换掉了交回空串；没换成则交回**理由那一句**（[`crate::mask::SIZE_REFUSAL_NO_SELECTION`]
+        /// 或 [`crate::mask::SIZE_REFUSAL_NOT_POSITIVE`]），此时**选区一点没动** —— 与
+        /// [`Self::pickRatio`] 的 `false` 同一条口径：门把手不许在"没做成"的时候顺手清掉别的
+        /// 格子。空串也不等于"这就是你打的数"—— 夹过的会变小，那是第二条规则，而让了多少由
+        /// `reload` 之后那行 W×H 读数自己说。
+        ///
+        /// 一句而不是一枚 `bool`、以及为什么不走 `message`：见 [`Self::applyRatioSpec`]，两枚是
+        /// 邻居、同一笔改动、同一条理由（§7.4 第 3 条）。
         ///
         /// `apply_` 而不是 `set_`：与 [`Self::applyRatioSpec`]、[`Self::applyShader`] 同一条
         /// 理由，`set_` 那一族名字已经被 qproperty 的 associated function 占了。
         #[qinvokable]
         #[cxx_name = "applySize"]
-        fn apply_size(self: Pin<&mut Self>, w: i32, h: i32) -> bool;
+        fn apply_size(self: Pin<&mut Self>, w: i32, h: i32) -> QString;
 
         /// §5.3.6 第一句规则在屏幕上的那行字：锚点的名字，`|` 分隔，下标是 [`Self::sizeAnchor`]
         /// 那一枚序号 —— 与 [`Self::ratioNames`] 同一形状，句子住在 Rust。
@@ -910,6 +986,7 @@ use cxx_qt_lib::QString;
 use falcon_core::geometry::PhysRect;
 
 use crate::annotate;
+use crate::capture;
 use crate::mask;
 use crate::settings;
 
@@ -953,6 +1030,9 @@ pub struct MaskViewRust {
     hover_y: i32,
     hover_w: i32,
     hover_h: i32,
+    // §5.3.4 那句层级反馈。`Default` 给的空串就是「此刻没有链」，页上那一行整个不画 ——
+    // 与上面那五格同规：一张还没 hover 过任何一扇窗的窗，不该在屏幕上多一行字。
+    element_line: QString,
     revision: i32,
     key: QString,
     name: QString,
@@ -1018,16 +1098,19 @@ pub struct MaskViewRust {
     // 过的窗报的是「没选中东西」，页上那一整行都在 `picked_count > 0` 的门后面。
     picked_count: i32,
     picked_rotation: i32,
-    // §5.7.3 步 4 那一枚圆角把手在本窗的位置。`Default` 给的 false/0/0 读作「此刻没有一枚可画」，
-    // 与上面那一族同规：还没 `assign` 过的窗不画工具条，也就没有把手。
-    radius_live: bool,
-    radius_x: i32,
-    radius_y: i32,
+    // 标注那些把手的两串（方的／圆的），形状见上面那两枚 `qproperty` 的头上。`Default` 给的两
+    // 枚空串读作「此刻一枚也不画」，与上面那一族同规：还没 `assign` 过的窗不画工具条，也就没有
+    // 把手。
+    grip_squares: QString,
+    grip_dots: QString,
     marquee_mode: bool,
     message: QString,
     landed: QString,
     reveal_last: QString,
     pre_notice: QString,
+    // §5.2.1 实时背景那一支的 `Timer.running`。`Default` 给的 `false` 读作「这一扇窗不刷」，
+    // 与出厂那一枚 `freeze_frame = true` 一致：还没 `reload` 过的窗不该转起来。
+    live_wanted: bool,
     send_to_last: QString,
     history_last: QString,
     band_last: QString,
@@ -1097,10 +1180,13 @@ impl qobject::MaskView {
             band_last,
             band_revision,
             ratio_spec,
+            element_line,
             clicks,
             acted,
             dim,
             clear,
+            wanted,
+            grips,
         ) = mask::with(|m| {
             m.ink.flush();
             let label = m
@@ -1189,12 +1275,24 @@ impl qobject::MaskView {
                 m.band_last.clone(),
                 m.band_revisions as i32,
                 m.ratio_spec.clone(),
+                // §5.3.4 那句「第几层」与上面这一格同一条腿：`MaskViewData` 是 `Copy` 的几何
+                // 样本，装不动一串字（`ratio_spec` 头上同规），而它必须与高亮框那五格是**同一次
+                // 锁**的读数 —— 否则换层之后屏幕上会出现「框已经到父级、字还写着子级」。
+                m.element_line(),
                 m.reveal_clicks as i32,
                 m.reveal_acted as i32,
                 // 这一块板子要暗化多少、窗底要不要跟着透明 —— 与上面那一样本同一次锁，因为
                 // 它们是同一趟流程的读数：分两次问就可能出现"洞是新那一身的、暗化是上一张的"。
                 m.board_dim(),
                 m.board_clear(),
+                // §5.2.1 实时背景那一支的 `Timer.running`，与上面那一样本同一次锁：分两次问就
+                // 可能出现「定时器按这一趟的闸门转、发出去的键是上一趟的」。
+                m.live_wanted(),
+                // 标注那些把手的两串，与上面那一样本同一次锁：拖一次把手要重读的就是这一列，
+                // 分两次问就会出现「框是这一趟的、把手是上一趟的」那一族。`MaskViewData` 是
+                // `Copy` 的几何样本，装不下一列，所以这一格与 `typing_text` 同一条腿 —— 在同
+                // 一次锁里直接向状态问（#86）。
+                m.grip_lines(index.max(0) as usize),
             )
         });
 
@@ -1237,7 +1335,7 @@ impl qobject::MaskView {
         self.as_mut().set_size_h(view.size_h as i32);
         self.as_mut().set_size_unit(view.size_unit);
         // §5.3.2 第三步那块高亮框与选区用的是**同一份 `view` 样本**：一次 `press`／`drag`／
-        // `release` 之后页上重新读这五格，就不会出现「选区是新拖出来的、高亮框还停在按下
+        // `release` 之后页上重新读这六格，就不会出现「选区是新拖出来的、高亮框还停在按下
         // 之前那一扇上」。`hover_window` 那一路是每次 hover 现算，两路写的是同一格数据，
         // 而都从同一把锁里的那一份状态出发。
         self.as_mut().set_hover_live(view.hover_live);
@@ -1245,6 +1343,10 @@ impl qobject::MaskView {
         self.as_mut().set_hover_y(view.hover.y);
         self.as_mut().set_hover_w(view.hover.w as i32);
         self.as_mut().set_hover_h(view.hover.h as i32);
+        // 那句「第几层」与上面五格同一次锁、同一份样本：链是这一趟的、层号也是这一趟的，
+        // 不会出现「框已经换到父级、字还写着子级」。
+        self.as_mut()
+            .set_element_line(QString::from(&*element_line));
         self.as_mut().set_revision(view.revision as i32);
         match &label {
             Some((key, name)) => {
@@ -1352,11 +1454,12 @@ impl qobject::MaskView {
         self.as_mut().set_text_w(view.typing.w as i32);
         self.as_mut().set_text_h(view.typing.h as i32);
         self.as_mut().set_text_font(view.font_dip as i32);
-        // 圆角那一枚把手与上面那个文本框读的是**同一份 `view` 样本**，所以拖一次把手不会出现
-        // 「框是这一趟的、把手是上一趟的」；页上那一枚点只绑这三格，一个像素也不自己算。
-        self.as_mut().set_radius_live(view.radius_live);
-        self.as_mut().set_radius_x(view.radius.x);
-        self.as_mut().set_radius_y(view.radius.y);
+        // 标注那些把手与上面那个文本框是同一次锁里问出来的（`grips` 那一格与 `view` 这一份
+        // 样本一起出 `mask::with`），所以拖一次把手不会出现「框是这一趟的、把手是上一趟的」；
+        // 页上那两枚 `Repeater` 只把每段的四枚数摆成矩形，一个像素也不自己算。
+        let (squares, dots) = grips;
+        self.as_mut().set_grip_squares(QString::from(&*squares));
+        self.as_mut().set_grip_dots(QString::from(&*dots));
         self.as_mut().set_message(QString::from(&*message));
         self.as_mut().set_landed(QString::from(&*landed));
         self.as_mut().set_reveal_last(QString::from(&*reveal_last));
@@ -1370,6 +1473,7 @@ impl qobject::MaskView {
         self.as_mut().set_band_revision(band_revision);
         self.as_mut().set_reveal_clicks(clicks);
         self.as_mut().set_reveal_acted(acted);
+        self.as_mut().set_live_wanted(wanted);
     }
 
     pub fn note_shader_status(self: Pin<&mut Self>, status: i32) {
@@ -1377,9 +1481,27 @@ impl qobject::MaskView {
         mask::with(|m| m.note_shader_status(index.max(0) as usize, status));
     }
 
-    pub fn note_swap(self: Pin<&mut Self>) {
+    pub fn note_swap(mut self: Pin<&mut Self>) {
         let index = *self.index();
-        mask::with(|m| m.note_swap(index.max(0) as usize));
+        // 交回的那一枚 `bool` 说的是「**这一帧**就是令实时背景那一支起来的那一帧」，也只有那一帧
+        // 值得一次 `reload`（把 `live_wanted` 那枚新读数递给页上的定时器）。每帧都 `reload` 就是
+        // `onFrameSwapped` → `reload` → 新帧 → `onFrameSwapped` 一条自己喂自己的环。
+        let armed = mask::with(|m| m.note_swap(index.max(0) as usize));
+        if armed {
+            self.as_mut().reload();
+        }
+    }
+
+    pub fn live_tick(mut self: Pin<&mut Self>) -> i32 {
+        let code = mask::with(|m| m.live_tick());
+        // 取到货才 `reload`。`0` 说的是邮箱空的、`MaskState` 一字未动，那一趟 `reload` 会把
+        // 二十几枚 `set_*` 全走一遍而一个值也没换 —— 闸门还没答的那一小段里，页上这一枚钟每
+        // 333 ms 就来一趟。取到货时无条件重读：新帧的键在 `Slot.key` 那一格，页上 `Image` 的
+        // URL 绑的就是它，不重读等于背景一帧也没刷。
+        if code != 0 {
+            self.as_mut().reload();
+        }
+        code
     }
 
     pub fn set_hole(mut self: Pin<&mut Self>, x: i32, y: i32, w: i32, h: i32) {
@@ -1760,23 +1882,28 @@ impl qobject::MaskView {
     }
 
     /// 同上，而 `spec` 是文本框里那句话的所有权移交（`&QString` → `to_string`，与
-    /// [`Self::save_selection`] 同一条理由）。那句话**总是**被记下，返回值只说锁上没上
-    /// （[`mask::MaskState::set_ratio_spec`]），所以 `false` 之后仍要 `reload`：文本框点灰
-    /// 靠的就是这一次读回来的 [`Self::ratio_live`]。
-    pub fn apply_ratio_spec(mut self: Pin<&mut Self>, spec: &QString) -> bool {
+    /// [`Self::save_selection`] 同一条理由）。那句话**总是**被记下，返回值说的是锁上没上
+    /// （[`mask::MaskState::set_ratio_spec`]），所以空串那一次也照样 `reload`：文本框点灰靠的
+    /// 就是这一次读回来的 [`Self::ratio_live`]，而锁上了那三格读数也得跟着改口。
+    pub fn apply_ratio_spec(mut self: Pin<&mut Self>, spec: &QString) -> QString {
         let typed = spec.to_string();
         let took = mask::with(|m| m.set_ratio_spec(&typed));
         self.as_mut().reload();
-        took
+        // 这一枚不像 `apply_size` 那样要挑句子：`set_ratio_spec` 对一句**非空**的话只有一处答
+        // `false`（`parse_ratio` 解不出来），所以只有一句可说 —— 一句，而不是"一句加一枚下标"。
+        QString::from(if took { "" } else { mask::RATIO_REFUSAL })
     }
 
     /// §5.3.6：尺寸那两格文本框的提交。改动落在 [`mask::MaskState`] 的 `hole` 与（撞锁时）
     /// 芯片那一格，所以递完就要 `reload` —— 与 [`Self::pick_ratio`] 同一条理由，而这里要的
-    /// 读数比它多：那行 W×H、锚点那一角、芯片亮哪格，三处都是这一次改动的后果。
-    pub fn apply_size(mut self: Pin<&mut Self>, w: i32, h: i32) -> bool {
-        let took = mask::with(|m| m.type_size(w, h));
+    /// 读数比它多：那行 W×H、锚点那一角、芯片亮哪格，三处都是这一次改动的后果。被拒的那一次
+    /// 也照 `reload`：那一支一个字节没改，可"读数是当下这一场的"这一句不该看有没有改成。
+    pub fn apply_size(mut self: Pin<&mut Self>, w: i32, h: i32) -> QString {
+        // 句子由 [`mask::MaskState::size_refusal`] 那一支支 `return` 自己挑（#281：一件事一个
+        // 作者），这里只把它搬过桥。空串是"收下了"，不是"没话说"。
+        let said = mask::with(|m| m.size_refusal(w, h));
         self.as_mut().reload();
-        took
+        QString::from(said.unwrap_or(""))
     }
 
     pub fn size_anchor_names(&self) -> QString {
@@ -1968,24 +2095,66 @@ impl qobject::MaskView {
         self.as_mut().set_magnifier_corner_radius(data.look.radius);
     }
 
-    /// §5.3.2 第二、三步。一次 [`crate::mask::MaskState::hover_window`] 之后紧接着把
-    /// **同一把锁里**的窗内读数交出去 —— 分成两趟锁就会读到「命中是这一趟、框是上一趟」。
+    /// §5.3.2 第二、三步 + §5.3.3/§5.3.4 那一条控件级通路。一次 hover 之内做完三件事：
+    /// 判命中（[`crate::mask::MaskState::hover_window`]）、**该问时**钻一次元素链
+    /// ([`crate::capture::element_chain`]，要不要钻由 [`crate::mask::MaskState::element_ask_at`]
+    /// 那四条判据说了算)，然后把**同一把锁里**的窗内读数交出去 —— 分成两趟锁就会读到
+    /// 「命中是这一趟、框是上一趟」，链与框分两趟更是让「高亮画 A 层、单击选中 B 层」。
+    ///
+    /// 那一次 UIA 询问发生在**锁里面**，这是有意的：链归位与读数必须原子，而代价有上界 ——
+    /// [`falcon_core::capture::ELEMENT_CHAIN_BUDGET_MS`] 毫秒是 core 那一侧写死的，钻链那只手
+    /// 自己会在超时时停下（[`falcon_core::capture::element_walk_wanted`]）。锁外问、锁内写
+    /// 反而要在这里第二次判归属。
     ///
     /// 越界的 `index` 走 `max(0)` 与 [`Self::hit_test`] 同一写法：这一格错了是 QML 的一次
     /// 编程事故，它不该让桥上任何一列改动，而 `hover_window` 自己答 `false`。
     pub fn hover_window(mut self: Pin<&mut Self>, x: f64, y: f64) -> bool {
         let index = *self.index();
-        let (live, rect) = mask::with(|m| {
+        let (live, rect, line) = mask::with(|m| {
             let index = index.max(0) as usize;
-            let live = m.hover_window(index, x, y);
-            (live, m.hover_bounds(index).unwrap_or_default())
+            m.hover_window(index, x, y);
+            if let Some((owner, p)) = m.element_ask_at() {
+                let chain = capture::element_chain(owner, p);
+                m.take_elements(owner, chain);
+            }
+            let rect = m.hover_bounds(index);
+            (rect.is_some(), rect.unwrap_or_default(), m.element_line())
         });
+        self.as_mut().publish_hover(live, rect, &line);
+        live
+    }
+
+    /// §5.3.4 步 3-5 —— 滚轮换一层，`up` = 往**父级**（外头）走。返回页上那句
+    /// 「该不该吃掉这一格滚轮」：`true` 是换动了，页上 `win.grabbed()`；`false` 是已经到了
+    /// 最上/最下级（或压根没有链），这一格滚轮就原样交给 Qt —— 那一臂的答案与「链到头了」
+    /// 是同一件事，不另外开口子（[`crate::mask::MaskState::cycle_element`] 头顶）。
+    ///
+    /// 读数与 [`Self::hover_window`] 共用同一只手（[`Self::publish_hover`]）：换层之后屏幕上
+    /// 要跟着变的还是那六格，两条腿各写一遍就会有一遍是旧的。
+    pub fn cycle_element(mut self: Pin<&mut Self>, up: bool) -> bool {
+        let index = *self.index();
+        let (moved, live, rect, line) = mask::with(|m| {
+            let index = index.max(0) as usize;
+            let moved = m.cycle_element(up);
+            let rect = m.hover_bounds(index);
+            (moved, rect.is_some(), rect.unwrap_or_default(), m.element_line())
+        });
+        self.as_mut().publish_hover(live, rect, &line);
+        moved
+    }
+
+    /// 把「这一刻屏幕上该亮哪一块、该说第几层」那六格一次改齐。
+    ///
+    /// 单拎出来只有一条理由：`hover_window` 与 `cycle_element` 交回的是**同一族读数**，两处
+    /// 各写六行 `set_*` 就会出现「换了层而 `hover_live` 还是旧的」那一族漏改（#281 的反面：
+    /// 同一件事有两只手在写）。
+    fn publish_hover(mut self: Pin<&mut Self>, live: bool, rect: PhysRect, line: &str) {
         self.as_mut().set_hover_live(live);
         self.as_mut().set_hover_x(rect.x);
         self.as_mut().set_hover_y(rect.y);
         self.as_mut().set_hover_w(rect.w as i32);
         self.as_mut().set_hover_h(rect.h as i32);
-        live
+        self.as_mut().set_element_line(QString::from(line));
     }
 
     /// §5.4.2 —— 裸 `C`。走 [`crate::mask::MaskState::pick_color`]，之后**只**刷 `message`
@@ -2554,5 +2723,66 @@ mod tests {
                 "{caller} 那一手没收回预览副本"
             );
         }
+    }
+
+    /// §5.3.3 / §5.3.4 那一条控件级通路在**页与桥**上的那一截：滚轮有对面、层级那句话绑的是
+    /// 桥交出的那一格，而桥在同一次锁里问链、归位、发布。
+    ///
+    /// 这是**源码扫描**，不是真机读数：`--mask` 那一扇门没有指针注入器（第 46 项 ②），也没有
+    /// 一枚 UIA 能对着这张冻住的桌面答话（本仓这台机器从早到晚在锁屏上）。它证的是"这一格
+    /// 接上了下一格"，不证"屏幕上真的画出了那一枚控件" —— 后面这一句本轮欠着，写在 PRD
+    /// §5.3.3/§5.3.4 的实现口径里，不假装量过（#261）。
+    #[test]
+    fn the_pages_wheel_arm_calls_the_bridge_and_binds_the_level_line() {
+        let code = crate::hint_check::qml_code(PAGE);
+        // ① 页：滚轮有对面，而这一格吃不吃由桥的答案决定（页上不自己数层、也不自己判到头）。
+        assert!(
+            code.contains("onWheel: (wheel) => {"),
+            "页上压根没有滚轮那一手 —— §5.3.4 步 3 还没有对面"
+        );
+        assert!(
+            code.contains("view.cycleElement(wheel.angleDelta.y > 0)"),
+            "滚轮没递给桥那一手，或者方向不是本轮定下的「向上滚 = 往父级」那一条"
+        );
+        assert!(
+            code.contains("wheel.accepted = true"),
+            "换动了却没吃掉这一格：事件继续往上传，别的窗跟着乱滚"
+        );
+        assert!(
+            code.contains("if (view.cycleElement("),
+            "吃掉这一格没有跟着桥的读数走 —— 页自己判「到没到头」就会有两个作者"
+        );
+        // ② 页：那句层级反馈绑的是桥交出的一整句，页上不自己拼「第几层」。
+        assert!(
+            code.contains("text: win.view.element_line"),
+            "那一行字没绑桥交出的那一句"
+        );
+        assert!(
+            code.contains("visible: win.view.element_line !== \"\""),
+            "没有链的时候那一行还画着 —— 「不画」要有它自己的读数（#274）"
+        );
+        // ③ 桥：一次 hover 里问该不该钻、钻、归位、发布，全在**同一次锁**里。
+        let hover = fn_body(VIEW_SRC, "pub fn hover_window(");
+        assert!(
+            hover.contains("mask::with("),
+            "hover 那一趟不在一次锁里：框与那行字会读到两个时刻"
+        );
+        assert!(hover.contains("m.element_ask_at()"), "hover 没问该不该钻链");
+        assert!(
+            hover.contains("capture::element_chain(owner, p)"),
+            "该钻的时候没递给桥层那一只手"
+        );
+        assert!(
+            hover.contains("m.take_elements(owner, chain)"),
+            "问回来的链没归位（链、层号、归属三格必须一起换）"
+        );
+        assert!(
+            fn_body(VIEW_SRC, "pub fn cycle_element(").contains("m.cycle_element(up)"),
+            "换层没递给状态那一手"
+        );
+        assert!(
+            fn_body(VIEW_SRC, "fn publish_hover(").contains("set_element_line("),
+            "发布那六格里少了那行字 —— 换层后屏幕上会是「框到了父级、字还写着子级」"
+        );
     }
 }

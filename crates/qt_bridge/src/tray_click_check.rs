@@ -4,7 +4,7 @@
 //! 四枚键在 P144 之前不是一份配置，而是 `hotkey.rs` 里写死的一次 `Event::TrayLeft ⇒
 //! Work::Capture`：左键与右键的行为在码上，中键与「双击」根本没有归宿（平台层把
 //! `WM_LBUTTONUP` 与 `WM_LBUTTONDBLCLK` 折成同一枚事件，所以「左键=截图、双击=贴图」这种
-//! 配法连被写出来的地方都没有）。文档第 1449 行点名的正是这四枚，所以这一档判的是**四枚
+//! 配法连被写出来的地方都没有）。§5.18.2 步骤 2 点名的正是这四枚，所以这一档判的是**四枚
 //! 各自有没有归宿**，而不是其中一枚。
 //!
 //! ## 为什么这一档不开窗、也不等任何人
@@ -13,6 +13,11 @@
 //! [`Settings::open`] 读回来（`Config::load` ⇒ `validate` ⇒ 归一与规则，一次都不绕），再把
 //! 读到的动作名递给**产品那一层用的同一张表** [`tray_run_of`]。于是锁屏会话也判得出，也不必
 //! 有人的手放在鼠标上。
+//!
+//! 唯一不在这条路上的是 `tray tip reflects state` 那一格：它走的是产品那一手 [`replay_tip`] 的
+//! **重放**（三趟：不在独显 / 在独显留着 7 枚 / 退出独显），读回来的是本层交出去的那一句字符串。
+//! 它同样不开窗、不等人、锁屏会话也判得出，但它量的不是「一份档 → 一个决定」，而是「一手 →
+//! 一句」，所以它的天花板单独写在下面那一节与报告里那行 Blocked 上。
 //!
 //! ## 这一档不声称的那件事
 //!
@@ -33,7 +38,7 @@ use std::path::PathBuf;
 
 use falcon_core::config::{LoadSource, Tray, TRAY_ACTIONS, TRAY_ENTRY_ACTIONS};
 
-use crate::hotkey::{tray_run_of, TrayRun};
+use crate::hotkey::{replay_tip, tip_last, tray_run_of, TrayRun, TIP_CAP};
 use crate::r13::Report;
 use crate::settings::Settings;
 use crate::state::Check;
@@ -79,7 +84,7 @@ const A: Fixture = Fixture {
     ],
 };
 
-/// B：四枚**全都**进不了菜单也进不了设置页 —— 文档第 1455–1456 行那两句规则说的就是这一份。
+/// B：四枚**全都**进不了菜单也进不了设置页 —— §5.18.2 规则第一、二句说的就是这一份。
 const B: Fixture = Fixture {
     name: "b-no-way-in.toml",
     text: "[tray]\nleft = \"capture\"\ndouble = \"paste_pin\"\n\
@@ -250,7 +255,7 @@ pub fn measure() -> (Check, String) {
     // 枚而 `Work` 那边漏一手时，只有这里会红——门与 `route` 读的是同一张表，所以那张表自己缺
     // 臂不会被任何一次点击测出来，只会让用户配上去什么也不发生（P140 在热区那头关掉的就是这
     // 一族）。反向也判：规则用来放行那两名（`TRAY_ENTRY_ACTIONS`）必须是**用户配得到**的名，
-    // 且递进表里真的落在「开菜单」或「开设置页」那一臂上，否则第 1455 行那句规则是在许一个
+    // 且递进表里真的落在「开菜单」或「开设置页」那一臂上，否则 §5.18.2 规则第一句是在许一个
     // 路由兑现不了的诺。
     let mut unwired: Vec<String> = Vec::new();
     let mut not_offered: Vec<String> = Vec::new();
@@ -342,6 +347,66 @@ pub fn measure() -> (Check, String) {
         ),
     );
 
+    // ---- §5.1.1「正确反映应用运行状态」/ §5.11 规则③ 的那一句：托盘图标上那一行字。
+    //
+    // 这一档没有泵（`install` 一次也没跑），所以量不到「图标上真画出了这几个字」—— 那一格仍在
+    // 下面那行 Blocked 里。量得到的是产品那一手 [`replay_tip`] 真交出去的那一句：两档（不在独显 /
+    // 在独显留着 7 枚）各走一次，逐字读回来比，再走一次退出那一档。三问分开红（#453）：句子空着
+    // 是一问（#274：空对空的比对不作证）、两桩事实有没有被同一只手一起写下是第二问（#281：退出
+    // 独显时只改半句就会留下一枚谁也没设过的图标）、句子胖过 Win32 `szTip` 那一格是第三问
+    // （`write_wide` 静默截断，用户读到前半句而没有任何一句报错）。上限读的是产品那枚
+    // [`TIP_CAP`]，这一档不抄第二份数。热键那半句里的枚数是 0，因为这一档没装任何一枚键 ——
+    // 那是这一档自己的读数，不是一处坏。
+    let mut tip_bad: Vec<String> = Vec::new();
+    replay_tip(None);
+    let plain = tip_last();
+    if plain.is_empty() {
+        tip_bad.push(
+            "第一趟（不在独显）交回来的是空串：`replay_tip` 没把那一手写进它自己的读数"
+                .to_string(),
+        );
+    }
+    if plain.contains("独显") {
+        tip_bad.push(format!("不在独显，句子里却有「独显」：{plain}"));
+    }
+    replay_tip(Some(7));
+    let solo = tip_last();
+    if !solo.contains("独显中：留着 7 枚") {
+        tip_bad.push(format!("独显那一档没说出「独显中：留着 7 枚」：{solo}"));
+    }
+    if !solo.contains("个全局热键待命") {
+        tip_bad.push(format!("独显那一档把热键那半句抹掉了（#281）：{solo}"));
+    }
+    replay_tip(None);
+    let back = tip_last();
+    if back.contains("独显") {
+        tip_bad.push(format!("退出独显之后那半句还在：{back}"));
+    }
+    if back != plain {
+        tip_bad.push(format!("退出独显没有逐字回到原句：{back} ≠ {plain}"));
+    }
+    let mut fat: Vec<String> = Vec::new();
+    for (which, line) in [("不在独显", &plain), ("独显", &solo), ("退出独显", &back)] {
+        let units = line.encode_utf16().count();
+        if units > TIP_CAP {
+            fat.push(format!("{which} {units} 单元 > {TIP_CAP}"));
+        }
+    }
+    rep.row(
+        "tray tip reflects state",
+        Check::from(tip_bad.is_empty() && fat.is_empty()),
+        format!(
+            "三句逐字：不在独显「{plain}」；独显留着 7 枚「{solo}」；退出独显「{back}」。要求：\
+             第一句非空、不含「独显」；第二句含「独显中：留着 7 枚」**且**仍含「个全局热键待命」\
+             （两桩事实由同一只手写下，#281）；第三句逐字回到第一句。UTF-16 单元数 {} / {} / {}\
+             （上限 {TIP_CAP}，超了就是 `write_wide` 静默截断，用户读到前半句）。差额 {tip_bad:?}；\
+             超限 {fat:?}（要求两处都空）",
+            plain.encode_utf16().count(),
+            solo.encode_utf16().count(),
+            back.encode_utf16().count(),
+        ),
+    );
+
     // ---- 这一格发出来是为了让这一档的天花板出现在报告里，而不是只出现在源码注释里。
     rep.row(
         "tray click reaches",
@@ -350,7 +415,9 @@ pub fn measure() -> (Check, String) {
          `WM_RBUTTONUP`，所以它说不出真点下去时走的是哪一臂：上面几格量的是「这份档 + 这张表 = \
          哪个归宿」，不是「那一次点击真的到了泵」。已知的另一条代价记在这里：托盘结构体是 shell \
          Version 0（见 `platform-windows/hotkey.rs` 那句注释），双击会同时送来一次 UP，所以左键与\
-         双击配成不同动作时，双击会先跑一次左键那一格"
+         双击配成不同动作时，双击会先跑一次左键那一格。上面 `tray tip reflects state` 那一格也在\
+         同一条天花板底下：它读回来的是本层交给泵的那一句字符串，图标上真画出来的那几个像素这一档\
+         一次也没看过"
             .to_string(),
     );
 

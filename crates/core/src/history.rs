@@ -1,11 +1,12 @@
-//! The screenshot history: `history.db` next to one PNG per record (§6.2).
+//! The screenshot history: `history.db` next to one PNG per record.
 //!
-//! 计划 §6.2 fixes the split. SQLite holds *metadata and a thumbnail*; the
-//! full-resolution picture is a file under `history/<YYYY-MM-DD>/<id>.png`, and
-//! the row points at it through a path that is **relative to the data
-//! directory**. That is what makes PRD §6.2's "the user may move the data
-//! directory" a settings change rather than a migration: every path stored in
-//! the database still means the same thing after the folder moves.
+//! The split: SQLite holds *metadata and a thumbnail*; the full-resolution
+//! picture is a file under `history/<YYYY-MM-DD>/<id>.png`, and the row points
+//! at it through a path that is **relative to the data directory** — for the
+//! history that is `advanced.data_dir`, there being no key of its own. That is
+//! what makes PRD §6.2's 「应允许用户配置历史记录和自动保存目录」 a settings
+//! change rather than a migration: every path stored in the database still means
+//! the same thing after the folder moves.
 //!
 //! Three rules follow from that split:
 //!
@@ -413,17 +414,6 @@ impl History {
         }
     }
 
-    /// What comes before `before` when the list scrolls up.
-    pub fn newer_than(&self, before: &Record, limit: usize) -> Result<Vec<Record>, HistoryError> {
-        self.collect(
-            &format!(
-                "SELECT {COLUMNS} FROM captures WHERE (captured_at, id) > (?1, ?2) \
-                 ORDER BY captured_at ASC, id ASC LIMIT ?3"
-            ),
-            params![before.captured_at, before.id, limit as i64],
-        )
-    }
-
     /// 上一条 (§5.14.2) — the next record older than `id`.
     pub fn prev(&self, id: i64) -> Result<Option<Record>, HistoryError> {
         self.neighbour(id, "<", "DESC")
@@ -619,7 +609,7 @@ impl History {
     }
 
     /// The cleaner (PRD §5.14.1 "record count, retention time and maximum disk
-    /// usage" / §5.14.4). 计划 §6.2 says it compares all three and stops only
+    /// usage" / §5.14.4). All three are compared, and the deleting stops only
     /// when all three pass. This does it in one newest-first pass rather than a
     /// delete-one-requery loop: age is decided per record, while the count and
     /// the byte budget are a prefix — once the list is full or the budget spent,

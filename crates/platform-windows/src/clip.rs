@@ -39,6 +39,15 @@ pub struct Contents {
     pub html: Option<String>,
     pub text: Option<String>,
     pub files: Vec<PathBuf>,
+    /// Every format name the board carried, read or not - the same list [`formats`]
+    /// answers, taken inside the same open.
+    ///
+    /// The four fields above answer "what could this app take"; this one answers "what
+    /// was there". Those are two questions, and asking only the first is the hole this
+    /// field closes: a board holding nothing but `Rich Text Format` reads back with all
+    /// four empty, so every caller that equated the two wiped it and then reported that
+    /// it had been empty. Names only, never bytes (§9.1).
+    pub formats: Vec<String>,
 }
 
 impl Contents {
@@ -51,11 +60,19 @@ impl Contents {
         }
     }
 
+    /// Whether the board carried *nothing* - which is not the same question as whether
+    /// this app could read what it carried. See [`Contents::formats`].
+    ///
+    /// The distinction is load-bearing because `true` is a licence to destroy:
+    /// `state::put_back`'s empty arm runs `EmptyClipboard` in order to leave the board
+    /// as it found it, and every gate that writes over a board has to know whether that
+    /// write is reversible first. They all ask `state::cannot_put_back`, and it asks this.
     pub fn is_empty(&self) -> bool {
         self.image_bytes.is_none()
             && self.html.is_none()
             && self.text.is_none()
             && self.files.is_empty()
+            && self.formats.is_empty()
     }
 }
 
@@ -252,8 +269,11 @@ fn registered(name: &str) -> Option<u32> {
     (id != 0).then_some(id as u32)
 }
 
-/// Reads every piece the paste path cares about. Priority between them is
-/// `core::clip::classify`'s decision, not this function's.
+/// Reads every piece the paste path cares about, plus the board's own format names.
+/// Priority between those pieces is `core::clip::classify`'s decision, not this
+/// function's. The names are for the callers that owe the board back what they take -
+/// `classify` is never shown them, because a format this app cannot read is not a
+/// reason to refuse one it can.
 pub fn read() -> Result<Contents, ClipError> {
     let mut out = Contents::default();
     open()?;
@@ -294,6 +314,10 @@ pub fn read() -> Result<Contents, ClipError> {
         if let Some(hdrop) = unsafe { handle_of(CF_HDROP.0 as u32) } {
             out.files = unsafe { files_in_hdrop(HDROP(hdrop.0)) };
         }
+        // SAFETY: same open as every read above, and enumeration touches the format
+        // table only. Taken here rather than by a second `open` so that the names and
+        // the four fields beside them are one reading of one board.
+        out.formats = unsafe { enum_formats() };
         let _ = unsafe { CloseClipboard() };
     }
     Ok(out)
@@ -475,6 +499,61 @@ pub fn write_text(text: &str) -> Result<(), ClipError> {
     write_formats(&[(CF_UNICODETEXT.0 as u32, &wide)])
 }
 
+/// The `CF_HTML` envelope: `Version:0.9`, four 8-digit byte offsets, then the
+/// fragment wrapped in `<html><body>` with the two marker comments around it.
+///
+/// Pure, and public for the same reason [`hdrop_payload`] is: the layout *is* the
+/// contract, and a wrong offset does not fail - it pastes as a broken document.
+/// `core::clip::html_fragment` cuts on the markers rather than on the offsets
+/// (they are byte offsets into an encoding the reader has already converted
+/// lossily), but every other `CF_HTML` consumer - Word, the browsers, the shell -
+/// reads the numbers, so they have to be right even where this repo's own reader
+/// would forgive them. The tests below check each offset against the bytes it
+/// claims rather than against the constants written here.
+pub fn html_payload(fragment: &str) -> Vec<u8> {
+    const DOC_OPEN: &str = "<html><body><!--StartFragment-->";
+    const DOC_CLOSE: &str = "<!--EndFragment--></body></html>";
+    // 13 ("Version:0.9\r\n") + 20 + 18 + 24 + 22 (the four offset lines: name,
+    // exactly 8 digits, "\r\n"). Fixed-width padding is what makes the header a
+    // constant length despite holding varying values; a ~100 MB fragment would
+    // overflow 8 digits, but `GlobalAlloc` refuses a clipboard block of that size
+    // long before, so the padding never lies about something writable.
+    const HEADER_LEN: usize = 13 + 20 + 18 + 24 + 22;
+    let start_html = HEADER_LEN;
+    let start_fragment = start_html + DOC_OPEN.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + DOC_CLOSE.len();
+    let mut out = String::with_capacity(end_html);
+    out.push_str("Version:0.9\r\n");
+    out.push_str(&format!("StartHTML:{start_html:08}\r\n"));
+    out.push_str(&format!("EndHTML:{end_html:08}\r\n"));
+    out.push_str(&format!("StartFragment:{start_fragment:08}\r\n"));
+    out.push_str(&format!("EndFragment:{end_fragment:08}\r\n"));
+    debug_assert_eq!(out.len(), HEADER_LEN, "the offsets below assume this");
+    out.push_str(DOC_OPEN);
+    out.push_str(fragment);
+    out.push_str(DOC_CLOSE);
+    out.into_bytes()
+}
+
+/// The producer side of §5.8.2's paste path: put a genuine `CF_HTML` payload on
+/// the clipboard, so `read` sees what a browser would have left and
+/// `classify -> sanitize_html -> html_text` can be witnessed end to end (rule
+/// #261) instead of only unit-tested from a hand-written blob.
+///
+/// Takes the *fragment* - the user's part - and re-envelops it, which is what
+/// `put_back` needs when restoring a caught html leg. Writes only `HTML Format`
+/// and no `CF_UNICODETEXT` beside it: a browser writes both, but inventing the
+/// text leg here would mean guessing `html_text`'s flattening, and the witnesses
+/// downstream exist to read that flattening off the product, not off this guess.
+pub fn write_html(fragment: &str) -> Result<(), ClipError> {
+    let Some(format) = registered("HTML Format") else {
+        return Err(ClipError::Win("HTML Format 这一剪贴板格式注册不下来".into()));
+    };
+    let payload = html_payload(fragment);
+    write_formats(&[(format, &payload)])
+}
+
 /// Empty the clipboard and publish nothing.
 ///
 /// The product never asks for this: no user action means "clear the clipboard". It
@@ -532,26 +611,42 @@ fn write_formats(items: &[(u32, &[u8])]) -> Result<(), ClipError> {
 /// "the pin copied itself" is checked against what a paste target will ask for,
 /// on the machine doing the copying.
 pub fn formats() -> Result<Vec<String>, ClipError> {
-    let mut out = Vec::new();
     open()?;
-    // SAFETY: enumeration reads the format table only; no handle is dereferenced.
-    unsafe {
-        let mut format = EnumClipboardFormats(0);
-        while format != 0 && out.len() < 64 {
-            let mut buf = [0u16; 128];
-            let n = GetClipboardFormatNameW(format, &mut buf);
-            if n > 0 {
-                out.push(utf16_to_string(&buf[..n as usize]));
-            } else {
-                // A standard format has no name of its own; the number is the
-                // `CF_*` value, which is what a reader asks for.
-                out.push(format!("#{}", format));
-            }
-            format = EnumClipboardFormats(format);
-        }
+    // SAFETY: paired with the open above; enumeration reads the format table only, so
+    // none of the handles it names is dereferenced.
+    let out = unsafe {
+        let found = enum_formats();
         let _ = CloseClipboard();
-    }
+        found
+    };
     Ok(out)
+}
+
+/// The board's format names, in the shape [`formats`] answers them.
+///
+/// Split out of [`formats`] because [`read`] needs the same list inside the open it
+/// already holds. A second `open` would be a second reading of a board another process
+/// can change in between, and then the refusal that quotes the names and the note
+/// beside it would be quoting two different machines (#281).
+///
+/// # Safety
+/// The clipboard must be open on this thread; this closes nothing.
+unsafe fn enum_formats() -> Vec<String> {
+    let mut out = Vec::new();
+    let mut format = EnumClipboardFormats(0);
+    while format != 0 && out.len() < 64 {
+        let mut buf = [0u16; 128];
+        let n = GetClipboardFormatNameW(format, &mut buf);
+        if n > 0 {
+            out.push(utf16_to_string(&buf[..n as usize]));
+        } else {
+            // A standard format has no name of its own; the number is the
+            // `CF_*` value, which is what a reader asks for.
+            out.push(format!("#{}", format));
+        }
+        format = EnumClipboardFormats(format);
+    }
+    out
 }
 
 /// Whether this process can transact with the clipboard at all, right now.
@@ -645,6 +740,70 @@ mod tests {
     }
 
     #[test]
+    fn an_html_envelope_written_here_is_the_envelope_core_cuts() {
+        // One fragment with the characters a Chinese user's page actually has:
+        // the four offsets are byte offsets into the UTF-8 payload, so a
+        // multibyte fragment is the case that breaks if anyone counts chars.
+        for fragment in [
+            "<p>one</p>",
+            "<p>贴图</p><ul><li>二</li></ul>",
+            "<p>lead <b>boldface</b></p><script>alert(1)</script>",
+        ] {
+            let payload = html_payload(fragment);
+            let text = String::from_utf8(payload.clone()).expect("a CF_HTML payload is utf-8");
+            // The reader this product actually uses cuts on the marker comments:
+            // what was planted is what comes back, envelope and all cut away.
+            assert_eq!(falcon_core::clip::html_fragment(&text), fragment);
+            // Each offset checked against the bytes it claims rather than against
+            // the constants this file also wrote - the `hdrop_payload` test's rule.
+            let offset = |name: &str| -> usize {
+                text.lines()
+                    .find_map(|l| l.strip_prefix(name))
+                    .unwrap_or_else(|| panic!("the header carries no {name} line"))
+                    .trim()
+                    .parse()
+                    .expect("an 8-digit offset parses")
+            };
+            let (sh, eh) = (offset("StartHTML:"), offset("EndHTML:"));
+            let (sf, ef) = (offset("StartFragment:"), offset("EndFragment:"));
+            assert_eq!(&payload[sh..sh + 6], b"<html>", "StartHTML opens the document");
+            assert_eq!(eh, payload.len(), "EndHTML ends it");
+            assert_eq!(&payload[eh - 7..eh], b"</html>");
+            assert_eq!(&payload[sf..ef], fragment.as_bytes(), "the fragment, byte for byte");
+        }
+    }
+
+    #[test]
+    fn a_board_this_file_plants_classifies_as_html_and_flattens_to_lines() {
+        // The whole §5.8.2 promise, walked from the bytes `write_html` would put
+        // on the clipboard: classify picks the html leg, sanitize drops the
+        // `<script>` with its contents, and html_text keeps the line structure
+        // without the styling - `<b>`'s text stays, its boldness does not, and
+        // each `<li>` gets its own line.
+        let fragment = "<p>lead <b>boldface</b></p><script>alert(1)</script><ul><li>first item</li><li>second item</li></ul>";
+        let payload = html_payload(fragment);
+        let blob = String::from_utf8_lossy(&payload);
+        let facts = ClipFacts {
+            html: Some(&blob),
+            ..Default::default()
+        };
+        let (kind, payload_back) =
+            falcon_core::clip::classify(&facts).expect("an html board classifies");
+        assert_eq!(kind, falcon_core::clip::ClipKind::Html);
+        let falcon_core::clip::ClipPayload::Html(sanitized) = payload_back else {
+            panic!("the html leg hands over sanitized markup");
+        };
+        assert!(
+            !sanitized.contains("alert"),
+            "a raw-text tag loses its contents, not just its markup: {sanitized}"
+        );
+        assert_eq!(
+            falcon_core::clip::html_text(&sanitized),
+            "lead boldface\n\u{2022} first item\n\u{2022} second item"
+        );
+    }
+
+    #[test]
     fn a_copy_that_promised_a_file_and_has_none_is_refused_first() {
         // §5.9.17 asked for a file. Falling back to the image-only copy here would
         // be the caller's bug dressed up as the user's success, and it would be
@@ -706,5 +865,44 @@ mod tests {
         assert_eq!(dib_size(&[40, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0]), None);
         assert!(png_from_dib(&[]).is_none());
         assert!(png_from_dib(&[0xff; 40]).is_none());
+    }
+
+    /// Two questions get asked about a board, and they are not one question: "what
+    /// could this app read" and "what was on it". A board holding nothing but
+    /// `Rich Text Format` answers *nothing* to the first and *two formats* to the
+    /// second - and every caller that writes over a board owes it back, so the arm
+    /// licensed to run `EmptyClipboard` must not fire on that shape.
+    ///
+    /// Pure on purpose. Nothing here opens a clipboard, because the shape that used to
+    /// read back as empty is precisely the shape a gauge only ever meets on somebody
+    /// else's machine (§9.1 第十条: 单测不抓屏、也不动板).
+    #[test]
+    fn a_board_this_app_cannot_read_is_not_a_board_that_was_empty() {
+        let unread = Contents {
+            formats: vec!["Rich Text Format".to_string(), "#7".to_string()],
+            ..Default::default()
+        };
+        // Not a board this app half understood: all four readable fields really are
+        // empty, which is what made the old `is_empty` answer `true`.
+        assert!(unread.image_bytes.is_none());
+        assert!(unread.html.is_none());
+        assert!(unread.text.is_none());
+        assert!(unread.files.is_empty());
+        assert!(
+            !unread.is_empty(),
+            "只装读不来的格式的那块板又被叫成「空」了：写它的那只手接着就会 \
+             `EmptyClipboard`，而报告上写的是「它本来是空的」——一句话盖掉用户的东西"
+        );
+        // And the converse still holds, or the new field buys nothing: a board that
+        // carried nothing at all is still called empty, which is the only shape
+        // `clear()` may honestly be run on.
+        assert!(Contents::default().is_empty());
+        // The names never reach `classify`: a format this app cannot read is not a
+        // reason to refuse one it can, so `facts` still carries only the four.
+        let facts = unread.facts();
+        assert!(facts.image_bytes.is_none());
+        assert!(facts.html.is_none());
+        assert!(facts.text.is_none());
+        assert!(facts.files.is_empty());
     }
 }

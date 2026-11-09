@@ -419,9 +419,9 @@ Rectangle {
         bar.grabbed()
     }
 
-    /// PRD 433 / 459's 完成后可…贴图, in the one order that makes the floating picture an
-    /// artifact rather than a second rendering: 另存为 first, then a 贴图 made from the file
-    /// that landed (§10 第 43 项 ①).
+    /// §5.4.4 白板模式 操作步骤 步骤 5's 完成后可…贴图, in the one order that makes the
+    /// floating picture an artifact rather than a second rendering: 另存为 first, then a
+    /// 贴图 made from the file that landed (§10 第 43 项 ①).
     ///
     /// The dialog is opened by [`Self.pinAfterSave`] rather than by a second door, because
     /// the name the pin must be made from is not known until the user has typed it. Both
@@ -435,10 +435,11 @@ Rectangle {
 
     /// §5.8.1 步 2 与步 3 的一枚钮：把这一张直接浮成一扇贴图，一份文件也不写。
     ///
-    /// 它挨着「存完再钉图」而不是替了它，因为那是 PRD 433 那一节的两件不同的事：那一枚要的是
-    /// **用户挑中过的那份文件**浮起来（§10 第 43 项 ①），这一枚要的只是屏幕上这一块画面，
-    /// 用户没打算为它交出目录、名字和一次磁盘。判据全在 `MaskState::pin_selection` 那一格，
-    /// 页上这一步只是把它的返回值交给 `delivered`——那一面答的就是"这一刻屏幕上多了一张贴图吗"。
+    /// 它挨着「存完再钉图」而不是替了它，因为那是 §5.4.4 白板模式 操作步骤 步骤 5 里的两件
+    /// 不同的事：那一枚要的是**用户挑中过的那份文件**浮起来（§10 第 43 项 ①），这一枚要的只是
+    /// 屏幕上这一块画面，用户没打算为它交出目录、名字和一次磁盘。判据全在
+    /// `MaskState::pin_selection` 那一格，页上这一步只是把它的返回值交给 `delivered`——那一面答的
+    /// 就是"这一刻屏幕上多了一张贴图吗"。
     function pin() {
         bar.delivered = bar.view.pinSelection()
         bar.grabbed()
@@ -569,13 +570,13 @@ Rectangle {
         const wrote = bar.view.saveSelection(bareName, arm)
         bar.gaugeSay("f-jpg", arm + "|" + String(wrote) + "|" + bar.view.message)
 
-        // 存完再钉图 (§10 第 43 项 ①, PRD 433 / 459), asked at this same door one rung
-        // further along: the file is written first and the pin is made *out of that file*,
-        // so what floats afterwards is the artifact rather than a second reading of the
-        // selection. `saveAndPin` is the cell's own invokable and the name is the gauge's,
-        // so no dialog has to be in the way to ask it. `message` is read back because the
-        // door answers both acts in one sentence, and the id in that sentence is the only
-        // handle the report has on the pin the product says it made.
+        // 存完再钉图 (§10 第 43 项 ①, §5.4.4 白板模式 操作步骤 步骤 5), asked at this
+        // same door one rung further along: the file is written first and the pin is made
+        // *out of that file*, so what floats afterwards is the artifact rather than a second
+        // reading of the selection. `saveAndPin` is the cell's own invokable and the name is
+        // the gauge's, so no dialog has to be in the way to ask it. `message` is read back
+        // because the door answers both acts in one sentence, and the id in that sentence is
+        // the only handle the report has on the pin the product says it made.
         const pinName = bar.dlgUrl(String(bar.gauge[0]) + "/" + String(bar.gauge[1]) + "-p.png")
         const pinned = bar.view.saveAndPin(pinName, "")
         bar.gaugeSay("pin-after", String(pinned) + "|" + bar.view.message)
@@ -771,6 +772,23 @@ Rectangle {
         color: cell.active ? "#2d7ff7"
                            : (area.containsMouse && cell.usable ? "#3a3a41" : "transparent")
 
+        // §7.4 第 3 条：「选中」不许只靠颜色说。上面那枚蓝是颜色通道，这一条贴底的下划条是
+        // 形状通道。它刻意**不是** border —— 上面那两行禁的正是 border；也刻意不参与
+        // `cap.implicitWidth + 14`，所以换一枚工具时这一排不会抖一下宽度。左右各让 2px 是
+        // 为了不让它的直角戳出格子自己那 `radius: 3` 的圆角。
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 2
+            anchors.rightMargin: 2
+            anchors.bottomMargin: 2
+            height: 2
+            radius: 1
+            visible: cell.active
+            color: "#ffffff"
+        }
+
         Text {
             id: cap
             anchors.centerIn: parent
@@ -779,6 +797,10 @@ Rectangle {
             // window's device ratio, and a point size would make the bar's height
             // depend on the system font DPI rather than on the screen it is on.
             font.pixelSize: 12
+            // §7.4 第 3 条的另一半：「禁用」也不许只靠颜色说。灰字是颜色通道，删除线是形状
+            // 通道。选删除线而不是选加粗或加边距，是因为它**不改 `implicitWidth`** —— 一枚
+            // 钮按得动与按不动，这一排的宽度与每一枚钮的位置一动不动。
+            font.strikeout: !cell.usable
             color: cell.usable ? "#f2f2f2" : "#6a6a70"
         }
 
@@ -1230,7 +1252,7 @@ Rectangle {
         // 同一分工 —— 一格一步、地板 1、天花板 9999 都住在 `annotate`，这一排只递方向。
         // 读数 `counter_start` 是读回来的：它是 `Document` 计数器**此刻**的那一格，所以撤销掉
         // 一枚号之后这一格跟着往回走的是"下一枚是几"，而不是界面自己记的那个数。
-        // 步骤 5「删除中间编号时可选择是否自动重排」不在这一排里：那一枚开关改的是「删除」怎么被
+        // 步骤 5「删除中间编号时，可选择是否自动重排」不在这一排里：那一枚开关改的是「删除」怎么被
         // 记，所以它跟着下面「对象」那一排的删除走（`auto_renumber` / `applyAutoRenumber`）。
         Row {
             spacing: 6
@@ -1683,7 +1705,7 @@ Rectangle {
                 }
             }
 
-            // §5.7.12 步骤 5「删除中间编号时可选择是否自动重排」里的那一枚选择键。它改的是左边
+            // §5.7.12 步骤 5「删除中间编号时，可选择是否自动重排」里的那一枚选择键。它改的是左边
             // 那一枚「删除」怎么被记 —— 亮着时那一次删除与它带着的重排是栈上的**一条**编辑 ——
             // 所以摆在这一枚旁边，而不是编号那一排：把开关门在「手里是编号」后面，用户在真正按
             // 删除的那一刻（箭头工具在手）反而找不着它。亮与灭读 `auto_renumber` 这一枚 qproperty，
@@ -1740,7 +1762,7 @@ Rectangle {
         // P154 起 send-to 那一半是**能按的** Cell：派发那一条腿（`sendToTarget(index)` →
         // [`crate::mask::MaskState::send_to_target`] → `falcon_core::sendto::plan` →
         // `platform_windows::open::dispatch`）已经长在 Rust 上，而 §5.5.10 步骤 2 要的正是
-        // 「完成截图后点击"发送到应用"」——一枚点不动的按钮就是在邀请人点它，那一格如今反过来钉
+        // 「完成截图后点击“发送到应用”」——一枚点不动的按钮就是在邀请人点它，那一格如今反过来钉
         // 的是"按得动而没处可去"。share 那一半仍是 `Text`：provider 派发（把这一张**递给 slack**
         // 而不是递给关联表）到现在还没有 owner，所以它只把"有哪些目标"摆在屏幕上，不假装能按。
         // §5.5.9 的替代分支那一枚入口不住在这一排，住在下面那一路的「打开方式」里
@@ -1871,10 +1893,19 @@ Rectangle {
             // `asked` 是**递进去**而不是绑出来的（`ocrPanel.asked = true`）：绑成一串就会和面板
             // 自己那颗「收起」打架 —— 收起把 `asked` 写成假的同时把绑定踩掉，此后再按「文字提取」
             // 只是把 `bar` 上那一格重新写成它本来就是的那个值，谁也不重新求值，面板再也开不了。
+            //
+            // §7.3 条 4 的 C2：本机没有识别引擎时，这一枚要在**点下之前**就把话说完 —— 标签后头
+            // 接上 `ocr_unavailable` 那一句（有引擎时它是空串，接上去等于什么都没接），同时
+            // `usable` 一并假掉，于是 §7.4 条 3 的双通道（灰 + 划掉）自己就跟着来了。
+            // 句子一个字也不在这里写：那是平台层 `OcrError` 自己的 `Display`（#281）。
+            // 条 4 给了「隐藏」与「标注」两条路，这里选**标注** —— 一枚凭空消失的按钮答不出
+            // 「它去哪儿了」，一枚灰掉划掉还带着原因的按钮答得出。
+            // `usable` 里那半句而不是把 `onTapped` 掏空：`Cell` 的 `MouseArea` 绑在 `usable` 上，
+            // 掏空 `onTapped` 会留下一枚按得下去却什么都不发生的钮（§7.4 条 3 不许）。
             Cell {
-                label: "文字提取"
+                label: "文字提取" + bar.session.ocr_unavailable
                 hint: "文字提取：读出选区里的字，交进剪贴板"
-                usable: bar.view.selected
+                usable: bar.view.selected && bar.session.ocr_unavailable === ""
                 onTapped: {
                     ocrPanel.asked = true
                     bar.session.extractMaskText()
@@ -1942,9 +1973,10 @@ Rectangle {
 
             // §5.8.1 步 2：这一枚钮按下去就是「把这一块贴到屏幕上」，中间没有对话框、没有文件名。
             //
-            // 名字取「贴图」而不是「立即贴图」：PRD 990 行写的就是这两个字，而它下面那一枚已经
-            // 把自己说清楚了（「存完再钉图」——五个字里带着那份文件）。两枚共用的画面是同一张，
-            // 分开的是「要不要一份文件」这一件事，屏幕上读得出。
+            // 名字取「贴图」而不是「立即贴图」：§5.8.1 将截图贴到屏幕 操作步骤 步骤 2
+            // 写的就是这两个字，而它下面那一枚已经把自己说清楚了（「存完再钉图」——五个字里
+            // 带着那份文件）。两枚共用的画面是同一张，分开的是「要不要一份文件」这一件事，
+            // 屏幕上读得出。
             Cell {
                 label: "贴图"
                 hint: "贴图：把选区里这张图浮成一张贴图，不写成文件"
@@ -1952,10 +1984,10 @@ Rectangle {
                 onTapped: bar.pin()
             }
 
-            // PRD 433's "完成后可复制、保存或贴图" read as one flow instead of two: the
-            // picture goes to a file and the file comes back as a 贴图, so what floats is
-            // the artifact the user named (§10 第 43 项 ①). Greyed with the selection for
-            // the same reason 保存 is.
+            // §5.4.4 白板模式 操作步骤 步骤 5's "完成后可复制、保存或贴图"
+            // read as one flow instead of two: the picture goes to a file and the file comes back
+            // as a 贴图, so what floats is the artifact the user named (§10 第 43 项 ①). Greyed with
+            // the selection for the same reason 保存 is.
             Cell {
                 label: "存完再钉图"
                 hint: "存完再钉图：先落成文件，再把这个文件贴成浮图"
@@ -2004,9 +2036,10 @@ Rectangle {
                     anchors.centerIn: parent
                     spacing: 6
 
-                    // 写之前那一句排最左。PRD 447 的措辞是"将被填充"，它要在文件落地之前
-                    // 就有自己的一行，而不是被右边那句"已保存到 …"顶掉一次才算说过；两条都
-                    // 留着 —— 左边是提醒的记录，右边是结果，一句不挤掉另一句。
+                    // 写之前那一句排最左。§5.4.5 透明白板模式 规则 第 2 条的措辞是
+                    // "将被填充"，它要在文件落地之前就有自己的一行，而不是被右边那句"已保存到 …"
+                    // 顶掉一次才算说过；两条都留着 —— 左边是提醒的记录，右边是结果，
+                    // 一句不挤掉另一句。
                     Text {
                         visible: bar.view.pre_notice.length > 0
                         anchors.verticalCenter: parent.verticalCenter

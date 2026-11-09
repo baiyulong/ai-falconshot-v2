@@ -3,12 +3,27 @@
 //! One rule drives this whole module: the whole screen is captured **before** any
 //! mask window exists, and every later read - the selection crop, the colour pick,
 //! the magnifier, "capture again with the mask still up" - reads from that one
-//! snapshot (plan §4-M1). A second `BitBlt` after the mask appears is how a
+//! snapshot. A second `BitBlt` after the mask appears is how a
 //! screenshot ends up containing the screenshot tool.
+//!
+//! **One arm reads the screen with the mask up, and it is not an exception to that
+//! rule so much as the rule's only honest escape hatch.** §5.2.1 的实时背景（`[capture]
+//! freeze_frame` 关着）要的正是「遮罩在场时的桌面」，那一句只能在遮罩在场时读。它之所以不把截图
+//! 工具拍进图里，是因为读之前先把遮罩那几扇窗从**屏幕读取**里摘了出去
+//! （`platform_windows::affinity`，`WDA_EXCLUDEFROMCAPTURE`），而摘没摘成不是前提、是**当场量的**：
+//! 摘之前那块必须差、摘之后必须不差，两阶段都过才许起刷新（判据本体 `falcon_core::capture::live_gate`）。
+//! 那一趟读取住在 `crate::mask`（`spawn_live` / `grab_now`），跑在自己的线程上，交回的是整张
+//! `ScreenSnapshot`，回灌仍走 `mask.rs` 的 `take_revision` / `frame_key` 那两位原作者 —— 本模块
+//! 那一份 `open` 快照的形状、以及上面那一条规矩管的每一条读路，都没被它改过。
 //!
 //! The snapshot is cached on purpose. Freezing 3072x1920 measured 142-155 ms (P1/P5),
 //! so the mask path cannot afford to re-read the screen per gesture, and the
 //! magnifier would rebuild it on every mouse move.
+//!
+//! 那一份 142-155 ms 与 2026-11-07 量到的 **297-312 ms** 差一倍，两个数都没错：P1/P5 那几次屏幕
+//! 上显示的是锁屏，读取腿拿到的是一张不动的图；解锁之后同一条腿真的跟着桌面走，慢出来的那一半
+//! 就是「真的在拍」的价钱。实时背景那一支的节拍（333 ms ≈ 每秒 3 帧）是按**后面**那个数定的，
+//! 而它也因此坐不进 GUI 线程。
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -78,11 +93,12 @@ pub fn cursor_reads() -> u64 {
 ///
 /// **调用它的是 [`freeze`]，不是 commit 那道门**（P107，结掉 §10 第 107 项 ⑨ 记的 #197）：
 /// 指针的答案属于它被读走时那一枚画面，所以画面到手之后当场问一次、和画面并存进同一枚槽。
-/// 判据是 PRD 那两条规则——第 419 行「指针热点位置应与实际屏幕位置一致」里的「实际位置」只能
-/// 是**图里那块屏幕**，用户按下完成时指针已经走开的话，走开之后那个位置在图上根本没有对应物；
-/// 第 420 行「延时截图应捕获倒计时结束时的指针状态」把时刻点名点得更死，而倒计时结束正是冻结
-/// 发生的那一格。第 415 行「将当前鼠标指针合成」的「当前」在本轮读成「当前这张画面」，另一种
-/// 读法（此刻）与 419/420 冲突，冲突时取那两条规则而不是取流程叙述里的一个形容词。
+/// 判据是 PRD 那两条规则——§5.4.3 规则 第 1 条「指针热点位置应与实际屏幕位置一致」里的
+/// 「实际屏幕位置」只能是**图里那块屏幕**，用户按下完成时指针已经走开的话，走开之后那个位置
+/// 在图上根本没有对应物；§5.4.3 规则 第 2 条「延时截图应捕获倒计时结束时的指针状态」把时刻点名点得更死，而
+/// 倒计时结束正是冻结发生的那一格。§5.4.3 操作步骤 步骤 3「将当前鼠标指针合成」的「当前」
+/// 在本轮读成「当前这张画面」，另一种读法（此刻）与 §5.4.3 规则 第 1、2 条冲突，冲突时取
+/// 那两条规则而不是取流程叙述里的一个形容词。
 pub fn cursor_overlay() -> Option<(falcon_core::frame::Frame, PhysPoint)> {
     CURSOR_READS.fetch_add(1, Ordering::Relaxed);
     if !crate::settings::capture_cfg().include_cursor {
@@ -98,7 +114,8 @@ pub fn cursor_overlay() -> Option<(falcon_core::frame::Frame, PhysPoint)> {
 /// `--gauge` 那一行钉的是 `cursor_reads == freeze_count`（`crates/qt_bridge/src/autosave_check.rs`）。
 /// 活动窗口这条路**压根不 `freeze`** —— 它的内容是 `PrintWindow` 现取的一块窗口画布，不是桌面上
 /// 那一张被冻住的画面，所以这里没有「更早的画面」需要可对账：能问的「此刻」就是取像素的此刻，
-/// 两件事在同一毫秒里发生，§5.4.3 第 419 行要的「与实际屏幕位置一致」在这一路上是自动成立的。
+/// 两件事在同一毫秒里发生，§5.4.3 规则 第 1 条要的「与实际屏幕位置一致」在这一路上是自动
+/// 成立的。
 /// 把它记进同一枚计数器，只会让那一行开始测计数的摆法而不是测时刻。
 ///
 /// 键（`[capture] include_cursor`）由调用方读，这一格只答「此刻屏幕上亮着哪一只指针、它的图
@@ -184,7 +201,7 @@ pub fn current() -> Option<ScreenSnapshot> {
 /// 正常流程里长得一样。
 ///
 /// 它读的是槽，不是桌面：从 [`freeze`] 到 [`crate::mask::MaskState::commit`] 之间指针走没走开，
-/// 都不该改变交回的那一枚答案，而那正是 §5.4.3 第 419 行要的。
+/// 都不该改变交回的那一枚答案，而那正是 §5.4.3 规则 第 1 条要的。
 pub fn frozen_cursor() -> Option<(falcon_core::frame::Frame, PhysPoint)> {
     slot()
         .lock()
@@ -197,6 +214,26 @@ pub fn frozen_cursor() -> Option<(falcon_core::frame::Frame, PhysPoint)> {
 /// belonged to them, because the two are one value here.
 pub fn clear() {
     *slot().lock().unwrap_or_else(PoisonError::into_inner) = None;
+}
+
+/// 一次**不进槽**的整屏抓屏：画面只交回给调用者，[`FROZEN`] 那枚槽、[`FREEZE_COUNT`] 那枚
+/// 计数器、指针那一问，三样一样也不碰。
+///
+/// 它存在的理由是一条硬约束而不是省事。实时背景（§5.2.1 实现口径 那一句「实时背景那一臂仍欠着」
+/// 欠的就是这一支）要每隔一拍问一次桌面，而 [`freeze`] 是**一场流程的第 1 步**：它把槽里那张
+/// 用户正在选的画面换掉、把 `freeze_count` 加一。让刷新循环调 [`freeze`]，等于每拍一次就把
+/// §5.4.1 的放大镜底图、§5.4.2 的取色读数、`--gauge` 钉的 `cursor_reads == freeze_count`
+/// 那一行，在用户什么也没做的时候自己改掉一遍。
+///
+/// 交回的 `ms` 是这一趟抓屏自己花掉的毫秒，与 [`Frozen::ms`] 同一把尺（`Instant` 夹住
+/// `service().freeze()` 那一句，不多不少）。节拍就是拿这个数定的：本机 2026-11-07 解锁状态下
+/// 跑 `platform-windows` 那枚 `#[ignore]` 探针，三次整屏读数 312/297/309 ms ⇒ 天花板 ~3 fps，
+/// 所以这一手**不许坐在 GUI 线程上**。
+pub fn grab_now() -> Result<Frozen, String> {
+    let started = std::time::Instant::now();
+    let snap = service().freeze().map_err(|e| e.to_string())?;
+    let ms = started.elapsed().as_millis() as u64;
+    Ok(Frozen { snap, ms })
 }
 
 /// Freeze if nothing is frozen yet, otherwise reuse the frame the user is looking at.
@@ -480,7 +517,7 @@ pub fn pin_last_region() -> Result<(PinId, String), String> {
 /// of the later readings mean anything.
 ///
 /// 自本轮起**判定表本身**在 core（[`falcon_core::capture::active_window_block`]，那里有它的
-/// 分支与次序的断言，包括 §5.2.6 第 239 行「最小化窗口不可作为活动窗口截图对象」那一格），
+/// 分支与次序的断言，包括 §5.2.6 规则 第 2 条「最小化窗口不可作为活动窗口截图对象」那一格），
 /// 这里只剩**措辞**：那一枚枚举每一种拒绝在这里说哪一句中文，以及那句里带的进程名。这样
 /// 「四种拒绝都还在、次序没变」这件事由 `cargo test -p falcon-core` 说，而不只是由下面那
 /// 几条断言句子的门说。句子里的字一个没改 —— 门的证词还是同一句。
@@ -621,7 +658,7 @@ pub fn pin_rect(want: &PhysRect) -> Result<(PinId, String), String> {
 ///
 /// P166 之前这一句长在 `main.rs` 的 `cli_capture_to_pin` 那一格里，连同它那半句「（关掉那扇窗
 /// 即退出）」—— 那半句说的是命令行那一路只钉一张、钉完就等人关窗，不属于这一句的本分。对话框
-/// （PRD 第 302 行那一枚「开始截图」）是这一句的第二位读者，而它要的正是前面那半句：谁钉的、
+/// （§5.3.5 步骤 5 那一枚「点击开始截图」）是这一句的第二位读者，而它要的正是前面那半句：谁钉的、
 /// 钉在哪一块。把前面那半句抽到这里、尾巴留给调用方，两位读者说的就是同一句话，而「贴图 {id}
 /// 已钉：」这几个字不会出现第二种写法。
 ///
@@ -683,6 +720,46 @@ pub fn window_under(candidates: &[WindowInfo], p: PhysPoint) -> Option<(u32, Phy
     Some((w.hwnd, w.visible_bounds()))
 }
 
+/// §5.3.3/§5.3.4 那一句「光标这一刻在这一扇窗里压着哪几层元素」的**桥层读者**。
+///
+/// 与 [`window_under`] 同一条口径：这里既不算上界、也不判哪些矩形能当选区 —— 问数是
+/// `crates/platform-windows/src/uia.rs` 那一手，闸门与三道上界是
+/// [`falcon_core::capture::element_chain_of`] 与 [`falcon_core::capture::element_walk_wanted`]，
+/// 本行只是把两者接起来（[`falcon_core::capture::CaptureService::element_chain`] 是唯一装配处）。
+///
+/// 为什么传 `owner` 而不是只传点：遮罩是全屏的，屏幕上每一点的最上窗都是本程序自己那一扇，
+/// 按点问 UIA 得到的永远是工具自己。`owner` 递的是**候选表已经认定的那一扇窗**的把手
+/// （[`window_under`] 的第一格），链因此是从它往下钻出来的，而不是从屏幕上的一点往上问出来的。
+///
+/// 空表是答案不是失败：§5.3.3 预期结果第二句与 §5.3.4 最后一条规则要的退化，就是这一枚空表
+/// —— 遮罩照旧能整窗选中、照旧能自由拖。
+///
+/// **一次调用最多花 [`falcon_core::capture::ELEMENT_CHAIN_BUDGET_MS`] 毫秒**，这是它敢挂在
+/// hover 上的唯一理由；要不要再问一次由 [`crate::mask::MaskState::element_ask_at`] 判（窗换了、
+/// 或光标走出了当前那一层），不是每次移动都问。
+pub fn element_chain(owner: u32, p: PhysPoint) -> falcon_core::capture::ElementChain {
+    service().element_chain(owner, p)
+}
+
+/// 同一只手在**遮罩还没开门**那一刻的用法：光标此刻压着的那一枚最内层控件的边界。
+///
+/// `[capture] default_mode = element`（§5.2.1 步 1 那一枚「按默认模式进场」）要的是一块能
+/// 当场定下来的选区，而遮罩里那一路 hover 那时还不存在 —— 开门之前没有候选表、也没有
+/// [`crate::mask::MaskState::element_ask_at`] 那四条「该不该花这 50 毫秒」的判据。所以这一手
+/// 走 [`window_under_cursor`] 那条**每问一次重枚举一次**的老路：一次进场只问一次，而 hover
+/// 每动一次问一句才需要缓存表（[`window_candidates`] 头顶那条理由在这里不成立）。
+///
+/// 取链的**第一格**不是在这里新立一条判据：内层在前是
+/// [`falcon_core::capture::WindowExtras::element_chain`] 那一纸契约写下的次序（也是遮罩里
+/// [`crate::mask::MaskState::elem_index`] 出厂停在 0 的同一理由），本行只是照着读。
+///
+/// `None` = 问不出（光标不在任何可截窗上、那一扇窗里没有控件、或闸门把整串都裁掉了）。
+/// 与 [`element_chain`] 同一条口径：那是**答案**不是失败，调用方据此退回 §5.3.1 的自由选区。
+pub fn element_under_cursor() -> Option<PhysRect> {
+    let w = window_under_cursor()?;
+    element_chain(w.hwnd, cursor_pos()?).rects.into_iter().next()
+}
+
 /// The middle of the primary monitor, in physical pixels - what `--snap` grabs
 /// when it is not told a rectangle. The point of the flag is to prove that real
 /// screen pixels reach a real window, not to stand in for a selection UI that does
@@ -719,10 +796,10 @@ pub fn snap_centre(width: u32, height: u32) -> Result<(PinId, String), String> {
     ))
 }
 
-/// PRD 第 307 行「宽度和高度必须大于 0」这一句的**唯一作者**。
+/// §5.3.5 校验规则第一句「宽度和高度必须大于 0」这一句的**唯一作者**。
 ///
 /// P165 把它写在 [`rect_arg`] 里面，那是对的 —— 那时命令行是它唯一的读者。P166 的「自定义截图」
-/// 对话框（PRD 第 298-303 行）是第二位读者，而它手里已经是一拆开的四格整数、不是 `x,y,w,h` 那样
+/// 对话框（§5.3.5 操作步骤 1-6）是第二位读者，而它手里已经是一拆开的四格整数、不是 `x,y,w,h` 那样
 /// 一串字符：让对话框照着这一句再写一遍，就是 #281 的形状 —— 同一枚拒绝在两处各有措辞，改一处
 /// 就留下另一处还在说旧话。所以这里收的是一枚**名字**（谁给的数）与那两个数，命令行进来的那串
 /// 字符仍旧由 [`rect_arg`] 切完之后交进来，两句字节与 P165 记下的逐字相同。
@@ -966,15 +1043,52 @@ pub(crate) fn is_lock(app: &str) -> bool {
 /// [`Scene::hwnd`] is the reading and not a word in the sentence: a row that graded "the
 /// line does not begin with 没有" would be grading this file's own phrasing, which is the
 /// shape §10 第 41 项 ⑥ refuses - 判接线的格，对面必须是操作系统.
+///
+/// [`Scene::locked`] is a field rather than a substring of [`Scene::line`] for the same
+/// reason, and it exists because of one run: the first `--live` door (2026-11-08) printed
+/// `desktop scene PASS (1536,960) 上是 LockApp.exe「Windows Default Lock Screen」 …
+/// 会话锁屏=true`. A locked session's centre *is* a window - a title, an hwnd, a process
+/// name - so `hwnd.is_some()` reads green there, and the row every gauge prints first,
+/// because what the desktop was doing is context for every row that follows it, said PASS
+/// about a run in which no screen-reading row could mean anything. The lock was already
+/// computed here and then thrown away into the sentence; naming it is what lets a row grade
+/// it (#274 - 尺子必须读得动"空").
+///
+/// It does **not** follow that a lock voids a round: §10 第 41 项 ⑤ is the counter-witness
+/// (P40 read better ink locked than unlocked), and [`is_lock`]'s own doc keeps the lock as
+/// one input parameter of a screen row. What this field grades is narrower - whether the
+/// desktop was there to be read at all.
 pub struct Scene {
     pub line: String,
     pub hwnd: Option<u64>,
+    /// The centre window belongs to the workstation lock, so what was read is the lock
+    /// screen and not the desktop. `false` on a refusal: there was no reading to classify.
+    pub locked: bool,
+}
+
+impl Scene {
+    /// Whether this is a reading *of the desktop* rather than of the workstation lock.
+    ///
+    /// Graded by the one door whose whole subject is the screen -
+    /// [`crate::mask_check::live_measure`]'s `premise desktop readable` row, as `Blocked` -
+    /// and *not* by the `desktop scene` line every gauge prints, which is a note: it sits on
+    /// doors that never look at the desktop, so a lock there is context and not a verdict.
+    ///
+    /// A method rather than a `&&` written at the call site for the reason
+    /// [`crate::mask::mask_windows_in`] exists: the rule has to be hittable by a test with a
+    /// synthetic `Scene`, because the real one needs a desktop and a shell to answer - and a
+    /// locked shell answers happily, which is how the first `--live` run came to print
+    /// `desktop scene PASS` over `会话锁屏=true`.
+    pub fn read(&self) -> bool {
+        self.hwnd.is_some() && !self.locked
+    }
 }
 
 pub fn desktop_scene() -> Scene {
     let refused = |why: String| Scene {
         line: format!("没有桌面读数：{why}"),
         hwnd: None,
+        locked: false,
     };
     let monitors = match service().monitors() {
         Ok(m) => m,
@@ -998,14 +1112,15 @@ pub fn desktop_scene() -> Scene {
                 .and_then(process_name)
                 .unwrap_or_else(|| "未知进程".to_string());
             let title = window_title(hwnd).unwrap_or_default();
+            let locked = is_lock(&app);
             Scene {
                 line: format!(
-                    "({},{}) 上是 {app}「{title}」 hwnd=0x{hwnd:x} 会话锁屏={}",
+                    "({},{}) 上是 {app}「{title}」 hwnd=0x{hwnd:x} 会话锁屏={locked}",
                     centre.x,
                     centre.y,
-                    is_lock(&app)
                 ),
                 hwnd: Some(hwnd),
+                locked,
             }
         }
     }
@@ -1032,6 +1147,32 @@ mod tests {
         // The desktop's own window, which is what a normal unlocked session answers here.
         assert!(!is_lock("Progman"));
         assert!(!is_lock(""));
+    }
+
+    /// [`Scene::read`]'s rule, asked without a desktop: a lock screen *is* a reading - `LockApp`
+    /// has a title, an hwnd and a process name - and is not the desktop, so the door that grades
+    /// it must be able to answer "no reading" there (#274). The witness for why this needs a test
+    /// at all is the first `--live` run (2026-11-08), which printed
+    /// `desktop scene PASS (1536,960) 上是 LockApp.exe「Windows Default Lock Screen」 …
+    /// 会话锁屏=true`: that report opened with PASS over a run in which every screen-reading row
+    /// below it was measuring the lock.
+    ///
+    /// Three cells, which is every `Scene` [`desktop_scene`] can hand back: both refusals go
+    /// through the `refused` closure, which pins `locked: false`, so `(None, true)` is not a
+    /// shape this code can produce and is deliberately not asserted here.
+    #[test]
+    fn a_lock_screen_is_a_reading_but_not_a_desktop() {
+        let scene = |hwnd: Option<u64>, locked: bool| Scene {
+            line: String::new(),
+            hwnd,
+            locked,
+        };
+        assert!(scene(Some(0x1_0020), false).read(), "解锁桌面上的真窗");
+        assert!(
+            !scene(Some(0x3_0046), true).read(),
+            "锁屏那一扇也是窗，而它不是桌面"
+        );
+        assert!(!scene(None, false).read(), "shell 一句话也没答");
     }
 
     #[test]
@@ -1341,8 +1482,8 @@ mod tests {
             fn dwm_bounds(&self, _: u32) -> Option<PhysRect> {
                 None
             }
-            fn element_chain(&self, _: PhysPoint) -> Vec<PhysRect> {
-                Vec::new()
+            fn element_chain(&self, _: u32, _: PhysPoint) -> falcon_core::capture::ElementChain {
+                falcon_core::capture::ElementChain::walked(Vec::new())
             }
             fn cursor_image(&self, _: PhysPoint) -> Option<(Frame, PhysPoint)> {
                 None

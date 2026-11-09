@@ -2,9 +2,8 @@
 //!
 //! The mask never enters a screenshot because the whole screen is captured
 //! **before** any mask window exists, and every later crop reads from that
-//! snapshot (plan §4-M1). Colour picking and the magnifier read the same
-//! snapshot, which is why they are correct under mixed DPI and under the
-//! dimmed overlay.
+//! snapshot. Colour picking and the magnifier read the same snapshot, which is
+//! why they are correct under mixed DPI and under the dimmed overlay.
 
 use crate::frame::{Frame, FrameError};
 use crate::geometry::{PhysPoint, PhysRect, Scale};
@@ -147,11 +146,72 @@ pub fn layered_window_opacity(answered: bool, alpha_flag: bool, alpha: u8) -> Op
 }
 
 /// Implemented by the platform layer for things xcap does not cover: the DWM
+/// 一次元素链询问的答案：**这一串**加上「它是问完的、还是被拦停的」。
+///
+/// 分成两格而不是只交回一串矩形，是因为「空」在这一层是**两种完全不同的东西**：
+///
+/// - 空而 `aborted = false` —— 钻到最里了、或那一扇窗根本没有 UIA 元素。这是一句**答案**
+///   （「这一刻这一点上没有控件」），遮罩据此退回整窗检测并且不必为同一扇窗再问一次。
+/// - 空而 `aborted = true` —— 深度、步数、墙钟三枚上界里的某一枚在半路把它拦下，什么都没
+///   攒到。这是「**没问出来**」，不是答案。
+///
+/// 把第二种当第一种记下来，遮罩那一头就会在同一扇窗上再也不问（判据见
+/// [`crate::mask::MaskState::element_ask_at`] 第 3 条），于是**一次冷启动变成一场的失明**。
+/// 这不是假想的形状：2026-11-05 第一次在真机上跑这一手，同一枚把手、同一个点，本线程第一趟
+/// 交回空表、紧接着的两趟各交回三枚 —— 差的那几百毫秒花在提供方热身上，而那正好是第一趟
+/// 的 50 毫秒预算里唯一的内容。
+///
+/// `aborted = true` 而 `rects` 非空也是真读数：高亮照旧画已经问到的那一枚（它是真的装着
+/// 那一点的元素），只是不声称它是**最里**那一枚。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ElementChain {
+    /// 内层在前，**闸之前**的原始一串（顺序就是钻下来的顺序翻个个儿）。
+    pub rects: Vec<PhysRect>,
+    /// `true` = 这一趟是被某枚上界拦停的，所以下面还有没有更小的元素**没有问出来**。
+    pub aborted: bool,
+}
+
+impl ElementChain {
+    /// 问完了的那一问（没有被任何上界拦停）：链为空就是一句答案。
+    pub fn walked(rects: Vec<PhysRect>) -> Self {
+        Self { rects, aborted: false }
+    }
+}
+
+impl From<Vec<PhysRect>> for ElementChain {
+    /// 把「一串矩形」当「问完的那一问」收进来 —— 调用方**没有**被拦停时走这一手，
+    /// 被测的夹具与不提供 UIA 的那一臂（[`NoopExtras`]）都属此列。
+    fn from(rects: Vec<PhysRect>) -> Self {
+        Self::walked(rects)
+    }
+}
+
 /// bounds of one window and the UI-element hit test (PRD §5.3.3/§5.3.4).
 pub trait WindowExtras: Send + Sync {
     fn dwm_bounds(&self, hwnd: u32) -> Option<PhysRect>;
-    /// UIA element bounds under the cursor, innermost first (wheel cycles).
-    fn element_chain(&self, p: PhysPoint) -> Vec<PhysRect>;
+    /// PRD §5.3.3/§5.3.4 — the UIA element bounds under `p`, innermost first (the
+    /// wheel cycles), **inside the window `owner`**.
+    ///
+    /// `owner` is the handle the caller already decided the cursor points at (from
+    /// [`window_at_in`], not from a second hit test): the walk starts at that
+    /// window's element and goes **down** the tree. That is deliberate. UIA's own
+    /// `ElementFromPoint` asks the topmost window at that screen point, and while a
+    /// mask is up the topmost window at every point is this product's own fullscreen
+    /// mask — so a point-based ask answers with the tool, never with the button the
+    /// user is pointing at. Anchoring on the candidate table's window is what lets
+    /// the same question be answered through the mask.
+    ///
+    /// What comes back is **raw**: every rect this layer stepped on, in the order it
+    /// stepped on them, with nothing dropped, clipped or counted. The gate that
+    /// turns a raw walk into a selectable chain is [`element_chain_of`], and the
+    /// budget that stops a walk is [`element_walk_wanted`] — both live here because
+    /// both decide *what a user can end up selecting*, and both must be testable
+    /// without a desktop.
+    ///
+    /// 交回的是 [`ElementChain`] 而不只是一串矩形，因为「被上界拦停」与「问完了、这就是没有」
+    /// 是两句不同的话，而遮罩只在第二句上才许停止再问。拦停与否由这一手判（只有问数的那一层
+    /// 知道自己为什么停的），上界本身的数字仍住在 [`element_walk_wanted`]。
+    fn element_chain(&self, owner: u32, p: PhysPoint) -> ElementChain;
     fn cursor_image(&self, p: PhysPoint) -> Option<(Frame, PhysPoint)>;
     /// (executable name, full path) of the process owning `hwnd`.
     fn process_path(&self, hwnd: u32) -> Option<(String, String)>;
@@ -189,14 +249,139 @@ pub trait WindowExtras: Send + Sync {
     }
 }
 
+/// §5.3.3/§5.3.4 一次元素链询问的**层数**上界。
+///
+/// 写成公有的数而不是留在平台层那个循环里，是 2026-11-04 那条口径点名的第一件事（「真做的
+/// 时候，第一步不是写 `ElementFromPoint`，而是先把**上界**定下来」）：上界是「一次 hover
+/// 能让用户选中什么」的一部分，而这一部分不需要桌面就能判错，所以判据住在这里、问数住在
+/// `crates/platform-windows/src/uia.rs`。
+pub const ELEMENT_CHAIN_MAX_DEPTH: usize = 12;
+
+/// 同一次询问里**踩过的元素数**上界。层数封顶管不住横向：一层里可以摆着几百枚兄弟，
+/// 而「哪一个装着这一点」要把这一层问完才答得出（[`element_under`]）。
+pub const ELEMENT_CHAIN_MAX_STEPS: usize = 400;
+
+/// 同一次询问的**时间**上界（毫秒）。三条里只有这一条是真闸：元素提供方在别的进程里，
+/// 一次问可以慢到什么程度本层说不上来，而 hover 是鼠标每动一次问一句的热路径（同
+/// [`crate::capture::CaptureService::windows`] 头上记的那族教训）。超了就把已经问到的
+/// 那一串交回去，**不等**剩下的 —— 少一层选区不是错，多花两百毫秒把界面拖住才是。
+pub const ELEMENT_CHAIN_BUDGET_MS: u64 = 50;
+
+/// 还要不要往下问：三条上界的**唯一**判据。平台层每问一枚元素问一次这一手，所以「封顶」
+/// 这件事在两个 crate 里只有一份写法。
+///
+/// `depth` 是已经定下来的层数、`steps` 是已经问过的元素数、`elapsed_ms` 是这一次询问已经
+/// 花掉的毫秒。三条都是**严格小于**：等于上界就是到了界，不再问。
+pub fn element_walk_wanted(depth: usize, steps: usize, elapsed_ms: u64) -> bool {
+    depth < ELEMENT_CHAIN_MAX_DEPTH
+        && steps < ELEMENT_CHAIN_MAX_STEPS
+        && elapsed_ms < ELEMENT_CHAIN_BUDGET_MS
+}
+
+/// 一层兄弟里「哪一个装着这一点」：只答**面积最小**的那一枚的下标，`None` = 这一层没有
+/// 元素盖住这一点。
+///
+/// 最小而不是第一个命中的：提供方经常把铺满整窗的面板与它底下的按钮都报成这一层的兄弟
+/// （顺序不保证），拿第一个就会永远停在面板上，§5.3.3 步 3 要的那一圈高亮因此永远是错的。
+/// 面积并列时留**先**问到的那一枚 —— 没有第二条判据可用，而这一处不该假装有一枚。
+pub fn element_under(rects: &[PhysRect], p: PhysPoint) -> Option<usize> {
+    let mut best: Option<(u64, usize)> = None;
+    for (i, r) in rects.iter().enumerate() {
+        if r.is_empty() || !r.contains(p) {
+            continue;
+        }
+        let a = r.area();
+        let better = match best {
+            None => true,
+            Some((b, _)) => a < b,
+        };
+        if better {
+            best = Some((a, i));
+        }
+    }
+    best.map(|(_, i)| i)
+}
+
+/// §5.3.3 的那道**闸**：把平台层问上来的原始一串收成能选的一串。规则四条，一条也不放过：
+///
+/// 1. **空矩形丢**。提供方对「此刻没有布局」的元素交回 0×0 或一整串负数，两者都画不出
+///    高亮，也不该成为一种选区。
+/// 2. **不被所属窗口装着的丢**（`inside(rect, owner)`）。这一条是 2026-11-04 那句
+///    「拿到的矩形不被包含在所属窗口的 DWM 可见边内时一律丢弃」的落点，也是唯一一条能
+///    让「错矩形」**不可能静默选中错区域**的闸：越界的、跨到别的窗上去的、提供方报虚的，
+///    一律不成链。
+/// 3. **裁进 DWM 可见边**（`visible`）。不用「不在可见边内就丢」那一档：一扇最大化窗的
+///    客户区比 DWM 报的可见边宽出那条不可见收缩带，贴着边的滚动条与窗体最外一格面板会
+///    因此整条被丢掉，最常见的窗会最常退化。**装着**由第 2 条判（对的是窗口自己的框），
+///    **截多少**由这一条判（对的是屏幕上真有内容的那一块）—— 两条各管一件事，谁也不
+///    替谁。`None` = 平台没答出可见边，那就不裁，按第 2 条的边界原样交回。
+/// 4. **相邻同矩形只留一枚**。父与子常常一样大（一层只包着一层、没有任何内边距），
+///    留着就是滚轮转两下屏幕上什么都不变 —— 那是 §5.3.4「即时反馈」的反面。
+///
+/// 顺序原样交回（内层在前），`ELEMENT_CHAIN_MAX_DEPTH` 是这一串的长上界。
+pub fn element_chain_of(
+    raw: &[PhysRect],
+    owner: &PhysRect,
+    visible: Option<&PhysRect>,
+) -> Vec<PhysRect> {
+    let mut out: Vec<PhysRect> = Vec::new();
+    for r in raw.iter().take(ELEMENT_CHAIN_MAX_DEPTH) {
+        if r.is_empty() || !inside(r, owner) {
+            continue;
+        }
+        let kept = match visible {
+            Some(v) => match r.clamp_to(v) {
+                Some((c, _)) => c,
+                None => continue,
+            },
+            None => *r,
+        };
+        if kept.is_empty() || out.last() == Some(&kept) {
+            continue;
+        }
+        out.push(kept);
+    }
+    out
+}
+
+/// 「这一枚矩形整个被那一枚装着」。闭区间按**边**比，所以贴边的元素算装着 —— 这正是第 2 条
+/// 要的松紧：越出去一像素就是不在这一扇窗上，而贴着边不是越出去。
+fn inside(r: &PhysRect, o: &PhysRect) -> bool {
+    !o.is_empty()
+        && r.x >= o.x
+        && r.y >= o.y
+        && r.right() <= o.right()
+        && r.bottom() <= o.bottom()
+}
+
+/// §5.3.4 步 3-4 与那两条规则的落点：滚轮在链上换一层，`up` = 往**父级**（外头）走。
+///
+/// 答 `Option<usize>` 而不是 `usize`：`None` 说的是「这一趟什么都没换」，而调用方必须能
+/// 把它与「换到了同一层」分开 —— 到达最上级或最下级时**停止切换**是文档里的一条规则，
+/// 停下来的那一次不该被说成换了一层。空链（退化）同样是 `None`。
+pub fn element_cycle(index: usize, len: usize, up: bool) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let next = if up {
+        (index + 1).min(len - 1)
+    } else {
+        index.saturating_sub(1)
+    };
+    (next != index).then_some(next)
+}
+
 pub struct NoopExtras;
 
 impl WindowExtras for NoopExtras {
     fn dwm_bounds(&self, _: u32) -> Option<PhysRect> {
         None
     }
-    fn element_chain(&self, _: PhysPoint) -> Vec<PhysRect> {
-        Vec::new()
+    /// 这一台没有那一一只手：空表、而**没有**被拦停 —— 也就是这一句「没有控件」是问完了的
+    /// 答，所以 §5.3.4「在不支持的平台应自动退化」走的正是那一条退化，而遮罩不必为同一扇窗
+    /// 反复去问一只不存在的手。
+    fn element_chain(&self, _: u32, _: PhysPoint) -> ElementChain {
+        ElementChain::walked(Vec::new())
     }
     fn cursor_image(&self, _: PhysPoint) -> Option<(Frame, PhysPoint)> {
         None
@@ -300,7 +485,7 @@ pub fn resolved_corner_radius(requested: u32, system: Option<u32>) -> u32 {
 ///
 /// 三项的顺序是有对的，不是随手排的：**指针先落进画面，再切圆角，再长阴影圈**。
 /// 这与 [`crate::imageops::Decoration::apply`] 头顶那一句同源（圆角先于铭牌，否则铭牌会在
-/// 即将变透明的像素底下画阴影），而指针排在最前是 §5.4.3 第 419 行的读法：一枚停在窗口角上
+/// 即将变透明的像素底下画阴影），而指针排在最前是 §5.4.3 规则 第 1 条的读法：一枚停在窗口角上
 /// 的指针若先被圆角裁掉半只，图上就没有「用户此刻看见的那根箭头」了。
 ///
 /// 全部关掉时交回的就是进来的那一张：`Off`/`Off`/`None` 一个像素也不动、矩形一字不改 ——
@@ -315,7 +500,7 @@ pub fn window_picture(
 ) -> Result<(Frame, PhysRect), CaptureError> {
     let mut out = src.clone();
     let mut rect = *visible;
-    // §5.4.3 第 419 行「指针热点位置应与实际屏幕位置一致」：`cursor` 交回来的那个点是
+    // §5.4.3 规则 第 1 条「指针热点位置应与实际屏幕位置一致」：`cursor` 交回来的那个点是
     // **指针图的左上角**在屏幕上的位置（平台层已经减过热点，见 `platform_windows::cursor`），
     // 而这一格要的偏移是相对这张图的左上角，所以减的是 `rect`，不是屏幕原点。裁剪由
     // [`Frame::blend_over`] 自己做，这里不手写第二遍边界。
@@ -372,7 +557,7 @@ pub enum ActiveWindowBlock {
 }
 
 impl ActiveWindowBlock {
-    /// 规则第二句那一格：只有 `Minimized` 是 PRD 第 239 行点名的那一种。
+    /// 规则第二句那一格：只有 `Minimized` 是 §5.2.6 规则第二句点名的那一种。
     pub fn is_minimised(&self) -> bool {
         *self == ActiveWindowBlock::Minimized
     }
@@ -489,37 +674,71 @@ fn pick_format(name: &str) -> crate::colors::ColorFormat {
     crate::colors::ColorFormat::from_name(name).unwrap_or(crate::colors::ColorFormat::HexUpper)
 }
 
+/// §5.2.1 步 2 后半支（`[capture] freeze_frame` 关着 = 背景该是**活的**）那道闸的**判据本体**。
+///
+/// 一张会随桌面刷新的背景要两件事同时成立：这条屏幕读取腿跟着桌面走，且遮罩那几扇窗能从读取里
+/// 摘出去而屏幕上照旧看得见（`crates/platform-windows/src/affinity.rs` 那一手）。两件都是**这台机器此刻**的性质，
+/// 不是可以推理的东西 —— 所以进场那一刻量两次，把两次读数交给这里判，而不是把「这一句会被听」当前提。
+/// 判「该不该起刷新」只有这一位作者：桥只管去量两次数，QML 只管把答说给人看。
+///
+/// 每一档 refusal 各说各的话（#453），而调用方欠的是**说出来**而不是静默降级（#433）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiveGate {
+    /// 摘之前在遮罩那几扇窗的位置上差得出东西、摘之后同一块又不差了 —— 允许刷新。
+    Allowed,
+    /// 摘之前那一次压根比不了（那一块矩形不在任何显示器上，或两次裁帧里有一次失败）。
+    CannotCompareFirst,
+    /// 摘之前在遮罩的位置上**一枚也不差** —— 这条读取腿没有跟着桌面走：实时背景做起来既取不到
+    /// 新东西，也证明不了「摘出去」这一格。这一档到现在**没有被证实过**：2026-11-05/06 那几次实测
+    /// 屏幕上都是锁屏，本进程那扇洋红窗不在屏幕上，「一枚也不差」说的是那一张不动的锁屏，不是这台
+    /// 机器的读取腿（分开这两件的手在 `platform_windows::desktop::display_reach` 与 `affinity`
+    /// 那一格的 `foreground` 那一行）；而 2026-11-07 那一次在解锁的桌面上量到的是**差得出东西**
+    /// （整块 3072×1920 差 212751 枚，远超 [`counted_as_change`] 那道八分之一的下限）⇒ 那一次走的
+    /// 是 [`Self::Allowed`]，这一档照旧没有真机读数。
+    ///
+    /// 没有读数不等于这一档可以删：它是**另一台机器**的答，而那台机器正是这一支唯一升不成「成」的
+    /// 形状（远程桌面、无头会话、以及某些把整屏读取接到一张缓存位图上的显卡驱动）。它欠的那一句
+    /// 已经写好并由 `qt_bridge::mask::live_notice` 念出来 —— 留着一条没有证人的拒绝臂是诚实的，
+    /// 把它删掉换成一句「不会发生」才是替用户宣布了一件事（#261 的反面）。
+    ReadDoesNotFollow,
+    /// 摘之后那一次比不了。它与 [`Self::CannotCompareFirst`] 不是一件事：那一句已经说给系统了，
+    /// 这一格量不出来时遮罩**可能**已经从读取里消失、也可能照旧在，谁也不知道。
+    CannotCompareSecond,
+    /// 摘之后在遮罩的位置上**照旧差** —— `WDA_EXCLUDEFROMCAPTURE` 对这条读取腿没用，起刷新就是
+    /// 把截图工具自己拍进图里。
+    ExclusionIgnored,
+}
+
+/// 一次比较的两枚数：差了几枚、比了几枚；`None` = 那一次没比上（与「一枚也不差」不是一句话）。
+pub type LiveCompare = Option<(usize, usize)>;
+
+/// 差几枚才算「差得出东西」：比的那一块里至少八分之一。一条真跟着桌面走的读取腿，遮罩那一大片暗色
+/// 会改掉几乎整块，八分之一是一道**只挡噪声**的下限（时钟走一格、一帧动画、光标一闪都在这一行以下），
+/// 不是判「遮罩该有多大」。`compared = 0` 永远不算差：尺子读不出东西时「不差」与「没比」不许混成
+/// 一格（#274）。
+fn counted_as_change(changed: usize, compared: usize) -> bool {
+    compared > 0 && changed.saturating_mul(8) >= compared
+}
+
+/// 两次读数 → 一个答。次序即因果：先证明这条腿跟着桌面走（摘之前遮罩在读取里），再证明这一句把它
+/// 从读取里摘掉了（摘之后同一块不差了）。
+pub fn live_gate(before_exclusion: LiveCompare, after_exclusion: LiveCompare) -> LiveGate {
+    let Some((changed, compared)) = before_exclusion else {
+        return LiveGate::CannotCompareFirst;
+    };
+    if !counted_as_change(changed, compared) {
+        return LiveGate::ReadDoesNotFollow;
+    }
+    let Some((changed, compared)) = after_exclusion else {
+        return LiveGate::CannotCompareSecond;
+    };
+    if counted_as_change(changed, compared) {
+        return LiveGate::ExclusionIgnored;
+    }
+    LiveGate::Allowed
+}
+
 impl ScreenSnapshot {
-    pub fn monitor_at(&self, p: PhysPoint) -> Option<&MonitorInfo> {
-        self.monitors
-            .iter()
-            .find(|m| m.info.contains(p))
-            .map(|m| &m.info)
-    }
-
-    /// Primary wins ties; used to pick which scale a mixed-DIP readout shows.
-    pub fn monitor_for_rect(&self, r: &PhysRect) -> Option<&MonitorInfo> {
-        let mut best: Option<(u64, &MonitorInfo)> = None;
-        for m in &self.monitors {
-            let Some(hit) = m.info.bounds.intersection(r) else {
-                continue;
-            };
-            let a = hit.area();
-            let better = match best {
-                None => true,
-                Some((ba, bi)) => a > ba || (a == ba && m.info.primary && !bi.primary),
-            };
-            if better {
-                best = Some((a, &m.info));
-            }
-        }
-        best.map(|(_, m)| m)
-    }
-
-    pub fn scale_at(&self, p: PhysPoint) -> Scale {
-        self.monitor_at(p).map(|m| m.scale).unwrap_or(Scale::ONE)
-    }
-
     /// Colour of the raw screen pixel (PRD §5.4.2: unaffected by the overlay).
     pub fn color_at(&self, p: PhysPoint) -> Option<[u8; 4]> {
         let m = self.monitors.iter().find(|m| m.info.contains(p))?;
@@ -592,7 +811,7 @@ impl ScreenSnapshot {
     }
 
     /// §5.4.2 第 3-4 步：按 `C` 要复制进剪贴板的那一串颜色值。读的是**冻结那一帧**的原始
-    /// 屏幕像素（[`Self::color_at`]），不是屏幕合成结果，所以「颜色值应基于原始屏幕像素、
+    /// 屏幕像素（[`Self::color_at`]），不是屏幕合成结果，所以「颜色值应基于原始屏幕像素，
     /// 不应受截图遮罩影响」这一条在这里结构性成立。`format_name` 是用户配置的默认复制格式
     /// （[`crate::colors::ColorFormat`] 的名字）；不认识的落回 HEX 大写，与
     /// [`crate::config::Config::validate`] 对 `magnifier_color_format` 的兜底同一格。
@@ -641,6 +860,33 @@ impl ScreenSnapshot {
             monitors: used,
             clipped,
         })
+    }
+
+    /// 两张冻住的桌面在**同一块桌面矩形**里差几枚、比了几枚 —— [`live_gate`] 那两次读数由这一手
+    /// 量出来，判据不在这里。裁帧交回 [`Self::capture`] 那唯一一位作者（桌面坐标换算与跨屏拼接
+    /// 不在这里重算一遍），这里只逐像素点数。
+    ///
+    /// `None` = 这一格矩形不在任何显示器上、面积为零、或两次裁帧有一次失败：那是「比不了」，与
+    /// 「一枚也不差」是两句话（[`LiveGate::CannotCompareFirst`] 与 [`LiveGate::ReadDoesNotFollow`]
+    /// 分得开靠的就是这一格）。同一枚请求裁出来的两张图本应同尺寸，仍按小的那一枚比 —— 宁可少比
+    /// 几枚也不越界。
+    pub fn differs_in(&self, other: &ScreenSnapshot, want: &PhysRect) -> LiveCompare {
+        let (Ok(a), Ok(b)) = (self.capture(want), other.capture(want)) else {
+            return None;
+        };
+        let (w, h) = (
+            a.frame.width.min(b.frame.width),
+            a.frame.height.min(b.frame.height),
+        );
+        let mut changed = 0usize;
+        for y in 0..h {
+            for x in 0..w {
+                if a.frame.get(x, y) != b.frame.get(x, y) {
+                    changed += 1;
+                }
+            }
+        }
+        Some((changed, w as usize * h as usize))
     }
 }
 
@@ -727,12 +973,6 @@ impl<E: WindowExtras + ?Sized> CaptureService<E> {
         })
     }
 
-    /// Freeze + crop in one call: used by repeat-last-region, delayed capture,
-    /// the CLI and any path with no interactive selection.
-    pub fn capture_rect(&self, want: &PhysRect) -> Result<Captured, CaptureError> {
-        self.freeze()?.capture(want)
-    }
-
     pub fn capture_window(&self, hwnd: u32) -> Result<Captured, CaptureError> {
         let frame = self.source.capture_window(hwnd)?;
         let info = self.windows(true)?.into_iter().find(|w| w.hwnd == hwnd);
@@ -805,9 +1045,35 @@ impl<E: WindowExtras + ?Sized> CaptureService<E> {
         window_at_in(&ws, p).cloned()
     }
 
-    /// PRD §5.3.4: the wheel cycles through the element chain under the cursor.
-    pub fn element_chain(&self, p: PhysPoint) -> Vec<PhysRect> {
-        self.extras.element_chain(p)
+    /// PRD §5.3.3/§5.3.4: the element chain under `p` inside the window `owner`,
+    /// innermost first — the wheel cycles through it.
+    ///
+    /// Two platform asks and one core decision, in that order. The ask
+    /// ([`WindowExtras::element_chain`]) only walks and reports; the bounds that
+    /// make the chain safe to select are the two already on this trait
+    /// ([`WindowExtras::window_rect`] for 「属于这一扇窗」 and
+    /// [`WindowExtras::dwm_bounds`] for 「屏幕上真有内容的那一块」); the reading of
+    /// all three is [`element_chain_of`] and nowhere else — including nowhere in
+    /// the platform layer, which must not get a second chance to decide what a
+    /// wrong rect means.
+    ///
+    /// `window_rect` answering `None` empties the whole chain, and that is the
+    /// answer rather than a failure: 「不被所属窗口装着的一律丢弃」 needs the window's
+    /// own edge to be provable at all, and §5.3.3's second 预期结果 says this
+    /// degrades to window detection instead of blocking the shot.
+    ///
+    /// 「量不出所属窗」那一臂交回的是 `aborted = true` 而**不是**一句「没有控件」：这一趟连
+    /// 闸的前提都没有，链上一个也没看过，说它答过了就是假话（#433）。代价是同一扇窗下一趟
+    /// hover 会再问一次，而那一次的问数照旧受同一枚墙钟管。
+    pub fn element_chain(&self, owner: u32, p: PhysPoint) -> ElementChain {
+        let raw = self.extras.element_chain(owner, p);
+        let Some(own) = self.extras.window_rect(owner) else {
+            return ElementChain { rects: Vec::new(), aborted: true };
+        };
+        ElementChain {
+            rects: element_chain_of(&raw.rects, &own, self.extras.dwm_bounds(owner).as_ref()),
+            aborted: raw.aborted,
+        }
     }
 }
 
@@ -999,18 +1265,10 @@ mod tests {
     }
 
     #[test]
-    fn colour_and_scale_follow_the_monitor() {
+    fn colour_follows_the_monitor() {
         let s = snap_two();
         assert_eq!(s.color_at(PhysPoint::new(250, 50)), Some([0, 0, 255, 255]));
-        assert_eq!(s.scale_at(PhysPoint::new(250, 50)), Scale::of(2.0));
-        assert_eq!(s.scale_at(PhysPoint::new(50, 50)), Scale::ONE);
         assert_eq!(s.color_at(PhysPoint::new(999, 0)), None);
-        assert_eq!(
-            s.monitor_for_rect(&PhysRect::new(190, 0, 40, 40))
-                .unwrap()
-                .id,
-            "b"
-        );
     }
 
     #[test]
@@ -1448,7 +1706,7 @@ mod tests {
         }
     }
 
-    /// §5.4.3 第 419 行「指针热点位置应与实际屏幕位置一致」在这条路上的那一半：
+    /// §5.4.3 规则 第 1 条「指针热点位置应与实际屏幕位置一致」在这条路上的那一半：
     /// 平台交回的是**指针图左上角**的屏幕坐标（热点已经减过），这里要的偏移是相对
     /// 这张截图的左上角，所以减的是截图的矩形。
     ///
@@ -1957,8 +2215,8 @@ mod tests {
         fn dwm_bounds(&self, hwnd: u32) -> Option<PhysRect> {
             self.dwm.iter().find(|(h, _)| *h == hwnd).map(|(_, r)| *r)
         }
-        fn element_chain(&self, _: PhysPoint) -> Vec<PhysRect> {
-            Vec::new()
+        fn element_chain(&self, _: u32, _: PhysPoint) -> ElementChain {
+            ElementChain::walked(Vec::new())
         }
         fn cursor_image(&self, _: PhysPoint) -> Option<(Frame, PhysPoint)> {
             None
@@ -1997,8 +2255,8 @@ mod tests {
         fn dwm_bounds(&self, _: u32) -> Option<PhysRect> {
             None
         }
-        fn element_chain(&self, _: PhysPoint) -> Vec<PhysRect> {
-            Vec::new()
+        fn element_chain(&self, _: u32, _: PhysPoint) -> ElementChain {
+            ElementChain::walked(Vec::new())
         }
         fn cursor_image(&self, _: PhysPoint) -> Option<(Frame, PhysPoint)> {
             None
@@ -2021,6 +2279,251 @@ mod tests {
                 .unwrap_or((false, false, 0));
             layered_window_opacity(answered, alpha_flag, alpha)
         }
+    }
+
+    /// §5.3.3/§5.3.4 那四道闸的**全部**判据都在这位读者手里，所以这一枚假把手只需要把
+    /// 三样事实原样交回：一条原始元素链、这扇窗自己的框、DWM 说的可见边。生产那一腿
+    /// (`crates/platform-windows/src/uia.rs`) 走的就是这个形状 —— 它只问数，一道也不自己算。
+    struct ChainedExtras {
+        raw: Vec<PhysRect>,
+        own: Option<PhysRect>,
+        visible: Option<PhysRect>,
+        /// 这一串是不是被上界拦停的读数（[`ElementChain::aborted`] 那一格），夹具用它来
+        /// 单独问「服务层有没有把这一格原样带过闸」。
+        aborted: bool,
+    }
+
+    impl WindowExtras for ChainedExtras {
+        fn dwm_bounds(&self, _: u32) -> Option<PhysRect> {
+            self.visible
+        }
+        fn element_chain(&self, _: u32, _: PhysPoint) -> ElementChain {
+            ElementChain { rects: self.raw.clone(), aborted: self.aborted }
+        }
+        fn cursor_image(&self, _: PhysPoint) -> Option<(Frame, PhysPoint)> {
+            None
+        }
+        fn process_path(&self, _: u32) -> Option<(String, String)> {
+            None
+        }
+        fn window_rect(&self, _: u32) -> Option<PhysRect> {
+            self.own
+        }
+        fn window_corner_radius(&self, _: u32) -> Option<u32> {
+            None
+        }
+    }
+
+    /// 一个 `CaptureService`，把手是假的、后端用不上（这三手一次也不碰帧）。
+    fn chained(
+        raw: Vec<PhysRect>,
+        own: Option<PhysRect>,
+        visible: Option<PhysRect>,
+    ) -> CaptureService<ChainedExtras> {
+        CaptureService::with_extras(
+            Box::new(ListSource {
+                windows: Vec::new(),
+            }),
+            Box::new(ChainedExtras {
+                raw,
+                own,
+                visible,
+                aborted: false,
+            }),
+        )
+    }
+
+    /// 同一只夹具，只把「这一串是被上界拦停的」那一格翻开。
+    fn truncated(
+        raw: Vec<PhysRect>,
+        own: Option<PhysRect>,
+    ) -> CaptureService<ChainedExtras> {
+        CaptureService::with_extras(
+            Box::new(ListSource {
+                windows: Vec::new(),
+            }),
+            Box::new(ChainedExtras {
+                raw,
+                own,
+                visible: None,
+                aborted: true,
+            }),
+        )
+    }
+
+    /// §5.3.3 预期结果第二句「无法读取控件信息时，应退化」在闸门这一层的形状：空进空出。
+    /// 尺子要先能读出空，才谈得上它报的那一串（§9.1 第十条那一族）。
+    #[test]
+    fn the_element_gate_reads_an_empty_walk_as_an_empty_chain() {
+        let owner = PhysRect::new(100, 100, 400, 300);
+        assert_eq!(element_chain_of(&[], &owner, None), Vec::<PhysRect>::new());
+        // 全是空矩形的一串也交回空 —— 「一条也没有」与「一条也没量出来」是同一句退化，
+        // 而它与下面那条「有可留的」必须各错各的（#453）。
+        assert_eq!(
+            element_chain_of(
+                &[PhysRect::new(120, 120, 0, 30), PhysRect::new(120, 120, 30, 0)],
+                &owner,
+                None
+            ),
+            Vec::<PhysRect>::new()
+        );
+    }
+
+    /// 四道闸各钉各的一格，而**次序是这条腿的内容**：贴着可见边的那一枚被裁进可见边、
+    /// 不是被「不被装着」那一档丢掉 —— 那一条判据对的是窗口自己的框，不是 DWM 的边。
+    #[test]
+    fn the_element_gate_drops_and_clips_by_the_rules_it_owns() {
+        // 窗自己的框（`GetWindowRect`）比 DWM 的可见边宽出一圈不可见收缩带：8 px。
+        let own = PhysRect::new(100, 100, 400, 300);
+        let visible = PhysRect::new(108, 108, 384, 284);
+        let raw = vec![
+            // ① 内层，整枚在可见边里 ⇒ 原样留下。
+            PhysRect::new(120, 120, 40, 20),
+            // ② 与内层同矩形的一枚父级 ⇒ 相邻同矩形只留一枚。
+            PhysRect::new(120, 120, 40, 20),
+            // ③ 贴着窗口的上左边、越过 DWM 可见边一格的那一枚 ⇒ **裁**，不丢。
+            PhysRect::new(100, 100, 400, 60),
+            // ④ 越出窗口自己的框 ⇒ 丢（这道闸就是不让错矩形静默选中区域）。
+            PhysRect::new(90, 120, 40, 20),
+            // ⑤ 空矩形 ⇒ 丢。
+            PhysRect::new(140, 140, 0, 0),
+            // ⑥ 在窗口内、但整枚落在那条不可见收缩带里（可见边之外）⇒ 裁完是空的 ⇒ 丢。
+            PhysRect::new(100, 100, 6, 6),
+        ];
+        assert_eq!(
+            element_chain_of(&raw, &own, Some(&visible)),
+            vec![
+                PhysRect::new(120, 120, 40, 20),
+                PhysRect::new(108, 108, 384, 52)
+            ]
+        );
+        // 平台没答出可见边 ⇒ 不裁：③ 原样留下、⑥ 也留下（它被「装着」那一档承认），
+        // 其余各档一字不变。这一格说的是「裁」与「丢」确实是两件事，不是一件事的两种写法。
+        let unclipped = element_chain_of(&raw, &own, None);
+        assert_eq!(unclipped[1], PhysRect::new(100, 100, 400, 60));
+        assert_eq!(unclipped[2], PhysRect::new(100, 100, 6, 6));
+        assert_eq!(unclipped.len(), 3);
+        // 窗口自己的框量不出来 = 第 2 条判据没有依据，整串不退化成「全都算越界」而是
+        // 交回空（`inside` 对空 `owner` 一律答否），调用方据此走 §5.3.2 的窗检测。
+        assert_eq!(
+            element_chain_of(&raw, &PhysRect::new(0, 0, 0, 0), None),
+            Vec::<PhysRect>::new()
+        );
+    }
+
+    /// 深度那一枚上界真的有闸：交上来 20 层，留下的只有 `ELEMENT_CHAIN_MAX_DEPTH` 层，
+    /// 而且是**前**那么多层（内层在前，被砍的是最外那几级）。
+    #[test]
+    fn the_element_chain_stops_at_its_depth_cap() {
+        let own = PhysRect::new(0, 0, 4000, 4000);
+        let raw: Vec<PhysRect> = (0..20u32)
+            .map(|i| PhysRect::new(10 + i as i32, 10 + i as i32, 300 - 2 * i, 200 - 2 * i))
+            .collect();
+        let kept = element_chain_of(&raw, &own, None);
+        assert_eq!(kept.len(), ELEMENT_CHAIN_MAX_DEPTH);
+        assert_eq!(kept.first(), raw.first());
+        assert_eq!(kept.last(), raw.get(ELEMENT_CHAIN_MAX_DEPTH - 1));
+    }
+
+    /// 三条上界各管各的一维，而**到了界就是界**（等于不算未过）。这一手是平台层每一枚
+    /// 元素都要问的那一句，所以它错了就是热路径上一问接着一问停不下来。
+    #[test]
+    fn each_element_walk_cap_stops_on_its_own_number() {
+        assert!(element_walk_wanted(0, 0, 0));
+        // 层数
+        assert!(!element_walk_wanted(ELEMENT_CHAIN_MAX_DEPTH, 0, 0));
+        assert!(element_walk_wanted(ELEMENT_CHAIN_MAX_DEPTH - 1, 0, 0));
+        // 问过的元素数
+        assert!(!element_walk_wanted(0, ELEMENT_CHAIN_MAX_STEPS, 0));
+        assert!(element_walk_wanted(0, ELEMENT_CHAIN_MAX_STEPS - 1, 0));
+        // 毫秒
+        assert!(!element_walk_wanted(0, 0, ELEMENT_CHAIN_BUDGET_MS));
+        assert!(element_walk_wanted(0, 0, ELEMENT_CHAIN_BUDGET_MS - 1));
+    }
+
+    /// §5.3.3 步 3 的那一圈高亮为什么永远是「最小的那一枚」：兄弟顺序不保证，而
+    /// 「第一个盖住这点的」通常是铺满整窗的那块面板。并列时留先问到的那一枚。
+    #[test]
+    fn the_element_under_a_point_is_the_smallest_one_covering_it() {
+        let p = PhysPoint::new(150, 130);
+        let panel = PhysRect::new(100, 100, 400, 300);
+        let button = PhysRect::new(120, 120, 40, 20);
+        let other = PhysRect::new(300, 300, 40, 20);
+        assert_eq!(element_under(&[panel, other, button], p), Some(2));
+        assert_eq!(element_under(&[button, panel], p), Some(0));
+        // 不盖这点的、空矩形的、表是空的：三种都答 `None`，调用方据此停止往下钻。
+        assert_eq!(element_under(&[other], p), None);
+        assert_eq!(element_under(&[PhysRect::new(150, 130, 0, 0)], p), None);
+        assert_eq!(element_under(&[], p), None);
+        // 面积并列 ⇒ 先问到的那一枚，而不是后者。
+        assert_eq!(
+            element_under(
+                &[PhysRect::new(130, 125, 40, 20), PhysRect::new(120, 120, 40, 20)],
+                p
+            ),
+            Some(0)
+        );
+    }
+
+    /// §5.3.4 那两条规则（滚轮换层、到达最上/最下级停止）在同一枚返回型上分开：
+    /// `None` = 这一趟没换，`Some(i)` = 换到了第 `i` 层。
+    #[test]
+    fn the_wheel_cycles_levels_and_stops_at_both_ends() {
+        // 3 层，内层在前：下 = 往内、上 = 往外。
+        assert_eq!(element_cycle(0, 3, true), Some(1));
+        assert_eq!(element_cycle(1, 3, true), Some(2));
+        assert_eq!(element_cycle(2, 3, true), None, "最上级要停");
+        assert_eq!(element_cycle(2, 3, false), Some(1));
+        assert_eq!(element_cycle(0, 3, false), None, "最下级要停");
+        // 一层都问不出（退化）时两向都不动，而这不是「停在某一级」。
+        assert_eq!(element_cycle(0, 0, true), None);
+        assert_eq!(element_cycle(0, 0, false), None);
+        // 只有一层：两向都到头。
+        assert_eq!(element_cycle(0, 1, true), None);
+        assert_eq!(element_cycle(0, 1, false), None);
+    }
+
+    /// 装配这一格：服务把平台问上来的原始一串**过闸**再交回，而不是原样转交。
+    /// 「原样转交」是这一手最容易写错的样子，而它错了就是错矩形直接成为选区。
+    ///
+    /// 第三格是这一轮加上的形状：闸把「问得出」的前提（窗口自己的框）问不出时，交回的必须
+    /// 是「**没问出来**」而不是「这一扇窗没有控件」—— 遮罩只在后者那一格上才许停止再问，
+    /// 拿一句没问出来的空表去换那一格，就是让一次桌面询问的失败在一场里装成一种窗。
+    #[test]
+    fn the_service_gates_the_walk_it_asked_for() {
+        let own = PhysRect::new(100, 100, 400, 300);
+        let raw = vec![
+            PhysRect::new(120, 120, 40, 20),
+            PhysRect::new(50, 50, 40, 20), // 不在这扇窗上
+        ];
+        let p = PhysPoint::new(130, 130);
+        let svc = chained(raw.clone(), Some(own), Some(own));
+        assert_eq!(svc.element_chain(7, p).rects, vec![raw[0]]);
+        // 窗口自己的框问不出 ⇒ 整条退化，而不是拿越界那一枚当选区。
+        let no_own = chained(raw.clone(), None, Some(own));
+        let dry = no_own.element_chain(7, p);
+        assert!(dry.rects.is_empty());
+        assert!(dry.aborted, "连闸的前提都没量到 = 没问出来，不是一句「没有控件」");
+        // 可见边问不出 ⇒ 仍过其余三道闸（这一格不是「全链作废」）。
+        let no_vis = chained(raw, Some(own), None);
+        assert_eq!(no_vis.element_chain(7, p).rects.len(), 1);
+    }
+
+    /// 「被拦停」这一格不许跟着闸一起被抹平。闸丢的是**越界的矩形**，`aborted` 说的是
+    /// **问数那一腿有没有走完** —— 两道不同的事，后一层穿过闸时得原样带到，因为遮罩只在
+    /// 「问完的那一空」上才许停止再问同一扇窗。抹平它，一次被 50 毫秒拦停的询问就伪装成了
+    /// 一句「这一扇窗没有控件」（真机读数 2026-11-05：本线程第一趟 73 毫秒、空表，第二趟
+    /// 12 毫秒、三枚 —— 差的是提供方热身，不是那扇窗）。
+    #[test]
+    fn the_gate_passes_the_aborted_flag_through() {
+        let own = PhysRect::new(100, 100, 400, 300);
+        let raw = vec![
+            PhysRect::new(120, 120, 40, 20),
+            PhysRect::new(50, 50, 40, 20), // 不在这扇窗上
+        ];
+        let got = truncated(raw.clone(), Some(own)).element_chain(7, PhysPoint::new(130, 130));
+        assert_eq!(got.rects, vec![raw[0]], "闸照旧过：越界那一枚还是得丢");
+        assert!(got.aborted, "而『这一趟没走完』不许跟着一起丢");
     }
 
     /// Real hardware, so the assumptions above get checked against a desktop
@@ -2104,5 +2607,88 @@ mod tests {
             png.len(),
             c.frame.has_transparency()
         );
+    }
+
+    /// §5.2.1 步 2 后半支那道闸的四个答，每一档由一格证据逼出来 —— 一台没有桌面的机器也能全跑：
+    /// 交进来的是两次读数，不是屏幕。
+    #[test]
+    fn the_live_gate_needs_both_stages_in_order() {
+        // 两格都过：摘之前那一大片暗色满块都是（遮罩在读取里），摘之后同一块只剩噪声（已被摘出去）。
+        assert_eq!(
+            live_gate(Some((900, 1000)), Some((3, 1000))),
+            LiveGate::Allowed
+        );
+        // 摘之前一枚也不差 ⇒ 这一档说的就是「这条读取腿没跟着桌面走」：它同时也是「第二格量不出东西」
+        // 的前提 —— 顺序不许反，反了就把「读不出」放成了行。（这一档在真机上还没被证实过：
+        // 那几次屏幕上都是锁屏，见 `LiveGate::ReadDoesNotFollow` 头顶那三行。）
+        assert_eq!(
+            live_gate(Some((0, 1000)), Some((0, 1000))),
+            LiveGate::ReadDoesNotFollow
+        );
+        // 摘之后照旧差 ⇒ `WDA_EXCLUDEFROMCAPTURE` 对这条读取腿没用。
+        assert_eq!(
+            live_gate(Some((900, 1000)), Some((900, 1000))),
+            LiveGate::ExclusionIgnored
+        );
+        // 两次的「比不了」各说各的话，且谁也不许被读成前两档（#453）。
+        assert_eq!(live_gate(None, Some((0, 1000))), LiveGate::CannotCompareFirst);
+        assert_eq!(
+            live_gate(Some((900, 1000)), None),
+            LiveGate::CannotCompareSecond
+        );
+    }
+
+    /// 八分之一那道下限：一帧动画、时钟走一格、光标一闪都不该把刷新放行。`compared = 0` 永远不算
+    /// 差 —— 尺子读不出东西时，「一枚也不差」与「一枚也没比」不许混成一格（#274）。
+    #[test]
+    fn a_change_below_the_floor_is_not_a_change() {
+        assert!(!counted_as_change(124, 1000));
+        assert!(counted_as_change(125, 1000));
+        assert!(!counted_as_change(9_999, 0), "比了零枚不是「差得出东西」");
+        assert!(!counted_as_change(0, 0));
+        assert!(
+            counted_as_change(usize::MAX, 1),
+            "整块都改了不该因为乘八溢出被判成噪声"
+        );
+        // 下限在闸那一层的方向是「不放行」，不是「勉强放行」。
+        assert_eq!(
+            live_gate(Some((124, 1000)), Some((0, 1000))),
+            LiveGate::ReadDoesNotFollow
+        );
+    }
+
+    /// 量读数那一手只数**这块矩形里**的：遮罩那几扇窗之外的桌面自己在动，不该被算成「遮罩在读取
+    /// 里」的那一格证据。三块矩形同一份数据，数出来的分别是 0、1、2 枚。
+    #[test]
+    fn differs_in_counts_only_the_pixels_inside_the_rect() {
+        let a = snap_two();
+        let mut b = snap_two();
+        b.monitors[0].frame.set(50, 50, [0, 0, 0, 255]);
+        b.monitors[1].frame.set(10, 10, [0, 0, 0, 255]);
+
+        assert_eq!(
+            a.differs_in(&b, &PhysRect::new(0, 0, 40, 20)),
+            Some((0, 800)),
+            "右屏那一枚改在这块矩形之外，不该被数进来"
+        );
+        assert_eq!(
+            a.differs_in(&b, &PhysRect::new(40, 40, 40, 40)),
+            Some((1, 1600)),
+            "左屏那一枚改在里头的，必须被数进来"
+        );
+        assert_eq!(
+            a.differs_in(&b, &PhysRect::new(50, 10, 161, 41)),
+            Some((2, 6_601)),
+            "跨两屏的那一块：两枚各数一次，裁帧那一手仍然只有一位作者"
+        );
+    }
+
+    /// 尺子要读得出「读不出」：矩形不在任何显示器上、或面积为零，交回的是 `None`（比不了），不是
+    /// `Some((0, ..))`（一枚也不差）—— 这两格在闸那里是两个不同的答。
+    #[test]
+    fn a_rect_that_is_not_on_any_monitor_is_not_read_as_no_change() {
+        let a = snap_two();
+        assert_eq!(a.differs_in(&a, &PhysRect::new(1000, 0, 10, 10)), None);
+        assert_eq!(a.differs_in(&a, &PhysRect::new(0, 0, 0, 0)), None);
     }
 }

@@ -3,7 +3,7 @@ import QtQuick.Controls
 import QtQuick.Window
 import dev.falconshot 1.0
 
-// §5.3.5 的那一扇「自定义截图」对话框（PRD 第 294–309 行）。
+// §5.3.5 整节（自定义位置、尺寸和延时）的那一扇「自定义截图」对话框。
 //
 // 这一页上**没有一份名单、没有一句判据、也没有一枚算术**。五格叫什麼（`customLabels()`）、每格旁边
 // 那句提示（`customHints()`）、窗标题（`customTitle()` = 唯一名册里 `capture_custom` 那一枚名，与托盘
@@ -13,13 +13,15 @@ import dev.falconshot 1.0
 // 「页上画的格数 == 名单长度」）。
 //
 // 校验也一次也不在这一页上：
-// * 第 307 行「宽度和高度必须大于 0」那句话的作者是 `crate::capture::size_guard`，对话框把自己的
-//   名字递进去当 `what`，所以页上那句拒绝与终端那句拒绝是**同一句话**而不是它的译文；
+// * §5.3.5 校验规则 第 1 条「宽度和高度必须大于 0」那句话的作者是
+//   `crate::capture::size_guard`，对话框把自己的名字递进去当 `what`，所以页上那句拒绝
+//   与终端那句拒绝是**同一句话**而不是它的译文；
 // * 「这一格写的不是整数」「延时要在界内」那两句的作者分别是 `custom::int_note` /
 //   `custom::delay_note`，而那一枚「界」读的是档里那两枚常数，页上不知道也不该知道它是 300；
-// * 第 309 行「应支持键盘方向键微调数值」的那一枚 **+1 住在 `custom::nudge`**：页上那两枚键 handler
-//   只做一次调用与一次回填。算术若写在这一页里，这一条规则在单测与门两头都是空的 —— 本仓没有输入
-//   注入器（§10 第 150 项③：量具的手 ≠ 用户的手），量具递不进真按键，但量具能叫同一只手。
+// * §5.3.5 校验规则 第 3 条「应支持键盘方向键微调数值」的那一枚 **+1 住在 `custom::nudge`**：
+//   页上那两枚键 handler 只做一次调用与一次回填。算术若写在这一页里，这一条规则在单测与门两头
+//   都是空的 —— 本仓没有输入注入器（§10 第 150 项③：量具的手 ≠ 用户的手），量具递不进真按键，
+//   但量具能叫同一只手。
 //
 // 这一扇窗与 `SettingsWindow.qml` 一样，是本进程里由 **Rust 决定存在与否**的窗：`Session.custom_open`
 // 那一格是 0 就没有这个对象（`main.qml` 的 `syncCustom`），所以产品会话与另外七道门不会被一扇没人要的
@@ -92,8 +94,9 @@ Window {
         session: win.session
     }
 
-    // 一扇正常的对话框：有边框、进任务栏、接键盘。第 298 行写的是「对话框」，不是盖在桌面上的浮层，
-    // 所以这里**不**写 `flags`：`Qt.Tool` / `FramelessWindowHint` 属于贴图与遮罩那一族。
+    // 一扇正常的对话框：有边框、进任务栏、接键盘。§5.3.5 操作步骤 步骤 1 写的是
+    // 「对话框」，不是盖在桌面上的浮层，所以这里**不**写 `flags`：`Qt.Tool` /
+    // `FramelessWindowHint` 属于贴图与遮罩那一族。
     title: win.headerText
     width: 420
     height: 360
@@ -135,8 +138,9 @@ Window {
         //    几格 —— 两个数都从页这一侧读，不是「我们叫过 show()」。
         win.report("open|" + (win.visible ? 1 : 0) + "|" + cellRows.count + "|" + win.labels.length)
 
-        // ② 第 307 行：宽高那一对递上去，页上那句拒绝就是 `size_guard` 的原话。前四格里 X / Y
-        //    必须填得像样，不然 `read` 先说「这一格还空着」，那一趟量的就不是宽高那一条规则了。
+        // ② §5.3.5 校验规则 第 1 条：宽高那一对递上去，页上那句拒绝就是 `size_guard`
+        //    的原话。前四格里 X / Y 必须填得像样，不然 `read` 先说「这一格
+        //    还空着」，那一趟量的就不是宽高那一条规则了。
         win.fill(0, win.plan[1])
         win.fill(1, win.plan[2])
         win.fill(2, win.plan[5])
@@ -151,8 +155,9 @@ Window {
         // ④ 延时的界：越界那一枚也来自计划，页上不知道界是 300。
         win.report("baddelay|" + String(win.session.customSet(win.delayCell, String(win.plan[9]))))
 
-        // ⑤ 第 309 行：方向键往上那一枚。先读「挪之前那一格此刻写着什么」，再叫 `customNudge` ——
-        //    两枚都是页上那两枚键 handler 叫的同一对手，判的是「交回的要真的是挪之前那个 + 1」。
+        // ⑤ §5.3.5 校验规则 第 3 条：方向键往上那一枚。先读「挪之前那一格此刻写着什么」，
+        //    再叫 `customNudge` —— 两枚都是页上那两枚键 handler 叫的同一对手，判的是
+        //    「交回的要真的是挪之前那个 + 1」。
         win.fill(0, win.plan[10])
         win.fill(1, win.plan[11])
         win.fill(2, win.plan[12])
@@ -169,8 +174,8 @@ Window {
         win.fill(win.delayCell, "")
         win.report("offscreen|" + String(win.session.customStart()))
 
-        // ⑦ 第 308 行：出界的那一块。裁与说都在 `pin_rect` / `clip_note` 那一头，页上画的只是那句
-        //    原文 —— 这一格是「提示还是自动修正」那一条规则的全部对面。
+        // ⑦ §5.3.5 校验规则 第 2 条：出界的那一块。裁与说都在 `pin_rect` / `clip_note` 那一头，
+        //    页上画的只是那句原文 —— 这一格是「提示还是自动修正」那一条规则的全部对面。
         win.fill(0, win.plan[1])
         win.fill(1, win.plan[2])
         win.fill(2, win.plan[3])
@@ -178,8 +183,9 @@ Window {
         win.fill(win.delayCell, "")
         win.report("clip|" + String(win.session.customStart()))
 
-        // ⑧ 第 301 / 302 行：延时 > 0 的那一支。按下这一刻只该挂上倒计时、说一句「还剩几枚数」，
-        //    一次冻结也不许有（PRD 第 420 行：冻面是数满那一刻的事）。数满那一行由 Timer 递。
+        // ⑧ §5.3.5 步骤 4 / 步骤 5：延时 > 0 的那一支。按下这一刻只该挂上倒计时、说一句
+        //    「还剩几枚数」，一次冻结也不许有（§5.2.4 步骤 5：冻面是数满那一刻的事）。数满那
+        //    一行由 Timer 递。
         win.fill(0, win.plan[10])
         win.fill(1, win.plan[11])
         win.fill(2, win.plan[12])
@@ -234,8 +240,9 @@ Window {
                 color: win.word_fill
             }
 
-            // 第 302 行那一枚「开始截图」：按下去叫的是 `customStart`，页上不判形状、不算区域、
-            // 也不数秒 —— 那三件事住在 `custom::read` / `capture::pin_rect` / `delay::Countdown`。
+            // §5.3.5 操作步骤 步骤 5 那一枚「开始截图」：按下去叫的是 `customStart`，
+            // 页上不判形状、不算区域、也不数秒 —— 那三件事住在
+            // `custom::read` / `capture::pin_rect` / `delay::Countdown`。
             MouseArea {
                 id: startArea
 
@@ -383,16 +390,16 @@ Window {
 
             // 出生时读一次桥里那一格的值，此后**不绑也不写**：`TextField` 里一次赋值就摧毁绑定，
             // 绑一枚值会让用户打的字与桥里记的字在某一格上各活一半（`CaptureMask.qml` 的 `sizeBar`
-            // 记过的那一族）。延时那一格此刻开着 `[capture] delay_seconds` —— PRD 第 301 行「可选
+            // 记过的那一族）。延时那一格此刻开着 `[capture] delay_seconds` —— §5.3.5 步骤 4「可选
             // 输入」的对面正是「上次那个数还在」，而不是每场归零。
             text: row.bridge.customCell(row.slot)
 
             onEditingFinished: row.bridge.customSet(row.slot, cellField.text)
 
-            // 第 309 行「应支持键盘方向键微调数值」：键 handler 只做两件事 —— 叫 `customNudge`、
-            // 把交回的那串字填回自己这一格。**这里不写 +1 / -1 之外的任何算术**：挪出来的数对不对、
-            // 空格该从几起步、写着「abc」的那一格该不该被悄悄改掉，全在 `custom::nudge` 里判，
-            // 那里这一条有单测、也有门可问。
+            // §5.3.5 校验规则 第 3 条「应支持键盘方向键微调数值」：键 handler 只做两件事 ——
+            // 叫 `customNudge`、把交回的那串字填回自己这一格。**这里不写 +1 / -1 之外的任何算术**：
+            // 挪出来的数对不对、空格该从几起步、写着「abc」的那一格该不该被悄悄改掉，
+            // 全在 `custom::nudge` 里判，那里这一条有单测、也有门可问。
             Keys.onUpPressed: (event) => {
                 event.accepted = true
                 cellField.text = String(row.bridge.customNudge(row.slot, 1))
@@ -404,9 +411,10 @@ Window {
         }
 
         Text {
-            // 那句提示画在框**右边**而不是只当 placeholder：placeholder 一打字就没，而第 307 行那句
-            // 「要大于 0」与「物理像素」这两件事，用户正在打字的那一刻最需要看见。宽度是排版，不是
-            // 判据 —— 它可以在这一页上钉死，因为没有任何一格读数读它。
+            // 那句提示画在框**右边**而不是只当 placeholder：placeholder 一打字就没，而
+            // §5.3.5 校验规则 第 1 条那句「宽度和高度必须大于 0」与框上那枚字段名自带的
+            // 「物理像素」这两件事，用户正在打字的那一刻最需要看见。宽度是排版，不是判据 ——
+            // 它可以在这一页上钉死，因为没有任何一格读数读它。
             width: 190
             text: row.hint
             wrapMode: Text.Wrap

@@ -1,12 +1,12 @@
 //! The annotation model: a [`Document`] of [`Element`]s, the [`Command`]s that
 //! change it, and the [`UndoStack`] that reverses them.
 //!
-//! 计划 §6.4 fixes the shapes, 技术方案 §8.2 fixes the flow: the core writes the
-//! document and then files the command. The model, the commands and the stack
-//! know nothing about pixels; [`raster`] is the one place that turns an
-//! `Element` into a `Frame`, and drawing on a screen is still Qt's job. Keeping
-//! the first three free of both is what makes 5.7 editable on a machine with no
-//! Qt installed.
+//! 技术方案 §8.2 fixes the flow: the core writes the document and then files the
+//! command. The shapes belong to this module — nothing outside it declares them.
+//! The model, the commands and the stack know nothing about pixels; [`raster`]
+//! is the one place that turns an `Element` into a `Frame`, and drawing on a
+//! screen is still Qt's job. Keeping the first three free of both is what makes
+//! 5.7 editable on a machine with no Qt installed.
 
 pub mod command;
 pub mod model;
@@ -28,8 +28,9 @@ pub use model::{
 };
 pub use raster::{paint, render, Glyphs, Ink, NoGlyphs};
 pub use select::{
-    clamp_rotation, grip_at, grip_at_any, grip_point, radius_grip_command, resize_grip,
-    resize_grip_command, rotate_at_command, rotate_command, rotation_at, segment_floor, Grip,
-    Selection, GRIP_SLOP, MIN_SIZE, RADIUS_GRIP_INSET, ROTATE_LIMIT, ROTATE_OFFSET,
+    clamp_rotation, grip_at, grip_at_any, grip_box, grip_point, grips_held, grips_of,
+    radius_grip_command, resize_grip, resize_grip_command, rotate_at_command, rotate_command,
+    rotation_at, segment_floor, Grip, Selection, GRIP_SLOP, MIN_SIZE, RADIUS_GRIP_INSET,
+    ROTATE_LIMIT, ROTATE_OFFSET,
 };
 pub use undo::UndoStack;

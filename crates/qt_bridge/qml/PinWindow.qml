@@ -184,6 +184,20 @@ Window {
     }
 
     // Style bits are the one thing a property change cannot carry by itself.
+    //
+    // 这一手身上记一笔明账（#455，PRD §8.3「不许静默」与 §7.3 第 4 条「平台不支持的能力应自动
+    // 隐藏或明确标记不可用」）：C++ 那头的 `applyStyle` 把 `SetWindowLongPtrW` 的返回值丢掉了，
+    // 所以**这一手自己**说不出样式位写没写上。回读其实是够得着的——`shim` 的 `describe` 印的就是
+    // `GetWindowLongPtrW` 现读回来的 `TRANSPARENT` / `LAYERED`，本档调用它没有问题；缺的是把
+    // 「回读对不上」说给用户听的那条路：本产品用户可见的句子一律由 Rust 侧写（Session 的 `say`，
+    // 或 hotkey.rs 里 §5.9.13 那枚采样钟经它自己的 handle 排队写 `status`，一句事实一名作者
+    // #281），QML 从不写 session 的 status 那一格，桥上也没有能捎一句话的 invokable——新开一条
+    // 就是动 cxx-qt 桥面，本轮明令不许。所以这一手的证人不在这一手里面：它长在 `--pin` 量具门的
+    // `ct-*` 那六条腿上——`applyClickThrough` 返回后立即回读窗上自己的样式位，由 pin_check 的
+    // `ct_rows` 判开与关两枚判据（两枚各占一行，#453）。产品侧当场对用户说「穿透没生效」的那条
+    // 话路也已经补上了，同样在 Rust 侧、不在本档：hotkey.rs 的采样钟顺带核对回读（名册那一格
+    // 稳了才问，判据与上面那六条腿共用 pin_check 的 `native_pass_through` 那一把尺 #281），
+    // 没吃下就经 Session 的 `status` 说一句。本档在这里照旧不假装有：QML 不写 status 那一格。
     function restyle() {
         shim.applyStyle(win, view.topmost, view.click_through)
     }
@@ -251,7 +265,7 @@ Window {
         return win.session.toggleSolo(id)
     }
 
-    // PRD 第 1149 行「批量销毁时应提示影响数量」的那一句字面数。本窗不许自己数名单（那是
+    // §5.9.18 规则第二句「批量销毁时应提示影响数量」的那一句字面数。本窗不许自己数名单（那是
     // `batch_hand` 的第二份，#281），它问的是桥侧那一格 `destroy_answer` —— 与按下「销毁」时
     // 真正带走的那些枚读的是同一张表。
     //
@@ -769,6 +783,30 @@ Window {
         gaugeSay("xf-key-left", String(rotateLeftKey.sequences.length) + "|" + String(rotateLeftKey.enabled))
         gaugeSay("xf-key-right", String(rotateRightKey.sequences.length) + "|" + String(rotateRightKey.enabled))
         gaugeSay("xf-key-gray", String(grayscaleKey.sequences.length) + "|" + String(grayscaleKey.enabled))
+        // §5.9.13 鼠标穿透。这一手按的就是菜单里「鼠标穿透」那一行点名的同一枚手（视图列的
+        // `applyClickThrough`）——量规是这枚手多出来的一个测量读者，不另立第二条路（#281）；而从
+        // 那一手往下到 Win32 扩展样式位的整条
+        // 链——`gesture`、`reload`、窗上 `click_through` 那一格、下面那段 `Connections`、`restyle`、
+        // C++ 的 `applyStyle`——在同一个调用栈里走完，所以手返回的那一刻样式位已经是新的位，回读
+        // 不用等。回读走 `shim` 的 `describe`：它印的是 `GetWindowLongPtrW` 现读回来的东西，即被量
+        // 的那一扇窗自己那一格，而不是本档对 Qt 的记忆（#261：判据要有证人）。断的是绝对的 1 与 0，
+        // 不是上面 xf 那四枚开关的相对翻转：那四枚按的是「翻一下」，这一手收的是「设成开／设成关」
+        // ——进门那一格若本来就是 true，再按一次设 true 不会翻 notify，可窗上那一格在出生时就已经
+        // 写上了，回读照样是 1；绝对断言既不替用户的配置作答（#261），也不依赖 notify 真的发过。
+        // 收梢：离开前把那一格放回进门读到的那枚值，`ct-end` 与 `ct-start` 由判据要求同值，往上读
+        // 对话框的那几枚行因此一个字节也没被本族动过。
+        const ctStart = win.view.click_through
+        gaugeSay("ct-start", String(ctStart))
+        win.view.applyClickThrough(true)
+        gaugeSay("ct-on", String(win.view.click_through))
+        gaugeSay("ct-desc-on", String(shim.describe(win)).trim())
+        win.view.applyClickThrough(false)
+        gaugeSay("ct-off", String(win.view.click_through))
+        gaugeSay("ct-desc-off", String(shim.describe(win)).trim())
+        if (ctStart) {
+            win.view.applyClickThrough(true)
+        }
+        gaugeSay("ct-end", String(win.view.click_through))
         gaugeSay("menu", saveAsItem.text)
         gaugeSay("filters", saveAs.nameFilters.join(";;"))
         // The members are read rather than assumed: `selectedNameFilter` came back as
@@ -1802,7 +1840,7 @@ Window {
     }
 
     // §5.9.5 步骤 2「使用数字键或菜单执行向左、向右旋转」和 §5.9.7 步骤 2「使用对应快捷键或菜单
-    // 选择"灰度"」各给了两只门，所以形状照上面 `copyAction` 那一封：落点声明一次，菜单那一行
+    // 选择“灰度”」各给了两只门，所以形状照上面 `copyAction` 那一封：落点声明一次，菜单那一行
     // `action:` 到它，键也 `trigger()` 它。六枚**全部**提成 Action，而不只提那三枚有键的，是因为
     // `pin_check.rs` 的 `xf-*` 那一族要在真机上按同一只手：菜单那一行自己没有 `onTriggered` 可叫
     // （`action:` 之后 handler 住在 Action 里），量规叫得着的只有 `trigger()` —— 与上面那封信里
@@ -1846,7 +1884,7 @@ Window {
         onTriggered: win.view.toggleGrayscale()
     }
 
-    // §5.9.8 步骤 2 给的是「选择"颜色反转"」——那一句里既没有数字键也没有快捷键，所以这一枚
+    // §5.9.8 步骤 2 给的是「选择“颜色反转”」——那一句里既没有数字键也没有快捷键，所以这一枚
     // Action 只有菜单一只读者（加上量规那一枚）。它仍然提成 Action：六枚同一形状比四枚 Action
     // 加两枚 inline handler 少一处「为什么这两行不一样」。
     Action {
@@ -1878,8 +1916,33 @@ Window {
         onTriggered: win.view.zoomStep(false)
     }
 
-    // 键帽是本档钉的默认，不是 PRD 钉的：第 1010 行只说「数字键」、第 1026 行只说「对应快捷键」，
-    // 而第 7 行明写「快捷键使用常见默认值举例，实际以用户设置和运行平台为准」。这里钉
+    // §5.9.18 操作步骤 步骤 1 是「用户打开贴图菜单或使用关闭快捷键」——一条字面两只门，所以形状
+    // 照上面 `copyAction`（§5.9.16 步骤 2）那一封：落点声明一次，菜单那一行 `action:` 到它，键也
+    // `trigger()` 它。菜单那一行原先自己写着落点（`session.closePin` 加本窗的 id），而
+    // 这里刻意不把那一行**照抄**出来：`pin_check` 数落点数的是字面而不是语法树，注释里抄一遍就
+    // 是第二处落点，而这一格今天判红过一次就是这么红的（#274/#461）。本档讲同一件事的那封
+    // 「三只手各一句落点」的信里说的也是 `session.closePin`，不带 `win.`、不带括号，此处随它。
+    // 快捷键那一只门在窗上**没有手**：全部 `Shortcut` 逐枚数过（复制、取消、`1`/`2`/`3`、`+`/`-`、
+    // `Enter`、`Esc`）没有一枚关闭键；`Esc` 又早被 §5.10.1 步骤 4 与裁剪退出两处占住；全文也没有
+    // 一枚 `Keys.on*` 兜底。§5.9.18 那一节没有「实现口径」块，所以「或」的后一支从没被判过——按
+    // §5.8.3 口径那一封的先例，前一支通了不替后一支结案。
+    //
+    // 这一手是**窗内**那一枚，不往全局表 `hotkey.actions` 里添一行：`ACTIONS` 头上那封信讲的正是
+    // 这件事（「一张*建议*名单抵不过一节*操作*步骤，所以这里发的是文档欠的那一只手而不是替那张表
+    // 添一行」），而 §5.16.1「可绑定范围」那张表也没列关闭。
+    //
+    // 步骤 3 的「销毁」不给第二枚键帽：文档只在这一句里点了「关闭快捷键」，多加一枚就是替文档添
+    // 一位它没要的作者（#281）。
+    Action {
+        id: closeAction
+
+        text: "关闭"
+        onTriggered: win.session.closePin(win.pinId)
+    }
+
+    // 键帽是本档钉的默认，不是 PRD 钉的：§5.9.5 操作步骤 步骤 2 只说「数字键」、§5.9.7 操作步骤
+    // 步骤 2 只说「对应快捷键」，而文档文首「说明」那一句明写「快捷键使用常见默认值举例，
+    // 实际以用户设置和运行平台为准」。这里钉
     // 1=向左旋转、2=向右旋转、3=灰度，即那三行在菜单上的次序；「§5.16.1 用户可在设置中修改
     // 快捷键」那一问目前只覆盖全局表 `hotkey.actions`，窗口内这几枚键还没进那张表，差距逐名记
     // 在台账的欠账里，不在这里冒充已做。
@@ -1966,6 +2029,28 @@ Window {
         onActivated: win.cropMode = false
     }
 
+    // §5.9.18 步骤 1「或使用关闭快捷键」那一只门，叫的是上面 `closeAction` 那一只手。键帽交给 Qt
+    // 的标准关闭键序，与上面复制、取消两枚同一理由：和弦随平台与键盘布局而变，本档不硬写码点
+    // （文档文首「说明」那一句也明写「快捷键使用常见默认值举例，实际以用户设置和运行平台为准」）。
+    // 抬进 `sequences:` 而不是 `sequence:`：一枚标准键序在 Qt 里可以对应**多枚** native 绑定，只接
+    // 第一枚就是漏一半，而 Qt 会为漏掉的那一枚在每趟跑完时抱怨一句 —— 那一句正是量规
+    // `no qml complaints` 那枚行判红的证人。
+    //
+    // **不带 `enabled: !win.typing` 这处退让**，与上面 `StandardKey.Copy` 那一枚同形。退让问的是
+    // 「焦点在框里时用户打的这一个**字符**不是手势」，那说的是 `1`/`2`/`3`/`+`/`-` 五枚**裸键**；
+    // 一枚和弦在任何布局下都不是往框里写字。带上它还会把 `pin_check.rs` 里那枚「这处退让该长在
+    // 旋转、灰度与缩放那五枚键上」的分母改成六 —— 那枚尺数的是**谁身上长了这处退让**，多一枚与
+    // 漏一枚同样判红。
+    // 也不带 `!win.cropMode`：菜单里「关闭」那一行是无条件的，两只门的条件必须一字不差，否则
+    // 「两扇门一只手」在裁剪态下就不成立了。
+    Shortcut {
+        id: closeKey
+
+        sequences: [StandardKey.Close]
+        context: Qt.WindowShortcut
+        onActivated: closeAction.trigger()
+    }
+
     Menu {
         id: pinMenu
 
@@ -1992,15 +2077,21 @@ Window {
         // `asked` 是**递进去**而不是绑出来的（理由与 `AnnotationToolbar.qml` 那封信同一封：绑成一串
         // 就会和面板自己那颗「收起」互相踩掉），而 `ocrWindow.visible` 绑在它上面 —— 读的那一头
         // 是绑定，写的那一头不是，两侧才各走各的。
+        //
+        // §7.3 条 4 的 C2 在贴图这一臂：本机没有识别引擎时，这一行要在**点下之前**就把话说完。
+        // 标注走的仍是「接上 Rust 写好的那一句」而不是这里另拼一句（#281），有引擎时那一格是空串、
+        // 接上去等于什么都没接。`enabled` 假掉之后菜单项自己就灰了，而句子还在 —— 一枚灰掉却
+        // 不说原因的菜单项答不出「为什么不能点」，一枚说了原因的就答得出（条 4 选**标注**不选隐藏）。
         MenuItem {
-            text: "提取文字"
+            text: "提取文字" + win.session.ocr_unavailable
+            enabled: win.session.ocr_unavailable === ""
             onTriggered: {
                 ocrPanel.asked = true
                 win.session.extractPinText(win.pinId)
             }
         }
 
-        // §5.6.2 步骤 1 与 §5.6.3 步骤 1 在贴图这一臂：PRD 那两节各写「点击识别二维码」/
+        // §5.6.2 步骤 1 与 §5.6.3 步骤 1 在贴图这一臂：PRD 那两节各写「点击“识别二维码”」/
         // 「点击条形码识别」，这里一行都担了 —— 底下是同一只读码的手，一行分成两行只会让用户
         // 先猜图上是哪种码。这一格有宽度（菜单项按最长那行拉），所以写全「扫码（二维码 / 条形码）」
         // 而不像工具条那颗只留两个字。
@@ -2081,7 +2172,7 @@ Window {
 
         MenuSeparator { visible: win.view.refreshable }
 
-        // §5.5.8 刷新截图。规则 1 写的是「用户**可选择**覆盖原图或生成新图」，所以这里两行而不
+        // §5.5.8 刷新截图。规则 1 写的是「用户可选择覆盖原图或生成新图」，所以这里两行而不
         // 是一行加一枚开关：按下哪一行的字就是那一枚选择，读完不需要再回头问「现在是哪一种」。
         //
         // 可见性读的是 `view.refreshable` —— 这一枚贴图记不记得自己的**原截图坐标**。从文件、
@@ -2207,14 +2298,16 @@ Window {
         MenuItem { id: allPinsItem
                    text: win.session.all_hidden > 0 ? "显示全部贴图" : "隐藏全部贴图"
                    onTriggered: win.session.toggleAllPins() }
-        // 这一句字面没动，动的是它背后那只手：`closePin` 自 P134 起走 `state::close_pin`，
-        // 名单里有第二枚且本窗在名单里时，关的是那一批而不是本窗一枚。
-        MenuItem { text: "关闭"; onTriggered: win.session.closePin(win.pinId) }
-        // §5.9.18 / PRD 第 1149 行「批量销毁时应提示影响数量」：字面上印着的数由桥侧那一格答
+        // 背后那只手：`closePin` 自 P134 起走 `state::close_pin`，名单里有第二枚且本窗在名单里
+        // 时，关的是那一批而不是本窗一枚。字面「关闭」与落点如今都住在上面 `closeAction` 那一枚
+        // Action 上 —— §5.9.18 步骤 1 的两只门（菜单、关闭快捷键）共指一只手，所以这一行只写
+        // `action:`，既不重述字面也不重写落点（第二处 `onTriggered` 就是第二条会走散的路）。
+        MenuItem { action: closeAction }
+        // §5.9.18 规则第二句「批量销毁时应提示影响数量」：字面上印着的数由桥侧那一格答
         // （`destroyCountFor` → `state::destroy_answer` → 同一张 `hand_targets`），所以它与
-        // 按下之后真正带走的那些枚不可能各走各的。第 1148 行「应显示确认或支持撤销」走的是
-        // 下面那一枚撤销：销毁在状态机里有回头路（`PinSet::restore`），于是这一手不需要一扇
-        // 确认对话框替用户兜住一只本可以撤销的手。
+        // 按下之后真正带走的那些枚不可能各走各的。§5.9.18 规则第一句「应显示确认或支持
+        // 撤销」走的是下面那一枚撤销：销毁在状态机里有回头路（`PinSet::restore`），于是这一手
+        // 不需要一扇确认对话框替用户兜住一只本可以撤销的手。
         MenuItem { id: destroyItem
                    text: "销毁（影响 " + win.destroyReach + " 枚）"
                    onTriggered: win.destroyTarget(win.pinId) }
@@ -2232,7 +2325,7 @@ Window {
         // 删除/重命名/排序、§5.12.4 显示/隐藏 四节在窗上的落点。每一行叫的都是桥侧那一只手，
         // 窗自己一不数名、二不判重名、三不决定「贴图如何处理」—— 那些都是 core 已答过的事
         // （#281）。`model` 绑的是 `win.groupList` 那一枚绑定值，`session.groups` 一到 notify
-        // 就重建这些行，所以「排序变化同步反映到快捷切换菜单」在这里只是重新读同一张表。
+        // 就重建这些行，所以「排序变化应同步反映到快捷切换菜单」在这里只是重新读同一张表。
         Menu {
             id: groupMenu
             title: "分组"

@@ -65,7 +65,7 @@ pub mod qobject {
         #[qproperty(bool, solo_hidden)]
         /// §5.9.5–§5.9.8 的显示状态五枚：角度与四枚开关，逐枚读的是 core 那一枚字段本体
         /// （见 [`crate::state::PinViewData::rotation`] 那封信）。为什么非要有这五枚：
-        /// §5.9.6 的规则是「系统**更新显示状态**」、§5.9.7 与 §5.9.8 的规则是「再次执行恢复」，
+        /// §5.9.6 的规则是「系统更新显示状态」、§5.9.7 与 §5.9.8 的规则是「再次执行恢复」，
         /// 而这两句在没有这五枚之前只有菜单上那六行的**按下**能读——按下之后窗上读不到「现在是
         /// 灰的」，也就读不到「不再是灰的」是同一次开关还是另一次操作。现在两边读的是同一格。
         ///
@@ -448,8 +448,11 @@ impl qobject::PinView {
     /// 透明度也不在这一列里了（§5.10.3）：一次调整改的也是**名单**，而「这一手算几枚」全仓只判
     /// 一次（[`crate::state::PinState::batch_hand`]）。两只落点是 `Session.setPinOpacity`（绝对值）
     /// 与 `Session.stepPinOpacity`（阶梯，Ctrl+滚轮与菜单那两枚都走它）。§5.10.4 的「重置」自
-    /// P134 起同一枚判据走同一只落点（`Session.resetPin`），所以 `cfg` 在这一列里没有读者了 ——
-    /// 它是上一段那封信里「删掉的那一格」的第二位。这一列里剩下的每一手仍
+    /// P134 起同一枚判据走同一只落点（`Session.resetPin`），所以 `cfg` 在**这一格**里没有读者了 ——
+    /// 它是上一段那封信里「删掉的那一格」的第二位。说清楚范围：没有读者说的是 `gesture` 自己，
+    /// 它下面那些手里现在有一位读档的 —— [`Self::wheel_zoom`] 在进这一格**之前**问一次
+    /// [`crate::settings::wheel_resizes`]，而那一句必须先问完再进来，因为 `settings::with` 与
+    /// `state::with` 这两把全局锁不许叠着拿。这一列里剩下的每一手仍
     /// 是"一枚贴图上的一个手势"，所以 `reload` 只重读自己那一扇；批量那三手重读的是名单里每一扇。
     fn gesture<R: Default>(mut self: Pin<&mut Self>, f: impl FnOnce(&mut dyn Gesture) -> R) -> R {
         let id = *self.pin_id() as PinId;
@@ -459,6 +462,12 @@ impl qobject::PinView {
     }
 
     pub fn wheel_zoom(self: Pin<&mut Self>, up: bool, wx: i32, wy: i32) {
+        // §5.9.2 步骤 2 那一条「滚动鼠标滚轮」归 `[pin] wheel_resizes` 管，判在这一只手里
+        // （页上只递方向）。现读而不是启动快照：这一格属于「正要发生的一个事件」，理由见
+        // [`crate::settings::wheel_resizes`]。先问再进 `gesture`：两把全局锁不叠着拿。
+        if !crate::settings::wheel_resizes() {
+            return;
+        }
         // The cursor arrives window-relative; the anchor the state machine wants
         // is a desktop point, because that is the space its window rect lives in.
         let at = PhysPoint::new(self.pos_x() + wx, self.pos_y() + wy);

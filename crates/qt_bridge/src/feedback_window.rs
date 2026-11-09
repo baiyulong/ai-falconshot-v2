@@ -2,10 +2,13 @@
 //!
 //! ## 这一档为什么存在
 //!
-//! [`falcon_core::feedback`] 那一腿早就齐了 —— 名单、脱敏、两把闸、单测都有。缺的是**它的对面**：
-//! `about.send_diagnostics` 与 `about.feedback_channel` 两枚持久键在全仓没有一位独立读者，而
-//! `feedback::payload` 唯一的调用处是 [`crate::state::selftest`]（一格判据，屏幕上没有人能走到）。
-//! 这就是本仓反复出现的那一族缺陷：逻辑齐备、生产路径零调用。这一档把那条路修通。
+//! [`falcon_core::feedback`] 那一腿早就齐了 —— 名单、脱敏、两把闸、单测都有。曾缺的是**它的对面**：
+//! 在本档落地之前，`about.send_diagnostics` 与 `about.feedback_channel` 两枚持久键在全仓没有一位
+//! 独立读者，`feedback::payload` 唯一的调用处也只有 [`crate::state::selftest`]（一格判据，屏幕上
+//! 没有人能走到）—— 本仓反复出现的那一族缺陷：逻辑齐备、生产路径零调用。这一档把那条路修通了，
+//! 两枚键如今各有现读的读者：`send_diagnostics` 由 [`build`] 现读、递给
+//! [`falcon_core::feedback::payload`] 参与两把闸之判；`feedback_channel` 由 [`send`] 现读、经
+//! [`channel_leg`] 走进渠道那道闸（那道闸的作者由下文第 4 步那一行点名，这里不抄第二份）。
 //!
 //! ## 四步各自的作者（谁都不在这里抄第二份）
 //!
@@ -41,7 +44,7 @@ use falcon_core::feedback::{self, Consent, Draft};
 
 use crate::state::Check;
 
-/// PRD 第 1694 行写的就是这七个字（「用户点击“反馈问题”」），**这一枚名唯一的作者**：页上那枚钮、
+/// §5.21.3 步骤 1 写的就是这四个字（「用户点击“反馈问题”」），**这一枚名唯一的作者**：页上那枚钮、
 /// [`crate::settings_view::feedback_words`]、本档 ① 那一格问的都是它。措辞在这里是读数，不是读数
 /// 之外的修饰（#455），所以不把它顺成「意见反馈」「提交问题」，也不抄进 `.qml`。
 ///
@@ -58,7 +61,7 @@ pub const DESC_LABEL: &str = "问题描述";
 /// 中间没有第二份名字。
 pub const LOGS_LABEL: &str = "附加日志";
 
-/// 第 4 步那枚钮（PRD 第 1697 行「发送反馈」）。
+/// 第 4 步那枚钮（§5.21.3 步骤 4「跳转到反馈渠道或发送反馈」里的「发送反馈」）。
 pub const SEND_WORD: &str = "发送反馈";
 
 /// 收起这一块的那枚钮。文档没有给这一枚起字，所以用最普通的两个字，不发明一句「稍后再说」。
@@ -99,7 +102,7 @@ pub const OWNED: [&str; ON_PAGE.len() - 1] = [
 
 /// 这一块用到的四条腿：`(页上那枚东西, 桥上的名字)`。表**不实现任何 handler**，它只是把
 /// 「钮上写着发送、递进产品的却是取消」这一族缺陷做成一格可扫的判据 —— 与
-/// [`crate::history_window::ROUTES`] 同一枚形状，只是这一档的腿全长在设置窗里，不必再抄主人那一列。
+/// `crate::history_window::ROUTES` 同一枚形状，只是这一档的腿全长在设置窗里，不必再抄主人那一列。
 pub const LEGS: [(&str, &str); 4] = [
     (WORD, "feedbackAsk"),
     (DESC_LABEL, "feedbackPreview"),
@@ -317,7 +320,7 @@ pub fn measure() -> (Check, String) {
     let mut rep = Report::new();
     crate::r13::scene_row(&mut rep);
 
-    // ---- ① 第 1 步那七个字，是从**文档自己身上**读回来的。
+    // ---- ① 第 1 步那四个字，是从**文档自己身上**读回来的。
     let quoted = doc_step_word(1);
     rep.row(
         "step 1 names the word the button carries",

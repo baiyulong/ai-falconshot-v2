@@ -59,6 +59,13 @@ Rectangle {
             anchors.centerIn: parent
             text: chip.label
             font.pixelSize: 12
+            // §7.4 第 3 条：「禁用」不许只靠颜色说。灰字是颜色通道，删除线是形状通道。手法与
+            // `CodesPanel` 的 `Chip`、`AnnotationToolbar` 的 `Cell` 是同一枚，理由也是同一个：
+            // 删除线不改 `implicitWidth`，所以一枚钮此刻按不按得动，这一排的宽度与每一枚芯片
+            // 的位置一动不动。这一处不是凑数的第三份副本 ——「复制选中」在**什么都没选中时**
+            // 就是禁用的，而那正是这一屏打开时的默认样子，所以它是全应用被看见最多次的那一枚
+            // 禁用钮。
+            font.strikeout: !chip.usable
             color: chip.usable ? "#f2f2f2" : "#6a6a70"
         }
 

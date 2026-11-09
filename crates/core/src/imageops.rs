@@ -5,10 +5,9 @@
 //! Every function here is pure: it reads a [`Frame`] and returns a new one, so
 //! the same code serves the live preview (a brush stroke re-rasterised per
 //! dirty rect) and the final export. Nothing calls `QImage::save` or any Qt
-//! type — plan §3.3 keeps bitmap work on the Rust side.
+//! type — bitmap work stays on the Rust side.
 
-use crate::encode::EncodeError;
-use crate::frame::{blend_rgba, Frame, FrameError};
+use crate::frame::{Frame, FrameError};
 use crate::geometry::{PhysPoint, PhysRect};
 
 /// What a pixelated block looks like: the mean of the block, hard edges.
@@ -90,59 +89,12 @@ pub fn blur(src: &Frame, radius: u32) -> Result<Frame, FrameError> {
     Ok(out)
 }
 
-/// Mosaic or blur only inside `area`, leaving the rest of the frame as it was.
-/// The area is clipped to the frame, so a stroke that hangs off the edge is
-/// still correct.
-pub fn effect_in(src: &Frame, area: &PhysRect, kind: Effect) -> Result<Frame, EncodeError> {
-    let Some(hit) = area.intersection(&src.bounds()) else {
-        return Ok(src.clone());
-    };
-    if hit.is_empty() {
-        return Ok(src.clone());
-    }
-    let cropped = src.crop(&hit)?;
-    let effected = match kind {
-        Effect::Mosaic { block } => mosaic(&cropped, block)?,
-        Effect::Blur { radius } => blur(&cropped, radius)?,
-    };
-    let mut out = src.clone();
-    out.paste(&effected, PhysPoint::new(hit.x, hit.y));
-    Ok(out)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Effect {
     /// §5.7.9 像素化: the block edge length in physical pixels.
     Mosaic { block: u32 },
     /// §5.7.10 模糊强度: the box radius in physical pixels.
     Blur { radius: u32 },
-}
-
-/// Composite `effect` over `base` weighted by `mask`'s alpha, with `mask` and
-/// `effect` placed at `at`. This is how a feathered brush or a rounded mosaic
-/// patch lands on the picture: the shape lives in the mask, the pixels in the
-/// effect.
-pub fn blend_masked(base: &mut Frame, effect: &Frame, mask: &Frame, at: PhysPoint) {
-    let Some(hit) =
-        PhysRect::new(at.x, at.y, effect.width, effect.height).intersection(&base.bounds())
-    else {
-        return;
-    };
-    for y in hit.y..hit.bottom() {
-        for x in hit.x..hit.right() {
-            let (dx, dy) = (x as u32, y as u32);
-            let (sx, sy) = ((x - at.x) as u32, (y - at.y) as u32);
-            if sx >= effect.width || sy >= effect.height || sx >= mask.width || sy >= mask.height {
-                continue;
-            }
-            let m = mask.get(sx, sy)[3];
-            if m == 0 {
-                continue;
-            }
-            let dst = base.get(dx, dy);
-            base.set(dx, dy, blend_rgba(dst, effect.get(sx, sy), m));
-        }
-    }
 }
 
 /// §5.5.6: what sits outside the rounded corner.
@@ -397,52 +349,6 @@ pub fn still_valid(area: &PhysRect, desktop: &PhysRect) -> Option<PhysRect> {
     desktop.intersection(area)
 }
 
-/// A brush shape mask: opaque inside the shape, transparent outside, with the
-/// edge ramped over `feather` pixels so §5.7.10's "笔刷大小和形状" preview does
-/// not look cut out with scissors.
-pub fn shape_mask(
-    width: u32,
-    height: u32,
-    shape: Shape,
-    feather: u32,
-) -> Result<Frame, FrameError> {
-    let mut out = Frame::new(width, height)?;
-    for y in 0..height {
-        for x in 0..width {
-            let (nx, ny) = (x as f64 + 0.5, y as f64 + 0.5);
-            let inside = match shape {
-                Shape::Rect => true,
-                // 这一格画的是**盒子内接**的那一枚椭圆：长短轴之比是盒子带的，不是这一格带的，
-                // 所以 [`ELLIPSE_RATIO`] 到这里为止 —— 递一枚正方形的盒子进来，圆与椭圆得到
-                // 同一枚盘。想在这一格里看见扁，递的盒子就得是扁的。
-                Shape::Circle | Shape::Ellipse => {
-                    let rx = width as f64 / 2.0;
-                    let ry = height as f64 / 2.0;
-                    let dx = (nx - rx) / rx.max(1e-6);
-                    let dy = (ny - ry) / ry.max(1e-6);
-                    dx * dx + dy * dy <= 1.0
-                }
-            };
-            let a = if feather == 0 || shape == Shape::Rect {
-                if inside {
-                    255.0
-                } else {
-                    0.0
-                }
-            } else {
-                // Distance to the shape edge, in pixels, signed inward.
-                let rx = width as f64 / 2.0;
-                let ry = height as f64 / 2.0;
-                let d = ((nx - rx) / rx).hypot((ny - ry) / ry);
-                let edge = (1.0 - d) * rx.min(ry);
-                (edge / feather as f64).clamp(0.0, 1.0) * 255.0
-            };
-            out.set(x, y, [0, 0, 0, a as u8]);
-        }
-    }
-    Ok(out)
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shape {
     Rect,
@@ -459,30 +365,6 @@ pub enum Shape {
 /// 而一枚按钮后面藏两枚旋钮是界面在赌用户会猜。写在这里而不是写进每一处匹配，是因为「这一支
 /// 笔有多扁」只该有一位作者（#281）。
 pub const ELLIPSE_RATIO: f64 = 2.0;
-
-/// A 1 px hairline in the accent colour, used by the selection rectangle and
-/// by `Plate` defaults; kept here so the QML side and the export side agree.
-pub fn outline(src: &mut Frame, r: &PhysRect, color: [u8; 4], width: u32) {
-    let w = width.max(1);
-    for i in 0..w {
-        let y0 = r.y + i as i32;
-        let y1 = r.bottom() - 1 - i as i32;
-        if y0 < r.bottom() && y0 >= 0 {
-            src.fill_rect_blend(&PhysRect::new(r.x, y0, r.w, 1), color);
-        }
-        if y1 >= r.y && y1 < src.height as i32 {
-            src.fill_rect_blend(&PhysRect::new(r.x, y1, r.w, 1), color);
-        }
-        let x0 = r.x + i as i32;
-        let x1 = r.right() - 1 - i as i32;
-        if x0 >= 0 {
-            src.fill_rect_blend(&PhysRect::new(x0, r.y, 1, r.h), color);
-        }
-        if x1 < src.width as i32 {
-            src.fill_rect_blend(&PhysRect::new(x1, r.y, 1, r.h), color);
-        }
-    }
-}
 
 /// §5.9.7 — display greyscale, alpha untouched. BT.601 luma in fixed point
 /// (`0.299 / 0.587 / 0.114`), the same weighting `image` uses.
@@ -510,28 +392,9 @@ pub fn invert(src: &Frame) -> Frame {
     out
 }
 
-/// Refuse a lossy export whose transparency would silently turn black/white
-/// (§5.5.6 rule, §8.2, §5.4.5 rule 2), unless the caller already flattened it onto
-/// a fill. The list of formats is asked, not listed: `Format::supports_alpha` is the
-/// one authority §5.4.5 needs, and a copy of it here was missing GIF and ICO -
-/// which encode.rs:175 already flattens, so the pixels and the promise disagreed.
-pub fn warns_about_transparency(
-    frame: &Frame,
-    format: crate::encode::Format,
-) -> Result<(), EncodeError> {
-    if format.supports_alpha() {
-        return Ok(());
-    }
-    if frame.has_transparency() {
-        return Err(EncodeError::TransparencyLost(format.ext()));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::encode::Format;
 
     /// 4x4 with a distinct value per pixel, opaque.
     fn gradient() -> Frame {
@@ -590,44 +453,6 @@ mod tests {
             [120, 0, 0, 255]
         );
         assert_eq!(blur(&gradient(), 0).unwrap(), gradient());
-    }
-
-    #[test]
-    fn an_effect_lands_only_inside_its_area() {
-        let src = gradient();
-        let out = effect_in(
-            &src,
-            &PhysRect::new(0, 0, 2, 2),
-            Effect::Mosaic { block: 2 },
-        )
-        .unwrap();
-        assert_eq!(out.get(0, 0), [40, 0, 0, 255]);
-        // Outside the area the original survives untouched.
-        assert_eq!(out.get(3, 3), src.get(3, 3));
-        // An area hanging off the edge is clipped, not rejected.
-        let clipped =
-            effect_in(&src, &PhysRect::new(3, 3, 8, 8), Effect::Blur { radius: 4 }).unwrap();
-        assert_eq!(clipped.get(3, 3), src.get(3, 3));
-        assert_eq!(clipped.width, 4);
-    }
-
-    #[test]
-    fn a_mask_decides_how_much_of_the_effect_shows() {
-        let mut base = Frame::new(2, 1).unwrap();
-        base.set(0, 0, [0, 0, 0, 255]);
-        base.set(1, 0, [0, 0, 0, 255]);
-        let effect = Frame::filled(2, 1, [255, 0, 0, 255]).unwrap();
-        let mut mask = Frame::new(2, 1).unwrap();
-        mask.set(0, 0, [0, 0, 0, 255]);
-        mask.set(1, 0, [0, 0, 0, 51]);
-        blend_masked(&mut base, &effect, &mask, PhysPoint::new(0, 0));
-        assert_eq!(base.get(0, 0), [255, 0, 0, 255]);
-        // 51/255 of the red over black: a soft brush edge, not a hard one.
-        let r = base.get(1, 0)[0];
-        assert!((20..60).contains(&r), "{r}");
-        // A mask placed outside the frame is a no-op, not a panic.
-        blend_masked(&mut base, &effect, &mask, PhysPoint::new(40, 40));
-        assert_eq!(base.get(0, 0), [255, 0, 0, 255]);
     }
 
     #[test]
@@ -783,55 +608,5 @@ mod tests {
             still_valid(&PhysRect::new(2000, 10, 100, 100), &desktop),
             None
         );
-    }
-
-    #[test]
-    fn a_feathered_circle_mask_ramps_its_edge() {
-        let hard = shape_mask(11, 11, Shape::Circle, 0).unwrap();
-        assert_eq!(hard.get(0, 0)[3], 0);
-        assert_eq!(hard.get(5, 5)[3], 255);
-        let soft = shape_mask(11, 11, Shape::Circle, 3).unwrap();
-        assert_eq!(soft.get(0, 0)[3], 0);
-        assert_eq!(soft.get(5, 5)[3], 255);
-        // The ramp is monotone towards the centre, and it is exactly
-        // `feather` pixels wide: 42 → 127 → 212 across the boundary, then
-        // solid from the third pixel in.
-        let (a, b, c) = (soft.get(0, 5)[3], soft.get(1, 5)[3], soft.get(2, 5)[3]);
-        assert!(a > 0 && a < b && b < c && c < 255, "{a} {b} {c}");
-        assert_eq!(soft.get(3, 5)[3], 255);
-        // A rect is filled to its own edges: the brush shape is the frame.
-        let rect = shape_mask(4, 4, Shape::Rect, 2).unwrap();
-        assert_eq!(rect.get(0, 0)[3], 255);
-    }
-
-    #[test]
-    fn an_outline_draws_inside_the_rect() {
-        let mut f = Frame::new(5, 5).unwrap();
-        outline(&mut f, &PhysRect::new(1, 1, 3, 3), [255, 0, 0, 255], 1);
-        assert_eq!(f.get(1, 1), [255, 0, 0, 255]);
-        assert_eq!(f.get(3, 3), [255, 0, 0, 255]);
-        assert_eq!(f.get(2, 2), [0, 0, 0, 0]);
-        assert_eq!(f.get(0, 0), [0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn opaque_output_never_promises_transparency() {
-        let mut f = Frame::new(2, 2).unwrap();
-        f.set(0, 0, [1, 2, 3, 200]);
-        assert!(warnings::first(&f, Format::Jpg).is_some());
-        assert!(warnings::first(&f, Format::Png).is_none());
-        let solid = Frame::filled(2, 2, [1, 2, 3, 255]).unwrap();
-        for fmt in [Format::Jpg, Format::Bmp, Format::Tga, Format::Png] {
-            assert!(warnings::first(&solid, fmt).is_none(), "{fmt:?}");
-        }
-    }
-
-    mod warnings {
-        use super::*;
-        pub fn first(frame: &Frame, format: Format) -> Option<String> {
-            warns_about_transparency(frame, format)
-                .err()
-                .map(|e| e.to_string())
-        }
     }
 }

@@ -7,7 +7,7 @@
 // qt_TexCoord0.
 //
 // Chosen over the four-rectangle drawing for shape expressiveness, not speed -
-// the two were measured indistinguishable (plan §3.5① ⑧), and rounded or
+// the two were measured indistinguishable, and rounded or
 // multi-part selections cannot be assembled from rectangles. The rectangle
 // drawing stays in `CaptureMask.qml` as the `software` RHI fallback, because
 // ShaderEffect needs an RHI and that combination was never measured.

@@ -3,7 +3,9 @@
 //! `xcap` enumerates windows and grabs pixels, but it does not know the DWM's idea
 //! of a window's visible rectangle, cannot name the process behind a handle on
 //! every path, and has no UI Automation client. Those four gaps are this trait, and
-//! this module is where the two that decide *what a user sees* are filled in.
+//! this module is where the ones that decide *what a user sees* are filled in - the
+//! element side by one call into [`crate::uia`], which is where the COM lives so
+//! that nothing in this file has to know about apartments.
 
 use falcon_core::capture::WindowExtras;
 use falcon_core::geometry::{PhysPoint, PhysRect};
@@ -86,14 +88,21 @@ impl WindowExtras for WinExtras {
         Some(PhysRect::new(rect.left, rect.top, w as u32, h as u32))
     }
 
-    /// PRD §5.3.4 - the wheel cycling through the element chain under the cursor.
+    /// PRD §5.3.3/§5.3.4 - the raw UIA element chain inside `owner`, innermost first.
     ///
-    /// Not answered yet, and deliberately not guessed at: a wrong rect here would
-    /// silently select the wrong region, which is worse than no element snapping.
-    /// The UIA client (`IUIAutomation::ElementFromPoint`, then walking parents) is
-    /// the work item that fills this in.
-    fn element_chain(&self, _: PhysPoint) -> Vec<PhysRect> {
-        Vec::new()
+    /// Pure adapter, and deliberately so: [`crate::uia::chain`] walks the control view and
+    /// reports the numbers, while what may become a selection out of them is
+    /// [`falcon_core::capture::element_chain_of`] and the three caps that stop a walk are
+    /// [`falcon_core::capture::element_walk_wanted`]. A wrong rect here would silently
+    /// select the wrong region, so the reading of those numbers lives where it can be
+    /// tested without a desktop - not next to the COM call that cannot be.
+    ///
+    /// `owner` is the handle the caller already decided the cursor points at, and the walk
+    /// starts there rather than at the screen point: while a mask is up, the topmost window
+    /// at every point is this product's own fullscreen window, so a point-based
+    /// `ElementFromPoint` would answer with the tool instead of the button.
+    fn element_chain(&self, owner: u32, p: PhysPoint) -> falcon_core::capture::ElementChain {
+        crate::uia::chain(owner, p)
     }
 
     /// PRD §5.4.3 - the system cursor as a small frame, for "capture with cursor".
@@ -225,7 +234,9 @@ impl WindowExtras for WinExtras {
         None
     }
 
-    fn element_chain(&self, _: PhysPoint) -> Vec<PhysRect> {
+    /// 不支持的平台 ⇒ 空链，与 [`crate::uia::chain`] 非 Windows 那一臂同一句话：§5.3.3 的
+    /// 「无法读取控件信息时，应退化为窗口检测或自由选区」由这一枚空表满足，截图一次也不因此停下。
+    fn element_chain(&self, _: u32, _: PhysPoint) -> Vec<PhysRect> {
         Vec::new()
     }
 

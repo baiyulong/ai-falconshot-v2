@@ -25,7 +25,8 @@
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
-use falcon_core::capture::ScreenSnapshot;
+use falcon_core::annotation::Grip;
+use falcon_core::capture::{LiveCompare, LiveGate, ScreenSnapshot};
 use falcon_core::encode;
 use falcon_core::geometry::{
     anchor_of_corner, anchor_of_drag, constrain_aspect, handle_at, nudge, nudge_edge, nudge_sample,
@@ -184,6 +185,26 @@ pub fn unit_hints() -> String {
     UNIT_HINTS.join("|")
 }
 
+/// 「打进去的那对数被拒了」这一件事的**说法**，两句与 [`MaskState::size_refusal`] 的三支
+/// `return Some` 对上（后两支共一句，理由写在那一枚函数里）。
+///
+/// §7.4 第 3 条要求状态不能只靠颜色表达，而这一格在此之前只有颜色：两枚输入框在 `refused`
+/// 时换成 `#e06a6a`，屏幕上没有任何一处说得出"为什么没换掉尺寸"。更要紧的是那枚颜色**分不出
+/// 它的邻居** —— 用户还没按回车时框也是不红的，按下回车换掉了也是不红的，于是"不红"同时是
+/// "还没提交"和"提交了"。恒真的读数不是通道，句子才分得出这三者。
+///
+/// 两句是**各自命名的常量**，不是 `[&str; 2]` 加一张 `|` 分隔的表。上面那几张表存在，是因为
+/// 页面把整张表一次铺开、再按下标取一格（芯片、单位、锚点都是），"第 `i` 枚字样"与"第 `i` 个
+/// 东西"之间因此有一枚能各自漂移的下标要钉。这里一次只说一句，过桥的是句子本身，**没有下标**
+/// ——没有下标就没有第二个作者（#281）。
+pub const SIZE_REFUSAL_NO_SELECTION: &str = "没换掉尺寸 —— 先拖出一张选区";
+pub const SIZE_REFUSAL_NOT_POSITIVE: &str = "没换掉尺寸 —— 宽和高都得大于 0";
+
+/// §5.3.8 那一枚比例锁的唯一一句拒绝。[`MaskState::set_ratio_spec`] 对一句**非空**的话只有
+/// 一处答 `false`（[`parse_ratio`] 解不出来），所以这里也只有一句。空串不在这一格里：那不是
+/// "打错了"而是"清掉了"，与按「无」（[`RATIO_CELLS`] 的第 0 枚，比例串为空）同一意思。
+pub const RATIO_REFUSAL: &str = "锁不上这个比例 —— 写成 16:10 这种两枚整数的样子";
+
 /// Which screen a confirmed selection came from, as an index into the pairs it is
 /// given - `(monitor name, physical bounds)`, the two things the question reads.
 ///
@@ -336,6 +357,327 @@ fn spawn_auto_ocr(
         .ok()
 }
 
+/// 遮罩窗标题的前缀，Rust 侧唯一一处拼写。
+///
+/// 真正的**作者**是 `qml/CaptureMask.qml` 里那一行 `title: "falconshot-mask-" + view.name`：
+/// 窗是 QML 开的，标题也只能由它起。这一枚常量是把那句抄进 Rust，而抄了就要对账 ——
+/// 单测 `mask_title_prefix_is_the_one_the_page_really_sets` 逐字读那份 QML，两处一分家那一格
+/// 就红（#281：一件事只能有一位作者，第二位必须是它的证人，不能是它的副本）。
+///
+/// Rust 也要认得这个前缀，是因为实时背景那两阶段自检（§5.2.1 实现口径 的判据，判据本体在
+/// [`falcon_core::capture::live_gate`]）要按「遮罩那几扇窗的几何范围」去比两张桌面图，而
+/// 「哪几扇窗是遮罩」这件事在 Win32 那一侧只有标题能答：遮罩与贴图的窗类都是 `QQuickWindow`。
+/// 前缀里不含空格是有意的 —— `pinTopLevels` 交回的是一行按空白切开的字段表
+/// （[`crate::r13::parse_levels`]），带空格的名字会被切成两段，`title=` 那一段就只剩前半截。
+pub const MASK_TITLE_PREFIX: &str = "falconshot-mask-";
+
+/// 一份 census 里认出来的一扇遮罩窗：哪一枚槽的、Win32 那枚手是什么、它在桌面上占哪一块物理矩形。
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaskWindow {
+    /// 槽名（[`Slot::name`]，也就是 capture 层给那台显示器起的 id）：标题去掉前缀之后剩下的那一段。
+    pub name: String,
+    /// [`platform_windows::affinity`] 那三枚手要的就是这一格 —— 摘与不摘都是按 HWND 说的。
+    pub hwnd: u64,
+    pub phys: PhysRect,
+}
+
+/// 从一份 `pinTopLevels` 原文里挑出属于 `names` 这几枚槽的遮罩窗。
+///
+/// 判据是**标题逐字相等**（前缀 + 槽名），不是「以前缀开头」：`m0-display1` 与 `m0-display11`
+/// 两台显示器同时在场时，开头匹配会把后者也算成前者那一扇，而那一扇的矩形不是这块遮罩。
+/// 只认 `visible=1`：藏着的窗仍在 census 里，拿它的矩形去比两张桌面图，比的是屏幕上一块此刻
+/// 没有遮罩的地方 —— 阶段 B 会因此假绿（「摘了之后不再差」在一块压根没被遮的地方本来就成立）。
+///
+/// `names` 的顺序就是交回的顺序，一枚槽最多交回一扇窗；同名两扇取 census 里靠后的那一枚
+/// （那是一场流程里不该出现的形状，而这一格不猜哪一枚才是对的）。
+pub(crate) fn mask_windows_in(raw: &str, names: &[String]) -> Vec<MaskWindow> {
+    let levels = crate::r13::parse_levels(raw);
+    names
+        .iter()
+        .filter_map(|name| {
+            let want = format!("{MASK_TITLE_PREFIX}{name}");
+            levels
+                .iter()
+                .filter(|t| t.visible && t.title == want)
+                .last()
+                .map(|t| MaskWindow {
+                    name: name.clone(),
+                    hwnd: t.hwnd,
+                    phys: t.phys,
+                })
+        })
+        .collect()
+}
+
+/// 几扇遮罩窗合起来占的那一块物理矩形，也就是两阶段自检要比的那一块范围。
+///
+/// 空表交回 `None` 而不是一枚空矩形：「遮罩还没开起来」与「遮罩开在一块面积为零的地方」是
+/// 两句话（#453），而前者是自检**跑不了**的理由，后者是自检跑出来的一枚读数 —— 并成一枚
+/// 空矩形之后，两阶段都会拿 `differs_in` 的 `None` 当答案，读回来的是「比不了」，看不出是
+/// 哪一种比不了。
+pub(crate) fn mask_extent_of(wins: &[MaskWindow]) -> Option<PhysRect> {
+    wins.iter().map(|w| w.phys).reduce(|a, b| a.union(&b))
+}
+
+/// §5.2.1 实时背景那一条腿的**节拍**：333 ms ≈ 每秒 3 帧。
+///
+/// 这一枚数字是从一次真机实测来的，不是挑出来的：`--ignored` 那支 affinity 探针在 2026-11-07
+/// 解锁的桌面上跑过一遍，三次整屏读取各是 312 / 297 / 309 ms。所以节拍钉在「比最慢那一次再长
+/// 一点点」的位置 —— 长于 312 ms，睡的那一段才是真睡而不是被读取自己吃满；又不至于慢到那三帧
+/// 被读成「卡住了」（真被读成那样的风险由 [`live_notice`] 在 `Allowed` 那一档说破）。
+///
+/// 刷新那一趟**不许坐在 GUI 线程上**：312 ms 一次的整屏读取摆在 GUI 线程上就是每秒冻三下鼠标。
+/// 于是节拍只有一枚钟，归 [`live_thread`]；页侧那枚 `Timer` 只是来**取**已经画好的那张
+/// （`mask_view.rs` 的 `live_tick`），它自己不数拍。两处各有一枚钟就是两个作者（#281）。
+///
+/// 为什么不按选区抓一小块：纹理是**按显示器**发的（每枚 [`Slot`] 一块整屏大小的帧），选区只是同一块
+/// 纹理上的一层遮罩；按选区抓得先把这套键的布局改掉，而改完省下的是「抓」那一段的一半，不是「3 fps」
+/// 这一档 —— 上限来自整屏读取本身。代价记在这儿：3072×1920 一张帧约 23 MB，每秒三张过
+/// `shim::store_raw`。
+pub const LIVE_BUDGET_MS: u64 = 333;
+
+/// 一次两阶段自检的**读数**：闸判成什么，以及判成那样所依据的那几枚数。
+///
+/// 判据本体在 [`falcon_core::capture::live_gate`]，这一型不判、只装。装读数是因为 refusal 那句话
+/// 要说得比「做不到」细（#453）：`ExclusionIgnored` 与「三扇里只摘成一扇」是两句话，而后一句只有
+/// `asked`/`excluded` 那两格能作证。
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveReading {
+    /// 闸的答案。
+    pub gate: LiveGate,
+    /// 摘之前那一次比较：差了几枚、比了几枚；`None` = 那一次比不了（与「一枚也不差」不是一句话）。
+    pub stage_a: LiveCompare,
+    /// 摘之后那一次比较，同上。
+    pub stage_b: LiveCompare,
+    /// 要摘几扇：census 里认出来的遮罩窗有几扇。
+    pub asked: usize,
+    /// 摘**成**几扇：逐扇读回来那一档等于 `Excluded` 的有几扇。
+    pub excluded: usize,
+    /// 两次抓屏合起来多少毫秒。这一格不是判据的一部分，是把「3 fps」说破时手里那枚真读数。
+    pub grab_ms: u64,
+}
+
+/// 一次读数 → 说给人听的那一句。**纯函数**：五档答案各说各的话，一句一句都能在不开桌面的机器上
+/// 被测到（#261：判据与话都留在能作证的那一层，QML 只管把答念出来）。
+///
+/// 与 [`MaskState::freeze_notice`] 相反，这一位在 `Allowed` 那一档也说话，而且没有 `None` 那一档：
+/// `freeze_frame` 是用户**自己**拨开的，背景真的跟着桌面走时那画面只有约 3 fps，不说一句就被读成
+/// 「卡住了」；而 `freeze_notice` 在默认那一侧闭嘴，是因为默认那侧屏幕上不许凭空多出一行与用户
+/// 决定无关的话。这一侧每一档都跟用户那一拨有关，所以每一档都有一句（#433：不许静默降级）。
+pub fn live_notice(reading: &LiveReading) -> String {
+    let LiveReading {
+        gate,
+        stage_a,
+        stage_b,
+        asked,
+        excluded,
+        grab_ms,
+    } = *reading;
+    let pair = |c: LiveCompare| match c {
+        Some((changed, compared)) => format!("差 {changed} 枚 / 比 {compared} 枚"),
+        None => "比不了".to_string(),
+    };
+    match gate {
+        LiveGate::Allowed => format!(
+            "[capture] freeze_frame 关着，背景在跟着桌面走：约每秒 3 帧（这一台机器上两次整屏读取\
+             合起来 {grab_ms} ms，节拍 {LIVE_BUDGET_MS} ms）。画面看着不快是这一枚键本来的样子，\
+             不是卡住了。顺带一句：§5.3.2 那份候选窗口表仍是进场那一刻取的一份拷贝，不会跟着\
+             刷新 —— 背景在动，窗口高亮框说的是按下热键那一刻的桌面。"
+        ),
+        LiveGate::CannotCompareFirst => format!(
+            "实时背景起不来：摘之前那一次{} —— 遮罩那几扇窗合起来的那块矩形不在任何显示器上，\
+             或者那一块裁帧失败了。画面仍是按下那一刻冻住的那一帧。",
+            pair(stage_a)
+        ),
+        LiveGate::ReadDoesNotFollow => format!(
+            "实时背景起不来：摘之前那一次{}（在遮罩那块范围里一枚也不差）—— 这条屏幕读取腿没有\
+             跟着桌面走，既取不到新东西，也证明不了「摘出去」那一格。画面仍是按下那一刻冻住的那一帧。",
+            pair(stage_a)
+        ),
+        LiveGate::CannotCompareSecond => format!(
+            "实时背景起不来：摘之后那一次{}。这一档与「摘之前比不了」不是一件事 —— 摘出去那一句\
+             **可能**已经被听了，也可能照旧没被听，量不出来时谁也不知道，所以按没听说。画面仍是\
+             按下那一刻冻住的那一帧。",
+            pair(stage_b)
+        ),
+        LiveGate::ExclusionIgnored => format!(
+            "实时背景起不来：要摘 {asked} 扇、读回来摘成的只有 {excluded} 扇，摘过之后遮罩那块\
+             范围里{}（照旧差）—— WDA_EXCLUDEFROMCAPTURE 对这条读取腿没用，起刷新就是把截图工具\
+             自己拍进图里。画面仍是按下那一刻冻住的那一帧。",
+            pair(stage_b)
+        ),
+    }
+}
+
+/// 刷新那一趟与 GUI 之间的那一只信箱。
+///
+/// 用一只信箱而不用 `mpsc`：`try_recv` 的 `Empty` 把「线程没了」与「还没有新帧」并成一格（#453），
+/// 而这两件在这一支是两句话；再者这里要的只是**最新那一张** —— 排一条队等于让画面去追一块早就
+/// 走远了的桌面。`stop` 那一位由 [`MaskState::close`] 落下，线程每圈读一眼。
+#[derive(Default)]
+struct LiveMail {
+    /// 最新一张已经抓到、还没被 GUI 取走的整屏快照。
+    ///
+    /// 取走（`take`）而不是「留着让几扇窗都看一眼」：灌进 Qt 那一下（`shim::store_raw`）只能在
+    /// GUI 线程上做，而**一次就够** —— [`MaskState::live_publish`] 拿一张快照灌满每一枚槽，所以
+    /// 谁先来谁灌，别扇窗那一拍只是 `reload` 一下把自己那块的新键读走。排一条队则是让画面去追
+    /// 一块早就走远了的桌面。
+    frame: Option<ScreenSnapshot>,
+    /// 自检那一趟的读数，还没被 GUI 取走。
+    reading: Option<LiveReading>,
+    /// 线程自己要说的话（自检那句话，或「整屏读取失败了」），还没被 GUI 取走。
+    said: Option<String>,
+    /// 收工。
+    stop: bool,
+}
+
+static LIVE: OnceLock<Mutex<LiveMail>> = OnceLock::new();
+
+fn live_mail() -> &'static Mutex<LiveMail> {
+    LIVE.get_or_init(|| Mutex::new(LiveMail::default()))
+}
+
+/// 与 [`with`] 同一条口径：毒了就把里面那份接着用。这一支的状态里没有「半更新」是不能看的形状
+/// （`frame`/`reading`/`said` 三格各是一整份），重开一把锁只会把一次读数丢掉。
+fn live_with<R>(f: impl FnOnce(&mut LiveMail) -> R) -> R {
+    let mut guard = live_mail().lock().unwrap_or_else(PoisonError::into_inner);
+    f(&mut guard)
+}
+
+/// `u64` 的 HWND → [`platform_windows::affinity`] 那三枚手要的 `u32`。
+///
+/// 不把那三枚手改宽是**有意**的：这一格唯一一次真机实测（2026-11-07 解锁桌面上跑的 `--ignored`
+/// affinity 探针）走的就是 `exclude(hwnd as u32)`，读回来 `Some(Excluded)`、`magenta after
+/// exclusion = None`、还原之后 `Some(Plain)`。改宽等于把那一次实测作废，得在一台解锁的桌面上
+/// 重跑一遍才算数 —— 而那一趟会在屏幕上真开出一扇洋红窗。
+///
+/// Win64 的窗口句柄是把 32 位那半**符号扩展**出来的，高半不是身份，砍掉它对这一手没有损失。万一
+/// 砍错了（那一枚 HWND 已经死了、或被别的进程回收了），失败形状是安全的：`SetWindowDisplayAffinity`
+/// 报错 → `exclude` 交回 `None` → 摘成的少一枚 → 阶段 B 照旧差 → [`live_gate`](falcon_core::capture::live_gate)
+/// 答 `ExclusionIgnored` → 留冻住的那一帧并把话说出去（#433）。它不会反过来把一扇没摘的窗当成摘了的。
+///
+/// `pub(crate)` 是给 `--live` 那一扇门用的：它要在 `close()` 之后逐枚读回还了没有，而读回的手
+/// 要的正是这同一个 `u32`。抄第二份 `as u32` 就是给上面那一次实测添一处它没证过的拼写（#281）。
+pub(crate) fn narrow(hwnd: u64) -> u32 {
+    hwnd as u32
+}
+
+/// 起那一趟实时刷新。**只许在 GUI 线程上调**：要摘的那几扇窗得先从 Qt 那一侧的 census 里认出来
+/// （[`MaskState::mask_windows`]），而线程里面一次 Qt 也不碰。
+///
+/// `open_snap` 是进场那一刻那一张 —— 阶段 A 要跟它比，比的是「不摘就会被拍进去」这件事本身。
+/// `extent` 是遮罩那几扇窗合起来的那块物理矩形，两阶段都只在这块里点数（差在这块之外只说明桌面
+/// 自己在动，不算证据）。`wins` 就是要摘的那几扇；摘成之后**一直摘着**，收工时逐枚还回去。
+fn spawn_live(
+    open_snap: ScreenSnapshot,
+    extent: PhysRect,
+    wins: Vec<MaskWindow>,
+) -> Result<std::thread::JoinHandle<()>, String> {
+    std::thread::Builder::new()
+        .name("falconshot-live".into())
+        .spawn(move || live_thread(open_snap, extent, wins))
+        .map_err(|e| format!("实时背景起不来：那一趟线程没能起（{e}）。画面仍是按下那一刻冻住的那一帧。"))
+}
+
+/// 刷新那一趟本体。次序就是 §5.2.1 实现口径 钉死的那一条：阶段 A 抓一张跟进场那张比 → 逐扇摘 →
+/// 阶段 B 再抓一张跟阶段 A 那张比 → 把两次读数交给 [`falcon_core::capture::live_gate`] 判。
+///
+/// 摘不成全部**不另起一条分支**：一扇没摘掉的窗在阶段 B 里照旧差得出东西，闸自然答
+/// `ExclusionIgnored`，而「摘成几扇」那一格由 [`live_notice`] 说破。判据仍归 `capture::live_gate`
+/// 这一位作者，这里只量两次数（#281）。
+fn live_thread(open_snap: ScreenSnapshot, extent: PhysRect, wins: Vec<MaskWindow>) {
+    use platform_windows::affinity::{self, Affinity};
+
+    let asked = wins.len();
+    let held: Vec<u64> = wins.iter().map(|w| w.hwnd).collect();
+    // 还回去是这一趟欠的：`WDA_EXCLUDEFROMCAPTURE` 留着的话这扇窗在**别的程序**的录屏与投屏里
+    // 也不出现（`affinity.rs` 头上那一段），而遮罩马上就要被关掉、HWND 会被回收给别人。
+    let restore_all = || {
+        for h in &held {
+            affinity::restore(narrow(*h));
+        }
+    };
+
+    let before = match capture::grab_now() {
+        Ok(f) => f,
+        Err(e) => {
+            live_with(|m| {
+                m.said = Some(format!(
+                    "实时背景起不来：摘之前那一次整屏读取失败了（{e}）。画面仍是按下那一刻冻住的那一帧。"
+                ));
+            });
+            return;
+        }
+    };
+    let stage_a = open_snap.differs_in(&before.snap, &extent);
+
+    let mut excluded = 0usize;
+    for h in &held {
+        if affinity::exclude(narrow(*h)) == Some(Affinity::Excluded) {
+            excluded += 1;
+        }
+    }
+
+    let after = match capture::grab_now() {
+        Ok(f) => f,
+        Err(e) => {
+            restore_all();
+            live_with(|m| {
+                m.said = Some(format!(
+                    "实时背景起不来：摘之后那一次整屏读取失败了（{e}），摘出去那几扇窗已经还回去了。\
+                     画面仍是按下那一刻冻住的那一帧。"
+                ));
+            });
+            return;
+        }
+    };
+    let stage_b = before.snap.differs_in(&after.snap, &extent);
+
+    let reading = LiveReading {
+        gate: falcon_core::capture::live_gate(stage_a, stage_b),
+        stage_a,
+        stage_b,
+        asked,
+        excluded,
+        grab_ms: before.ms.saturating_add(after.ms),
+    };
+    let said = live_notice(&reading);
+    if reading.gate != LiveGate::Allowed {
+        restore_all();
+        live_with(|m| {
+            m.reading = Some(reading);
+            m.said = Some(said);
+        });
+        return;
+    }
+    live_with(|m| {
+        m.reading = Some(reading);
+        m.said = Some(said);
+        // 阶段 B 那一张已经是摘干净之后抓的，直接当第一帧用，省掉一次 312 ms 的整屏读取。
+        m.frame = Some(after.snap);
+    });
+
+    loop {
+        if live_with(|m| m.stop) {
+            break;
+        }
+        let started = Instant::now();
+        match capture::grab_now() {
+            Ok(f) => live_with(|m| m.frame = Some(f.snap)),
+            Err(e) => live_with(|m| {
+                m.said = Some(format!(
+                    "实时背景停了：整屏读取失败（{e}）。画面回到冻住的那一帧，遮罩照旧能用。"
+                ));
+            }),
+        }
+        let slept = LIVE_BUDGET_MS.saturating_sub(started.elapsed().as_millis() as u64);
+        if slept > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(slept));
+        }
+    }
+    restore_all();
+}
+
 /// A screen the mask covers.
 #[derive(Clone, Debug)]
 pub struct Slot {
@@ -396,14 +738,10 @@ pub struct MaskViewData {
     /// 直接向 [`crate::annotate::Layer::typing_text`] 问 —— 同一把锁就是同一个时刻，与
     /// `pen_family` 那一格同一待遇。
     pub font_dip: u32,
-    /// §5.7.3 step 4's 圆角 handle on this window, in the same window-local DIP as
-    /// [`Self::typing`]: the point itself is core's answer ([`crate::annotate::Layer::radius_handle`]
-    /// asks [`falcon_core::annotation::grip_point`]) and this layer only moves it into the
-    /// window's own units, through `MaskState::local_dip` like the field above. `radius_live` is
-    /// "there is one to draw"; the rect is 1×1 because that is the shape the divider takes,
-    /// and QML reads `x`/`y` out of it and draws its own dot.
-    pub radius: PhysRect,
-    pub radius_live: bool,
+    // #86 起，这一格里**不再**有标注把手的那一份几何：把手是一列而不是一枚，`Copy` 的样本
+    // 装不下一列，与上面 `typing_text` 那一句同一条理由。它们改走
+    // [`MaskState::grip_lines`]，由 [`crate::mask_view`] 在同一次锁里问，所以「这一趟的
+    // 选区」与「这一趟的把手」仍然是同一个时刻。
     pub revision: u32,
     pub swaps: u32,
     pub first_swap_ms: Option<u64>,
@@ -621,8 +959,8 @@ pub struct MaskState {
     ///
     /// 还有一条 P106 装真臂时才露出来的口径，P107 关掉了：这一枚**不再是 `commit()` 那一刻读的**。
     /// 画面早在 [`crate::capture::freeze`] 就冻住了，而指针在屏幕上是走的 —— 在门上当场问，
-    /// 贴上去的位置就是「按下完成时指针在哪」，而 §5.4.3 第 419 行「热点位置应与实际屏幕位置
-    /// 一致」里的「实际位置」只能是图里那块屏幕，第 420 行更把延时那一臂的时刻点名成倒计时
+    /// 贴上去的位置就是「按下完成时指针在哪」，而 §5.4.3 规则第 1 条「指针热点位置应与实际屏幕位置
+    /// 一致」里的「实际屏幕位置」只能是图里那块屏幕，规则第 2 条更把延时那一臂的时刻点名成倒计时
     /// 结束。所以取的是**冻结那一格读到的**答案（[`crate::capture::frozen_cursor`]），门只
     /// 把它接进状态，不再自己问桌面。
     ///
@@ -705,6 +1043,25 @@ pub struct MaskState {
     /// 写在 [`Self::press`] 而不是写在页上的 `pressed` 上：按下这一格**同时**是
     /// [`Self::release`] 那一路整窗选中的起点，两件事得有同一个主人。
     pub hover_taken: bool,
+    /// §5.3.3/§5.3.4 —— [`Self::hover_win`] 那一扇窗**里**的元素链，内层在前，桌面物理矩形。
+    ///
+    /// 存的是过完 core 那道闸的链（[`crate::capture::element_chain`] 交回的那一串），不是
+    /// UIA 的原始读数：高亮框、滚轮换层、单击选中三处读的都是同一串能被选的东西。
+    ///
+    /// 空表是合法状态而不是失败，并且**就是** §5.3.3 预期结果第二句那条退化：问不出控件
+    /// （开关 `[capture] highlight_element` 关着、光标不在任何窗上、这一台没有 UIA、这一扇
+    /// 窗没有控件级提供方、矩形全被那道闸丢掉）时，高亮与单击都回到整窗，自由选区照旧能拖。
+    pub hover_elems: Vec<PhysRect>,
+    /// 链上此刻停在哪一层（0 = 最内层）。§5.3.4 步 3 那一枚滚轮动的就是这一格。
+    ///
+    /// 与 `hover_elems` 同生同死：链一换（重新问过一扇窗）这一格就归 0，**不**留着上一次的
+    /// 层数 —— 留着就会在只有两层的窗上停在第三层，而那一格在屏幕上是空的。
+    pub elem_index: usize,
+    /// 这一次链是问**哪一扇窗**问来的。判「要不要重问」只读这一格与下面那一格，不问桌面。
+    pub chain_owner: Option<u32>,
+    /// 最后一次 hover / press 落到的那一点（桌面物理像素）。`element_ask_at` 要用「光标还在
+    /// 不在当前那一层里」这句话，而 `hover_win` 存的是窗的边界、不是指针的位置。
+    pub hover_p: Option<PhysPoint>,
     /// Pixels handed to Qt, and how long that took - the part of the 150 ms
     /// promise that is this module's to keep.
     pub pixels_ms: Option<u64>,
@@ -856,7 +1213,7 @@ pub struct MaskState {
     /// 最近一次揭示的话，成功失败都写这里，不写 [`Self::message`]：那句话是"已保存到
     /// 某个路径（多大）"，通知的行要留着它，否则一句反馈会把另一句证据挤掉。
     pub reveal_last: String,
-    /// 写之前那一档提醒 —— PRD **447** 说的是"应提醒用户背景**将**被填充"，而
+    /// 写之前那一档提醒 —— §5.4.5 规则第 2 条 说的是"应提醒用户背景将被填充"，而
     /// [`Self::message`] 那一行的"已保存到 … 已填成白色"是**事后**说的。
     ///
     /// 它单独占一格，是因为一句话的槽位里"将被"只存在几毫秒就被"已保存"顶掉 —— 那不
@@ -878,7 +1235,7 @@ pub struct MaskState {
     /// 那句证据（[`Self::reveal_last`] / [`Self::auto_copy_last`] 为同一条理由各占过一格）。
     pub send_to_last: String,
     /// 这一次递给目标的那枚临时文件。留着有两个用处：门要读回"我们递出去的那一枚确实在盘上，
-    /// 且在**我们自己那一枚**目录下"；而下一次派发要先把上一枚收回（§6.2 第 1600-1601 行
+    /// 且在**我们自己那一枚**目录下"；而下一次派发要先把上一枚收回（§6.2 存储规则第 4 条
     /// 「临时文件应按策略自动清理」在派发这一路上的那一次轮次）。
     pub send_to_landed: Option<std::path::PathBuf>,
     /// §5.7.21 第二步（把工具栏那一排色块拖着换顺序）的那一句话，改成了与被拒绝都写这里而**不**写
@@ -916,17 +1273,47 @@ pub struct MaskState {
     ///
     /// 除 `show_dimensions` 之外的 12 枚自 P108 起少了一枚（`delay_seconds` 有了行为读者
     /// [`crate::delay::arm_from_config`]，而它**不从这里读** —— 延时决定的是 `open()` 之前等多久，
-    /// 那一刻这枚快照还没取），自 P164 起再少一枚（`size_unit`），自本轮起再少两枚：
+    /// 那一刻这枚快照还没取），自 P164 起再少一枚（`size_unit`），自本轮起再少三枚：
     /// `default_mode` 与 `freeze_frame` 的行为读者是 [`Self::apply_opening`]（`open()` 每场现读，
-    /// 判的本文件 [`Self::opening_hole`] / [`Self::freeze_notice`] 那两枚纯本体）。留在本格的那一份
+    /// 判的本文件 [`Self::opening_hole`] / [`Self::freeze_notice`] 那两枚纯本体），`highlight_element`
+    /// 的行为读者是本文件那一条控件级通路（**该不该问**由 [`Self::element_ask_at`] 第 1 条判、
+    /// **进场那一刻问不问**由 [`Self::apply_opening`] 的 `element` 那一臂判，两处读的都是这一格）。
+    /// 留在本格的那一份
     /// 仍然是「这一场遮罩开着的时候配置长什么样」，各枚读者各说各的时刻，没有谁覆盖谁。
     ///
     /// 快照而不是逐字段 reader：`open()` 只跑一次，中途 `write_back` 不改本会话已经开着的
-    /// 遮罩，和 P64 的 `PinState::new()` 同一形状。**运行期读数仍欠**（第 65 项 ②）——
-    /// `--mask` 门本轮 0 趟，cargo 单测证的是"拨一下读得回两样答案"（`default_mode` 那一臂的
-    /// 两块选区、`freeze_frame` 那一臂的那句话），而**证不了**「用户把 `freeze_frame` 拨到关之后
-    /// 遮罩背景会跟着桌面刷新」—— 那一问在这一版产品没有对应的通路，说的就是
-    /// [`Self::freeze_notice`] 交回来的那一句，不是漏了一句待办。
+    /// 遮罩，和 P64 的 `PinState::new()` 同一形状。
+    ///
+    /// 前提那一半**已经不欠**：2026-11-05/06 那三次量的是锁屏、读数已撤回，而 2026-11-07 在
+    /// 解锁的桌面上量成了（摘之前整块差 212751 枚、`exclude → Some(Excluded)` 之后洋红采不到、
+    /// 洞里露出底下那一层），实时背景那一支自此落地 —— 起读取腿的是 [`Self::arm_live`]，说话的
+    /// 是 [`live_notice`]，进场那一句「正在过闸」的作者是 [`Self::freeze_notice`]。
+    ///
+    /// 门那一半自本轮起也写成了：`--live <ms>`（[`crate::mask_check::live_measure`]）把这一枚
+    /// `freeze_frame` **只在内存里**翻成 `false` 跑一整场（写回落点由调用方钉在量具自己的目录，
+    /// §9.1 第十五条），判据仍归 [`falcon_core::capture::live_gate`]，不另起一套（#281）；闸的
+    /// 四枚码、`live_frames` 那一枚计数、逐槽 `revision == 1 + live_frames` 那条算术自此各有门上
+    /// 的读者。**门跑过的两趟都在锁着的桌面上，两趟都不能替「刷新」作证**：2026-11-08 头一趟
+    /// `--live 8000` 交回 `live check: PASS`，桌面却是锁着的 —— 闸量到「摘之前那一块一枚也不差」
+    /// （0 / 5898240），答 `ReadDoesNotFollow`。于是**拒绝那一支自此有真机证人**：读数递进去了、
+    /// 线程起来了、两趟整屏 624 ms、`live_say` 说出了话、`frames=0 && revision=1` 那条算术对得上、
+    /// 纹理进了 Qt 的仓库又在 `close()` 之后放掉、摘出去那一扇读回 Plain、闹钟在 8000 ms 上收工。
+    /// 而 **`Allowed` 那一支 —— 也就是"背景真的跟着桌面刷新"这一句 —— 证人仍是空的**（#261）；
+    /// cargo 单测证的只是"拨一下读得回两样答案"（`default_mode` 那一臂的两块选区、`freeze_frame`
+    /// 那一臂的那句话）。那一趟报告自己也没喊出来：`desktop scene` 那一格当时读的是 PASS，锁屏就
+    /// 写在它自己那一句里，而没有一个字段能判它。锁自此读得出来
+    /// （[`crate::capture::Scene::locked`]），判它的那一格是本档自己的 `premise desktop
+    /// readable`、判 `Blocked`（`verdict_code` 交成退出码 3）；共享的那一行自此只报不判，因为它
+    /// 还坐在压根不看屏幕的门上（`--pin` 锁着解锁两趟全绿）。为什么这么分，正文归
+    /// [`crate::r13::scene_row`]（#281）。
+    ///
+    /// 门上还欠一格，而且是**说破了**欠着的（#433）：`live texture of` 那族只证到"存进了 Qt 的
+    /// 纹理仓库"（`crates/qt_bridge/cpp/pin_shim.cpp` 的 `maskSelfCheck` 压根不调
+    /// `requestImage`），「URL 换了、页侧真的重取了、玻璃上真的是新那张」这一段读不到 —— 刷新腿
+    /// 整个循环持有 `WDA_EXCLUDEFROMCAPTURE`，而 `PrintWindow` 在一扇被摘的窗上交回什么这台机器
+    /// 没有证人（`platform_windows::affinity` 那枚 `--ignored` 探针读 `print_window` 是在
+    /// `exclude` **之前**）。所以 `dim of` / `hole of` 两族只在 `--mask` 那一档跑，本档报告里由
+    /// `pixels on glass` 那一格 note 说破。
     pub capture: falcon_core::config::Capture,
     /// `[history]` 整段在这一场流程里的快照，P93 起。`Some` 只说"这一场有历史可记"，
     /// **不**替 `enabled` 作第二次主：那一分岔归 [`crate::settings::history_open_in`]
@@ -1059,21 +1446,42 @@ pub struct MaskState {
     /// 与 [`Self::save_then_pin`] 头上那段同一个形状。
     pub history_pin_last: String,
     /// [`Self::annotate_history_row`] 那一条腿说的话（§5.14.2 step 4「标注」，也是 §5.14.3
-    /// step 4「恢复该截图**内容**」唯一把内容放回屏幕上那一腿）。六格失败各说各话：「这一场没有
+    /// step 4「恢复该截图内容」唯一把内容放回屏幕上那一腿）。六格失败各说各话：「这一场没有
     /// 历史」「`enabled` 关着」「库打不开」「没有第 N 行」「那一行的图取不回来」「画面铺不上去」
     /// 「遮罩开不起来」是七件不同的事，与 [`Self::history_replay_last`] 那五格同一口径。
     /// 不占 [`Self::message`]：那一格留给落盘。
     pub history_annotate_last: String,
+    /// §5.2.1 实时背景那一支：**这一场问过闸没有**。与闸的答案分成两格 —— 答案是
+    /// [`Self::live_reading`]，而「问过没有」决定页侧那枚 `Timer` 该不该继续转（没问过就还得问，
+    /// 问过了就该把答取走）。这一格也是「一场只问一次」那把锁：[`Self::note_swap`] 每一帧都会来，
+    /// 不锁就是每帧起一趟线程。
+    pub live_asked: bool,
+    /// 闸过了之后还摘在 `WDA_EXCLUDEFROMCAPTURE` 那一档的 HWND。[`Self::close`] 逐枚还回去 ——
+    /// 不还就是 [`platform_windows::affinity`] 头上那段警告说的那件事：这扇窗在**别的程序**的录屏
+    /// 与投屏里也不出现，而遮罩一关、HWND 会被回收给别人。空表 = 此刻没摘着任何一扇。
+    pub live_excluded: Vec<u64>,
+    /// 自检那一趟的读数。判据本体在 [`falcon_core::capture::live_gate`]，这一格只装答（#281）。
+    /// `None` = 这一场还没量过 —— 与「量过了、答是不许」不是一句话。
+    pub live_reading: Option<LiveReading>,
+    /// 那一趟说的话：[`live_notice`] 那五句之一，或「整屏读取失败了」那一句。
+    /// 不占 [`Self::message`]：那一格留给落盘，与 [`Self::history_copy_last`] 同一条口径。
+    pub live_last: String,
+    /// 这一场刷了几帧。0 = 一帧也没刷（闸没过，或还没到第一帧）。
+    pub live_frames: u32,
+    /// 刷新那一趟的线程手。产品路径上一位也不读它 —— 图的是 `cargo test` 能 `join` 一下，
+    /// 与 [`Self::auto_ocr_join`] 同一枚形状。
+    pub live_join: Option<std::thread::JoinHandle<()>>,
 }
 
-/// [`MaskState::opening_hole`] 要的**事实**：遮罩进场那一刻能问出来的几块矩形，全部由调用方
-/// 递进来，分岔本体自己一问桌面也不问。
+/// [`MaskState::opening_hole`] 要的**事实**：遮罩进场那一刻能问出来的几块矩形与一枚开关的
+/// 真值，全部由调用方递进来，分岔本体自己一问桌面也不问。
 ///
 /// 拆成单独一型的理由与 [`MagnifierLook`] 同一枚：§9.1 第十条要「拨一下读得回两样答案」在一台
-/// 不开窗的机器上判得出，而「光标下是哪一扇窗」「上一次截图是哪一块」这两问都要碰桌面。问桌面
+/// 不开窗的机器上判得出，而「光标下是哪一扇窗」「上一次截图是哪一块」「光标下是哪一枚控件」
+/// 这三问都要碰桌面。问桌面
 /// 那一半因此留在 [`MaskState::apply_opening`]，这一型只装已经答出来的那半。
 ///
-/// `window` / `last` 是 `Option` 而不是空矩形：「这一刻问不出」在那两臂都是**合法答案**而不是
+/// `window` / `last` / `element` 是 `Option` 而不是空矩形：「这一刻问不出」在那三臂都是**合法答案**而不是
 /// 失败，把它写成 `PhysRect::new(0,0,0,0)` 就会与「光标下真有一扇零大小的窗」混成同一格（#453）。
 pub struct OpeningFacts {
     /// `[capture] default_mode = region`（出厂那一侧）用的：[`MaskState::default_hole`] 算出来
@@ -1088,6 +1496,15 @@ pub struct OpeningFacts {
     /// `repeat` 用的：本进程上一次截成过的那一块（§5.2.5）。`None` = 这一趟进程还没有过一次
     /// 选区。
     pub last: Option<PhysRect>,
+    /// `element` 用的：光标此刻在一扇可截窗里压着的**最内层控件**边界，问法是
+    /// [`crate::capture::element_under_cursor`]。`None` = 这一刻问不出（指针不在任何窗上、
+    /// 那一扇窗里没有控件、或闸门把整串都裁掉了）—— 那是答案不是失败（§5.3.3 预期结果第二句
+    /// 要的就是这一格退化）。
+    pub element: Option<PhysRect>,
+    /// `[capture] highlight_element` 的真值，**只是那一格**：控件级那一整条路（高亮、滚轮换层、
+    /// 单击选中）的开关。它在本型里的唯一用处是让 [`MaskState::opening_hole`] 把「用户自己关
+    /// 掉了」与「这一刻问不出」说成两句话（#453 三臂三样答案）—— 判归属、问桌面都不在这一格。
+    pub element_switch: bool,
 }
 
 /// [`MaskState::opening_hole`] 的答案：这一场按哪一块进场，以及需不需要开口说一句。
@@ -1325,6 +1742,8 @@ impl MaskState {
         self.windows = capture::window_candidates();
         self.hover_win = None;
         self.hover_taken = false;
+        self.hover_p = None;
+        self.clear_elements();
         self.virtual_bounds = snap.virtual_bounds;
         // `[capture] default_mode`、`[capture] freeze_frame`、`[advanced] privacy_no_temp_files`
         // 三枚键在产品里的**唯一读者**就在这一行：一场遮罩进场的那一刻。选这一格而不是选在
@@ -1360,6 +1779,187 @@ impl MaskState {
         format!("{name}-{revision}")
     }
 
+    /// 这一场遮罩此刻在桌面上开着的那几扇窗，按槽序。
+    ///
+    /// 问的是 Win32 那一份 census（[`crate::session::shim::top_levels`]）而**不是**
+    /// [`Self::slots`]：槽说的是「本进程打算开几扇窗、各打算落在哪一块几何上」，而两阶段自检
+    /// 要判的是「桌面上真的有那几扇窗吗、`SetWindowDisplayAffinity` 那一句会不会被听」。
+    /// 拿自己的打算当自己的证据正是 #261 不许的那种判法 —— 那一族 bug 的形状是「窗压根没开
+    /// 起来，而报告说自检过了」。
+    ///
+    /// 这一手要 Qt 在场（census 走的是 QML 那一侧的 `topLevelWindows()`），所以判据本体不在
+    /// 这里而在 [`mask_windows_in`]：递一份合成的 census 原文进去就能验，不必开一扇真窗。
+    pub fn mask_windows(&self) -> Vec<MaskWindow> {
+        let names: Vec<String> = self.slots.iter().map(|s| s.name.clone()).collect();
+        mask_windows_in(&crate::session::shim::top_levels(), &names)
+    }
+
+    /// §5.2.1 实时背景那一支**该不该转**：页侧那枚 `Timer` 的 `running` 唯一的读者。
+    ///
+    /// 三条腿，各说各的事：
+    /// 1. `freeze_frame` 开着（出厂就是开的）⇒ 假。这一场压根不去问闸，画面本就该是冻住的
+    ///    那一帧，定时器转起来只是白烧 CPU；
+    /// 2. 遮罩不在场上 ⇒ 假。窗都关了，[`Self::live_tick`] 无处可灌；
+    /// 3. 闸还没答 ⇒ **真**。这一格是 #433「不许静默」逼出来的：闸答「不许」时那一句拒绝是
+    ///    搭着邮箱交回来的，只有定时器转上一圈才取得到。要是这里在 `live_reading.is_none()`
+    ///    时先答假，那一句话就永远躺在邮箱里，用户看到的是一张不动的图**和一片安静** ——
+    ///    正是 PRD §5.2.1 实时背景那一条不许的形状。
+    ///
+    /// 闸答过之后，本函数逐字复读闸那一格（`gate == Allowed`）：判据仍归
+    /// [`falcon_core::capture::live_gate`]，这里不另起一套（#281）。
+    pub fn live_wanted(&self) -> bool {
+        if self.capture.freeze_frame || !self.shown {
+            return false;
+        }
+        match &self.live_reading {
+            None => true,
+            Some(r) => r.gate == LiveGate::Allowed,
+        }
+    }
+
+    /// 实时背景那一支说话的唯一一手：记进 [`Self::live_last`]，并**只在句子变了的时候**追加进
+    /// [`Self::message`]（屏幕上看得见的那一格，#433）。
+    ///
+    /// 去重不是省字：整屏读取失败时那趟线程每 333 ms 就交回同一句话，不去重就是把 `message`
+    /// 撑成一篇复读，而用户真正要读的那一句会被埋掉。
+    fn live_say(&mut self, said: &str) {
+        if self.live_last != said {
+            self.say(said);
+        }
+        self.live_last = said.to_string();
+    }
+
+    /// §5.2.1 实时背景那一支的**问闸**：起那一趟读取腿，一场只起一次。
+    ///
+    /// 挂在 [`Self::note_swap`] 而不是 [`Self::open`] 上，理由是 Win32 那份 census：`open`
+    /// 交回槽表的那一刻 QML 的 `Window` 还没被 `show()` 过，[`Self::mask_windows`] 数得到的是
+    /// **零**扇遮罩窗，于是阶段 A「摘之前那一块必须差」量出来是「一枚也不差」，闸答
+    /// [`LiveGate::ReadDoesNotFollow`] —— 一次**假的**拒绝，而用户看到的是一张永远不动的图。
+    /// 等到最后一扇窗都交出过第一帧，那几扇窗既在 census 里也在屏幕上，阶段 A 才量得到东西。
+    ///
+    /// 交回 `true` 只有一枚意思：这一趟线程真起来了（页侧据此 `reload` 一次，把
+    /// [`Self::live_wanted`] 那枚新读数递给定时器）。其余各条路交回 `false`，并把「为什么没起」
+    /// 说出去 —— 除了那三条「本就不该起」的（键开着、不在场、已经问过了）：那不是失败，
+    /// 说出去反倒是一句谎话。
+    fn arm_live(&mut self) -> bool {
+        if self.capture.freeze_frame || !self.shown || self.live_asked {
+            return false;
+        }
+        if !self.slots.iter().all(|s| s.first_swap_ms.is_some()) {
+            return false;
+        }
+        self.live_asked = true;
+        let Some(snap) = self.snapshot.clone() else {
+            self.live_say(
+                "实时背景起不来：这一场手里没有进场那一刻那一张桌面图，量不了「摘之前那一块\
+                 必须差」。画面仍是按下那一刻冻住的那一帧。",
+            );
+            return false;
+        };
+        let wins = self.mask_windows();
+        let Some(extent) = mask_extent_of(&wins) else {
+            self.live_say(
+                "实时背景起不来：Win32 那份 census 里认不出这一场遮罩的任何一扇窗，量不了\
+                 「摘之前那一块必须差」。画面仍是按下那一刻冻住的那一帧。",
+            );
+            return false;
+        };
+        self.live_excluded = wins.iter().map(|w| w.hwnd).collect();
+        // 邮箱是一枚**跨场**的静态量，而 `stop` 是黏的：上一场 [`Self::close`] 叫过停，这一场
+        // 不把它拨回来，新起的那趟线程一进循环就退出。同一手把上一场没取走的货倒掉 —— 被叫停
+        // 之前它也许刚灌完最后一帧，留着它，这一场第一个 tick 就会把**上一张**桌面当新帧发出去。
+        live_with(|m| {
+            m.stop = false;
+            m.said = None;
+            m.reading = None;
+            m.frame = None;
+        });
+        match spawn_live(snap, extent, wins) {
+            Ok(join) => {
+                self.live_join = Some(join);
+                true
+            }
+            Err(said) => {
+                self.live_excluded.clear();
+                self.live_say(&said);
+                false
+            }
+        }
+    }
+
+    /// 把读取腿交回来的一整张桌面图灌进 Qt：一槽一枚新键，走的是 [`Self::take_revision`] 与
+    /// [`Self::frame_key`] 那两位原作者（#281 —— 键的形状只有一处说了算；`Image.cache: false`
+    /// 只在 URL 真变了的时候才肯重取，所以「刷了」与「看着刷了」差的就是这一枚 revision）。
+    ///
+    /// 槽↔显示器按 `info.id` 配对而**不是**重跑 [`Self::match_monitor`]：那一手要一枚
+    /// [`shim::Screen`]（Qt 的屏幕表，只能在 GUI 线程上问），而 `capture` 那一层的
+    /// `monitor_id` 是 `m{序号}-{名字}` 那一枚稳定读数，同一台机器上两次抓屏给出的 id 一样。
+    ///
+    /// 新那张图里少了一块显示器（拔线、投影断开）时，那一扇窗就此停在最后一帧，并把这件事
+    /// 交回给调用者说出去 —— 不说就是一扇悄悄冻住的窗（#433）。
+    fn live_publish(&mut self, snap: &ScreenSnapshot) -> Option<String> {
+        let revision = self.take_revision();
+        let mut lost: Vec<String> = Vec::new();
+        for slot in &mut self.slots {
+            let Some(mon) = snap.monitors.iter().find(|m| m.info.id == slot.name) else {
+                lost.push(slot.name.clone());
+                continue;
+            };
+            let key = Self::frame_key(&slot.name, revision);
+            shim::store_raw(&key, &mon.frame.pixels, mon.frame.width, mon.frame.height);
+            // 先灌新的、再撤旧的，顺序不能倒：页侧 `Image` 的 URL 绑在 `slot.key` 上，反着来
+            // 会有一瞬间两把键都不在仓库里，那一次重取读到的是一张空图。
+            shim::drop_frame(&slot.key);
+            slot.key = key;
+            slot.revision = revision;
+        }
+        // §5.4.2「颜色值应基于原始屏幕像素」：取色器与放大镜读的是这一格，所以灌完新帧之后
+        // 它得是新那一张 —— 否则背景在动、而取色器读的是三分钟前的桌面。
+        self.snapshot = Some(snap.clone());
+        if lost.is_empty() {
+            return None;
+        }
+        Some(format!(
+            "实时背景：新那一张桌面图里认不出 {}（显示器断开了？），那一扇窗停在最后一帧，\
+             其余照旧在刷。",
+            lost.join("、")
+        ))
+    }
+
+    /// 页侧那枚定时器每 333 ms 来一趟：把邮箱里攒下的东西**取走**（`take`，一次就够 ——
+    /// 读取腿交回的是一整张桌面图，[`Self::live_publish`] 一次灌满每一枚槽）。
+    ///
+    /// 交回的四枚码是四件不同的事（#453，不许并成一枚「有没有动静」）：`0` = 邮箱里什么都没
+    /// 有；`1` = 灌了一帧新的；`2` = 有一句话要说（闸的拒绝，或整屏读取失败）；`3` = 两样都
+    /// 有 —— 闸放行那一趟的第一个 tick 就是这个形状：读数、那句话、第一帧一起来。
+    pub fn live_tick(&mut self) -> i32 {
+        let (said, reading, frame) =
+            live_with(|m| (m.said.take(), m.reading.take(), m.frame.take()));
+        let mut code = 0;
+        if let Some(s) = said {
+            self.live_say(&s);
+            code = 2;
+        }
+        if let Some(r) = reading {
+            if r.gate != LiveGate::Allowed {
+                // 那趟线程自己已经把每一扇窗还回 `WDA_NONE` 了（`restore_all`）；清掉这一格是
+                // 告诉 [`Self::close`] 别再还第二遍。还两遍本身无害（两次 `WDA_NONE`），但
+                // 「谁欠这一笔」得只有一位作者（#281）。
+                self.live_excluded.clear();
+            }
+            self.live_reading = Some(r);
+            code = if code == 0 { 2 } else { 3 };
+        }
+        if let Some(snap) = frame {
+            if let Some(s) = self.live_publish(&snap) {
+                self.live_say(&s);
+            }
+            self.live_frames = self.live_frames.saturating_add(1);
+            code = if code == 0 { 1 } else { 3 };
+        }
+        code
+    }
+
     /// The selection a mask opens with: the middle half of the primary monitor,
     /// or of the whole desktop if the enumeration names no primary. A fixed shape
     /// on purpose - the hole the user drags is M3's, and until then the only
@@ -1377,12 +1977,13 @@ impl MaskState {
     /// `[capture] default_mode` 的**分岔本体**：一次没有点名模式的截图（§5.2.1 的快捷键、
     /// §5.2.2 的托盘项）按下之后，遮罩进场时选区停在哪一块，以及需不需要开口。
     ///
-    /// 写成递事实的一枚纯函数（`free` / `desktop` / `window` / `last` 全部从外面进来），
-    /// 与 [`crate::capture::window_frame`] 的 `decorate_window` 同一枚理由：本函数不开窗、
+    /// 写成递事实的一枚纯函数（`free` / `desktop` / `window` / `last` / `element` 与
+    /// `element_switch` 全部从外面进来），与 [`crate::capture::window_frame`] 的
+    /// `decorate_window` 同一枚理由：本函数不开窗、
     /// 不抓屏、不问桌面，所以 §9.1 第十条那一半（拨一下读得回两样答案）能在 `cargo test` 里判，
     /// 而不是只在真机上被看见。[`MaskState::open`] 是唯一递真事实进来的地方。
     ///
-    /// 四臂各自对面，而**出厂那一臂（`Region`）一字不改** —— 这一枚键从「档里没人读」变成
+    /// 每一臂各自对面，而**出厂那一臂（`Region`）一字不改** —— 这一枚键从「档里没人读」变成
     /// 有人读的那一刻，默认路径的进场选区必须还是 [`Self::default_hole`] 算出来的那一块：
     /// * `Region` ⇒ 就是 `free`，不开口（§5.3.1 自由区域，一直是那样）。
     /// * `Fullscreen` ⇒ `desktop` = 整桌面那一块（遮罩本来就铺满每一块屏，所以这里取快照的
@@ -1392,10 +1993,11 @@ impl MaskState {
     ///   （[`crate::capture::window_under`] 对着**这一场**那张候选表，不另开一条挑窗的路）。
     ///   答不出时**不说成「这一枚模式没做」**：那是另一件事（#453），所以那一臂单独一句。
     /// * `Repeat` ⇒ `last` = §5.2.5 记住的那一块；这一趟进程没截成过东西就说那一句。
-    /// * `Element` ⇒ **这一版产品做不到**：界面元素检测的那一只手（UIA `ElementFromPoint`）
-    ///   在本仓库是 [`falcon_core::capture::WindowExtras::element_chain`] 那一枚交空表的占位，
-    ///   没有第二条路能答出「按钮/输入框的边界」。不替它编一个读者，也不静默：话当场说出口，
-    ///   遮罩按 `free` 进场。
+    /// * `Element` ⇒ `element` = 光标下那一枚**最内层控件**的边界（§5.3.3 第四步要的正是这一块，
+    ///   问法与遮罩里 hover 那一路共用同一枚闸：[`falcon_core::capture::WindowExtras::element_chain`]
+    ///   交 raw 矩形、[`falcon_core::capture::element_chain_of`] 判链）。这一臂另有两句话可说，
+    ///   且两句不是同一件事（#453）：`element_switch` 关着 = 用户自己把控件级那条路整条关了，
+    ///   开着而 `element` 是 `None` = 这一刻桌面上问不出控件。两者都按 `free` 进场，不静默。
     pub fn opening_hole(
         mode: falcon_core::config::CaptureMode,
         facts: &OpeningFacts,
@@ -1422,33 +2024,64 @@ impl MaskState {
                         .to_string(),
                 ),
             },
-            M::Element => Opening::falling_back(
-                facts.free,
-                "[capture] default_mode = element：界面元素检测这一版产品还没有那一只手\
-                 （core 的 element_chain 只会交回空表），这一枚键做不到；这一场按自由区域进场。"
-                    .to_string(),
-            ),
+            M::Element => match (facts.element_switch, facts.element) {
+                (false, _) => Opening::falling_back(
+                    facts.free,
+                    "[capture] default_mode = element，可 `[capture] highlight_element` 关着：\
+                     控件级那一条路（高亮、滚轮换层、单击选中元素）整条是这一枚键管的，\
+                     这一场按自由区域进场。"
+                        .to_string(),
+                ),
+                (true, Some(rect)) => Opening::at(rect),
+                (true, None) => Opening::falling_back(
+                    facts.free,
+                    "[capture] default_mode = element：这一刻问不出光标下是哪一枚控件\
+                     （指针不在任何可截窗上，或那一扇窗里 UIA 交回空表），这一场按自由区域进场。"
+                        .to_string(),
+                ),
+            },
         }
     }
 
-    /// §5.2.1 第二步「应用**冻结**或捕获当前屏幕画面」里 `[capture] freeze_frame` 的那一判。
+    /// §5.2.1 第二步「应用冻结或捕获当前屏幕画面」里 `[capture] freeze_frame` 的那一判。
     ///
-    /// **这一枚键产品做不到**，而做不到的那一面不许静默（#433）：本产品的遮罩背景**天生就是**
-    /// 按下那一刻冻住的那一帧，且这是全模块的头一条规矩（[`crate::capture`] 头顶：屏幕在任何
-    /// 一扇遮罩窗存在之前只读一次，之后每一问都从那一帧答 —— 遮罩出现之后再 `BitBlt` 一次，
-    /// 拍进图里的就是截图工具自己）。「实时取景」要的是一条会随桌面刷新的背景纹理通路，本仓库
-    /// 一处也没有：槽位按 `revision` 存**一帧**、`Image` 的 URL 换了才重画，没有第二条刷新路。
+    /// 两拨法的**形状**没动过：开着（出厂默认）⇒ `None`，默认那一侧屏幕上不许多出一行与用户决定
+    /// 无关的话；关着 ⇒ 一句话，说给用户自己拨过的那一枚键听（#433：拨了没生效也是一件要说的事）。
+    /// 动的是它**说的理由**。
     ///
-    /// 所以关着那一臂交回的就是这句话本身，而不是一个假读者（把画面改成"看起来像活的"既做不
-    /// 到、也不该做）。开着那一臂交回 `None`：默认那一侧屏幕上不许多出一行与用户决定无关的话。
+    /// 这一句原先说的是「这一枚键产品做不到」，做不到的是「背景随桌面刷新」那一臂。拦路的从来不是
+    /// 「没有第二条抓屏路」：[`crate::capture::re_read`] 就是一条会随桌面走的抓屏路，§5.2.5 重复与
+    /// §5.5.8 刷新每一场都在用它。拦路的是 [`crate::capture`] 头顶那一条规矩 —— 屏幕只在任何遮罩窗
+    /// 存在**之前**读一次，遮罩已经在了再抓，拍进图里的就是截图工具自己：用户按下那枚键要拍的东西，
+    /// 正好被这扇遮罩挡住了。让这件事不可能发生只有一格 Win32 的手：把遮罩那几扇窗从**屏幕读取**里
+    /// 摘出去而屏幕上照旧看得见，即 [`platform_windows::affinity`]（`WDA_EXCLUDEFROMCAPTURE`）。
+    /// 而那一手的前提量过三次、三次都不算数：屏幕上当时显示的是**锁屏**（`foreground` = `LockApp.exe`
+    /// / `Windows Default Lock Screen`，会话与合成那两格都好），本进程摆的窗不在屏幕上，于是三条各自
+    /// 独立的读取腿（GDI、WGC、另一个进程的 .NET `CopyFromScreen`）读回同一张不动的锁屏图，整块屏幕
+    /// 在窗出现前后一枚也不差 —— 那个数既不能证「这条腿跟着桌面走」，也不能证「不跟」。
+    ///
+    /// **2026-11-07 那一次在解锁的桌面上量成了**（`cargo test -p platform-windows -- --ignored
+    /// the_probe`）：主屏 (300,300) 一扇 200×200 洋红窗，`foreground` = 本进程、`锁屏=false`；整屏读
+    /// 一次 297–312 ms；窗出现前后整块 3072×1920 差 212751 枚（外接框正是整块屏）⇒ 阶段 A 的「摘
+    /// 之前必须差」成立；`exclude → Some(Excluded)` 之后那一片洋红采不到了 ⇒ 阶段 B 的「摘之后必须
+    /// 不差」成立；`restore → Some(Plain)`；而洞里露出来的是底下那一层（十六采点全是 `[12,12,12,255]`，
+    /// 即桌面本身，不是黑的）。于是「做不到」这三个字在这一版上不再成立：实时取景那一支已经落地
+    /// （[`MaskState::arm_live`] 起读取腿、[`live_notice`] 说话、页侧一枚 333 ms 的钟取货回灌）。
+    ///
+    /// 可这一句交回的**不是**「背景活了」，而是「正在过闸」：闸的答要到第一帧上屏之后才量得出来，
+    /// 进场这一刻手里只有「要去量」这一件事实。把还没量的答先说出去，就是把「这一句会被听」当前提
+    /// —— 那正是 §5.2.1 的实现口径钉死不许做的那一件，也是这台机器上三次锁屏读数教会本仓的那一课。
+    /// 所以关着那一臂只说三件此刻为真的事：这枚键关着、实时取景要先过一道两阶段自检、在它开口之前
+    /// 画面仍是冻的；并明说随后会另有一句，那一句才是这一场的答。判「该不该起刷新」的作者永远不在
+    /// 这里，在 `falcon_core::capture::live_gate`。
     pub fn freeze_notice(freeze_frame: bool) -> Option<String> {
         if freeze_frame {
             return None;
         }
         Some(
-            "[capture] freeze_frame 关着，可这一版遮罩的背景永远是按下那一刻冻住的那一帧：\
-             产品没有实时取景那一路（遮罩出现之后再抓一次屏幕，图里就会带上遮罩自己），\
-             这一枚键做不到，画面仍是冻的。"
+            "[capture] freeze_frame 关着，实时取景这一支要先过一道两阶段自检才敢转（摘之前那一块\
+             必须差、摘之后必须不差），这一场正在量。量完会另说一句，那一句才是这一场的答 —— 闸不\
+             放行就留冻帧，并说清是哪一格不成立。在它开口之前，画面仍是按下那一刻冻住的那一帧。"
                 .to_string(),
         )
     }
@@ -1533,7 +2166,10 @@ impl MaskState {
     /// 的那一枚需要问的**：`region` / `fullscreen` 两臂一次桌面也不碰，`window` 那一臂问的正是
     /// §5.3.3 那位既有的读者 [`crate::capture::window_under_cursor`]（本模块不第二次算「光标落在
     /// 哪一扇窗、该窗可截图的边界是哪一块」，#281），`repeat` 那一臂问的是 §5.2.5 记住的那一块
-    /// （[`crate::capture::last_region`]，与自定义截图对话框、`--last` 同一枚来源）。
+    /// （[`crate::capture::last_region`]，与自定义截图对话框、`--last` 同一枚来源），`element`
+    /// 那一臂问的是 [`crate::capture::element_under_cursor`] —— 全模块**唯一**一次在还没有候选表
+    /// 的时候钻控件链：一次进场只钻一次，而挂在 hover 上的那一路要先过
+    /// [`Self::element_ask_at`] 那四条「该不该花这 50 毫秒」的判据（开关关着时这一臂连链都不钻）。
     ///
     /// 落地走 [`Self::set_hole`] 而不是直接改 `self.hole`：那是选区唯一那一位作者，标注层的裁
     /// 剪跟着它走 —— §5.3.5 的自定义截图与 §5.14.3 的「回到原选区」都是从这一手进去的。
@@ -1550,6 +2186,8 @@ impl MaskState {
             desktop: snap.virtual_bounds,
             window: None,
             last: None,
+            element: None,
+            element_switch: self.capture.highlight_element,
         };
         match mode {
             M::Window => {
@@ -1558,6 +2196,12 @@ impl MaskState {
             M::Repeat => {
                 facts.last = capture::last_region().map(|l| l.rect);
             }
+            // 开关关着时**一次桌面也不问**：`highlight_element` 关的是控件级那一整条路，
+            // 进场那一刻没有理由为一条关着的路花那 50 毫秒（`element_ask_at` 第 1 条同一枚
+            // 判据、同一位作者 —— 这里是它唯一的第二个读处，读的还是那一格真值）。
+            M::Element if facts.element_switch => {
+                facts.element = capture::element_under_cursor();
+            }
             _ => {}
         }
         let opening = Self::opening_hole(mode, &facts);
@@ -1565,9 +2209,11 @@ impl MaskState {
         if let Some(said) = opening.said {
             self.say(&said);
         }
-        // `freeze_frame` 关着时交回的就是「这一枚键这一版产品做不到」那句话本身：本模块没有
-        // 一条能让背景随桌面刷新的路（见 [`Self::freeze_notice`] 头顶），所以这里能做的诚实事情
-        // 只有把它说出来，而不是把画面改成"看起来像活的"。
+        // `freeze_frame` 关着时交回的是「这一支正在过闸」那一句：实时取景那一支已经落地（起读取腿
+        // 的是 [`Self::arm_live`]，挂在第一帧上屏那一刻），可闸的答要等两阶段各一次整屏读取之后才
+        // 量得出来，进场这一刻不许预支它（见 [`Self::freeze_notice`] 头顶那几段）。随后开口的是
+        // [`live_notice`]：放行就说背景在跟着桌面走、约每秒 3 帧（不说就被读成「卡住了」），不放行
+        // 就说清是哪一格不成立、并留冻帧 —— 两样都不许静默（#433）。
         if let Some(said) = Self::freeze_notice(self.capture.freeze_frame) {
             self.say(&said);
         }
@@ -1604,7 +2250,7 @@ impl MaskState {
 
     /// 把一句**这一场自己该说的话**接在 [`Self::message`] 后面。
     ///
-    /// 接而不是换：一次进场可能有两句话（模式问不出 + 实时取景做不到），把它们各占一格就得新
+    /// 接而不是换：一次进场可能有两句话（模式问不出 + 实时取景正在过闸），把它们各占一格就得新
     /// 建一枚 qproperty 并改 QML 绑定，而这一轮的 QML 归另一位（#281 也把"屏幕上那一行该说什么"
     /// 这一件事留给已经有的那一位作者）。空表就是空串，所以 `--mask` 门上「话由落盘那一手写」
     /// 那几格的开局没有被抢先。
@@ -1658,6 +2304,24 @@ impl MaskState {
     /// The mask is over: take the textures out of Qt's process, all of them, since
     /// a 4K desktop is 24 MB per screen and a leak here is a leak the user sees.
     pub fn close(&mut self) {
+        // §5.2.1 实时背景那一支收工。叫停那趟线程，再把**这一格还欠着的**HWND 逐枚还回
+        // `WDA_NONE`：线程自己退出前也会 `restore_all`，但那一刻它可能正卡在一次 312 ms 的整屏
+        // 读取里，而这些 HWND 马上就要被 Qt 回收、发给别的窗 —— 到时候还摘着的就是**别的程序**
+        // 的窗，正是 [`platform_windows::affinity`] 头上那段警告说的那件事。还两遍无害（两次
+        // `WDA_NONE`），所以这一笔由两边都还：谁先到谁还，[`Self::live_excluded`] 被 `take`
+        // 空之后另一边就没得还了。
+        live_with(|m| m.stop = true);
+        for h in std::mem::take(&mut self.live_excluded) {
+            platform_windows::affinity::restore(narrow(h));
+        }
+        // 不 `join`：那一趟循环最长的一次停留是一枚 333 ms 的节拍加一次整屏读取，坐在 GUI 线程上
+        // 等它就是一次用户看得见的卡顿，而它手里那份 `wins` 是自己的一份拷贝，不靠下面这几行
+        // 清掉的槽表过日子。放手就是 detach，它自己会在下一圈开头读到 `stop` 然后退出。
+        self.live_join = None;
+        self.live_asked = false;
+        self.live_reading = None;
+        self.live_frames = 0;
+        self.live_last.clear();
         for slot in &self.slots {
             shim::drop_frame(&slot.key);
             // §5.4.1：这一扇窗**最后**一次 hover 留下的那张放大纹理也一起带走。
@@ -1676,6 +2340,8 @@ impl MaskState {
         self.windows.clear();
         self.hover_win = None;
         self.hover_taken = false;
+        self.hover_p = None;
+        self.clear_elements();
         self.shown = false;
         // The ink's canvases are the same size as the frames they sit on, so a flow
         // that ended without this leaked two 24 MB textures per screen, not one.
@@ -1848,25 +2514,30 @@ impl MaskState {
     /// §5.3.6 第三步与第四步：把打进来的这对着实尺寸换成选区的尺寸，从 [`Self::size_anchor`]
     /// 那一角扩展，超出桌面的那一头让路（[`set_size_within`]）。
     ///
-    /// `false` 的三种来历**都不动选区**：第一步还没走（没有选区可调整）、数字不是正数
-    /// （§5.3.5 那条「宽度和高度必须大于 0」在这一路同用，而 0 与负数打的是同一格键盘）、
-    /// 以及递来的数装不进 `u32`。
+    /// **答的是"为什么没换成"，不是"换没换成"**：`Some` 的那一句就是理由，三种来历**都不动
+    /// 选区**；`None` 才是换掉了。两支 `return Some(SIZE_REFUSAL_NOT_POSITIVE)` 共用一句，是
+    /// 因为在键盘上它们是同一个错 —— 递来的数装不进 `u32` 就是负数（入参是 `i32`，上界装得下，
+    /// 所以这一支只可能是负的），而 `w < 1` 在 `u32` 上就是 0；0 与负数打的是同一格键盘，用户
+    /// 也做同一件事来修它（把那个数改大）。#453 要的是**分得开的失败不许并成一种**，而这两支
+    /// 在用户那一侧分不开。
     ///
-    /// `true` 说的只是"这一对字换掉了尺寸"，**不是**"这就是你打的数"：夹过的结果可能比打的
-    /// 小，那正是第二条规则要的让路，而让了多少由 `reload` 之后那行 W×H 读数自己说。
+    /// `None` 说的只是"这一对字换掉了尺寸"，**不是**"这就是你打的数"：夹过的结果可能比打的
+    /// 小，那正是第二条规则要的让路，而让了多少由 `reload` 之后那行 W×H 读数自己说。夹**不是**
+    /// 拒绝，所以它没有句子 —— 打 99999 的人看到的是数字自己变小了，那比一句"太大了"说的是
+    /// 更多而不是更少。
     ///
     /// 与 §5.3.8 那把锁撞车时，本轮的答案是**打的数字赢、芯片跟着改口**：一次显式的输入比一把
     /// 还亮着的锁新。留着亮着的 1:1 而矩形已经不是 1:1，屏幕上就是一枚在说谎的芯片。判据不新造
     /// 容差 —— 把打出来的矩形再喂回锁自己用的那把 [`constrain_aspect`]，它答"不用改"才算还锁着。
-    pub fn type_size(&mut self, w: i32, h: i32) -> bool {
+    pub fn size_refusal(&mut self, w: i32, h: i32) -> Option<&'static str> {
         if !self.has_selection() {
-            return false;
+            return Some(SIZE_REFUSAL_NO_SELECTION);
         }
         let (Ok(w), Ok(h)) = (u32::try_from(w), u32::try_from(h)) else {
-            return false;
+            return Some(SIZE_REFUSAL_NOT_POSITIVE);
         };
         if w < 1 || h < 1 {
-            return false;
+            return Some(SIZE_REFUSAL_NOT_POSITIVE);
         }
         // §5.3.7 第三步：这对数**先按当前单位换成物理像素**，再交给桌面边界去夹。顺序不能
         // 反过来 —— `set_size_within` 夹的是 [`Self::desktop`]，而桌面是物理像素做的：先夹后换
@@ -1886,10 +2557,32 @@ impl MaskState {
             // 文本框里还写着「16:10」而锁已经不在了（第 162 项 ⑤ 那一族"亮着却画不出锁"）。
             self.pick_ratio(0);
         }
-        true
+        None
     }
 
-    /// §5.3.7 第三步里那句「**当前显示器**缩放比例」的所指：选区**自己那张屏**的缩放，由
+    /// 上一枚函数只答"换没换成"的那一半：`true` = 换掉了。
+    ///
+    /// 留着这一枚薄壳不是为了少改调用点，而是因为**问的问题真的有两个**：本文件 `mod tests` 里
+    /// 那十二处调用都只问前一半（它们判的是"收下了没有"，句子对它们没有任何所指），只有页面上
+    /// 那一格要问"为什么"。把 `bool` 从签名里删掉，等于逼每一个只关心前一半的证人自己
+    /// `.is_none()` 一遍 —— 那不是简化，是把一句话的说法摊到十几个不关心说法的地方去。
+    ///
+    /// **读者只有证人，所以这一枚挂 `#[cfg(test)]`**（与 `history_window::row_present` 同一条
+    /// 口径）：不是把它藏起来，是把"谁在读"写在编译器能核的地方 —— 哪天产品真长出第二个读者，
+    /// 编译会当场要求把它放回去。`#[allow(dead_code)]` 则是把这句话说反（那枚属性说的是"没人读
+    /// 也不要紧"，这里要说的是"只有证人在读"）。
+    ///
+    /// 这一枚属性是本轮**量出来的**，不是推测：`type_size` 在改完返回类型之后的非 test 读者为零
+    /// —— `--mask` 那扇门的尺寸臂问的是 [`MaskState::size_shown`] 与 [`MaskState::set_unit`]
+    /// （`mask_check.rs:634-642`，判的是"切单位不许动选区"与 px/dip 那对读数），过桥的那一枚
+    /// `applySize`（Rust 名 [`crate::mask_view::MaskViewRust::apply_size`]）要的正是句子本身，
+    /// 于是它调的是 [`Self::size_refusal`]。
+    #[cfg(test)]
+    pub fn type_size(&mut self, w: i32, h: i32) -> bool {
+        self.size_refusal(w, h).is_none()
+    }
+
+    /// §5.3.7 第三步里那句「当前显示器缩放比例」的所指：选区**自己那张屏**的缩放，由
     /// [`monitor_slot_for`] 从槽位里问出来（与选区重叠面积最宽的那一扇，打平取更早的那一扇）。
     ///
     /// 不用"这一扇窗自己的缩放"（[`Slot::scale`]）：那样同一张跨屏选区在两扇窗上会读出两个
@@ -2026,11 +2719,50 @@ impl MaskState {
             self.ink.release();
             return;
         }
-        if clicked_not_dragged && self.capture.snap_to_window {
-            // 抽成 [`Self::select_hovered_window`] 是因为这一臂要能在没有窗、没有 Qt 的地方被判：
+        if clicked_not_dragged {
+            // 抽成 [`Self::select_hovered`] 是因为这一臂要能在没有窗、没有 Qt 的地方被判：
             // 同 [`Self::reset_ratio`] 那一条理由（§9.1 第十条的 headless 半边）。
-            self.select_hovered_window();
+            self.select_hovered();
         }
+    }
+
+    /// 单击那一刻**要哪一块**：先要手上那一枚元素（§5.3.3 步 4「用户单击选中该元素」、
+    /// §5.3.4 步 5「用户单击确认所需层级」），元素不在或整枚越出桌面才回到整窗，整窗那一臂
+    /// 仍由 [`falcon_core::capture::CaptureConfig::snap_to_window`] 说了算（§5.3.2 步 4）。
+    ///
+    /// 元素那一臂**不**再读一次 `snap_to_window`：那一枚键管的是「选区贴不贴**窗**的边界」，
+    /// 而控件级那条路的开关是 `[capture] highlight_element` —— 它一关，
+    /// [`Self::element_ask_at`] 就不问，链恒空，`element_bounds` 交回 `None`，这一手因此
+    /// 自己走回整窗那一臂。两处各读一枚键，比这一手读两枚键诚实。
+    pub fn select_hovered(&mut self) -> bool {
+        if let Some(elem) = self.element_bounds() {
+            if self.select_rect(elem) {
+                return true;
+            }
+        }
+        self.capture.snap_to_window && self.select_hovered_window()
+    }
+
+    /// §5.3.2 第四步与 §5.3.3 第四步的**共同**落点：把「屏幕上这一块」交出去成为选区。
+    ///
+    /// 让路给桌面边界（[`PhysRect::clamp_to`] 的**裁剪**而不是
+    /// [`PhysRect::fitted_into`] 的滑动）：一扇被拖出屏幕外的窗、一扇 DWM 说比它所在显示器
+    /// 更宽的最大化窗，屏幕上真的有内容的只有相交那一块，选区多出来的那一圈底下是别的窗。
+    /// 相交为空（这一块已经整块离开桌面）时**不动选区**：把用户刚点出来的空选区再交回一次
+    /// 空，等于让他以为这一枪打空了；留着 0×0 让下一次 hover 重新说话更诚实。
+    ///
+    /// `false` = 这一块与桌面不相交（或退化成 0 高、0 宽）。`true` 说的只是「选区换成了
+    /// 这一块的边界」，不是「这就是全屏幕」。
+    fn select_rect(&mut self, rect: PhysRect) -> bool {
+        let desk = self.desktop();
+        let Some((clipped, _)) = rect.clamp_to(&desk) else {
+            return false;
+        };
+        if clipped.is_empty() {
+            return false;
+        }
+        self.set_hole(clipped);
+        true
     }
 
     /// §5.3.2 第四步的落点：把手里那一扇**光标最直接指向**的窗（[`Self::hover_win`]，第三
@@ -2041,11 +2773,8 @@ impl MaskState {
     /// [`crate::capture::window_under`])，与窗口截图、与屏幕上那圈高亮框同一条矩形。选区、
     /// 高亮、最后截出来的图三处因此不可能各说一遍。
     ///
-    /// 让路给桌面边界（[`PhysRect::clamp_to`] 的**裁剪**而不是
-    /// [`PhysRect::fitted_into`] 的滑动）：一扇被拖出屏幕外的窗、一扇 DWM 说比它所在显示器
-    /// 更宽的最大化窗，屏幕上真的有内容的只有相交那一块，选区多出来的那一圈底下是别的窗。
-    /// 相交为空（这扇窗已经整扇离开桌面）时**不动选区**：把用户刚点出来的空选区再交回一次
-    /// 空，等于让他以为这一枪打空了；留着 0×0 让下一次 hover 重新说话更诚实。
+    /// 「裁进桌面、不相交就不动选区」那两则由 [`Self::select_rect`] 一人写，元素那一臂共用
+    /// 同一只手段。
     ///
     /// `false` = 此刻没有可整窗选中的窗（候选表空、光标在桌面上、或那一扇已经量不出可见
     /// 内容）。`true` 说的只是「选区换成了这一扇窗的边界」，不是「这就是全屏幕」。
@@ -2053,15 +2782,7 @@ impl MaskState {
         let Some((_, rect)) = self.hover_win else {
             return false;
         };
-        let desk = self.desktop();
-        let Some((clipped, _)) = rect.clamp_to(&desk) else {
-            return false;
-        };
-        if clipped.is_empty() {
-            return false;
-        }
-        self.set_hole(clipped);
-        true
+        self.select_rect(rect)
     }
 
     /// §5.3.2 第二、三步：光标走到了这一点，把「最直接指向的那一扇窗」记进
@@ -2079,19 +2800,171 @@ impl MaskState {
     pub fn hover_window(&mut self, index: usize, x: f64, y: f64) -> bool {
         let Some(p) = self.desk_point(index, x, y) else {
             self.hover_win = None;
+            self.hover_p = None;
+            self.clear_elements();
             return false;
         };
         self.hover_win = capture::window_under(&self.windows, p);
+        if self.hover_win.is_none() {
+            // 指针走到了桌面上：链属于它**里面**那一扇窗，窗没了链也就没了。这一格不是拿
+            // `element_bounds` 那道归属判据兜住的 —— 判据在这儿确实会把旧链挡掉（`hover_win`
+            // 空、没有可比的那一扇窗），挡掉的是**这一趟**的画。留着的链会走过的是另一趟：
+            // 光标从桌面再回到同一扇窗、且落在旧的那一层的矩形里时，
+            // [`Self::element_ask_at`] 第 3 条会说「窗没换、层没走出」而不重问，于是屏幕上
+            // 亮的是一串**过期**的读数 —— 那一段里内容可能已经滚过、重排过。链是「这一刻这一
+            // 点上是哪一枚控件」的答案，走出所有窗就是这一刻的答案不再成立，收掉它、让回场
+            // 的那一趟重新问一次，比拿旧答案装新答案诚实（§5.3.3 步 3）。
+            self.hover_p = None;
+            self.clear_elements();
+        } else {
+            self.hover_p = Some(p);
+        }
         // 答的是**页上会画出来的那一格**（[`Self::hover_bounds`]），不是「命中了一扇窗」：
         // 两件事必须有同一个主人，否则桥上就会出现「`live` 说亮、五格读数是空的」或者反过来
         // —— 上面那段「高亮说 A、单击选中 B」防的是同一族错，只是这一回的错法是画不画。
         self.hover_bounds(index).is_some()
     }
 
+    /// §5.3.3 步 2-3 的**该不该问**：这一趟 hover 需不需要重问一次元素链，以及该问哪一扇窗。
+    ///
+    /// `Some((owner, p))` = 该问，`None` = 不该问。四条判据全在这一手，而**问**本身不在：
+    /// UIA 那一腿住在 [`crate::capture::element_chain`]（要碰 COM、要花时间），本函数一次也
+    /// 不问桌面，所以「什么时候舍得花那 50 毫秒」这件事能在不开窗、不起 COM 的地方被判
+    /// （§9.1 第十条的 headless 半边，与 [`Self::opening_hole`] 递事实同一族写法）。
+    ///
+    /// 四条判据，一条一个失效形状：
+    ///
+    /// 1. `[capture] highlight_element` 关着 ⇒ 不问。这一枚键在产品里**只有**这一个读者，
+    ///    而它关的是控件级那一整条路（高亮、滚轮换层、单击选中元素）—— 整窗高亮不受这一枚
+    ///    影响，那是 §5.3.2 第三步，文档里没给它开关。
+    /// 2. 光标不在任何一扇**可截**的窗上 ⇒ 不问。链是「那一扇窗里」的链，没有窗就没有 owner，
+    ///    也就没有「所属窗口」那道闸可依据。
+    /// 3. 窗没换、而光标**还在当前高亮那一层里** ⇒ 不问。hover 是鼠标每动一次问一句，
+    ///    每一次都问就是每次走一万枚兄弟；停在同一层内移动不改答案，所以也不该改花销。
+    ///    链是空的（这一扇窗问不出控件）时同一条判据**不放行**第二次询问 —— 那一串已经答过
+    ///    一次「没有」，每动一次再问一遍就是拿热路径去追一个不会变的答案。这一句只成立在
+    ///    **问完的那一空**上：被上界拦停的空表压根不把 `chain_owner` 记上（见
+    ///    [`Self::take_elements`]），所以它走不进这一格，下一趟照问。
+    /// 4. 换了一扇窗 ⇒ 必问。旧的链属于旧的窗，留着就是拿 A 窗的按钮高亮在 B 窗上。
+    pub fn element_ask_at(&self) -> Option<(u32, PhysPoint)> {
+        if !self.capture.highlight_element {
+            return None;
+        }
+        let (owner, _) = self.hover_win?;
+        let p = self.hover_p?;
+        if self.chain_owner == Some(owner) && self.still_on_level(p) {
+            return None;
+        }
+        Some((owner, p))
+    }
+
+    /// 光标还在不在**当前这一层**里。链是空的算「在」—— 那个答案由
+    /// [`Self::element_ask_at`] 第 3 条那一段解释，不在这里第二次说。
+    fn still_on_level(&self, p: PhysPoint) -> bool {
+        self.hover_elems.is_empty()
+            || self
+                .hover_elems
+                .get(self.elem_index)
+                .is_some_and(|r| r.contains(p))
+    }
+
+    /// 一次 UIA 询问的**归位**：链、停在哪一层、这一串属于哪扇窗，三格一起换。
+    ///
+    /// 三个调用点之外没人能写这三格，为的是它们必须同时换：留着旧链配新窗就是
+    /// [`Self::element_ask_at`] 第 4 条要防的那一形状，而把 `elem_index` 留在外面清就会出现
+    /// 「只有两层的窗停在第三层」（见 [`Self::elem_index`] 头上）。
+    ///
+    /// `chain` 是**闸之后**的那一串（内层在前）。空链照样归位，但**只限问完的那一空**：那是
+    /// 「这一扇窗问不出控件」的答案，得记下来（`chain_owner` 置上），否则下一次 hover 又问一遍
+    /// —— 而「记下来」的正当性全在这一格：这一串确实问完了。
+    ///
+    /// 被上界拦停的空表（[`falcon_core::capture::ElementChain::aborted`] 那一格）**不是一次
+    /// 回答**，所以它不把 `chain_owner` 置上：这一手收掉三格就返回，下一次 hover 于是照第 3
+    /// 条判据的「窗没换、层没走出」不放行不了（`chain_owner` 已经不是这一扇窗）而再问一次。
+    /// 真机读数 2026-11-05 给的就是这一格的必要：本线程第一次询问花 73 毫秒在唤起提供方上、
+    /// 交回空表，紧接着的两趟各花 12 毫秒问出三枚 —— 把第一趟当答案记下，这一场就在同一扇窗
+    /// 上再也不问了，一次热身就变成一场的失明。
+    pub fn take_elements(&mut self, owner: u32, chain: falcon_core::capture::ElementChain) {
+        if chain.rects.is_empty() && chain.aborted {
+            self.clear_elements();
+            return;
+        }
+        self.hover_elems = chain.rects;
+        self.elem_index = 0;
+        self.chain_owner = Some(owner);
+    }
+
+    /// 链与窗都不再有效时把三格一起收掉。`open` / `close` 与 [`Self::hover_window`] 那两条
+    /// 「指针不在这扇窗上了」的腿走这一手。
+    ///
+    /// [`Self::escape`] **不**走这一手，这是刻意的：第一档 Esc 清的是选区，而光标还停在原来
+    /// 那一点上、那一扇窗还是同一扇 —— 链是「这一点上 UIA 交回的那一串」，它与选区没有
+    /// 关系。清掉它，Esc 之后下一次 hover 会因为「窗没换、层没走出」那条判据不去重问，
+    /// 于是高亮框要等光标跨出窗外再回来 —— 空着的那一格是产品行为，不是读数。留着它，
+    /// Esc 之后的第一趟 hover 就把同一串答案重新画出来，与 [`Self::hover_taken`] 那一格
+    /// 把整窗高亮放回来的方向一致。
+    fn clear_elements(&mut self) {
+        self.hover_elems.clear();
+        self.elem_index = 0;
+        self.chain_owner = None;
+    }
+
+    /// §5.3.4 步 3-4：滚轮换一层，`up` = 往**父级**（外头）走。`true` 是「换动了」，
+    /// `false` 是「这一趟什么都没换」。
+    ///
+    /// 到头的两格（最上级、最下级）答 `false` 而不是绕回第一层 —— 那是文档里的一条规则
+    /// （「达到最上级或最下级时，应停止切换」），而绕回会让用户以为滚轮坏了。判据不住在
+    /// 这里：[`falcon_core::capture::element_cycle`] 是唯一作者，本手只负责把答案写回
+    /// [`Self::elem_index`]（#281：同一个数不许有两处各判一次）。
+    pub fn cycle_element(&mut self, up: bool) -> bool {
+        let Some(next) = falcon_core::capture::element_cycle(
+            self.elem_index,
+            self.hover_elems.len(),
+            up,
+        ) else {
+            return false;
+        };
+        self.elem_index = next;
+        true
+    }
+
+    /// 此刻该被高亮（也该被单击选中）的那一枚元素，桌面物理矩形。`None` = 没有链、链不归
+    /// **当前这一扇**窗、或链上这一格越了界 —— 那一条答案是 §5.3.2 那一扇窗，不是第三样东西。
+    ///
+    /// 中间那一道（`chain_owner != 当前 hover 的那扇窗`）不是想象中的敌人：[`Self::press`]
+    /// 为按下的那一点重算 `hover_win` 而**不**重问 UIA（按下不该花那 50 毫秒），于是「上一次
+    /// hover 攒下的链」与「这一次按下的窗」在手指跨了两扇窗时就是两扇窗。上面那句「高亮说
+    /// A、单击选中 B」防的是同一族错，这一回错在跨窗按下。
+    pub fn element_bounds(&self) -> Option<PhysRect> {
+        if self.chain_owner != self.hover_win.map(|(h, _)| h) {
+            return None;
+        }
+        self.hover_elems.get(self.elem_index).copied()
+    }
+
+    /// §5.3.4 规则第一句「应显示当前层级变化的即时反馈」那一行字。
+    ///
+    /// 句子在 Rust 里、不在页上（与 [`crate::annotate`] 的工具名表、[`Self::ratio_names`]
+    /// 同一条口径），所以「层」这个字只会有一处写法。**空串 = 此刻没有链**，页上那一行
+    /// 整个不画 —— 一行「0 / 0 层」比不写更假（#274：一把尺要先能读出空）。
+    pub fn element_line(&self) -> String {
+        let len = self.hover_elems.len();
+        if len == 0 {
+            return String::new();
+        }
+        let here = self.elem_index.min(len - 1) + 1;
+        let end = if here == len { "（最上级）" } else { "" };
+        format!("元素 第 {here} / {len} 层{end}")
+    }
+
     /// [`Self::hover_win`] 在**这一扇遮罩窗**上怎么看：裁进这扇屏、移到这扇屏的原点、除过
     /// 这扇屏的缩放。走 [`Self::local_dip`] 那一位作者，与选区 `hole` 画在哪一格用的是同一
     /// 把尺子 —— 高亮框与选区若各算一遍，200% 屏上就会差出一像素，而那正是「看着贴住了、
     /// 单击之后跳一格」的来历。
+    ///
+    /// 亮的是**哪一块**由 [`Self::element_bounds`] 先答（§5.3.3 步 3 的那一圈控件），没有链
+    /// 才回到整窗（§5.3.2 步 3）。两条读法共用这一手与下面那三格换算，所以「高亮的」与
+    /// 「单击之后选中的」不可能各说一遍 —— 它们读的是同一个答案。
     ///
     /// `None` = 此刻没有可高亮的窗，或那一扇与这扇屏不相交（跨两扇屏的窗在另一扇屏上画的
     /// 是另一块，`local_dip` 自己会裁）。
@@ -2102,7 +2975,9 @@ impl MaskState {
             return None;
         }
         let slot = self.slot(index)?;
-        let (_, rect) = self.hover_win?;
+        let rect = self
+            .element_bounds()
+            .or_else(|| self.hover_win.map(|(_, r)| r))?;
         let local = self.local_dip(slot, &rect);
         (!local.is_empty()).then_some(local)
     }
@@ -2124,8 +2999,16 @@ impl MaskState {
 
     /// The grab radius is a distance a finger travels, so it is stated in
     /// device-independent pixels and this screen's scale turns it into physical
-    /// ones. Five DIP is `falcon_core`'s `DEFAULT_HIT_SLOP`, the same number the
-    /// annotation handles use.
+    /// ones. Five DIP is `falcon_core`'s `DEFAULT_HIT_SLOP`.
+    ///
+    /// 这一枚数**不是**标注把手用的那一枚，早先这里写着"与标注把手同一个数"是一句假话（它还被
+    /// 抄进过 #86 那一条任务记录）。标注那一族量的是 [`GRIP_SLOP`]，而且是**没除过缩放**的画面
+    /// 像素 —— 两者的差不是笔误而是各自的道理，理由写在 `select.rs` 那一枚常量的头上：选区是一
+    /// 个按原尺寸画出来的框，标注常常只是一圈 3 像素的边线，所以"够得着"这件事一个按相对量、
+    /// 一个按绝对量。这一手喂的两处都是选区那一个洞的八枚把手（[`Self::press`] 与
+    /// [`Self::hit_test`] 各自调一次 `geometry::handle_at(&self.hole, …)`），一处也管不到标注。
+    ///
+    /// [`GRIP_SLOP`]: falcon_core::annotation::GRIP_SLOP
     fn hit_slop(&self, index: usize) -> u32 {
         self.slot(index)
             .map(|s| s.scale.dip_to_phys_i(DEFAULT_HIT_SLOP as i32).max(1) as u32)
@@ -2284,7 +3167,7 @@ impl MaskState {
     /// 免得出现"放大镜写着 #FF0000、按 C 复制出 #00FF00"。
     ///
     /// 快照读的是**冻结那一帧**的原始像素（[`ScreenSnapshot::color_at`]），不是屏幕合成结果，
-    /// 所以「颜色值应基于原始屏幕像素、不应受截图遮罩影响」结构性成立。字符串由
+    /// 所以「颜色值应基于原始屏幕像素，不应受截图遮罩影响」结构性成立。字符串由
     /// [`ScreenSnapshot::color_label`] 拼，格式名走 [`Self::capture`] 的 `magnifier_color_format`
     /// —— 与放大镜显示那一行**同一格配置**，§5.19.3 里 HEX/RGB/HSL 三族本来就只有一枚键，
     /// 这里不再新造同义键。
@@ -3025,7 +3908,7 @@ impl MaskState {
         }
     }
 
-    /// §5.14.3 step 4「恢复该截图内容或**重新进入原选区**」的第一条产品腿（P102 起）：把历史
+    /// §5.14.3 step 4「恢复该截图内容或重新进入原选区」的第一条产品腿（P102 起）：把历史
     /// 里那一行的原选区交回遮罩，让人回到当初画的那个框。
     ///
     /// 前面三节各自的腿都已经证明过"那一行确实带着自己的 rect"（[`Self::record_history`] 把
@@ -3120,7 +4003,7 @@ impl MaskState {
         back
     }
 
-    /// §5.14.3 step 4「恢复该截图内容**或**重新进入原选区」里**内容**那一半的第一条产品腿，P116 起；
+    /// §5.14.3 step 4「恢复该截图内容或重新进入原选区」里**内容**那一半的第一条产品腿，P116 起；
     /// 同一张图也正是 §5.14.2 step 4「用户可重新复制、保存、标注或贴图」里**重新复制**那半的第一位
     /// 产品读者（[`falcon_core::history::History::frame`] 自 §6.2 建库起只有单测与
     /// [`Self::replay_history`] 两个读者）。
@@ -3287,7 +4170,7 @@ impl MaskState {
         }
     }
 
-    /// §5.14.2 step 4「标注」的输入腿，也是 §5.14.3 step 4「恢复该截图**内容**」唯一把内容放回
+    /// §5.14.2 step 4「标注」的输入腿，也是 §5.14.3 step 4「恢复该截图内容」唯一把内容放回
     /// 屏幕上的那一腿。四步的**次序就是这一格的全部风险**：
     ///
     /// 冻一帧（[`crate::capture::freeze`]，几何那把尺子只能从这儿来，理由写在 [`open_board`]
@@ -3674,14 +4557,15 @@ impl MaskState {
     /// different things about one picture again (P35: they had, and one of them said it
     /// in English while ignoring `[output] jpeg_quality`).
     ///
-    /// The fourth sentence is the reason P34 exists. Three rows of the PRD ask
-    /// for it - §5.5.5 line 506 ("包含透明背景时，应推荐 PNG"), §5.4.5's line 447
-    /// ("不支持透明度的输出格式应提醒用户背景将被填充") and §5.5.6's line 521 - and all
-    /// three are true of the same write, because `flatten_on_lossy` paints those pixels
-    /// white and the file is then not the picture the user was looking at. The count
-    /// travels with the sentence: "有透明区域" alone is boilerplate, and P33 measured
-    /// what one selection's eraser actually costs (`11684 px`), so the number is the
-    /// difference between a prompt and a shrug.
+    /// The fourth sentence is the reason P34 exists. Two rows of the PRD ask for it:
+    /// §5.5.5 另存为 支持格式要求 第 2 条 ("包含透明背景时，应推荐 PNG") - cited twice, because
+    /// two rotted numbers both landed on that one row - and §5.4.5 透明白板模式 规则 第 2 条
+    /// ("不支持透明度的输出格式应提醒用户背景将被填充"). All of them are true of the same
+    /// write, because `flatten_on_lossy` paints those pixels white and the file is then
+    /// not the picture the user was looking at. The count travels with the sentence:
+    /// "有透明区域" alone is boilerplate, and P33 measured what one selection's eraser
+    /// actually costs (`11684 px`), so the number is the difference between a prompt
+    /// and a shrug.
     ///
     /// The write still happens. The extension was the user's own choice in a file
     /// dialog, this mask has one message line and no modal, and refusing a legitimate
@@ -3720,7 +4604,7 @@ impl MaskState {
             self.message = "选区的画面拼不出来：截图还在，可以再保存一次。".to_string();
             return false;
         };
-        // 写之前先说一次：PRD 447 的措辞是"将被填充"，而 [`crate::save::write`] 一回来
+        // 写之前先说一次：§5.4.5 规则第 2 条的措辞是"将被填充"，而 [`crate::save::write`] 一回来
         // 就把那句话变成"已填成白色"。这一格是提醒，不是确认 —— 照写。
         self.pre_notice =
             crate::save::reminder(&frame, path, chosen, &self.export, "选区").unwrap_or_default();
@@ -3910,7 +4794,7 @@ impl MaskState {
         }
     }
 
-    /// PRD 491 step 4 的那一次点击：通知上按下去，把刚存的那张图在它自己的目录里亮出来。
+    /// §5.5.4 操作步骤 步骤 4 的那一次点击：通知上按下去，把刚存的那张图在它自己的目录里亮出来。
     ///
     /// 计数在**动手之前**加，不在成功之后加：这一格要判的是"点了几下"与"递出去几次"
     /// 是不是同一个数，而一个失败了却不计数的点击会把两次真点击读成一次。
@@ -3924,7 +4808,7 @@ impl MaskState {
     ///
     /// 为什么不复用 [`crate::state::PinState::clip_dir`]：那一枚目录里每张文件的死活是**问剪贴板**
     /// 问出来的（`sweep_clip_files`），而派发出去的这一张没有任何一枚剪贴板引用会指向它 ——
-    /// 放进去等于把它交给一条不属于它的清理规则。§6.2 第 1600-1601 行那两句（「临时文件应按策略
+    /// 放进去等于把它交给一条不属于它的清理规则。§6.2 存储规则第 4、5 条那两句（「临时文件应按策略
     /// 自动清理」与「应避免在退出时删除仍被剪贴板引用的文件」）在两处各按各自那一问执行。
     ///
     /// `pub(crate)` 是给门的，与 `clip_dir` 当初从 `pub(super)` 放开到 `pub(crate)` 同一条理由：
@@ -4128,7 +5012,7 @@ impl MaskState {
         }
     }
 
-    /// PRD 433 / 459's 贴图, and §10 第 43 项 ①'s whole reason: the picture goes to a
+    /// §5.4.4 操作步骤 步骤 5's 贴图, and §10 第 43 项 ①'s whole reason: the picture goes to a
     /// file *first* and the pin is made **from that file**, so what floats on screen
     /// afterwards is the artifact rather than a second reading of the selection.
     ///
@@ -4194,10 +5078,10 @@ impl MaskState {
 
     /// §5.8.1 步 2 的那一枚「贴图」钮：选区直接成为一扇浮窗，全程不碰盘。
     ///
-    /// 它是 [`Self::save_then_pin`] 减掉落盘那一步，而那一步正是这一节存在的理由：PRD 433 的
-    /// 「完成后可复制、保存**或**贴图」是三扇出口，第三扇被要的是一枚贴图 —— 先要用户交出一个
-    /// 目录、一个名字和一份他没打算要的文件，等于把第二扇出口挂着第三扇的牌子再让人走一遍
-    /// （§10 第 43 项 ① 说的是那一件，它有自己的那枚钮，本档不动它）。
+    /// 它是 [`Self::save_then_pin`] 减掉落盘那一步，而那一步正是这一节存在的理由：§5.4.4
+    /// 操作步骤 步骤 5 的「完成后可复制、保存或贴图」是三扇出口，第三扇被要的是一枚贴图 ——
+    /// 先要用户交出一个目录、一个名字和一份他没打算要的文件，等于把第二扇出口挂着第三扇的牌子
+    /// 再让人走一遍（§10 第 43 项 ① 说的是那一件，它有自己的那枚钮，本档不动它）。
     ///
     /// 用的是 [`crate::state::PinState::add`] 而不是 [`crate::state::PinState::add_captured`]：
     /// 后者是 [`falcon_core::pin::PinItem::captured_at`] 唯一的写入者，记的是「这些像素来自屏幕上
@@ -4337,15 +5221,59 @@ impl MaskState {
     /// a second copy of those three steps is a second answer, and the two of them
     /// rounding differently is a field that sits beside its own box.
     fn local_dip(&self, slot: &Slot, desk: &PhysRect) -> PhysRect {
-        let Some(local) = desk.intersection(&slot.bounds) else {
-            return PhysRect::default();
-        };
-        PhysRect::new(
+        self.local_dip_opt(slot, desk).unwrap_or_default()
+    }
+
+    /// [`Self::local_dip`]，但把「这一块根本不在这扇窗上」与「它在这扇窗上」分成两句答
+    /// （#238：一个空值不等于一次判过了的"没有"）。
+    ///
+    /// 把手那一列要这个分别：一枚跨在两屏接缝上的把手，两扇窗**各画自己那一片**才凑得成
+    /// 「画出来的 = 命中得了的」，而真的一枚也不在这扇窗上的那一枚得整个不进串 —— 拿
+    /// `PhysRect::default()` 当"没有"用，页上那一列里就会多出一段摆在 (0,0) 的空条目。
+    fn local_dip_opt(&self, slot: &Slot, desk: &PhysRect) -> Option<PhysRect> {
+        let local = desk.intersection(&slot.bounds)?;
+        Some(PhysRect::new(
             slot.scale.phys_to_dip_i(local.x - slot.bounds.x),
             slot.scale.phys_to_dip_i(local.y - slot.bounds.y),
             slot.scale.phys_to_dip_i(local.w as i32) as u32,
             slot.scale.phys_to_dip_i(local.h as i32) as u32,
-        )
+        ))
+    }
+
+    /// 这一扇窗**此刻该画**的标注把手，已经是页上 `split("|")` 就能喂 `Repeater` 的形状：
+    /// 每段 `x,y,w,h`，窗内 DIP。空串就是「这一扇窗此刻一枚也不画」，页上那两枚 `Repeater`
+    /// 因此各要一道零长段的闸（`"".split("|")` 在 QML 里答的是 `[""]`，一枚假条目）。
+    ///
+    /// 两枚串是按**长相**分的两族：方的一族是改尺寸、挪端点、旋转（§5.7.17 那八枚、§5.7.15
+    /// 那一枚、一段线那两个头），圆的一族只有 §5.7.3 步 4 的圆角把手 —— 拧角与改尺寸是两件
+    /// 事，长得一样就是一枚按下去会做错事的把手。分族是这一手的事（`Grip` 在这里还是一个真
+    /// 类型，`match` 写全了四臂，所以 core 长出一枚新把手时这里编译不过、必须有人来判它长得
+    /// 像哪一族），而"有没有这一枚、它住在哪儿"仍然只有 core 一位作者。
+    ///
+    /// 递的是**命中带本身**，不是页上自己挑的一枚点：那四边就是 core 的
+    /// [`falcon_core::annotation::grip_box`] 量出来、[`falcon_core::annotation::grip_at_any`]
+    /// 拿去答一次按下的同一个矩形，所以「画出来的 = 命中得了的」在屏幕上是同一个数，而不是两个
+    /// 恰好对得上的数（#86）。页上因此一处坐标也不算，连"画多大"都不归它 —— 它只把这四个数摆上去。
+    ///
+    /// [`annotate::Layer::grip_boxes`] 交回来的是文档坐标，这一手只做本窗那一次除法
+    /// （[`Self::local_dip_opt`]，与选区、与 §5.7.11 那个文本框同一位作者）。
+    pub fn grip_lines(&self, index: usize) -> (String, String) {
+        let Some(slot) = self.slot(index) else {
+            return (String::new(), String::new());
+        };
+        let mut square: Vec<String> = Vec::new();
+        let mut dot: Vec<String> = Vec::new();
+        for (grip, desk) in self.ink.grip_boxes() {
+            let Some(r) = self.local_dip_opt(slot, &desk) else {
+                continue;
+            };
+            let line = format!("{},{},{},{}", r.x, r.y, r.w, r.h);
+            match grip {
+                Grip::Radius => dot.push(line),
+                Grip::Box(_) | Grip::EndA | Grip::EndB | Grip::Rotate => square.push(line),
+            }
+        }
+        (square.join("|"), dot.join("|"))
     }
 
     pub fn view_data(&self, index: usize) -> MaskViewData {
@@ -4361,14 +5289,6 @@ impl MaskState {
             .filter(|r| slot.bounds.contains(PhysPoint::new(r.x, r.y)))
             .map(|r| self.local_dip(slot, &r));
         let typing_live = typing.is_some();
-        // 圆角那一枚把手与上面那个文本框走同一条腿：位置是 core 算的，这里只做本窗那一次除法，
-        // 而「不在这扇窗里」的那一支答案是 `None` —— 一台双屏的遮罩上，把手画在握不到的那一只
-        // 窗口上，比不画更难解释。
-        let radius = self
-            .ink
-            .radius_handle()
-            .filter(|p| slot.bounds.contains(*p))
-            .map(|p| self.local_dip(slot, &PhysRect::new(p.x, p.y, 1, 1)));
         // §5.3.7 那对读数在这一趟算，与下面 `hole`／`scale` 是同一份样本：`size_shown()` 读的
         // 是 `self.hole` 与 `self.unit`，分两次问就会出现"数字是这一趟的、单位是上一趟的"。
         let shown = self.size_shown();
@@ -4390,8 +5310,6 @@ impl MaskState {
                 .scale
                 .phys_to_dip_i(self.ink.typing_font_px() as i32)
                 .max(1) as u32,
-            radius: radius.unwrap_or_default(),
-            radius_live: radius.is_some(),
             revision: slot.revision,
             swaps: slot.swaps,
             first_swap_ms: slot.first_swap_ms,
@@ -4408,7 +5326,13 @@ impl MaskState {
 
     /// One presented frame. Only the first is timed, and the clock starts at
     /// `open`, so this is the number the pre-warm work is measured against.
-    pub fn note_swap(&mut self, index: usize) {
+    ///
+    /// 交回的那一枚 `bool` 是 [`Self::arm_live`] 的答，意思是「**这一帧**就是令实时背景那一支
+    /// 起来的那一帧」。页侧据此 `reload` 一次，把 [`Self::live_wanted`] 那枚新读数递给定时器；
+    /// 不这么递，定时器就永远停在 `running: false` 上，读取腿起了也没人去取它的货。
+    /// 只在真起来的那一帧 `reload` 是有意的：`onFrameSwapped` → `reload` → 新帧 →
+    /// `onFrameSwapped` 是一条会自己喂自己的环。
+    pub fn note_swap(&mut self, index: usize) -> bool {
         let elapsed = self.started.map(|t| t.elapsed().as_millis() as u64);
         if let Some(slot) = self.slot_mut(index) {
             slot.swaps += 1;
@@ -4420,6 +5344,7 @@ impl MaskState {
                 crate::state::stamp("swap");
             }
         }
+        self.arm_live()
     }
 
     pub fn note_shader_status(&mut self, index: usize, status: i32) {
@@ -7726,9 +8651,10 @@ mod tests {
         );
     }
 
-    /// PRD 506 ("包含透明背景时，应推荐 PNG") and 447 ("不支持透明度的输出格式应提醒用户
-    /// 背景将被填充"), read against the same selection: PNG keeps what the document has,
-    /// JPG does not - and says so, with the number of pixels it threw away.
+    /// §5.5.5 支持格式要求第 2 条 ("包含透明背景时，应推荐 PNG") and §5.4.5 规则第 2 条
+    /// ("不支持透明度的输出格式应提醒用户背景将被填充"), read against the same selection:
+    /// PNG keeps what the document has, JPG does not - and says so, with the number of
+    /// pixels it threw away.
     #[test]
     fn saving_says_what_a_format_without_alpha_threw_away() {
         let dir = sandbox("transparency");
@@ -7772,9 +8698,9 @@ mod tests {
         );
     }
 
-    /// §10 第 46 项 ①：PRD 447 说的是"**应提醒**用户背景**将**被填充"，而不是"存完之后告
-    /// 诉用户填了"。所以这一条测的是**顺序**：提醒说出口的那一刻，文件还不许在盘上；它自己也
-    /// 不许写。第二半是两句话只差一个时态——同一位用户在一扇门前不能听到两种说法。
+    /// §10 第 46 项 ①：§5.4.5 规则第 2 条说的是"应提醒用户背景将被填充"，而不是
+    /// "存完之后告诉用户填了"。所以这一条测的是**顺序**：提醒说出口的那一刻，文件还不许在盘上；
+    /// 它自己也不许写。第二半是两句话只差一个时态——同一位用户在一扇门前不能听到两种说法。
     #[test]
     fn the_notice_is_said_before_the_file_exists() {
         let dir = sandbox("pre-notice");
@@ -9426,6 +10352,207 @@ mod tests {
         assert!(!m.select_hovered_window(), "没命中任何窗就不谎报选中");
     }
 
+    /// §5.3.3 步 2-3 与 §5.3.4 步 1-2：什么时候**舍得**花那一次 UIA 询问。
+    ///
+    /// 这里判的是 [`MaskState::element_ask_at`] 那四条「该不该问」，一次桌面也不碰、一次链也
+    /// 不问 —— 问那一腿住在 [`crate::capture::element_chain`]，本仓没有能开 COM 的单测（§9.1
+    /// 第十条的 headless 半边）。四条各对一个失效形状，少一条就有一个热路径上的浪费或一次
+    /// 屏幕上的假话。
+    #[test]
+    fn the_element_chain_is_asked_only_when_it_would_answer_something_new() {
+        let mut m = hovering();
+        // ① 开关关着 ⇒ 整条控件级路闭嘴，连一次都不问。
+        m.capture.highlight_element = false;
+        assert!(m.hover_window(0, 30.0, 30.0));
+        assert_eq!(m.element_ask_at(), None, "`highlight_element` 关着就不该问");
+        m.capture.highlight_element = true;
+
+        // ② 光标不在任何一扇可截窗上 ⇒ 没有 owner，也就没有「所属窗口」那道闸。
+        let mut dry = hovering();
+        dry.windows.clear();
+        dry.hover_window(0, 30.0, 30.0);
+        assert_eq!(dry.element_ask_at(), None, "桌面上没有窗，问谁");
+
+        // ③ 第一次走到这一扇窗上 ⇒ 该问，而且问的是**这一扇**。
+        assert_eq!(
+            m.element_ask_at(),
+            Some((7, PhysPoint::new(30, 30))),
+            "换了一扇没问过的窗 ⇒ 必问"
+        );
+
+        // ④ 链已经归位、光标还在当前那一层里走 ⇒ 不问（每动一次问一遍就是拿热路径追一个
+        //    不会变的答案）。
+        let elem = PhysRect::new(25, 25, 50, 20);
+        m.take_elements(7, vec![elem, PhysRect::new(22, 22, 190, 140)].into());
+        assert_eq!(m.element_ask_at(), None, "同一扇窗、同一层内移动不该再问");
+        // 链空着也不问第二次：那一串已经答过一次「这一扇窗里没有控件」。
+        let mut none_chain = hovering();
+        none_chain.hover_window(0, 30.0, 30.0);
+        none_chain.take_elements(7, Vec::new().into());
+        assert_eq!(
+            none_chain.element_ask_at(),
+            None,
+            "空链是答案，不是「还没问过」"
+        );
+
+        // ⑤ 走出了当前那一层 ⇒ 该重问；换了一扇窗 ⇒ 更该重问，且 owner 跟着换。
+        m.hover_window(0, 150.0, 120.0);
+        assert_eq!(
+            m.element_ask_at(),
+            Some((7, PhysPoint::new(150, 120))),
+            "指针走出了高亮那一层，答案就不在原处"
+        );
+        m.hover_window(0, 450.0, 350.0);
+        assert_eq!(
+            m.element_ask_at().map(|(h, _)| h),
+            Some(8),
+            "旧链属于旧窗，换窗必重问（#281 的那一形状）"
+        );
+    }
+
+    /// 链、层号、归属三格**同生同死**：归位一起换（[`MaskState::take_elements`]），指针走出
+    /// 所有窗就一起收掉（[`MaskState::hover_window`] 里那一道）。收掉这一格要防的不是「桌面上
+    /// 画着上一扇窗的按钮」—— 那道归属判据已经把这一格挡住了；是**回场的那一趟**：光标回到
+    /// 同一扇窗、落在旧那一层的矩形里时，`element_ask_at` 第 3 条会说「窗没换、层没走出」而
+    /// 不重问，于是亮的是一串过期的读数（那一段内容可能已经滚过、重排过）。
+    #[test]
+    fn the_chain_is_rehung_when_the_pointer_leaves_every_window() {
+        let mut m = hovering();
+        assert!(m.hover_window(0, 30.0, 30.0));
+        let elem = PhysRect::new(25, 25, 50, 20);
+        m.take_elements(7, vec![elem].into());
+        assert_eq!(m.hover_bounds(0), Some(elem), "有链时亮的是那一枚控件");
+        assert_eq!(m.chain_owner, Some(7));
+
+        // 走到两扇窗都盖不住的那一点（桌面）。
+        assert!(!m.hover_window(0, 600.0, 600.0));
+        assert!(m.hover_elems.is_empty(), "窗没了链就该没了");
+        assert_eq!(m.chain_owner, None);
+        assert_eq!(m.elem_index, 0, "层号不许留着上一次的那一层");
+        assert_eq!(m.hover_p, None);
+        assert_eq!(m.hover_bounds(0), None, "桌面上不画任何一枚控件");
+        assert_eq!(m.element_line(), "", "没有链就没有那行字");
+    }
+
+    /// 「问不出」与「没问出来」必须是两格 —— 这一格是真机读数逼出来的：2026-11-05 第一次在
+    /// 这台机器上跑 UIA 那一手，同一枚把手、同一个点，本线程**第一趟**交回空表（73 毫秒全花在
+    /// 唤起提供方上），紧接着的两趟各花 12 毫秒问出三枚。把第一趟那张空表当「这一扇窗问不出
+    /// 控件」记下，[`MaskState::element_ask_at`] 第 3 条就会在同一扇窗上永远放行「不必再问」，
+    /// 一次热身就变成一场的失明。反过来，问完的那一空**必须**记下，否则光标每动一格都要重问
+    /// 一遍一个不会变的答案。
+    #[test]
+    fn an_aborted_empty_ask_is_not_recorded_as_an_answer() {
+        use falcon_core::capture::ElementChain;
+        let mut m = hovering();
+        assert!(m.hover_window(0, 30.0, 30.0));
+        let owner = m.hover_win.map(|(h, _)| h).unwrap();
+        let p = m.hover_p.unwrap();
+
+        // 被上界拦停的空表：归属不记 ⇒ 下一趟照问（`chain_owner` 不是这一扇窗，第 3 条不放行）。
+        m.take_elements(
+            owner,
+            ElementChain { rects: Vec::new(), aborted: true },
+        );
+        assert_eq!(m.chain_owner, None, "没问出来不许装成一句答案");
+        assert_eq!(m.element_ask_at(), Some((owner, p)), "下一趟还得再问一次");
+        assert_eq!(m.element_bounds(), None, "空表就是不亮，而不是亮上一趟的旧链");
+
+        // 问完的那一空：是一句答案，记下来，第 3 条从此放行。
+        m.take_elements(owner, ElementChain::walked(Vec::new()));
+        assert_eq!(m.chain_owner, Some(owner), "「这一扇窗问不出控件」得有个凭据");
+        assert_eq!(m.element_ask_at(), None, "已经答过一次『没有』就不再拿热路径追它");
+
+        // 拦停而**有**读数：已经问到的那一枚是真装着那一点的元素，照旧亮、照旧归这一扇窗。
+        let inner = PhysRect::new(25, 25, 50, 20);
+        m.take_elements(owner, ElementChain { rects: vec![inner], aborted: true });
+        assert_eq!(m.element_bounds(), Some(inner), "拦停前问到的那一枚不算白问");
+        assert_eq!(m.chain_owner, Some(owner));
+
+        // 另一头的退化：非 Windows 那一臂（[`falcon_core::capture::NoopExtras`]）交回的是
+        // 问完的空链，所以「不支持的平台自动退化」不会变成每动一次问一次。
+        let mut bare = hovering();
+        bare.hover_window(0, 30.0, 30.0);
+        let owner = bare.hover_win.map(|(h, _)| h).unwrap();
+        bare.take_elements(owner, ElementChain::walked(Vec::new()));
+        assert_eq!(bare.element_ask_at(), None, "退化了就不再问");
+    }
+
+    /// §5.3.4 步 3-4 + 规则两句：滚轮换层、**到最上/最下级停止**、以及那句即时反馈本身。
+    #[test]
+    fn the_wheel_walks_levels_and_stops_at_both_ends() {
+        let mut m = hovering();
+        // 内层在前（`element_chain` 那一纸契约），所以出厂停在这一串的第一格。
+        let inner = PhysRect::new(25, 25, 50, 20);
+        let middle = PhysRect::new(22, 22, 190, 140);
+        let outer = PhysRect::new(20, 20, 200, 150);
+        m.hover_window(0, 30.0, 30.0);
+        m.take_elements(7, vec![inner, middle, outer].into());
+        assert_eq!(m.element_line(), "元素 第 1 / 3 层", "出厂停在最里那一层");
+        assert!(!m.cycle_element(false), "已经是最下级 ⇒ 再往里不动，也不绕回");
+
+        assert!(m.cycle_element(true));
+        assert_eq!(m.element_bounds(), Some(middle), "换层换的是高亮那一格");
+        assert_eq!(m.element_line(), "元素 第 2 / 3 层");
+        assert!(m.cycle_element(true));
+        assert_eq!(m.element_line(), "元素 第 3 / 3 层（最上级）");
+        assert!(!m.cycle_element(true), "到达最上级 ⇒ 停止切换");
+        assert_eq!(m.element_bounds(), Some(outer), "停下就是把用户留在最后那一格");
+
+        // 没有链的两手都不谎报：换不动、也没那句话可说。
+        let mut bare = hovering();
+        bare.hover_window(0, 30.0, 30.0);
+        assert!(!bare.cycle_element(true));
+        assert_eq!(bare.element_line(), "");
+    }
+
+    /// §5.3.3 步 3-4 与 §5.3.4 步 5：有链时**高亮与单击读的是同一枚控件**。
+    ///
+    /// 两件事共用 [`MaskState::element_bounds`] 一处答案，所以这一格里「屏幕上亮的」与
+    /// 「松手后选中的」不可能各说一遍。`snap_to_window` 关着也照样贴合控件：那一枚键管的是
+    /// 整窗吸附，控件那一路的开关是 `highlight_element`（见 [`MaskState::select_hovered`]）。
+    #[test]
+    fn a_click_selects_the_element_when_there_is_one() {
+        let mut m = hovering();
+        m.hover_window(0, 30.0, 30.0);
+        let elem = PhysRect::new(25, 25, 50, 20);
+        m.take_elements(7, vec![elem].into());
+        assert_eq!(m.hover_bounds(0), Some(elem));
+
+        m.press(0, 30.0, 30.0);
+        m.release();
+        assert_eq!(m.hole, elem, "选区自动贴合控件边界（§5.3.3 预期结果第一句）");
+        assert_ne!(m.hole, PhysRect::new(20, 20, 200, 150), "没有偷偷退回整扇窗");
+
+        let mut no_snap = hovering();
+        no_snap.capture.snap_to_window = false;
+        no_snap.hover_window(0, 30.0, 30.0);
+        no_snap.take_elements(7, vec![elem].into());
+        no_snap.press(0, 30.0, 30.0);
+        no_snap.release();
+        assert_eq!(no_snap.hole, elem, "整窗吸附关着，控件那一臂照旧落");
+    }
+
+    /// 跨窗按下：链是上一次 hover 在 **7 号**上攒的，而按下那一点命中的是 **8 号**。
+    /// [`MaskState::press`] 不重问 UIA（按下不该花那 50 毫秒），所以这一格必须**不**拿 7 号
+    /// 的控件当选区 —— 那是 [`MaskState::element_bounds`] 中间那道归属判据唯一防的东西。
+    #[test]
+    fn a_chain_from_another_window_never_selects_this_one() {
+        let mut m = hovering();
+        m.hover_window(0, 30.0, 30.0);
+        m.take_elements(7, vec![PhysRect::new(25, 25, 50, 20)].into());
+        // 光标走到只有 8 号盖得住的那一点：按下重算 `hover_win`，链还是 7 号那一串。
+        m.press(0, 450.0, 350.0);
+        assert_eq!(m.hover_win.map(|(h, _)| h), Some(8), "夹具：这一枪落在另一扇窗上");
+        assert_eq!(m.element_bounds(), None, "不归这一扇窗的链不算控件");
+
+        m.release();
+        assert_eq!(
+            m.hole,
+            PhysRect::new(0, 0, 500, 400),
+            "没有控件就照 §5.3.2 整窗那一臂，而不是拿别窗的按钮"
+        );
+    }
+
     /// `open` / `close` 之间不串：上一场按过一次的闸门与那一张候选表都不能跟着下一场活。
     ///
     /// 这一句**没有**单测，而且是明知故欠：[`MaskState::open`] 要冻结桌面、[`MaskState::close`]
@@ -9459,6 +10586,8 @@ mod tests {
             desktop,
             window: Some(PhysRect::new(12, 34, 200, 100)),
             last: Some(PhysRect::new(300, 200, 120, 90)),
+            element: Some(PhysRect::new(20, 40, 60, 18)),
+            element_switch: true,
         }
     }
 
@@ -9466,7 +10595,7 @@ mod tests {
     /// （[`MaskState::opening_hole`]）。判法就是把**同一组事实**递给两拨法，问两次答案：
     /// 拨一下读不回两样，这一枚键就还停在「档里没人读」。
     ///
-    /// 四格各有对面，而**出厂那一臂（`region`）与本轮之前字节相同**：`free` 就是
+    /// 每一格各有对面，而**出厂那一臂（`region`）与本轮之前字节相同**：`free` 就是
     /// [`MaskState::default_hole`] 的那一块、也不开口，所以第一次有人读这枚键的那一刻，默认
     /// 路径上没有任何一格变了行为 —— 这是「新读者不许顺手改旧答案」的唯一证人。
     #[test]
@@ -9510,51 +10639,101 @@ mod tests {
         assert!(said_rep.contains("[capture] default_mode") && said_rep.contains("repeat"));
         assert_ne!(said_rep, said_win, "两臂问不出的是两件事，话不能是同一句（#453）");
 
-        // ③ `element`：这一版产品**做不到**（UIA 那一只手在本仓库只会交空表），所以这一臂的
-        // 答案不是"另一种选区"而是「照自由区域进场 + 把那句话说出口」（#433 不许静默）。
-        let elem = MaskState::opening_hole(M::Element, &facts);
-        assert_eq!(elem.hole, facts.free, "做不到那一臂按自由区域进场");
-        let said_elem = elem.said.expect("做不到也要开口，不许静默");
-        assert!(
-            said_elem.contains("[capture] default_mode")
-                && said_elem.contains("element")
-                && said_elem.contains("做不到"),
-            "做不到那一臂的话要点名键、要点名哪一臂：{said_elem:?}"
+        // ③ `element`：三样事实 ⇒ 三样答案。开关开着、链问得出 ⇒ 照办，进场选区就是那一枚控件
+        // （§5.3.3 步 4「选区自动贴合控件边界」在进场这一刻的形状）；开关开着、问不出 ⇒ 退自由
+        // 区域并说「这一刻问不出」；开关关着 ⇒ 退自由区域并说**是用户自己关了那条路**。后两句
+        // 不是同一件事（#453），也不许与 `window` / `repeat` 那两句混成一句。
+        let elem_yes = MaskState::opening_hole(M::Element, &facts);
+        assert_eq!(
+            elem_yes.hole,
+            facts.element.unwrap(),
+            "问得出控件时进场选区就该贴在控件边界上"
         );
-        assert_ne!(said_elem, said_win, "「这枚键做不到」与「这一刻问不出」是两句话（#453）");
+        assert!(elem_yes.said.is_none(), "照办那一臂不该多说一句");
+
+        let mut no_elem = opening_facts();
+        no_elem.element = None;
+        let elem_dry = MaskState::opening_hole(M::Element, &no_elem);
+        assert_eq!(elem_dry.hole, facts.free, "问不出控件也要进得了场（§5.3.3 退化那条）");
+        let said_dry = elem_dry.said.expect("问不出控件必须开口");
+        assert!(
+            !said_dry.contains("highlight_element")
+                && said_dry.contains("控件")
+                && !said_dry.contains("做不到"),
+            "「这一刻问不出」既不该点开关的名、也不该说成做不到（#453）：{said_dry:?}"
+        );
+
+        let mut off = opening_facts();
+        off.element_switch = false;
+        let elem_off = MaskState::opening_hole(M::Element, &off);
+        assert_eq!(elem_off.hole, facts.free, "开关关着时进场停在自由区域");
+        let said_off = elem_off.said.expect("用户自己关了那条路也要说出来，不许静默");
+        assert!(
+            said_off.contains("highlight_element"),
+            "那一句要点名是哪一个开关关掉了整条路：{said_off:?}"
+        );
+        // 事实里明明还留着那一枚控件矩形，开关一关答案就跟着变 —— 这一格证的是「读的是开关，
+        // 不是那份读数」：只比 hole 的话，两臂都是 `free`，看不出链条有没有被这一枚键掐断。
+        assert_ne!(said_off, said_dry, "「用户关了」与「这一刻问不出」是两句话（#453）");
+        assert_ne!(said_off, said_win, "element 与 window 退的不是同一条路（#453）");
     }
 
-    /// `[capture] freeze_frame` 分岔的**唯一读者**是 [`MaskState::freeze_notice`]，而它交回的
-    /// 是「这一枚键这一版产品做不到」那句话本身 —— 见它头顶那段：本产品没有让遮罩背景随桌面
-    /// 刷新的通路，`capture` 那一模块的头一条规矩就是屏幕在任何窗存在之前只读一次。
+    /// `[capture] freeze_frame` 分岔的**唯一读者**是 [`MaskState::freeze_notice`]。两拨法的形状照旧：
+    /// 开着 ⇒ `None`（默认那一侧屏幕上不该多出一行），关着 ⇒ 一句话，句里点名这枚键、点名「实时
+    /// 取景」、也点名画面此刻仍然是冻的（用户有权知道自己拨的东西还没生效）。
     ///
-    /// 两拨法交回两样答案：开着 ⇒ `None`（默认那一侧屏幕上不该多出一行），关着 ⇒ 那句话，且
-    /// 句里点名这枚键、点名「做不到」、也点名画面仍然是冻的（用户有权知道自己拨的东西没生效）。
-    /// 它与 `default_mode = element` 那句也不是一句：一枚键做不到与另一枚键做不到，各有各的
-    /// 来处（#453）。
+    /// **变的是一枚针：「做不到」如今必须不在句里。** 那三个字是 2026-11-05/06 那几轮的读数 ——
+    /// 当时那一手（`WDA_EXCLUDEFROMCAPTURE`）的前提量过三次、三次屏幕上都是锁屏，读数已撤回；
+    /// 2026-11-07 在解锁的桌面上量成了（阶段 A 差 212751 枚、摘之后洋红采不到、洞里露出底下那一层），
+    /// 实时取景那一支自此落地。留着那三个字就是当着用户说一句假话，所以这一格反过来钉：这一句不许
+    /// 再说做不到，也**不许预支闸的答**（「跟着桌面走」那一句的作者只有 [`live_notice`] 的 `Allowed`
+    /// 那一档，它要等两阶段真量完才说）—— 进场这一刻能说的只有「正在量」。
+    ///
+    /// 它与 `default_mode = element` 那句问不出控件的话也不是一句：一枚键正在过闸、另一枚键这一刻
+    /// 桌面上量不到，各有各的来处（#453）。
     #[test]
-    fn the_freeze_frame_key_says_what_it_cannot_do() {
+    fn the_freeze_frame_key_says_what_it_is_measuring() {
         assert!(
             MaskState::freeze_notice(true).is_none(),
             "开着（出厂默认）那一臂不许在屏幕上多留一行与用户决定无关的话"
         );
         let off = MaskState::freeze_notice(false).expect("关着那一臂必须开口");
         assert!(
-            off.contains("[capture] freeze_frame") && off.contains("做不到"),
+            off.contains("[capture] freeze_frame"),
             "那句话没点名这枚键：{off:?}"
         );
-        assert!(off.contains("实时取景"), "得说的是**为什么**做不到：{off:?}");
-        assert_ne!(
-            off,
-            MaskState::opening_hole(
-                falcon_core::config::CaptureMode::Element,
-                &opening_facts()
-            )
-            .said
-            .expect("element 那臂也该开口")
-            .as_str(),
-            "两枚不同的键做不到是两件不同的事，话不能共用一句（#453）"
+        assert!(
+            off.contains("实时取景"),
+            "得点名做不到/正在量的是哪一支：{off:?}"
         );
+        assert!(
+            !off.contains("做不到"),
+            "那一手的前提 2026-11-07 已在解锁的桌面上量成，这一句不许再说做不到：{off:?}"
+        );
+        assert!(
+            !off.contains("跟着桌面走"),
+            "闸的答还没量出来，进场这一句不许预支它：{off:?}"
+        );
+        assert!(
+            off.contains("正在量") && off.contains("冻"),
+            "它得说清此刻的两件事：闸在量、画面还是冻的：{off:?}"
+        );
+        let mut dry = opening_facts();
+        dry.element = None;
+        let said_elem = MaskState::opening_hole(
+            falcon_core::config::CaptureMode::Element,
+            &dry,
+        )
+        .said
+        .expect("element 那臂问不出时也要开口");
+        assert_ne!(
+            off, said_elem,
+            "「这枚键正在过闸」与「这一刻问不出」是两件不同的事，话不能共用一句（#453）"
+        );
+        // 控件那只手落地之前，`element` 那一臂交回的也是一句「做不到」，两句那时候都带着这三个字；
+        // 落地之后它换成了「这一刻问不出」，而 freeze_frame 这一句到今天连那三个字也不再需要 ——
+        // 这一格钉的是前一件：`element` 那条退路说的是量不到，不是产品做不到。
+        assert!(!said_elem.contains("做不到"), "element 那条退路不是做不到：{said_elem:?}");
     }
 
     /// `[advanced] privacy_no_temp_files` 分岔的**唯一读者**是 [`MaskState::sweep_stale_temp`]。
@@ -9735,5 +10914,707 @@ mod tests {
         assert_eq!(m.ink.objects(), 1);
         assert_eq!(ink_alpha(&m.ink, 260, 160), 0, "撤销之后画布上还留着副本那一笔");
         assert_ne!(ink_alpha(&m.ink, 280, 140), 0, "撤销把原物一起退掉了");
+    }
+
+    /// 页上那两枚 `Repeater` 读的那一串，按页读它的方式读回来：`|` 分段、`,` 分四枚数。空串答
+    /// **零段**，而 QML 里 `"".split("|")` 答的是 `[""]` —— 一枚假条目，摆出来就是左上角一段
+    /// `NaN` 大小的矩形（#274：尺子得读得动"空"，于是这一位助手先把那一条歧义挡在门外，下面
+    /// 那些 `.len()` 数的才是把手而不是分隔符）。
+    fn parse_grips(s: &str) -> Vec<PhysRect> {
+        if s.is_empty() {
+            return Vec::new();
+        }
+        s.split('|')
+            .map(|seg| {
+                let f: Vec<i32> = seg
+                    .split(',')
+                    .map(|n| {
+                        n.parse::<i32>()
+                            .unwrap_or_else(|_| panic!("段 {seg:?} 里有一枚不是整数"))
+                    })
+                    .collect();
+                assert_eq!(f.len(), 4, "一段该是 x,y,w,h 四枚数：{seg:?}");
+                assert!(f[2] > 0 && f[3] > 0, "一段交出了画不出来的尺寸：{seg:?}");
+                PhysRect::new(f[0], f[1], f[2] as u32, f[3] as u32)
+            })
+            .collect()
+    }
+
+    /// #86 那一列把手**过桥之后**的形状。core 那一位作者已经证过「画出来的那一列 = 命中得了的
+    /// 那一列」是同一列读两遍（`select.rs` 里那枚双向证人），这一枚量的是它跨过 [`MaskState`]
+    /// 与那两串 `QString` 之后还是不是同一列：段数、每段四枚数、空选区答空串，以及最要紧的一条
+    /// —— 每一段的中心真按下去，层握住了。
+    ///
+    /// 一台 100% 的屏（不是这台机器此刻的 200%）：DIP 与桌面是同一个数，于是下面每一枚坐标都
+    /// 不必先解释一遍换算，读的人看见的就是页上摆上去的那四枚数。
+    #[test]
+    fn the_grip_strings_the_page_draws_are_the_grips_a_press_really_takes() {
+        use falcon_core::annotation::{model::Kind, GRIP_SLOP};
+
+        let bounds = PhysRect::new(0, 0, 800, 600);
+        let snap = snapshot(vec![monitor("m0", 0, 0, 800, 600, 1.0, true)]);
+        let mut m = selectable(vec![slot(0, bounds, 1.0)], PhysRect::default(), bounds);
+        m.ink.begin(&snap, &m.slots);
+        m.set_hole(PhysRect::new(100, 100, 600, 400));
+
+        // 还没选中任何东西：两串都得是空的。这一条不是"顺手也测一下"，页上那两枚零长段的闸读的
+        // 就是它。一枚不存在的窗答同一个答案，而不是 panic、也不是上一扇窗那一列。
+        assert_eq!(m.grip_lines(0), (String::new(), String::new()));
+        assert_eq!(m.grip_lines(7), (String::new(), String::new()));
+
+        // 一枚圆角矩形：`Grip::grips_for` 给它十枚 —— 圆的 1 枚（拧角）+ 方的 8 枚（改尺寸）
+        // + 方的 1 枚（旋转）。画完并不自动选中，所以还要放下笔、在**画出来的那一条边**上点一下
+        // （没灌满的框，中间那片不是它的目标）。
+        m.ink.select_tool(annotate::code_of(Some(Kind::RoundedRect)));
+        m.press(0, 200.0, 150.0);
+        m.drag(0, 320.0, 230.0, false);
+        m.release();
+        assert_eq!(m.ink.objects(), 1, "圆角矩形没在遮罩上落下来");
+        m.ink.select_tool(annotate::code_of(None));
+        assert!(m.ink.press(PhysPoint::new(280, 150)), "上边那一下没落在描边上");
+        m.release();
+        assert_eq!(m.ink.selected_count(), 1, "点了一下没选中它");
+
+        let lines = m.grip_lines(0);
+        let square = parse_grips(&lines.0);
+        let dot = parse_grips(&lines.1);
+        assert_eq!(square.len(), 9, "方的那一族不是 8 枚改尺寸 + 1 枚旋转：{}", lines.0);
+        assert_eq!(dot.len(), 1, "圆的那一族只有 §5.7.3 步 4 那一枚：{}", lines.1);
+
+        // 每一段就是**命中带本身**：core 量的边是含的，所以是奇数 `2*GRIP_SLOP + 1`；100% 的屏
+        // 上除完还是它。页上因此连"画多大"都不必自己挑一个数，也就无从与命中的那个数走岔。
+        let band = GRIP_SLOP * 2 + 1;
+        for g in square.iter().chain(dot.iter()) {
+            assert_eq!((g.w, g.h), (band, band), "这一段不是命中带本身：{g:?}");
+        }
+
+        // 双向那一条：每一段的中心按下去，层真握住了 —— [`MaskState::press`] 把这一趟整个交给
+        // [`annotate::Layer::press`]，握住的读数就是 `dragging()`。于是"画的 = 命中得了的"不是
+        // 两个恰好对得上的数，而是页上摆的那四枚数自己回答了一次按下。
+        for g in square.iter().chain(dot.iter()) {
+            assert!(!m.ink.dragging(), "上一枚把手没松手");
+            m.press(0, (g.x + g.w as i32 / 2) as f64, (g.y + g.h as i32 / 2) as f64);
+            assert!(m.ink.dragging(), "画在 ({},{}) 的这一枚握不住", g.x, g.y);
+            m.release();
+        }
+        // 那十下探测一下也不许搬动谁：一趟没拖过的按下交回的是空命令。这一句同时是上面那十条
+        // 断言的自反证（#269）—— 若探测本身改了几何，它们量的就已经是另一枚对象了。
+        assert_eq!(m.grip_lines(0), lines, "那十下探测把对象搬走了");
+    }
+
+    /// 一枚把手跨在两屏接缝上时，两扇窗**各画自己那一片**，而两片各自仍然握得住。
+    ///
+    /// 这一枚量的是 [`MaskState::local_dip_opt`] 与 `local_dip` 那一分岔：后者把「根本不在这扇窗
+    /// 上」与「在这扇窗上」答成同一个 `PhysRect::default()`，于是接缝上那一枚被裁剩的一片、和真
+    /// 的一枚像素也不在这扇窗上的那一枚，在页上长得一模一样 —— 都是一段摆在窗内 (0,0) 的空条目
+    /// （#238：一个空值不等于一次判过了的"没有"）。裁剩那一片照旧握得住，因为切下来的仍是命中带
+    /// 的一部分，而它的中心还在带子里；多出来的那一段谁也握不住，正是 #86 要拆掉的那一副脸。
+    #[test]
+    fn a_grip_on_the_seam_is_drawn_half_in_each_window_and_each_half_still_takes_the_press() {
+        use falcon_core::annotation::{model::Kind, GRIP_SLOP};
+
+        let desk = PhysRect::new(0, 0, 800, 600);
+        let snap = snapshot(vec![
+            monitor("m0", 0, 0, 400, 600, 1.0, true),
+            monitor("m1", 400, 0, 400, 600, 1.0, false),
+        ]);
+        let mut m = selectable(
+            vec![
+                slot(0, PhysRect::new(0, 0, 400, 600), 1.0),
+                slot(1, PhysRect::new(400, 0, 400, 600), 1.0),
+            ],
+            PhysRect::default(),
+            desk,
+        );
+        m.ink.begin(&snap, &m.slots);
+        m.set_hole(PhysRect::new(100, 100, 600, 400));
+
+        // 这枚圆角矩形骑在 x=400 上：N、S 两枚边把手的中点与旋转那一枚都正在接缝上，于是它们的
+        // 命中带被切成两片；圆角那一枚住在左上角附近，整个属于窗 0。
+        m.ink.select_tool(annotate::code_of(Some(Kind::RoundedRect)));
+        m.press(0, 340.0, 150.0);
+        m.drag(0, 460.0, 230.0, false);
+        m.release();
+        m.ink.select_tool(annotate::code_of(None));
+        assert!(m.ink.press(PhysPoint::new(430, 150)), "上边那一下没落在描边上");
+        m.release();
+        assert_eq!(m.ink.selected_count(), 1, "点了一下没选中它");
+
+        let (left_line, right_line) = (m.grip_lines(0), m.grip_lines(1));
+        let (left, right) = (parse_grips(&left_line.0), parse_grips(&right_line.0));
+        let band = (GRIP_SLOP * 2 + 1) as i32;
+
+        // 两扇窗都画得出来，而各自画的那一片都在这扇窗里 —— 越界那一段页上根本画不出来（窗只有
+        // 400 DIP 宽），握倒是握得住，于是又变成"命中得了的没画"那半边。
+        assert!(!left.is_empty() && !right.is_empty(), "接缝上那三枚谁也没画");
+        for (index, list) in [(0, &left), (1, &right)] {
+            for g in list {
+                assert!(
+                    g.x >= 0 && g.x + g.w as i32 <= 400 && g.y >= 0 && g.y + g.h as i32 <= 600,
+                    "窗 {index} 画到了自己外面：{g:?}"
+                );
+            }
+        }
+
+        // "裁过"与"没裁"分得开：两扇窗各有一段比整条带子窄（那三枚骑在接缝上的），也各有一段
+        // 还是整条（那三枚整个躺在一扇窗里的）。两头都得有人，否则这一条什么也没证（#274）。
+        for (index, list) in [(0, &left), (1, &right)] {
+            assert!(
+                list.iter().any(|g| g.w as i32 == band),
+                "窗 {index} 一段整条的带子也没有：{list:?}"
+            );
+            assert!(
+                list.iter().any(|g| (g.w as i32) < band),
+                "窗 {index} 一段被接缝裁过的也没有：{list:?}"
+            );
+        }
+
+        // 圆的那一族整枚都在窗 0 上，于是窗 1 答的是空串，而不是把窗 0 那一枚也画一遍。
+        assert_eq!(parse_grips(&left_line.1).len(), 1, "圆角那一枚没画在它住的那扇窗上");
+        assert!(
+            right_line.1.is_empty(),
+            "窗 1 画了一枚自己身上一枚像素也没有的圆点：{}",
+            right_line.1
+        );
+
+        // 两扇窗各自的双向那一条：画出来的每一片，在自己的窗里按下去都握得住。
+        for (index, list) in [(0, &left), (1, &right)] {
+            for g in list {
+                m.press(index, (g.x + g.w as i32 / 2) as f64, (g.y + g.h as i32 / 2) as f64);
+                assert!(
+                    m.ink.dragging(),
+                    "窗 {index} 画在 ({},{}) 的这一片握不住",
+                    g.x,
+                    g.y
+                );
+                m.release();
+            }
+        }
+        assert_eq!(m.grip_lines(0), left_line, "那几下探测把对象搬走了");
+        assert_eq!(m.grip_lines(1), right_line);
+    }
+
+    /// 上面那两枚证人管的是**串里装了什么**：Rust 交出的每一段都握得住、握得住的每一枚都交了。
+    /// 这一枚管的是**那两串有没有人读** —— 页上那两枚 `Repeater` 一旦被删掉、或改回自己写死一枚
+    /// 8×8，五道门一道也不会红：编译过得去，`--selftest` 又根本不开遮罩窗（要开得用 `--capture`，
+    /// 那条腿读真屏幕、归用户跑）。于是本任务要修的那个病 —— 用户握的是看不见的把手 —— 会一声
+    /// 不响地回来。判过了的事得留一位证人看着，不然它只是"这一次对"（#261）。
+    ///
+    /// 读源而不注入输入，理由与 [`mask_title_prefix_is_the_one_the_page_really_sets`] 同一条：本档
+    /// 没有一枚能按屏幕上那枚钮的手。所以这里判的四件事都是机械可判的 —— 两串都真被绑上了、各自
+    /// 带着那道零长段的闸、尺寸是从串里来的而不是页上写死的、圆的那一族真的只有一族是圆的；外加
+    /// 一条反面：单枚把手时代那三格 `radius_*` 一枚也不许剩（它回来就意味着又有一位作者开始在页上
+    /// 自己算把手住在哪儿，#281）。
+    #[test]
+    fn the_page_really_draws_both_grip_families_and_takes_their_size_from_the_string() {
+        const PAGE: &str = include_str!("../qml/CaptureMask.qml");
+        const LEGS: &str = include_str!("mask_view.rs");
+        let lines: Vec<&str> = PAGE.lines().map(str::trim).collect();
+        let count = |needle: &str| lines.iter().filter(|l| **l == needle).count();
+
+        for prop in ["grip_squares", "grip_dots"] {
+            let model = format!(
+                "model: win.view.{prop}.length ? win.view.{prop}.split(\"|\") : []"
+            );
+            assert!(
+                lines.contains(&model.as_str()),
+                "页上没有任何一枚 Repeater 按「空串读成零段」的形状绑 win.view.{prop}：\
+                 QML 里 \"\".split(\"|\") 答的是 [\"\"]，少这道闸就是左上角一枚 NaN 大小的矩形"
+            );
+            assert!(
+                LEGS.contains(&format!("set_{prop}(")),
+                "桥那一侧再没有人写 {prop}：页上绑的是一格没人交出来的数"
+            );
+        }
+
+        assert_eq!(
+            count("width: Number(box[2])"),
+            2,
+            "两族里有一族的宽不再是从串里来的：画多大又变回页自己的事了"
+        );
+        assert_eq!(
+            count("height: Number(box[3])"),
+            2,
+            "两族里有一族的高不再是从串里来的：画多大又变回页自己的事了"
+        );
+        assert_eq!(
+            count("radius: Math.min(width, height) / 2"),
+            1,
+            "圆的那一族该正好一族：多了就是方那族也画圆了，少了就是 §5.7.3 步 4 那枚圆角把手\
+             与改尺寸那八枚在屏幕上分不开了"
+        );
+        for gone in ["radius_live", "radius_x", "radius_y"] {
+            assert!(
+                !PAGE.contains(gone),
+                "页上又出现 {gone}：单枚把手时代那位自己算坐标的作者回来了（#281）"
+            );
+        }
+    }
+
+    /// [`MASK_TITLE_PREFIX`] 是抄来的，抄就要对账：窗标题的**作者**是 QML 那一行，而
+    /// 两阶段自检与 `--mask` 那扇门都靠 Rust 侧这一枚常量去认窗。两边分家之后不会有任何
+    /// 一枚运行期读数变红 —— 认不出窗的形状是「census 里一扇也没匹配上」，而那正是自检
+    /// 跑不了时的样子，与「遮罩没开起来」长得一样（#453 要它们分得开，先得让它们各自有证人）。
+    #[test]
+    fn mask_title_prefix_is_the_one_the_page_really_sets() {
+        const PAGE: &str = include_str!("../qml/CaptureMask.qml");
+        assert!(
+            PAGE.contains(&format!("title: \"{MASK_TITLE_PREFIX}\" + view.name")),
+            "QML 那一行不再是 `title: \"{MASK_TITLE_PREFIX}\" + view.name`：\
+             Rust 侧这一枚常量已经认不出自己那些窗了"
+        );
+        assert!(
+            !MASK_TITLE_PREFIX.contains(' '),
+            "`pinTopLevels` 按空白切字段，带空格的前缀会让 title= 那一段只剩前半截"
+        );
+        assert!(
+            MASK_TITLE_PREFIX.starts_with("falconshot-"),
+            "前缀得认得出是谁的窗：本进程同时开着贴图、提示、设置那几扇，类都是 QQuickWindow"
+        );
+    }
+
+    /// 一份 census 里认窗的判据。四条各有各的对面：
+    /// ①认得出来的两扇，槽名、HWND、物理矩形三样都对得上（HWND 是
+    /// `SetWindowDisplayAffinity` 唯一能吃的东西，认错一枚就是摘了别人的窗）；
+    /// ②`visible=0` 那一扇不算 —— 拿一块此刻没有遮罩的矩形去比两张桌面图，阶段 B 会假绿；
+    /// ③`m0-display1` 不许把 `m0-display11` 认成自己（前缀匹配会，逐字相等不会）；
+    /// ④census 里那些不是遮罩的行（贴图、没有标题的投影窗）一扇也不进来。
+    #[test]
+    fn mask_windows_in_reads_a_census_without_opening_a_window() {
+        let raw = "\
+class=QQuickWindow visible=1 hwnd=0x6a0d1e phys=0,0,3072,1920 title=falconshot-mask-m0-display1
+class=QQuickWindow visible=1 hwnd=0x6a0d2f phys=3072,0,1920,1080 title=falconshot-mask-m1-display2
+class=QQuickWindow visible=0 hwnd=0x6a0d30 phys=0,0,100,100 title=falconshot-mask-m2-gone
+class=QQuickWindow visible=1 hwnd=0x6a0d40 phys=9,9,9,9 title=falconshot-mask-m0-display11
+class=QQuickWindow visible=1 hwnd=0x6a0d50 phys=5,5,50,50 title=贴图 1
+class=QQuickDropShadowWindow visible=1 hwnd=0x6a0d60 phys=0,0,3072,1920
+";
+        let names: Vec<String> = ["m0-display1", "m1-display2", "m0-display11", "m2-gone"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let got = mask_windows_in(raw, &names);
+
+        assert_eq!(
+            got,
+            vec![
+                MaskWindow {
+                    name: "m0-display1".to_string(),
+                    hwnd: 0x6a0d1e,
+                    phys: PhysRect::new(0, 0, 3072, 1920),
+                },
+                MaskWindow {
+                    name: "m1-display2".to_string(),
+                    hwnd: 0x6a0d2f,
+                    phys: PhysRect::new(3072, 0, 1920, 1080),
+                },
+                MaskWindow {
+                    name: "m0-display11".to_string(),
+                    hwnd: 0x6a0d40,
+                    phys: PhysRect::new(9, 9, 9, 9),
+                },
+            ],
+            "认出来的窗与它们的矩形对不上：藏起来的那扇不该在，`m0-display11` 不该被 \
+             `m0-display1` 认走，贴图与投影窗一扇也不该进来"
+        );
+        assert_eq!(
+            got.iter().map(|w| w.name.as_str()).collect::<Vec<_>>(),
+            vec!["m0-display1", "m1-display2", "m0-display11"],
+            "交回的顺序该是槽序，不是 census 序：报告是按槽念的"
+        );
+
+        assert!(
+            mask_windows_in(raw, &[]).is_empty(),
+            "一枚槽也没有时不该认出窗来 —— 那一格是「遮罩还没开」，不是「随便挑几扇」"
+        );
+        assert!(
+            mask_windows_in("", &names).is_empty(),
+            "census 空着（Qt 还没起来、或那一手问不出）时交回空表，而不是猜"
+        );
+    }
+
+    /// 几扇窗并成一块范围。并集**是**判据要的那一块：两阶段自检问的是「遮罩占的地方还差不差」，
+    /// 而遮罩在多屏上是几扇窗、不是一扇。空表交回 `None`，理由写在 [`mask_extent_of`] 头上。
+    #[test]
+    fn mask_extent_of_unions_the_windows_and_reads_empty_as_none() {
+        let two = vec![
+            MaskWindow {
+                name: "m0-display1".to_string(),
+                hwnd: 1,
+                phys: PhysRect::new(0, 0, 3072, 1920),
+            },
+            MaskWindow {
+                name: "m1-display2".to_string(),
+                hwnd: 2,
+                phys: PhysRect::new(3072, 0, 1920, 1080),
+            },
+        ];
+        assert_eq!(
+            mask_extent_of(&two),
+            Some(PhysRect::new(0, 0, 4992, 1920)),
+            "两块桌面左右挨着，并起来该是横跨两块的那一块"
+        );
+        assert_eq!(mask_extent_of(&two[..1]), Some(two[0].phys));
+        assert_eq!(
+            mask_extent_of(&[]),
+            None,
+            "空表是「跑不了」，不是一枚面积为零的读数"
+        );
+    }
+
+    /// [`live_notice`] 那五句：闸的五档答各说各的话、**两两不同**（#453），而四句拒绝各带同一句
+    /// 「画面仍是按下那一刻冻住的那一帧」—— 那枚键是用户自己拨开的，他就有权知道画面此刻是什么
+    /// 状态（#433：不许静默降级）。
+    ///
+    /// 这一位是纯函数，所以五档在一台**开不了桌面**的机器上也各有一位证人。真机上把闸跑过一遍
+    /// 的那一趟到此刻还欠着一扇门（[`MaskState::capture`] 头上那一条账记的是同一件事）。
+    ///
+    /// 顺带钉住两件改起来不会有任何运行期读数变红的事：
+    /// ① 「背景在跟着桌面走」那一句肯定的作者只有 `Allowed` 一档 —— [`MaskState::freeze_notice`]
+    ///    钉的是相反的针（进场那一句不许预支闸的答），两格互为对面（#281：一枚事实一位作者）。
+    ///    那枚针连着主语一起写，因为 `ReadDoesNotFollow` 也说到「跟着桌面走」，说的却是「这条屏幕
+    ///    读取腿**没有**跟着桌面走」—— 主语与口气都相反，而子串两样都看不见；所以那一档另有一枚
+    ///    针逐字钉住「没有」，删掉那两个字才会红的那一格不许没人看着；
+    /// ② `None` 渲染成「比不了」而**不是**「差 0 枚」：尺子读不出东西时，「不差」与「没比」不许
+    ///    并成一格（#274）。`ReadDoesNotFollow` 那一档反过来必须说「差 0 枚」，两句才分得开。
+    #[test]
+    fn the_five_gate_answers_each_say_their_own_sentence() {
+        // 3 扇 / 摘成 1 扇 / 两次抓屏 609 ms：这三枚数各只在一句里出现，改了就会被下面那几格逮住。
+        let reading = |gate: LiveGate, a: LiveCompare, b: LiveCompare| LiveReading {
+            gate,
+            stage_a: a,
+            stage_b: b,
+            asked: 3,
+            excluded: 1,
+            grab_ms: 609,
+        };
+        let changed: LiveCompare = Some((212751, 5898240));
+        let still: LiveCompare = Some((0, 5898240));
+        let names = [
+            "Allowed",
+            "CannotCompareFirst",
+            "ReadDoesNotFollow",
+            "CannotCompareSecond",
+            "ExclusionIgnored",
+        ];
+        let said = [
+            live_notice(&reading(LiveGate::Allowed, changed, still)),
+            live_notice(&reading(LiveGate::CannotCompareFirst, None, still)),
+            live_notice(&reading(LiveGate::ReadDoesNotFollow, still, None)),
+            live_notice(&reading(LiveGate::CannotCompareSecond, changed, None)),
+            live_notice(&reading(LiveGate::ExclusionIgnored, changed, changed)),
+        ];
+        for i in 0..said.len() {
+            for j in (i + 1)..said.len() {
+                assert_ne!(
+                    said[i], said[j],
+                    "{} 与 {} 是两档不同的答，话不许共用一句（#453）",
+                    names[i], names[j]
+                );
+            }
+        }
+
+        let frozen = "画面仍是按下那一刻冻住的那一帧";
+        // 针连着主语一起钉：「背景在跟着桌面走」整句是 `Allowed` 那一档独家的一句肯定，
+        // 四句拒绝各说各的相反状态（见下面那枚「没有」的针）。
+        const FOLLOWS: &str = "背景在跟着桌面走";
+        for (name, line) in names.iter().zip(said.iter()).skip(1) {
+            assert!(
+                line.starts_with("实时背景起不来"),
+                "{name} 那一档得先说清是「起不来」，不是「慢」：{line:?}"
+            );
+            assert!(
+                line.contains(frozen),
+                "{name} 那一档得说清画面此刻仍是冻住的：{line:?}"
+            );
+            assert!(
+                !line.contains(FOLLOWS),
+                "「{FOLLOWS}」那一句的作者只有 Allowed 一档，{name} 不许抢（#281）：{line:?}"
+            );
+        }
+        // 上面那枚针**必须**连着主语一起写。这一格第一次跑时钉的是光秃秃的「跟着桌面走」，
+        // 当场被 `ReadDoesNotFollow` 逮住 —— 那一档说的是「这条屏幕读取腿**没有**跟着桌面走」，
+        // 主语是读取腿、口气是否定，与 `Allowed` 说的「背景在跟着桌面走」不是一枚事实，所以两格并不
+        // 犯 #281，犯的是那枚针：子串看不见主语，也看不见「没有」。
+        // 但把针放宽本身会丢一格覆盖 —— 谁把「没有」两个字删掉，那一档就从拒绝变成「实时背景在跑」，
+        // 而放宽之后的针一个字也不会红。所以下面那一枚把否定式逐字钉住：删掉「没有」⇒ 那一格失败。
+        //
+        // 否定式是**另起一枚常量**、不是 `format!("没有{FOLLOWS}")`：两句的主语本来就不同（背景 vs
+        // 这条屏幕读取腿），那么拼出来的串在场上一句也没有 —— 这一格第二次跑红的正是那个拼法，
+        // 而它红得对：它把「否定就是肯定前面加两个字」当成了前提，那前提正是上面那段刚说完不成立的事。
+        const DOES_NOT_FOLLOW: &str = "没有跟着桌面走";
+        assert!(
+            said[2].contains(DOES_NOT_FOLLOW),
+            "ReadDoesNotFollow 与「实时背景在跑」之间只隔着「没有」两个字，那两个字是这一档唯一的\
+             对面，删了就是一句假话：{:?}",
+            said[2]
+        );
+        assert!(
+            said[0].contains(FOLLOWS),
+            "Allowed 那一档必须把「背景真的在动」说破，否则约 3 fps 被用户读成卡住了：{:?}",
+            said[0]
+        );
+        assert!(
+            !said[0].contains(frozen),
+            "Allowed 那一档画面正在动，不许再说它是冻住的那一帧：{:?}",
+            said[0]
+        );
+        assert!(
+            said[0].contains("609") && said[0].contains(&LIVE_BUDGET_MS.to_string()),
+            "那一句要带着手里这两枚真读数（两次抓屏合起来多少 ms、节拍多少 ms），\
+             否则「看着不快」是一句没有证人的安慰：{:?}",
+            said[0]
+        );
+        assert!(
+            !said[0].contains("做不到") && !said[0].contains("起不来"),
+            "Allowed 那一档不是拒绝，也不是产品做不到：{:?}",
+            said[0]
+        );
+
+        assert!(
+            said[1].contains("比不了") && !said[1].contains("差 0 枚"),
+            "摘之前那一次压根没比成，不许渲染成一枚「差 0」的读数（#274）：{:?}",
+            said[1]
+        );
+        assert!(
+            said[2].contains("差 0 枚") && !said[2].contains("比不了"),
+            "摘之前比成了、答是一枚也不差 —— 这一档与「比不了」不是一句话（#274）：{:?}",
+            said[2]
+        );
+        assert!(
+            said[1].contains("摘之前") && said[3].contains("摘之后"),
+            "两档「比不了」各点名是自己那一次，否则用户看不出闸停在哪一步：{:?} / {:?}",
+            said[1],
+            said[3]
+        );
+        assert!(
+            said[4].contains("要摘 3 扇") && said[4].contains("只有 1 扇"),
+            "「三扇里只摘成一扇」与「摘了也没被听」是两句话，而分开它们的只有 asked/excluded \
+             那两格：{:?}",
+            said[4]
+        );
+    }
+
+    /// [`narrow`] 保的是 Win64 句柄的**低半**，不是把它夹到 `u32` 上限。
+    ///
+    /// 这两种写法在「高半全是 1」那一枚句柄上分家，而 Win64 的句柄正是把 32 位那半符号扩展出来的
+    /// （[`narrow`] 头上那一段）。夹上去交回的是 `0xFFFFFFFF` —— 一枚不存在的窗；砍掉高半才拿得回
+    /// 原来那一扇。两种失败形状都安全（`SetWindowDisplayAffinity` 报错 ⇒ 摘成的少一枚 ⇒ 闸答
+    /// `ExclusionIgnored`），但只有一种是对的，所以这一格钉的是「砍」而不是「夹」。
+    #[test]
+    fn narrow_keeps_the_low_half_of_a_win64_handle() {
+        assert_eq!(narrow(0x0000_0000_0001_2345), 0x12345, "高半本来空着时不该动它");
+        assert_eq!(
+            narrow(0xFFFF_FFFF_0001_2345),
+            0x12345,
+            "符号扩展出来的那一枚：身份在低半"
+        );
+        assert_ne!(
+            narrow(0xFFFF_FFFF_0001_2345),
+            u32::MAX,
+            "不是夹，是砍 —— 夹上去交的是一枚不存在的窗"
+        );
+        assert_eq!(narrow(0), 0, "空句柄照旧交回空，不许造出一枚来");
+    }
+
+    /// 信箱 → 一拍：[`MaskState::live_tick`] 那四枚码各是一件事（#453）。0 = 这一拍什么都没交回来、
+    /// 1 = 只灌了一帧、2 = 只有一句话、3 = 两样都有（闸放行那一趟的第一拍就是 3：读数与阶段 B 那张
+    /// 图是同一手交回来的，见 [`live_thread`]）。
+    ///
+    /// 顺带钉三件只有这一格能看见的事：
+    /// ① 同一句话来第二次时**不追加** —— 节拍是 333 ms，复读会把用户那一行撑成一篇（[`MaskState::live_say`]）；
+    /// ② 闸答「不许」时 `live_excluded` 当场清空（那几扇窗得还给别的程序的录屏），而
+    ///    [`MaskState::live_wanted`] 跟着转假，页侧那枚 `Timer` 才停得下来；
+    /// ③ 闸**还没答**时 `live_wanted` 是真 —— 拒绝那句话是搭着信箱交回来的，定时器不转就永远取不到（#433）。
+    ///
+    /// **没证到的事明写**：这一格走的是「新那张图里认不出任何一枚槽」那一条路（显示器断开，§8.5
+    /// 那一族），所以 `shim::store_raw` 一次也没被调用 —— 与本文件放大镜那几格同一条口径，单元测试里
+    /// 没有 Qt 事件循环，那一手会走进 C++ 侧。「灌进去了、URL 换了、画面真的动了」这一段要门上的证人。
+    #[test]
+    fn the_live_mailbox_hands_one_reading_to_one_tick() {
+        let hole = PhysRect::new(0, 0, 100, 100);
+        let mut st = state_with(vec![slot(0, hole, 1.0)], hole);
+        st.shown = true;
+        st.capture.freeze_frame = false;
+        // 这一格是全文件唯一碰 `LIVE` 那只信箱的证人，开局先把它倒空：信箱是进程级的，
+        // 上一趟留下的东西会被这一拍当成新交回来的读数。
+        live_with(|m| *m = LiveMail::default());
+
+        assert_eq!(st.live_tick(), 0, "空信箱 = 这一拍什么都没交回来");
+        assert_eq!(st.live_frames, 0, "没有帧就不许数帧");
+        assert!(st.message.is_empty(), "0 那一拍不许在用户那一行留字：{:?}", st.message);
+        assert!(
+            st.live_wanted(),
+            "闸还没答过就得继续转：拒绝那句话是搭着信箱交回来的，停了就永远取不到（#433）"
+        );
+
+        let refused = live_notice(&LiveReading {
+            gate: LiveGate::ReadDoesNotFollow,
+            stage_a: Some((0, 100)),
+            stage_b: None,
+            asked: 1,
+            excluded: 0,
+            grab_ms: 600,
+        });
+        live_with(|m| m.said = Some(refused.clone()));
+        assert_eq!(st.live_tick(), 2, "只有一句话 = 2");
+        assert!(st.message.contains(&refused), "那句话得落到用户那一行：{:?}", st.message);
+        assert_eq!(st.live_frames, 0, "话不是一帧");
+        assert!(
+            st.live_reading.is_none() && st.live_wanted(),
+            "话到了、答还没到：这一拍不许把「问过闸」当成已经答过"
+        );
+
+        let said_once = st.message.clone();
+        live_with(|m| m.said = Some(refused.clone()));
+        assert_eq!(st.live_tick(), 2, "同一句话又来一次，码照旧是 2（这一拍确实有话交回来）");
+        assert_eq!(
+            st.message, said_once,
+            "333 ms 一拍的复读不许把用户那一行撑成一篇（live_say 的去重）"
+        );
+
+        st.live_excluded = vec![0x1234];
+        live_with(|m| {
+            m.reading = Some(LiveReading {
+                gate: LiveGate::ReadDoesNotFollow,
+                stage_a: Some((0, 100)),
+                stage_b: None,
+                asked: 1,
+                excluded: 0,
+                grab_ms: 600,
+            })
+        });
+        assert_eq!(st.live_tick(), 2, "只有读数 = 2");
+        assert_eq!(
+            st.live_reading.as_ref().map(|r| &r.gate),
+            Some(&LiveGate::ReadDoesNotFollow),
+            "答得存下来：live_wanted 此后逐字复读它，不另起一套判据（#281）"
+        );
+        assert!(
+            st.live_excluded.is_empty(),
+            "闸答不许 ⇒ 摘出去那几扇当场还回去，不许留在别的程序的录屏之外"
+        );
+        assert!(!st.live_wanted(), "闸答过「不许」之后页侧那枚定时器该停");
+
+        // 一张认不出任何一枚槽的快照：`live_publish` 于是走 `lost` 那一支，交回一句「显示器断开了」，
+        // 而 `shim::store_raw` 一次也不调用 —— 这一格量的是码与那句话，不是灌进 Qt 那一步。
+        let gone = snapshot(vec![monitor("m9-gone", 0, 0, 100, 100, 1.0, true)]);
+        live_with(|m| {
+            m.reading = Some(LiveReading {
+                gate: LiveGate::Allowed,
+                stage_a: Some((90, 100)),
+                stage_b: Some((0, 100)),
+                asked: 1,
+                excluded: 1,
+                grab_ms: 600,
+            });
+            m.frame = Some(gone.clone());
+        });
+        assert_eq!(st.live_tick(), 3, "答与帧同一拍交回来 = 3（闸放行那一趟的第一拍就是这个形状）");
+        assert_eq!(st.live_frames, 1, "帧到了就数一帧");
+        assert!(st.live_wanted(), "闸答放行之后定时器该继续转");
+        assert!(
+            st.message.contains("认不出") && st.message.contains("m0"),
+            "断掉的那一枚得点名是哪一扇窗，而不是笼统一句「有显示器断了」（#224）：{:?}",
+            st.message
+        );
+
+        let said_gone = st.message.clone();
+        live_with(|m| m.frame = Some(gone.clone()));
+        assert_eq!(st.live_tick(), 1, "只灌一帧 = 1");
+        assert_eq!(st.live_frames, 2, "计数逐帧往上走");
+        assert_eq!(
+            st.message, said_gone,
+            "同一句「认不出」不许每一拍再说一遍：{:?}",
+            st.message
+        );
+        live_with(|m| *m = LiveMail::default());
+    }
+
+    /// [`MaskState::arm_live`] 那几条**不起线程**的退路：五条各有各的对面，而前三条一句也不说 ——
+    /// 「还没到问的时候」不是失败，此时开口就是在屏幕上多留一行与用户决定无关的话。
+    ///
+    /// 这一格只走到「手里有没有进场那一张桌面图」为止：再往下是 [`MaskState::mask_windows`]
+    /// （问 Win32 那份 census，要 Qt 在场）与 [`spawn_live`]（真起一趟线程、真抓两次整屏），
+    /// 两手都不属于单元测试。所以「census 里认不出窗」与「线程起不来」那两句拒绝**在这一格没有证人**，
+    /// 它们要门上那一趟。
+    #[test]
+    fn arm_live_refuses_without_spawning_when_a_precondition_is_missing() {
+        let hole = PhysRect::new(0, 0, 100, 100);
+        let one_slot = || {
+            let mut s = slot(0, hole, 1.0);
+            s.first_swap_ms = Some(12);
+            s
+        };
+
+        let mut off = state_with(vec![one_slot()], hole);
+        assert!(
+            off.capture.freeze_frame,
+            "出厂默认得是开着的那一侧，否则这一格量的是另一件事"
+        );
+        off.shown = true;
+        assert!(!off.arm_live(), "freeze_frame 开着时压根不去问闸");
+        assert!(off.message.is_empty(), "默认那一侧屏幕上不许凭空多出一行：{:?}", off.message);
+        assert!(!off.live_asked, "没问过就不许把「这一场问过了」那把锁落下");
+
+        let mut hidden = state_with(vec![one_slot()], hole);
+        hidden.capture.freeze_frame = false;
+        assert!(!hidden.arm_live(), "遮罩不在场上时 live_tick 无处可灌");
+        assert!(hidden.message.is_empty(), "{:?}", hidden.message);
+        assert!(!hidden.live_asked);
+
+        let mut cold = state_with(vec![slot(0, hole, 1.0)], hole);
+        cold.capture.freeze_frame = false;
+        cold.shown = true;
+        assert!(
+            !cold.arm_live(),
+            "还有一扇窗没交出第一帧就去问 census，那一趟量到的是「窗还没开起来」，是一次假拒绝"
+        );
+        assert!(cold.message.is_empty(), "这一格是「还没到」，不是失败：{:?}", cold.message);
+        assert!(!cold.live_asked);
+
+        let mut nosnap = state_with(vec![one_slot()], hole);
+        nosnap.capture.freeze_frame = false;
+        nosnap.shown = true;
+        assert!(!nosnap.arm_live(), "手里没有进场那一张桌面图，「摘之前那一块必须差」量不了");
+        assert!(nosnap.live_asked, "这一场问过了 —— 一场只问一次，不许每帧起一趟线程");
+        assert!(nosnap.live_join.is_none(), "没起线程");
+        assert!(
+            nosnap.live_excluded.is_empty(),
+            "没摘任何一扇窗，所以也没什么要还"
+        );
+        let said = nosnap.message.clone();
+        assert!(
+            said.contains("没有进场那一刻那一张桌面图"),
+            "它得点名缺的是哪一样证据：{said:?}"
+        );
+        assert!(
+            said.contains("画面仍是按下那一刻冻住的那一帧"),
+            "它得说清画面此刻是什么状态（#433）：{said:?}"
+        );
+        assert!(
+            said.contains("量不了"),
+            "它得说清是量不成、不是闸答了不许：{said:?}"
+        );
+        assert_ne!(
+            said,
+            live_notice(&LiveReading {
+                gate: LiveGate::CannotCompareFirst,
+                stage_a: None,
+                stage_b: None,
+                asked: 1,
+                excluded: 0,
+                grab_ms: 0,
+            }),
+            "「证据不够、量不成」与「量成了、闸答不许」是两句话（#453）"
+        );
+
+        let before = nosnap.message.clone();
+        assert!(!nosnap.arm_live(), "一场只问一次：锁已经落下");
+        assert_eq!(
+            nosnap.message, before,
+            "第二回来不许把那句拒绝再说一遍：{:?}",
+            nosnap.message
+        );
     }
 }

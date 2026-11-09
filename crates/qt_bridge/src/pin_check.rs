@@ -417,6 +417,18 @@ const RECT_SLACK: i32 = 2;
 /// （`xf-rot-geo-start` 对 `xf-rot-geo-end`），后面 `menu` 往上那几枚读对话框的行也一个字节
 /// 没被本族动过。本族不点别的窗：六只手全按在本窗自己身上，场上有几枚贴图对它没有要求，所以
 /// 单窗那一趟也问得动（`des-*` 与 `solo-*` 那种「场上得真有别的两枚」的前提在这里不存在）。
+///
+/// 六枚 `ct-*`（§5.9.13 鼠标穿透）排在 `xf-key-gray` **之后**、`menu` 之前，理由与上面那几封
+/// 同一枚而方向也同一枚：显示状态那六只手全按在本窗自己身上、收梢把本窗放回进门的样子，穿透
+/// 这一手要的正是这个起点。这一族问的只有一件事——**窗自己的 Win32 样式位**：C++ 的 `applyStyle`
+/// 把 `SetWindowLongPtrW` 的返回值丢掉了，「按了」在产品里没有第二位证人，所以回读用的是
+/// `describe` 现读的 `TRANSPARENT` / `LAYERED` 两枚（#261：判据要有证人，而证人必须是被量的那
+/// 一扇窗自己那一格，不是本档对 Qt 的记忆；`LAYERED` 一起判是因为 Win32 只认「分层 + 透明」那
+/// 一对——`applyStyle` 自己的注释就是这么写的，少了分层位的透明位不兑现穿透）。两枚判据各占一行
+/// （开与关是 §5.9.13 那一句的两半，#453）。这一族自己同样收梢：`ct-end` 与 `ct-start` 必须同值
+/// （进门那一格是用户配置里的一格，`pin.default_click_through`，本族不替它作答，#261），后面
+/// `menu` 往上那几枚读对话框的行因此一个字节也没被本族动过。本族不点别的窗：穿透是本窗自己的
+/// 样式位，场上有几枚贴图对它没有要求，单窗那一趟也问得动。
 pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "gif-frames",
     "gif-frame",
@@ -586,6 +598,12 @@ pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "xf-key-left",
     "xf-key-right",
     "xf-key-gray",
+    "ct-start",
+    "ct-on",
+    "ct-desc-on",
+    "ct-off",
+    "ct-desc-off",
+    "ct-end",
     "menu",
     "filters",
     "filter",
@@ -1140,6 +1158,23 @@ pub(crate) fn probe_field(line: Option<&str>, key: &str) -> Option<String> {
         .split_whitespace()
         .find_map(|tok| tok.strip_prefix(&prefix))
         .map(str::to_owned)
+}
+
+/// 「鼠标真的会穿过这一扇窗吗」——`describe` 那一行里 `TRANSPARENT` 与 `LAYERED` 两枚位的合读。
+///
+/// 两枚一起读、不是只读透明那一枚，理由住在 Win32 而不在本仓：鼠标只忽略「分层 + 透明」那**一对**，
+/// 少了 `WS_EX_LAYERED` 的 `WS_EX_TRANSPARENT` 不兑现「鼠标事件穿透窗口」。`cpp/pin_shim.cpp` 的
+/// `applyStyle` 就是把两枚一起或上去的，所以判据也得两枚一起看，否则一格 `TRANSPARENT=1` 会被读成
+/// 「穿透生效了」而用户的鼠标照样落在贴图上。这一枚不变式只在这里说一遍，两个读者都调它：
+/// [`ct_rows`] 那扇量具门（判**一扇点名的窗**），与 `crate::hotkey` 的采样腿（判**场上每一枚**，
+/// 并在没吃下时给用户一句话，§7.3 第 4 条）。
+///
+/// `None` = 这一行压根没打那两枚字段（非 Windows 的平台、没有 hwnd 的窗）。那是「没有问」，
+/// 不许读成 `false`：把缺席并成一个被判的否，正是 #238 那一族。
+pub(crate) fn native_pass_through(line: Option<&str>) -> Option<bool> {
+    let transparent = probe_field(line, "TRANSPARENT")?;
+    let layered = probe_field(line, "LAYERED")?;
+    Some(transparent == "1" && layered == "1")
 }
 
 /// 行里那枚矩形，读成 `(x, y, w, h)`。`None` 有三种：这一格压根没有 `rect=`、产品写的是
@@ -2832,10 +2867,10 @@ const DES_ROWS: [&str; 5] = [
 
 /// §5.9.18 的「销毁 / 撤销 / 影响数量」三格与 §5.10.4 那两只手，从量规的十八枚 `des-*` 行里读。
 ///
-/// 这五问一枚也不并，因为 PRD 第 1148/1149 行的两句话（「应显示确认或支持撤销」「批量销毁时
-/// 应提示影响数量」）与「按下去带走几枚」是三件不同的事：第一格里那一句撤销由菜单那一行**出现
-/// 与否**答（`des-undo-shown` / `des-undo-absent`），第二格由**字面上那个数**答
-/// （`des-menu-label`），第三格由那只手自己的答复答（`des-batch`）。三处读的都是同一格
+/// 这五问一枚也不并，因为 §5.9.18 规则 第 1 条与第 2 条的两句话（「应显示确认或支持撤销」
+/// 「批量销毁时应提示影响数量」）与「按下去带走几枚」是三件不同的事：第一格里那一句撤销由
+/// 菜单那一行**出现与否**答（`des-undo-shown` / `des-undo-absent`），第二格由**字面上那
+/// 个数**答（`des-menu-label`），第三格由那只手自己的答复答（`des-batch`）。三处读的都是同一格
 /// `state::destroy_answer` → 同一张 `hand_targets`，所以它们不可能各说一套（#281：两处各数一遍
 /// 就是那一族，而那一处的错用户看得见——印着的数与真被带走的那些不一致）。
 ///
@@ -2906,7 +2941,7 @@ fn des_rows(lines: &[String], id: PinId) -> Vec<(Check, &'static str, String)> {
         },
         DES_ROWS[1],
         format!(
-            "名单换成 {{本窗, {}}}(两枚)之后开菜单：桥侧那一格答 {}，菜单那一行字面读回的是「{}」，而这一格进门时缓存里存的是 1；判据＝PRD 第 1149 行要的那个数**印在用户点下去之前看得见的那一行上**，且它与那只手的答复同源——字面从 1 走到 2 只有 `onAboutToShow` 真叫过一次 `destroyCountFor` 才做得到（一枚读不出差别的初值量不到扇出，#433）。机制那三枚是 {}。{}",
+            "名单换成 {{本窗, {}}}(两枚)之后开菜单：桥侧那一格答 {}，菜单那一行字面读回的是「{}」，而这一格进门时缓存里存的是 1；判据＝§5.9.18 规则 第 2 条要的那个数**印在用户点下去之前看得见的那一行上**，且它与那只手的答复同源——字面从 1 走到 2 只有 `onAboutToShow` 真叫过一次 `destroyCountFor` 才做得到（一枚读不出差别的初值量不到扇出，#433）。机制那三枚是 {}。{}",
             read("des-target-a"),
             read("des-reach-batch"),
             read("des-menu-label"),
@@ -2940,7 +2975,7 @@ fn des_rows(lines: &[String], id: PinId) -> Vec<(Check, &'static str, String)> {
         },
         DES_ROWS[2],
         format!(
-            "名单换回 {{ {}, {} }}（本窗不在里面）再按「销毁」那一级：那只手自报带走 {} 枚、场上从 {} 枚变成 {} 枚、账上欠 {} 枚、菜单里「撤销刚才销毁的」那一行出现={}；判据＝带走几枚由名单决定（交 1 就是那只手把批量降成单枚），堆少的那些枚必须**正好**是那几只手答应的枚数（`count` 与 `trashed` 是两格账，各错一半就看不出来），而 PRD 第 1148 行那句「显示确认或支持撤销」在这里走的是撤销那一行：它只在账上欠着东西时出现，一枚也不欠时那一枚死行不出现（#433）。**这些枚的窗真被退役了吗**——本窗读不到别的窗，那一半的证人是 `pin pile before close` / `pin pile after close` 两枚行与 `state.rs` selftest（#271/#453）。",
+            "名单换回 {{ {}, {} }}（本窗不在里面）再按「销毁」那一级：那只手自报带走 {} 枚、场上从 {} 枚变成 {} 枚、账上欠 {} 枚、菜单里「撤销刚才销毁的」那一行出现={}；判据＝带走几枚由名单决定（交 1 就是那只手把批量降成单枚），堆少的那些枚必须**正好**是那几只手答应的枚数（`count` 与 `trashed` 是两格账，各错一半就看不出来），而 §5.9.18 规则 第 1 条那句「显示确认或支持撤销」在这里走的是撤销那一行：它只在账上欠着东西时出现，一枚也不欠时那一枚死行不出现（#433）。**这些枚的窗真被退役了吗**——本窗读不到别的窗，那一半的证人是 `pin pile before close` / `pin pile after close` 两枚行与 `state.rs` selftest（#271/#453）。",
             read("des-target-a"),
             read("des-target-b"),
             read("des-batch"),
@@ -2994,7 +3029,7 @@ fn des_rows(lines: &[String], id: PinId) -> Vec<(Check, &'static str, String)> {
         },
         DES_ROWS[4],
         format!(
-            "销毁之前菜单里那一行出现={}(账是空的)、之后按一次撤销：那只手自报还回 {} 枚、场上从 {} 枚回到 {} 枚、账归零={}、再按一次交回 {} 枚；判据＝第 1148 行那句「支持撤销」在这一格里是真的——还回来的是**成员**所以 `count` 跟着走、core 那一格 `PinSlot.index` 记的是它们各自离开的那一格（撤销回来还是原来那堆而不是全摞在最上面），账只认**最近一手**所以第二按交回 0 而不是把上一批还第二次。{} 后面这两枚读数是这一趟的堆没被本族弄走的证人：`pin window` 与 `pin pile *` 那几枚在本腿之后还要按每一枚各自的落点数一遍。{}",
+            "销毁之前菜单里那一行出现={}(账是空的)、之后按一次撤销：那只手自报还回 {} 枚、场上从 {} 枚回到 {} 枚、账归零={}、再按一次交回 {} 枚；判据＝§5.9.18 规则 第 1 条那句「支持撤销」在这一格里是真的——还回来的是**成员**所以 `count` 跟着走、core 那一格 `PinSlot.index` 记的是它们各自离开的那一格（撤销回来还是原来那堆而不是全摞在最上面），账只认**最近一手**所以第二按交回 0 而不是把上一批还第二次。{} 后面这两枚读数是这一趟的堆没被本族弄走的证人：`pin window` 与 `pin pile *` 那几枚在本腿之后还要按每一枚各自的落点数一遍。{}",
             read("des-undo-absent"),
             read("des-undo"),
             read("des-pile-gone"),
@@ -3383,8 +3418,9 @@ const XF_LABELS: [&str; 6] = [
     "颜色反转",
 ];
 
-/// 本档给那三枚数字键钉的键帽（PRD 第 1010 行只说「数字键」、第 1026 行只说「对应快捷键」，
-/// 第 7 行明写「快捷键使用常见默认值举例，实际以用户设置和运行平台为准」）。键帽这一半由
+/// 本档给那三枚数字键钉的键帽（§5.9.5 步骤 2 只说「使用数字键」、§5.9.7 步骤 2 只说
+/// 「使用对应快捷键」，文档抬头那枚「说明」明写「快捷键使用常见默认值举例，实际以
+/// 用户设置和运行平台为准」）。键帽这一半由
 /// [`the_transform_keys_share_the_menu_route`] 那枚源码扫描在文件原文上逐字判；第七格那一枚
 /// live 读数判的是「注册上了一枚键序、且此刻开着」——两半合起来才是「数字键能用」这句话。
 const XF_KEYS: [(&str, &str); 3] = [
@@ -3397,7 +3433,7 @@ const XF_KEYS: [(&str, &str); 3] = [
 ///
 /// 每一枚读数读的都是 `view` 上那一格**本体**（`rotation` / `flipped_h` / `flipped_v` /
 /// `grayscale` / `inverted`，P145 才送到窗上）。为什么非要那一格：§5.9.6 步骤 3 写的是「系统
-/// **更新显示状态**」，§5.9.7 与 §5.9.8 步骤 4 写的是「**再次执行**恢复」，两句话问的都是
+/// 更新显示状态」，§5.9.7 与 §5.9.8 步骤 4 写的是「再次执行恢复」，两句话问的都是
 /// 「按下之前是什么、按下之后是什么」，而窗上读不到那一格之前，本腿能问的只有「按下发生过」
 /// 这一件（#271：不许向一枚从没供过这格的读数要这一句）。
 ///
@@ -3694,6 +3730,113 @@ fn xf_toggle(
             },
         ),
     )
+}
+
+/// §5.9.13 的两枚判据，开与关各占一行，不并成一枚（#453）：两半读的是同一扇窗的样式位，坏法却
+/// 不同——设位那一手没设上时，清位那一手照样可能清得掉，反之亦然；并成一行，「坏的是哪一半」就
+/// 只能由读的人猜。
+const CT_ROWS: [&str; 2] = ["pin click-through on", "pin click-through off"];
+
+/// §5.9.13 那两行读的是**被量的那一扇窗自己**：两枚 `view.click_through` 的回读（`ct-on` /
+/// `ct-off`）、两枚 `PinShim::describe` 的现读样式位（`ct-desc-on` / `ct-desc-off`），以及收梢
+/// 那一对（`ct-start` / `ct-end`）。
+///
+/// 判的是**绝对**的真与假、1 与 0，不是 xf 那四枚开关的相对翻转：这一手收的是「设成开／设成关」
+/// （`applyClickThrough(on)`），而进门那一格若是用户配置里就已经开着的，再设一次 true 不会翻
+/// notify，可窗上的样式位在窗出生时就已经写过——绝对断言在两种进门下都成立，也才不替用户的配置
+/// 作答（#261）。
+///
+/// 判位用 [`probe_field`] 那把从空白分隔行里取 `key=value` 的尺：**行里压根没有这一枚键是
+/// `None`**。非 Windows 的平台、没有 hwnd 的窗，`describe` 根本不打这两枚字段，此时这一格是
+/// 「没有问」（Blocked），不许读成 0、更不许读成 1（#238 那一族：空值与被判的缺席不同种；#274：
+/// 尺要先展示会读空的那一面）。`LAYERED` 跟着开那一侧一起判，是因为 Win32 的鼠标只忽略「分层 +
+/// 透明」那一对——`applyStyle` 的 C++ 注释就是这么写的，少了分层位的透明位不兑现「鼠标事件穿透
+/// 窗口」，那是产品真的红，不是没有问。
+///
+/// 收梢（`ct-end` 对 `ct-start` 同值）折在关那一侧：还原那一手与清位是 §5.9.13「再次执行恢复」
+/// 同一句话的两半；但 detail 的措辞把每一枚读数都列出来，坏的那一枚在列举里自己点名（#453）。
+fn ct_rows(lines: &[String]) -> Vec<(Check, &'static str, String)> {
+    let read = |k: &str| -> String {
+        said(lines, k)
+            .map(str::to_string)
+            .unwrap_or_else(|| "<没有读数>".into())
+    };
+    let bit = |key: &str, field: &str| -> Option<String> { probe_field(said(lines, key), field) };
+    let miss = |keys: &[&'static str]| -> Vec<&'static str> {
+        keys.iter()
+            .filter(|k| said(lines, k).is_none())
+            .copied()
+            .collect()
+    };
+    let lost_on = miss(&["ct-on", "ct-desc-on"]);
+    let lost_off = miss(&["ct-off", "ct-desc-off", "ct-start", "ct-end"]);
+
+    let on_t = bit("ct-desc-on", "TRANSPARENT");
+    let on_l = bit("ct-desc-on", "LAYERED");
+    // 「问没问」与「判成什么」两格都走 [`native_pass_through`] 那一把尺，为的是两枚位的不变式
+    // 只有一处作者；`on_t` / `on_l` 这两个读数留着只为了下面 detail 那一句**原样引用**——
+    // 引文不是判据，所以它们在这里各拼一遍不构成第二个作者（#281）。
+    let on_native = native_pass_through(said(lines, "ct-desc-on"));
+    let on_asked = lost_on.is_empty() && on_native.is_some();
+    let on_grade = if !on_asked {
+        Check::Blocked
+    } else {
+        Check::from(said(lines, "ct-on") == Some("true") && on_native == Some(true))
+    };
+    let on_clause = if !lost_on.is_empty() {
+        format!("读数不齐（缺 {lost_on:?}），这一格没有问")
+    } else if !on_asked {
+        "describe 说了话却没答 TRANSPARENT/LAYERED 两枚字段——非 Windows 的平台或没有 hwnd 的窗；这一格没有问，不读成 0（#238）".to_string()
+    } else {
+        "读数齐，判的是绝对的位：窗上那格为 true、TRANSPARENT=1 且 LAYERED=1".to_string()
+    };
+
+    let off_t = bit("ct-desc-off", "TRANSPARENT");
+    let off_asked = lost_off.is_empty() && off_t.is_some();
+    let off_grade = if !off_asked {
+        Check::Blocked
+    } else {
+        Check::from(
+            said(lines, "ct-off") == Some("false")
+                && off_t.as_deref() == Some("0")
+                && said(lines, "ct-end") == said(lines, "ct-start"),
+        )
+    };
+    let off_clause = if !lost_off.is_empty() {
+        format!("读数不齐（缺 {lost_off:?}），这一格没有问")
+    } else if !off_asked {
+        "describe 说了话却没答 TRANSPARENT 字段——非 Windows 的平台或没有 hwnd 的窗；这一格没有问，不读成 0（#238）".to_string()
+    } else {
+        "读数齐，判的是绝对的位：窗上那格为 false、TRANSPARENT=0，且收梢与进门同值".to_string()
+    };
+
+    vec![
+        (
+            on_grade,
+            CT_ROWS[0],
+            format!(
+                "把穿透设开一次：窗上那格 `view.click_through` 读回 {}，同一瞬间 describe 现读 TRANSPARENT={}、LAYERED={}；判据＝§5.9.13「开启后鼠标事件将穿透窗口」在这一格里是**被量的那扇窗的样式位同时为两枚 1**——证的是 `GetWindowLongPtrW` 的现读回，不是本次写入的意图（#261）；而 C++ 的 `applyStyle` 把 `SetWindowLongPtrW` 的返回值丢掉了，这一枚回读因此是「写上了」在产品里唯一的证人。describe 原文：{}。{}",
+                read("ct-on"),
+                on_t.as_deref().unwrap_or("<这一枚字段缺席>"),
+                on_l.as_deref().unwrap_or("<这一枚字段缺席>"),
+                read("ct-desc-on"),
+                on_clause,
+            ),
+        ),
+        (
+            off_grade,
+            CT_ROWS[1],
+            format!(
+                "再把穿透设关：窗上那格 `view.click_through` 读回 {}，同一瞬间 describe 现读 TRANSPARENT={}；进门 {}，收梢 {}；判据＝§5.9.13「再次执行恢复」的后一半在这一格里是两句话——窗上的透明位必须清回 0（还挂着 1 就是鼠标仍旧穿过去，「恢复」没有兑现），且还原那一手必须把 `click_through` 放回**进门读到的那枚值**（进门那一格是用户配置里的一格，本族不替它作答，#261）。describe 原文：{}。{}",
+                read("ct-off"),
+                off_t.as_deref().unwrap_or("<这一枚字段缺席>"),
+                read("ct-start"),
+                read("ct-end"),
+                read("ct-desc-off"),
+                off_clause,
+            ),
+        ),
+    ]
 }
 
 /// §5.9.16 的复制本身、§5.9.17 的那一路文件，各占一枚名字。
@@ -4249,6 +4392,14 @@ pub fn measure() -> (Check, String) {
     for (verdict, label, detail) in xf_rows(&lines) {
         rep.row(label, verdict, detail);
     }
+    // §5.9.13 的两问读的是长在 `xf-key-gray` 之后、`menu` 之前的六枚 `ct-*`：那一手改的是本窗
+    // 自己的 Win32 样式位，而 C++ 的 `applyStyle` 把 `SetWindowLongPtrW` 的返回值丢掉了，所以
+    // 「写上了」的唯一证人是紧随其后由 `describe` 回读的那两枚现读；本族同样自己收梢（`ct-end`
+    // 与 `ct-start` 同值），后面读对话框的那几枚行一个字节也没被它动过。开与关两枚判据不并
+    // （#453），理由与 Blocked 的三种来路都写在 [`ct_rows`] 上面那封信里。
+    for (verdict, label, detail) in ct_rows(&lines) {
+        rep.row(label, verdict, detail);
+    }
     // 这一格的开关读的是产品这一趟加载的那一枚，和 `copy_pin` 走的是同一条路。
     for (verdict, label, detail) in copy_rows(&lines, crate::settings::output_cfg().copy_as_file) {
         rep.row(label, verdict, detail);
@@ -4710,13 +4861,13 @@ pub fn measure() -> (Check, String) {
 mod tests {
     use super::{
         alpha_num, alpha_rows, alpha_turn, alpha_yes, ask, ask_check, ask_said,
-        census_blames_earlier_phase, close_rows, copy_rows, des_rows, dialog_hygiene, dialog_live,
-        file_pin_rows, gif_rows, leg_order, live_said, mov_rows, op_rows, probe_field, probe_ids,
-        probe_rect, qml_leg_keys, real_click, rst_rows, said, same_file, sel_rows, solo_rows,
-        state, unasked_rows, xf_rows, Ask, Check, PhysRect, PinId, ALPHA_MENU_ITEMS, ALPHA_ROWS,
-        CLOSE_ROWS, COPY_ROWS, DES_ROWS, FILE_PIN_ROWS, GIF_ARM_MS, GIF_MENU_ITEMS, GIF_PIN_ROWS,
-        GIF_STILL_MS, LEG_DELAY_MS, MOV_ROWS, OP_ROWS, PIN_SCHEDULE, RST_ROWS, SEL_ROWS, SOLO_ROWS,
-        XF_KEYS, XF_LABELS, XF_ROWS,
+        census_blames_earlier_phase, close_rows, copy_rows, ct_rows, des_rows, dialog_hygiene,
+        dialog_live, file_pin_rows, gif_rows, leg_order, live_said, mov_rows, op_rows, probe_field,
+        probe_ids, probe_rect, qml_leg_keys, real_click, rst_rows, said, same_file, sel_rows,
+        solo_rows, state, unasked_rows, xf_rows, Ask, Check, PhysRect, PinId, ALPHA_MENU_ITEMS,
+        ALPHA_ROWS, CLOSE_ROWS, COPY_ROWS, CT_ROWS, DES_ROWS, FILE_PIN_ROWS, GIF_ARM_MS,
+        GIF_MENU_ITEMS, GIF_PIN_ROWS, GIF_STILL_MS, LEG_DELAY_MS, MOV_ROWS, OP_ROWS, PIN_SCHEDULE,
+        RST_ROWS, SEL_ROWS, SOLO_ROWS, XF_KEYS, XF_LABELS, XF_ROWS,
     };
     use std::path::Path;
 
@@ -5078,6 +5229,84 @@ mod tests {
         assert_eq!(
             bound, 1,
             "菜单那一项必须 `action:` 到同一枚 Action（自己再写一遍 onTriggered 就成了第二条路），读到 {bound} 处"
+        );
+    }
+
+    /// §5.9.18 step 1 names two doors to one hand —「用户打开贴图菜单或使用关闭快捷键」— and the
+    /// sentence is only worth printing because the file says it in exactly one place each: one
+    /// `closePin` call site (inside the `Action`) and one `Shortcut` bound to that same action.
+    /// 形状与上面 [`the_copy_has_one_route_and_two_doors_in_the_qml`] 一模一样，因为 §5.9.16 步骤 2
+    /// 与 §5.9.18 步骤 1 是同一件事的两种说法（「A 或 B」两只门一只手）。
+    ///
+    /// 这一格判的是**两只门共指一只手**，不是「键按下去了」：全仓一枚注入器也没有（`SendInput`
+    /// 零命中），所以「按下那一只手有没有动」在本档没有证人，记在欠账里，不拿注册冒充按下。
+    /// 还有第二件没证到的事，一并逐名记着：`StandardKey.Close` 在**这台机器上**是否真被 Qt 答出
+    /// 至少一枚 native 绑定。本档读到的是 QML 的字面，不是 Qt 那张键序表；答空的门是一枚看着在、
+    /// 按了没反应的键（#433）。今天只由 Qt 自己的文档与同文件里 `StandardKey.Copy` /
+    /// `StandardKey.Cancel` 两枚同机制的先例兜着，要真判得往 `--pin` 那扇门上补一条读
+    /// `closeKey.sequences.length` 的腿，而那扇门要一台解锁的桌面。
+    ///
+    /// 反证同一把尺的另一面（#274/#461）：四枚 needle 各数一枚不同的东西，而且每一枚都是**整行**
+    /// 而不是前缀——`never-close` 那一腿早就写着 `win.session.closePin(Number(win.gauge[9]))`，只数
+    /// `win.session.closePin(` 会把它也算成一条路。任一处被改名或删掉，这一格读回的是 0 而不是
+    /// "没这一问"。
+    ///
+    /// 这一格落地那一趟真判红过一次，红的不是代码而是**注释**：`routes` 读回 2，多出来的那一处是
+    /// QML 里解释这次改动的那封信自己把落点照抄了一遍。裸 `src.matches` 数的是字面，它分不清一句
+    /// `onTriggered:` 与一句讲 `onTriggered:` 的散文。所以这一格改为**剥过注释再数**（下面第一句
+    /// 断言就是证尺子真在剥），而不是靠「注释里别抄」这条口头约定。
+    ///
+    /// 同一枚针在 [`the_four_view_hands_have_one_landing_each_and_no_second_judgement`] 里叫
+    /// `close_landing`、分母是 2，同一句注释把它顶到 3——两处一起红正是这一格没有假绿的反证：针读
+    /// 得动「多写了一遍」，也就读得动「一次也没写」（#274）。那一格今天仍读裸 `src`（改它的分母
+    /// 不在本轮），所以 QML 里讲这件事的那封信**仍然不许把落点照抄出来**：它如今只说
+    /// 「`session.closePin` 加本窗的 id」。
+    #[test]
+    fn the_close_has_one_route_and_two_doors_in_the_qml() {
+        let src = include_str!("../qml/PinWindow.qml");
+        // 剥注释的那把尺子是 `hint_check::qml_code`（`pub(crate)`，`annotate_check`、
+        // `history_window`、`mask_view` 三处已在用；core 的 `pin.rs` 够不着它、只好自己滤 `//` 开头
+        // 的整行，本档够得着）。
+        let code = crate::hint_check::qml_code(src);
+        // 先证尺子本身在剥（#274）：这一串只活在一行 `//` 注释里，剥之前读得到、剥之后必须读不到。
+        // 少了这两句，一枚把 `src` 原样交回来的尺子会让下面四格全绿——那就不是「量到了」而是「没量」。
+        assert_eq!(
+            src.matches("没有一枚关闭键").count(),
+            1,
+            "这一串该只在注释里出现一次，读到不同就是尺子的前提变了"
+        );
+        assert_eq!(
+            code.matches("没有一枚关闭键").count(),
+            0,
+            "剥过注释之后那一串必须读不到，读得到就是尺子没剥"
+        );
+        let routes = code.matches("win.session.closePin(win.pinId)").count();
+        let shortcuts = code.matches("sequences: [StandardKey.Close]").count();
+        let fired = code.matches("onActivated: closeAction.trigger()").count();
+        let bound = code.matches("MenuItem { action: closeAction }").count();
+        assert_eq!(
+            routes, 1,
+            "关闭的落点在 PinWindow.qml 里只该有一处（菜单与关闭键共走一条路），读到 {routes} 处"
+        );
+        assert_eq!(
+            shortcuts, 1,
+            "关闭快捷键那一支路只该出现一次，读到 {shortcuts} 处"
+        );
+        assert_eq!(
+            fired, 1,
+            "快捷键点的必须就是菜单那枚 Action，读到 {fired} 处"
+        );
+        assert_eq!(
+            bound, 1,
+            "菜单那一项必须 `action:` 到同一枚 Action（自己再写一遍 onTriggered 就成了第二条路），读到 {bound} 处"
+        );
+        // 步骤 3 的「销毁」不许自己长出一枚键来：PRD 只在步骤 1 里点了「关闭快捷键」，多加一枚就是
+        // 替文档添一位它没要的作者（#281）。与上面 §5.9.6/§5.9.8 那三只手「PRD 没给键就不补」同一
+        // 形状的反证。
+        assert_eq!(
+            code.matches("onActivated: win.destroyTarget").count(),
+            0,
+            "销毁那一手不该被一枚 `Shortcut` 叫：§5.9.18 只有步骤 1 点了「关闭快捷键」"
         );
     }
 
@@ -6840,6 +7069,71 @@ mod tests {
         );
     }
 
+    /// §5.9.2 步骤 2 那一臂「滚动鼠标滚轮」的第一位读者，判在哪一只手里由这一档说。
+    ///
+    /// 四件事各判各的：① `pin_view.rs` 里那一枚门只此一处，并且排在 `self.gesture(` **之前** ——
+    /// `gesture` 那一格里面是 `state::with`，而 `settings::with` 与它是场上那两把全局锁，
+    /// 叠着拿过一次就是死锁的形状（判据本身因此也只能写在进去之前）；② `settings.rs` 那一头是
+    /// `with(|s| ...)` 现读，不是 `pin_cfg()` 那一枚启动快照 —— 快照说的是新贴图长什么样，
+    /// 这一枚说的是**这一下**滚轮算不算；③ 页上只把方向递过来，那一格 `onWheel` 里没有这一枚
+    /// 键的名字（判据不许有第二位）；④ 出厂那一格是 `true`，所以接线那一刻默认路径上滚轮照旧
+    /// 改大小 —— 这一族每次接读者都该先把"没改设置的人不受影响"量一遍。
+    #[test]
+    fn the_wheel_size_switch_is_read_at_the_hand_that_turns_it() {
+        let view = include_str!("pin_view.rs");
+        let settings = include_str!("settings.rs");
+        let qml = include_str!("../qml/PinWindow.qml");
+        let gate = "crate::settings::wheel_resizes()";
+        assert_eq!(
+            view.matches(gate).count(),
+            1,
+            "「滚轮改不改大小」在桥上只该判一次，读到 {} 处",
+            view.matches(gate).count()
+        );
+
+        let at = view
+            .find("pub fn wheel_zoom(")
+            .expect("the wheel has a landing on the bridge");
+        let body = &view[at..];
+        let body = &body[..body.find("\n    }").expect("the landing has an end")];
+        let read = body.find(gate).expect("the gate is in that hand");
+        assert!(
+            body.find("self.gesture(").map_or(false, |g| read < g),
+            "那一枚门要排在进 `gesture` 之前，不然它就在 `state::with` 里面再去拿 `settings::with`"
+        );
+        assert_eq!(
+            body.matches("state::with").count(),
+            0,
+            "两只手叠着拿锁的形状，就该在这一格里读得出"
+        );
+
+        assert_eq!(
+            settings
+                .matches("with(|s| s.config.pin.wheel_resizes)")
+                .count(),
+            1,
+            "取值的那一只手只有一处，且是现读"
+        );
+        assert!(
+            !settings.contains("pin_cfg().wheel_resizes"),
+            "启动快照里的那一枚 `wheel_resizes` 说的是新贴图的默认长相，不是这一下滚轮"
+        );
+
+        assert_eq!(
+            qml.matches("win.view.wheelZoom(").count(),
+            1,
+            "滚轮在页上只有一处落点"
+        );
+        assert!(
+            !qml.contains("wheel_resizes") && !qml.contains("wheelResizes"),
+            "判据不留在窗侧"
+        );
+        assert!(
+            falcon_core::config::Config::default().pin.wheel_resizes,
+            "出厂那一格改了的话，这一轮接线就不是「默认路径一字不变」了"
+        );
+    }
+
     /// 调透明度要让**所有**贴图窗重读自己该多透，借的还是 `moveTick` / `selectionTick` 那条已经
     /// 跑通的腿（cxx-qt 不给 qproperty 驼峰化，`onOpacityEpochChanged` 场上没有那一枚信号，名字
     /// 写错是**静默**的 #316）。三枚扇出的判据之外还有两枚尺读的是「只有一处做批量算术」：
@@ -7437,9 +7731,11 @@ mod tests {
         let undo_door = src
             .matches("onTriggered: win.undoDestroyTarget() }")
             .count();
-        let close_door = src
-            .matches("onTriggered: win.session.closePin(win.pinId) }")
-            .count();
+        // 「关闭」那一枚入口与另外三枚不同形：§5.9.18 步骤 1 是「打开贴图菜单**或**使用关闭
+        // 快捷键」，两只门共指一只手，所以字面与落点都搬进了 `closeAction` 那一枚 Action，菜单这
+        // 一行只写 `action:`（与那六枚变换手同形）。这一枚针因此读菜单那一行本身，不再读一段
+        // `onTriggered:`——另外三只手没有键，落点仍写在菜单行里，针也就仍读那一句。
+        let close_door = src.matches("MenuItem { action: closeAction }").count();
         let reset_readers = src.matches("win.resetTarget(").count();
         let destroy_readers = src.matches("win.destroyTarget(").count();
         let undo_readers = src.matches("win.undoDestroyTarget(").count();
@@ -7460,7 +7756,7 @@ mod tests {
         );
         assert_eq!(
             close_landing, 2,
-            "关闭那一手是一枚门加一段腿，读到 {close_landing} 处"
+            "关闭那一手是一枚 Action 加一段腿，读到 {close_landing} 处"
         );
         for (name, door) in [
             ("重置视图", reset_door),
@@ -7753,6 +8049,148 @@ mod tests {
         }
     }
 
+    /// §5.9.13 的两枚判据各答各的，而且哪一行都不许在一枚没读到的位上放行：设开没设上（透明位
+    /// 停在 0）或没配上分层位，只红开那一行；设关没清掉（透明位还是 1）、窗上那格没跟着、或收梢
+    /// 没还原，只红关那一行（#453：两种坏法不许并成一种）。`describe` 说了话却没答样式位字段
+    /// （非 Windows 的平台、没有 hwnd 的窗）是「没有问」（#238/#274），不是 0 也不是 1；一句读数
+    /// 也没有则两枚全 Blocked、一枚也不红——红是给产品的话，不是给门的。
+    #[test]
+    fn the_two_click_through_rows_answer_apart_and_never_pass_on_an_unread_bit() {
+        let legs = |pairs: &[(&str, &str)]| -> Vec<String> {
+            pairs.iter().map(|(k, v)| format!("{k}|{v}")).collect()
+        };
+        let at = |rows: &[(Check, &'static str, String)], i: usize| rows[i].0;
+        let flip = |pairs: &[(&'static str, &'static str)],
+                    key: &'static str,
+                    value: &'static str|
+         -> Vec<(&'static str, &'static str)> {
+            pairs
+                .iter()
+                .map(|(k, v)| if *k == key { (*k, value) } else { (*k, *v) })
+                .collect()
+        };
+
+        // 两枚 describe 行的形状取自 `PinShim::describe` 真会印出的那一行（trim 之后），只留下
+        // 本族判得到的几枚字段——`probe_field` 从空白分隔的行里按键取字段，不读位置与顺序。
+        const ON_DESC: &str = "class=QQuickWindow visible=1 LAYERED=1 TRANSPARENT=1 TOPMOST=0";
+        const OFF_DESC: &str = "class=QQuickWindow visible=1 LAYERED=1 TRANSPARENT=0 TOPMOST=0";
+
+        // 产品全对的一趟：进门关着，设开一次、设关一次，收梢收回进门那一格。
+        let good: [(&str, &str); 6] = [
+            ("ct-start", "false"),
+            ("ct-on", "true"),
+            ("ct-desc-on", ON_DESC),
+            ("ct-off", "false"),
+            ("ct-desc-off", OFF_DESC),
+            ("ct-end", "false"),
+        ];
+        let all = ct_rows(&legs(&good));
+        let names: Vec<&str> = all.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, CT_ROWS.to_vec(), "{names:?}");
+        for row in &all {
+            assert_eq!(row.0, Check::Pass, "好的一趟该两枚全绿：{:#?}", row.2);
+        }
+
+        // 进门就开着（用户配置 `pin.default_click_through` 那一格）：绝对断言不替它作答——再设
+        // 一次 true 未必翻 notify，可窗上的样式位在出生时就写过，回读照样是两枚 1；收梢还原回
+        // true。这一臂是 #261 的证人：判据若写成「按一次读回的要与进门的不同」（xf 那四枚开关
+        // 的相对翻转），产品在这里就红了而它没错。
+        let entered: [(&str, &str); 6] = [
+            ("ct-start", "true"),
+            ("ct-on", "true"),
+            ("ct-desc-on", ON_DESC),
+            ("ct-off", "false"),
+            ("ct-desc-off", OFF_DESC),
+            ("ct-end", "true"),
+        ];
+        for row in ct_rows(&legs(&entered)) {
+            assert_eq!(row.0, Check::Pass, "进门那一格不替用户作答：{:#?}", row.2);
+        }
+
+        // 设开没设上：窗上那格说了 true，窗上的透明位却停在 0——只有开那一行红，关那一行照旧绿
+        // （清位那一手没被这枚反证碰到）。
+        let stuck = flip(
+            &good,
+            "ct-desc-on",
+            "class=QQuickWindow visible=1 LAYERED=1 TRANSPARENT=0 TOPMOST=0",
+        );
+        let stuck = ct_rows(&legs(&stuck));
+        assert_eq!(at(&stuck, 0), Check::Fail, "{:#?}", stuck[0].2);
+        assert_eq!(at(&stuck, 1), Check::Pass, "关那一行不读开那一侧的位");
+
+        // 透明位设上了、分层位没配上：Win32 的鼠标不忽略不分层的透明窗，§5.9.13 那句承诺在这扇
+        // 窗上没有兑现——这是产品真的红，不是「没有问」。
+        let bare = flip(
+            &good,
+            "ct-desc-on",
+            "class=QQuickWindow visible=1 LAYERED=0 TRANSPARENT=1 TOPMOST=0",
+        );
+        let bare = ct_rows(&legs(&bare));
+        assert_eq!(at(&bare, 0), Check::Fail, "{:#?}", bare[0].2);
+        assert_eq!(at(&bare, 1), Check::Pass, "关那一行不读开那一侧的分层位");
+
+        // 设关没清掉：透明位还挂着 1，鼠标仍旧穿过去——只有关那一行红。
+        let uncleared = flip(
+            &good,
+            "ct-desc-off",
+            "class=QQuickWindow visible=1 LAYERED=1 TRANSPARENT=1 TOPMOST=0",
+        );
+        let uncleared = ct_rows(&legs(&uncleared));
+        assert_eq!(at(&uncleared, 0), Check::Pass, "开那一行不读关那一侧");
+        assert_eq!(at(&uncleared, 1), Check::Fail, "{:#?}", uncleared[1].2);
+
+        // 位清了、窗上那格却没跟着说 false：两种坏法（notify 没发、或回读那一腿没跑到）在这一行
+        // 里同一枚红，detail 把两枚读数都列出来，坏的那一枚在列举里自己点名。
+        let view_stuck = flip(&good, "ct-off", "true");
+        let view_stuck = ct_rows(&legs(&view_stuck));
+        assert_eq!(at(&view_stuck, 1), Check::Fail, "{:#?}", view_stuck[1].2);
+
+        // 收梢没还原：关完位没把进门那一格放回去——「再次执行恢复」折进关那一行的判据红了。
+        let unrestored = flip(&good, "ct-end", "true");
+        let unrestored = ct_rows(&legs(&unrestored));
+        assert_eq!(at(&unrestored, 1), Check::Fail, "{:#?}", unrestored[1].2);
+        assert_eq!(at(&unrestored, 0), Check::Pass, "开那一行不读收梢");
+
+        // describe 说了话却没答样式位字段——非 Windows 的平台，或 `(null window)` 那一行：两行
+        // 都是「没有问」，一行也不红、更不绿（把字段缺失读成 0 是假红，读成 1 是假绿，#274：
+        // 尺要先展示会读空的那一面）。
+        let foreign: [(&str, &str); 6] = [
+            ("ct-start", "false"),
+            ("ct-on", "true"),
+            ("ct-desc-on", "class=QQuickWindow visible=1 size=120x80"),
+            ("ct-off", "false"),
+            ("ct-desc-off", "class=QQuickWindow visible=1 size=120x80"),
+            ("ct-end", "false"),
+        ];
+        for row in ct_rows(&legs(&foreign)) {
+            assert_eq!(
+                row.0,
+                Check::Blocked,
+                "没有样式位字段的那一面该读成没有问：{:#?}",
+                row.2
+            );
+        }
+
+        // 缺读数：那一腿没说话，那一行是「没有问」，另一行照旧绿。
+        let mut no_desc_off: Vec<(&str, &str)> = good.to_vec();
+        no_desc_off.retain(|(k, _)| *k != "ct-desc-off");
+        let blind = ct_rows(&legs(&no_desc_off));
+        assert_eq!(
+            at(&blind, 0),
+            Check::Pass,
+            "开那一行不读关那一侧的 describe"
+        );
+        assert_eq!(at(&blind, 1), Check::Blocked, "{:#?}", blind[1].2);
+
+        // 一句也不说：两枚全是 Blocked，一枚也不红，且每枚都说了为什么没问。
+        let silent = ct_rows(&[]);
+        assert_eq!(silent.len(), 2, "{silent:?}");
+        for row in &silent {
+            assert_eq!(row.0, Check::Blocked, "{:#?}", row.2);
+            assert!(!row.2.is_empty(), "那一格连为什么都没说");
+        }
+    }
+
     /// 那三枚数字键与那六行菜单共指同一批落点，逐串现读 `PinWindow.qml`（引语要回盘上档案对
     /// #271/#341）。四件事各判各的：① 每枚 Action 的 `id` 与落点各一处（多一处就是第二条路绕过
     /// 了菜单那一行）；② 每行菜单只写 `action:`，字面不重述；③ 三枚 `Shortcut` 块内**同一块里**
@@ -7850,7 +8288,7 @@ mod tests {
         }
 
         // ③ 反证两面：PRD 没写过的词不许进窗；PRD 没给键的那三只手不许自己长出一枚键来
-        // （§5.9.6 只说「选择水平翻转或垂直翻转」、§5.9.8 只说「选择"颜色反转"」，两句都没有键）。
+        // （§5.9.6 只说「选择水平翻转或垂直翻转」、§5.9.8 只说「选择“颜色反转”」，两句都没有键）。
         for banned in ["text: \"顺时针\"", "text: \"逆时针\"", "text: \"反色\""] {
             assert_eq!(
                 src.matches(banned).count(),

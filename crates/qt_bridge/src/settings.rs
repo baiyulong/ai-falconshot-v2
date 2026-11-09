@@ -20,7 +20,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
 
-use falcon_core::config::{config_path, Config, ImportChange, ImportScope, LoadSource, Output};
+use falcon_core::config::{
+    config_path, inspect_file, prune_missing, roster_of, sync_store_groups, Config, GroupRoster,
+    ImportChange, ImportScope, LoadSource, Output,
+};
 use falcon_core::encode::EncodeOptions;
 use falcon_core::imageops::Decoration;
 use falcon_core::naming::Collision;
@@ -117,10 +120,19 @@ impl Settings {
     /// order §5.7.1's fallback is written in: the scalars are the pen a tool starts with
     /// and a taught tool overrides them. Reversed, a per-tool entry would be overwritten
     /// by the default row on every start and the memory would not survive one restart.
+    ///
+    /// 夹在中间那两手接的是同一枚 `[annotation]` 里此前**没有读者**的三格：`default_tool`
+    /// 说进场先拿哪一支（排在笔之后，因为拿起一支笔要按此刻的笔去配它自己的记忆），
+    /// `undo_limit` 与 `undo_merge_ms` 说这一场能反悔几步、连着几毫秒算一条。三格都在
+    /// 设置页那一列里看得见，也都在 `flat()` 里 —— 页上有一行而场上没人读，就是
+    /// §8.3 那句「别静默吞掉」在档面上的形状。
     pub fn apply_to(&mut self, layer: &mut Layer) -> usize {
         let started = Instant::now();
         let pens = self.config.annotation.tool_style.clone();
-        layer.apply_annotation_defaults(&self.config.annotation);
+        let ann = &self.config.annotation;
+        layer.apply_annotation_defaults(ann);
+        layer.apply_default_tool(ann);
+        layer.apply_undo_limits(ann);
         layer.apply_tool_styles(&pens);
         let ms = started.elapsed().as_millis() as u64;
         self.applies += 1;
@@ -431,6 +443,20 @@ pub fn drop_replaces() -> bool {
     with(|s| s.config.pin.drop_replaces_current)
 }
 
+/// §5.9.2 步骤 2「滚动鼠标滚轮」那一手的**现读**：`[pin] wheel_resizes`。
+///
+/// 为什么像 [`drop_replaces`] 那样现读、不吃 [`pin_cfg`] 那一枚启动快照：那一枚说的是「新贴图
+/// 的默认长相」，这一枚说的是「**这一下**滚轮算不算一次缩放」——它属于一个正要发生的事件。
+/// 用户在设置页把那一格扳下去，下一次滚轮就该不动（§5.20.2「修改后即时生效」在这一档上的形状）；
+/// 让它还读进程起来那一刻的那一份，就是让用户在同一枚开关上反复试三遍。
+///
+/// 判在这只手里，不在 `qml/PinWindow.qml` 那一格 `onWheel`：页上只递方向。全仓只有一位作者
+/// 决定「滚轮改不改大小」，菜单里 `+`/`-` 那两枚与 `zoom_step` 都不问这一枚键（§5.9.2 步骤 2
+/// 给的是两条并列出路，键关掉的只是滚轮那一条）。
+pub fn wheel_resizes() -> bool {
+    with(|s| s.config.pin.wheel_resizes)
+}
+
 /// §5.2–5.4：整段 `[capture]` 由这一枚 reader 一次性送进运行期 —— P64 之前 12 枚键里
 /// 只有 `show_dimensions` 一枚有独立 reader，其余 11 枚（`default_mode` / `include_cursor`
 /// / `freeze_frame` / `highlight_element` / `magnifier_radius` / `magnifier_zoom`
@@ -445,8 +471,10 @@ pub fn drop_replaces() -> bool {
 ///
 /// `delay_seconds` 自 P108 起**不在这一枚快照里被消费**：它决定的是 open **之前**等多久，而
 /// "之前"意味着遮罩还不存在、本枚快照也还没取。它的行为读者是 [`crate::delay::arm_from_config`]，
-/// 每次按下开始重新问一遍 —— 于是上面那句"11 枚停在键在档里没人读"到今天只剩一枚成立：
-/// `highlight_element`。其余各枚都问得出读者 —— `include_cursor` 在
+/// 每次按下开始重新问一遍 —— 于是上面那句"停在键在档里没人读"到今天一枚也不成立了：
+/// `highlight_element` 的行为读者是 [`crate::mask::MaskState::element_ask_at`] 的第 1 条判据
+/// （它关的是控件级那一整条路 —— 高亮、滚轮换层、单击选中元素；整窗吸附另有自己的键）。
+/// 其余各枚 —— `include_cursor` 在
 /// [`crate::capture::cursor_overlay`]（每次贴指针现问）、`magnifier_*` 五枚在
 /// [`falcon_core::capture`] 拼放大镜参数那一手、`snap_to_window` 在 [`crate::mask::MaskState::release`]、
 /// `delay_seconds` 与 `size_unit` 各在 [`crate::delay::arm_from_config`] 与本文件的
@@ -454,19 +482,23 @@ pub fn drop_replaces() -> bool {
 ///
 /// `default_mode` 与 `freeze_frame` 自本轮起也有行为读者了：[`crate::mask::MaskState::apply_opening`]
 /// 在**每场 `open` 现读一次**这枚快照（前者定遮罩进场那一刻选区停在哪一块，判的本体是
-/// [`crate::mask::MaskState::opening_hole`]；后者答的是「这一版产品没有实时取景那一路」，本体是
-/// [`crate::mask::MaskState::freeze_notice`]）。与 `include_cursor` / `size_unit` 同一族口径：改完档，
+/// [`crate::mask::MaskState::opening_hole`]；后者答的是「实时取景这一支正在过一道两阶段自检，
+/// 过不了闸时是哪一格不成立」，本体是两位而不是一位 —— 进场那一句由
+/// [`crate::mask::MaskState::freeze_notice`] 说，量完那一句由 [`crate::mask::live_notice`] 说，
+/// 而判「过不过」的那一位在 [`falcon_core::capture::live_gate`]）。与 `include_cursor` / `size_unit` 同一族口径：改完档，
 /// 下一次按下热键就用新的，而已经开着的这一场不动（§5.20.2「设置应即时生效」在遮罩这一路的形状）。
 pub fn capture_cfg() -> falcon_core::config::Capture {
     with(|s| s.config.capture.clone())
 }
 
-/// §5.1：整段 `[general]` 由这一枚 reader 一次性取快照 —— P65 之前 6 枚键（`launch_at_startup`
-/// / `start_minimized` / `show_tray` / `close_to_tray` / `confirm_exit` / `language`）全部停在
-/// "键在档里没人读"：`crates/qt_bridge/src/hotkey.rs:352` 那一句 `Some(TraySpec { ... })` 是
+/// §5.1：整段 `[general]` 由这一枚 reader 一次性取快照 —— P65 之前这一族的键全部停在
+/// "键在档里没人读"：`crates/qt_bridge/src/hotkey.rs` 那一句 `Some(TraySpec { ... })` 是
 /// P50 落 tray 那轮的硬编码，用户把 `[general] show_tray = false` 写进档里也不会让托盘消失。
 /// P66 把 `show_tray` 接进 `Pump::start` 的 tray 参数（`Some` ↔ `None` 由这一枚 clone 出来
-/// 的 `general.show_tray` 决定）。
+/// 的 `general.show_tray` 决定）。旧日的 6 枚键自 2026-11 那轮起是 4 枚：`start_minimized`
+/// 与 `confirm_exit` 被整枚删掉 —— §5.1.1 明写「默认不显示主窗口」（「最小化启动」没有可
+/// 指的东西），「退出前确认」PRD 全篇没有一句，而页上留着这两行就是让用户去扳一个扳了
+/// 也不动任何东西的开关（§5.20.2「页上有一行、场上没人读」那一族）。
 ///
 /// `launch_at_startup` 自本轮起**不再只是快照里的一个字段**：它有两只手，都不走这一枚快照 ——
 /// * [`crate::settings_view::write`] 在 [`falcon_core::config::AUTOSTART_KEY`] 那一枚键上拧
@@ -477,11 +509,14 @@ pub fn capture_cfg() -> falcon_core::config::Capture {
 /// 于是「档里写着开而注册表里没有」这一族在这一档里没有可达的写法，而这一枚键仍是
 /// `RESTART_KEYS` 里的那一枚：启动项是立刻写进机器的，**用它登录一次**才是它生效的时候。
 ///
-/// 其余 4 枚键（`start_minimized` 需要 main window 初始化时机、`close_to_tray` 需要窗口关闭
-/// 拦截、`confirm_exit` 需要对话框、`language` 需要 i18n 装填）本轮**由快照字段而不是由独立
-/// 调用点**建了读者：`hotkey::install` 里 clone 一次整段 `[general]`，`show_tray` 那一支真
-/// 分岔，其余四支**待改码接进各自的调用点**（§5.15 那一族）。与 [`pin_cfg`] / [`capture_cfg`]
-/// 同形：一次 clone 整段快照，而 `launch_at_startup` 那一支自本轮起每次问的是机器。
+/// 其余 2 枚键（`close_to_tray` 需要窗口关闭拦截、`language` 需要 i18n 装填）**由快照字段
+/// 而不是由独立调用点**建了读者：`hotkey::install` 里 clone 一次整段 `[general]`，`show_tray`
+/// 那一支真分岔，其余两支**待改码接进各自的调用点**（§5.15 那一族）。这两枚与上面删掉的
+/// 两枚不同处要记着：`close_to_tray` 有 PRD 自己的句子（§5.1.1「应用在后台持续运行」），缺的
+/// 是手不是据；`language` 则两头都缺 —— PRD 没有一句要「界面语言」，场上也没有读者，它能活过
+/// 2026-11 那轮删除只因那一轮的名单钉在审出来的十枚上，下一轮的逐键证人（每一枚键要么给据、
+/// 要么进例外名单）要重新判它。与 [`pin_cfg`] / [`capture_cfg`] 同形：一次 clone 整段快照，
+/// 而 `launch_at_startup` 那一支自本轮起每次问的是机器。
 pub fn general_cfg() -> falcon_core::config::General {
     with(|s| s.config.general.clone())
 }
@@ -630,7 +665,10 @@ pub fn appearance_cfg() -> falcon_core::config::Appearance {
 ///   分岔本体是 [`crate::mask::MaskState::sweep_stale_temp`]。另一枚临时目录 `falconshot-clip`
 ///   不归它 —— 那一枚的死活由「剪贴板还引用着就别删」那条规矩问剪贴板，读者是
 ///   [`crate::state::PinState::sweep_clip_files`]，两处各按各自那一问）。
-/// * `crash_recovery` —— 仍待 §7.2 的 recovery snapshot 那一路。
+/// * `crash_recovery` —— [`crate::state::pin_session_enabled`]（§7.2 recovery snapshot 那一族的
+///   头一道闸，现问于问的那一刻：关着 ⇒ [`crate::state::start_session`] 不恢复、不开节拍器，
+///   [`crate::state::finish_session`] 不收会话戳，整族沉默；开着还得另一枚
+///   `[pin] state_save_seconds` > 0 一起点头才算开）。
 ///
 /// `recognize_text` 已由 P148 接进 `MaskState::record_history` 的确认臂。
 /// 但**整段读者**自此有非 test 调用点、不再算死码。
@@ -929,6 +967,131 @@ pub fn autostart_backfill(
     }
 }
 
+/// §7.3 条 4 在页上那一格要的**机器的话**：不是「档里写着什么」，而是「本进程去问过机器一次，
+/// 机器答了什么」。
+///
+/// 它与 [`AutostartRead`] 是两件独立的事，所以是两枚类型而不是一枚加字段（#321 归属与姓名）：
+/// `AutostartRead` 回答**该不该改档**（§5.1.2 那条回填腿，`startup_autostart_banner` 唯一读者），
+/// 而这一枚回答**页上那一行该不该多缀一句**（[`crate::settings_view::Row::text`] 唯一读者）。
+/// 把两者捏成一枚，「机器与档不一致但机器答得上来」这一趟就会被页上多说一句它没被问过的话 ——
+/// 不一致由那条回填腿自己收尾（以机器为准改档），页上没有它的对象。
+///
+/// **三臂里只有一臂在页上不出声**，而那一臂是 `Agrees`：机器答上来了、答的与页上那枚开关说的
+/// 是同一件事，此时行尾一句也不多缀（那枚开关自己就是读数）。另外两臂都必须出声 ——
+/// `NoAnswer` 出声是 #433（一次读不到的查询不许长得像一次读到的一致），`Elsewhere` 出声是
+/// `platform_windows::autostart::Held::Elsewhere` 自己那句「不许在这里就丢掉它」。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MachineRead {
+    /// 机器答上来了，答的与档里那一枚是同一件事（[`platform_windows::autostart::Held`] 的
+    /// `Absent` 与 `Here` 两臂并到这一格）：页上那一行一句也不多缀，那枚开关自己说话。
+    Agrees,
+    /// 机器答上来了，答的是**别的那一串命令**：原文带着，页上要能看见指向的是谁。
+    ///
+    /// 这一枚是 §7.3 条 4 C7 那一格真正的对面：用户的 Run 值指着上一场安装留下的那条路径时，
+    /// 页上那枚开关是 ON 而 ON 说的是「下一次登录会有一个 falconshot 被启动」—— 而哪一个
+    /// falconshot，只有这一串原文答得出来。
+    Elsewhere(String),
+    /// 机器没答上来（读不动那一格、权限被拒、这台不支持），带着原因原文。
+    ///
+    /// 与 `Agrees` 是两件事，不许并：并了就是拿一次失败的查询冒充一次成功的一致（#433 不许静默
+    /// 降级；#238 一枚空读数不等于一枚判过的「不在」）。
+    NoAnswer(String),
+}
+
+impl MachineRead {
+    /// 机器那一侧的位置 → 页上这一枚话。纯的，所以三臂都能在单测里问而不碰注册表
+    /// （与 `platform_windows::autostart::inspect_with` 把纯判据从 Windows 那条腿上拆下来同一枚道理）。
+    ///
+    /// `Absent` 与 `Here` 并成 `Agrees` 不是丢读数：`Held::switch_on` 早就把这两臂折成同一枚
+    /// bool，而那一枚 bool 就是页上那枚开关显示的东西 —— 页上已经说完了这两臂要说的话，行尾
+    /// 再说一遍就是同一句有两个作者（#281）。**只有 `Elsewhere` 折不过去**：它也 `switch_on` = true，
+    /// 于是开关上看着与 `Here` 一模一样，而机器说的是另一个程序。
+    pub fn of_held(held: &platform_windows::autostart::Held) -> Self {
+        use platform_windows::autostart::Held;
+        match held {
+            Held::Elsewhere(command) => MachineRead::Elsewhere(command.to_string_lossy().into_owned()),
+            Held::Absent | Held::Here => MachineRead::Agrees,
+        }
+    }
+
+    /// 回填那条腿的三臂 → 页上这一枚话。`Silent` 那一臂在这里落地成 `NoAnswer`：
+    /// 回填腿拿它当「档里那一格不动」，页上拿它当「必须出声」。同一次读数，两个读者各取所需，
+    /// 而**没有任何一臂在这一步被丢掉**（`the_page_read_keeps_the_foreign_command_and_never_folds_unread_into_agrees` 盯着）。
+    pub fn of_read(read: &AutostartRead) -> Self {
+        match read {
+            AutostartRead::Silent(why) => MachineRead::NoAnswer(why.clone()),
+            AutostartRead::Agrees { held, .. } | AutostartRead::Drifts { held, .. } => {
+                MachineRead::of_held(held)
+            }
+        }
+    }
+}
+
+/// 本进程**最近一次真问过机器**的那一枚读数。`None` = 这一趟进程还没问过（页比启动腿先画出来的
+/// 那一瞬、或 `--selftest` 那种压根不走启动腿的走法）。
+///
+/// 页上不许自己再去问一次：`platform_windows::autostart::inspect` 是阻塞的 Win32
+/// （开 HKCU、读一格、再关），而 [`crate::settings_view::Row::text`] 长在 QML 的模型腿上 ——
+/// 每画一行开一趟注册表，就是把一次 UI 重绘换成一次系统调用风暴。所以是**启动腿读一次、缓存
+/// 在这一格、页上读缓存**，而这一格的形状（`Mutex<Option<..>>`）与 [`SETTINGS`] 同族。
+///
+/// 代价是这一枚读数**会旧**：用户在页外手改了 Run 值，页上这一句仍说的是本进程上次问到的那一串。
+/// 措辞那一头因此只说「本进程读到的」而不说「现在」—— 说得出被量的是哪一次，就不去猜此刻
+/// （#261 判决要配得上它的证人）。
+static MACHINE_READ: Mutex<Option<MachineRead>> = Mutex::new(None);
+
+/// 这一格的唯一写口：换进去一枚新读数，交回被换掉的那一枚。
+///
+/// 交回旧值而不是 `()`，是因为单测要能在问完之后把这一格放回原处 —— 全局缓存被一枚单测改了
+/// 而不放回，就是给别的单测埋一枚看谁先跑的雷（`swap_machine_read` 是它唯一读者）。
+fn store_machine_read(read: Option<MachineRead>) -> Option<MachineRead> {
+    let mut slot = match MACHINE_READ.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+    std::mem::replace(&mut *slot, read)
+}
+
+/// 记住一次机器的读数。启动腿与写腿各调一次，两者都是**真问过一次机器**之后才调
+/// （页上那一格从此说的是那一次问到的东西，不是档里的东西）。
+pub fn remember_machine_read(read: MachineRead) {
+    store_machine_read(Some(read));
+}
+
+/// 页上那一行要缀的那一枚话的原料。`None` 也是答案，而且在页上有它自己的措辞 ——
+/// 「还没问过」与「问过、答的是一致」长得必须不一样（#238）。
+pub fn machine_read() -> Option<MachineRead> {
+    match MACHINE_READ.lock() {
+        Ok(g) => g.clone(),
+        Err(p) => p.into_inner().clone(),
+    }
+}
+
+/// 单测换这一格、并把原来那一枚交回来让调用方放回去。
+///
+/// 挂 `#[cfg(test)]`：产品路径上没有任何一处需要「假装机器说过别的话」，而这一格能被换正是
+/// §7.3 条 4 那三臂的判据能在没有注册表的机器上问的前提（与 `inspect_with(store, want)` 收一枚
+/// 假 store 是同一枚手法）。
+#[cfg(test)]
+pub fn swap_machine_read(read: Option<MachineRead>) -> Option<MachineRead> {
+    store_machine_read(read)
+}
+
+/// 启动腿那一趟读机的**两个读者一次问完**：交回填腿要的 [`AutostartRead`]，同时把页上要的
+/// [`MachineRead`] 记进 [`MACHINE_READ`]。
+///
+/// 拆出这一枚是因为次序不能反、也不能分成两趟问：分成两趟就是开两次 HKCU 读同一格，而两次
+/// 读数之间机器可以变，于是 `[autostart cfg]` 那一行与页上那一句说的可能不是同一次查询
+/// （#281 一把尺一个作者：这一格只有一位读者，两个读者都从它身上取）。
+pub(crate) fn absorb_machine_read(
+    file_says: bool,
+    read: Result<platform_windows::autostart::Held, String>,
+) -> AutostartRead {
+    let back = autostart_backfill(file_says, read);
+    remember_machine_read(MachineRead::of_read(&back));
+    back
+}
+
 /// 一行说完这一趟启动回填，给 `main.rs` 的 `[autostart cfg]` 那一行。
 ///
 /// `saved_ms` 是**真落了盘**的那一次的毫秒数，`None` = 这一趟没写文件。那一格不许由调用方
@@ -965,8 +1128,11 @@ pub fn format_autostart_line(read: &AutostartRead, saved_ms: Option<u64>) -> Str
 /// 一次账，页上那一枚开关从此说的是「下一次登录会不会启动」，而不是「文件里上次写了什么」。
 ///
 /// 只有真不一致才写盘：默认那一趟（档里 `false`、机器里没有启动项）一个字节也不动。
+///
+/// 这一趟同时是**页上那一句的唯一一次问机**：读数由 [`absorb_machine_read`] 记进
+/// [`MACHINE_READ`]，页上 [`crate::settings_view::Row::text`] 只读那一格缓存，自己不开 HKCU。
 pub fn startup_autostart_banner() -> String {
-    let read = autostart_backfill(
+    let read = absorb_machine_read(
         general_cfg().launch_at_startup,
         platform_windows::autostart::inspect().map_err(|e| e.to_string()),
     );
@@ -1691,7 +1857,7 @@ pub fn history_rows_joined(records: &[falcon_core::history::Record], offset_min:
                 rec.monitor_id.replace('|', "/"),
                 rec.source.as_str(),
             );
-            // 「已取消」与「已锁定」各说一件事，而 §5.14.3 的「找到标记为已取消的记录」要的
+            // 「已取消」与「已锁定」各说一件事，而 §5.14.3 的「找到标记为“已取消”的记录」要的
             // 就是这一枚字样在清单里读得到；两枚都不带时那一行什么都不多写。
             if rec.cancelled {
                 label.push_str(" · 已取消");
@@ -2119,21 +2285,193 @@ pub fn render_import_preview(
 /// [`import_row_text`])。
 ///
 /// [`ImportRead::incoming`] 是校正过的那一份:步骤 5 写进本机的必须是同一份,而不是重新读一次原文。
+///
+/// `changes` 自此是**挑过之后留下的**那一列（挑的那一手是 core
+/// [`falcon_core::config::prune_missing`]）：步骤 5 写的、步骤 4 报的、页上画的那一列，
+/// 同一份名单（#281）。被挑下来的那些行不单独存一格——它们要说的一切已经收进
+/// [`ImportRead::unwritten`] 那一句里了，再存一份就是给同一件事第二位作者。
 pub struct ImportRead {
     pub incoming: Config,
     pub changes: Vec<ImportChange>,
     pub warnings: Vec<String>,
+    /// 档里没写、而这趟本机会被清掉的那几族（「导入不动它们」那一句的主语）。
+    /// 说这一句而不逐行报「甲组、乙组没被清」，是因为逐行的名单是 [`ImportRead::changes`]
+    /// 的**反面**：页与日志都在数正的那一面，拿行数对账时对不上（同 [`render_import_preview`]
+    /// 把注释挂行尾那一理由）。
+    pub unwritten: Vec<String>,
+    /// 机器上有、而这一族的写法（`名字=成员`，逗号/等号/竖线是它的分隔符）带不出来的那几枚组名。
+    ///
+    /// 它们必须出声：预览的分母里没有它们（写不出行的名字进不了那一份顺序表），而步骤 5 落机器
+    /// 那一手读的是 `PinSet` 本体的名册，**会**把它们删掉（成员退回未分组）。一声不吭就是拿一列
+    /// 用户看过的行去确认一件行里没有的事（§8.3「别静默吞掉」在分组这一族上的最后一形）。
+    /// 说它的那一手是 [`render_unnamed`]。
+    pub unnamed: Vec<String>,
+    /// 这份档**挡住的**那些句（`version` 比本机新那一类）,句子作者是 core
+    /// [`falcon_core::config::FileReport`]。非空 ⇒ [`config_import`] 的 confirm 那一支一枚也不写,
+    /// 并把这一句原样递出去（§5.17「不得报告成功」同一族:挡住就是挡住,不许退 0）。
+    pub blocking: Vec<String>,
 }
 
-pub fn import_read(path: &Path, scope: ImportScope) -> Result<ImportRead, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let (incoming, warnings) = Config::parse_import(&text).map_err(|e| e.to_string())?;
-    let changes = with(|s| s.config.preview_import(&incoming, scope));
-    Ok(ImportRead {
+/// 步骤 4 那一问的全部算术，**本体**：本机那一份、档里那一份、那张表说「没写」的那几族、
+/// 以及校验挡下来的那几句 ⇒ 带回一份 [`ImportRead`]。
+///
+/// 它不读盘、也不碰进程那一份 Settings，所以单测递得进「本机有甲、乙两组而档里压根没写
+/// `[groups]`」这一对，而不必拿用户机器上那一份当分母（判据的落点跟着哪一只手正在量哪一刻，
+/// 见 §9.1 第十条那一族）。[`import_read`] 是它对面那两只手（读盘、`inspect_file`）的容器。
+///
+/// `machine` 是**分组那一族的分母**：设置页那一趟递的是屏幕上那几枚组（[`machine_groups`]），
+/// 命令行递 `None`，那一支退回档上那一格。为什么这一族要换分母而别处不换：步骤 5 落机器那一手
+/// （`sync_store_groups`）读的就是屏幕上那一份名册，「将被覆盖的项目」若报的是另一份，用户确认的
+/// 就不是将要发生的那件事。换分母只动 `groups.` 那一臂 —— `Config::preview_import` 对 `groups.`
+/// 前缀**跳过**逐键比的那一半，所以把本机那一份克隆出来、只把顺序表换掉，其余每一枚键的读数与
+/// 拿 `local` 去问的一字不差；也因此不需要 core 那侧第二枚 diff（#281）。
+fn grade_import(
+    local: &Config,
+    incoming: Config,
+    missing: &[String],
+    blocking: Vec<String>,
+    warnings: Vec<String>,
+    scope: ImportScope,
+    machine: Option<&[GroupRoster]>,
+) -> ImportRead {
+    let mut denominator = local.clone();
+    let unnamed = match machine {
+        Some(roster) => denominator.set_roster(roster),
+        None => Vec::new(),
+    };
+    let found = denominator.preview_import(&incoming, scope);
+    let (changes, dropped) = prune_missing(&found, missing);
+    // 只报**真挑下了行**的那些族:`FAMILIES` 那 15 枚里没写的每一枚都要说一句,用户读到的
+    // 就是一串他没碰过的表名;而「没写而这趟本来也没有它的行」那几族,原样留着是显然的。
+    let unwritten: Vec<String> = missing
+        .iter()
+        .filter(|m| dropped.iter().any(|c| c.key.split('.').next() == Some(m.as_str())))
+        .cloned()
+        .collect();
+    ImportRead {
         incoming,
         changes,
         warnings,
-    })
+        unwritten,
+        unnamed,
+        blocking,
+    }
+}
+
+/// 步骤 4 那一问的**容器**：读盘、过 [`inspect_file`]、再按「这一趟问得到机器吗」递进
+/// [`grade_import`]。`machine` 由调用方答，而不是这一手自己猜——「有没有一台活机器」在
+/// 产品那一趟与命令行那一趟里是两个不同的事实，谁调用谁知道（#281）。
+pub fn import_read(
+    path: &Path,
+    scope: ImportScope,
+    machine: bool,
+) -> Result<ImportRead, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // 走 [`inspect_file`] 而不是 [`Config::parse_import`]:反序列化对「档里没写 `[groups]`」与
+    // 「写了而每一枚都恰好是默认值」给的是同一个 `Config`,而这两件事在导入时是两种做法。
+    let (incoming, report) = inspect_file(&text).map_err(|e| e.to_string())?;
+    // 先问机器再进 `with`：`machine_groups` 自己就叫一次 `with`，锁不可重入。
+    let roster = machine.then(machine_groups);
+    Ok(with(|s| {
+        grade_import(
+            &s.config,
+            incoming,
+            &report.missing,
+            report.blocking,
+            report.warnings,
+            scope,
+            roster.as_deref(),
+        )
+    }))
+}
+
+/// 步骤 4「校验文件」里**不是「将被覆盖」**的那几行:挡下的、与档里没写的那些族。
+///
+/// 「档里没写这些族,导入不动它们」那一句的作者仍是 core
+/// [`falcon_core::config::FileReport::unwritten_line`]——命令行与设置页两处都叫它,桥只加上
+/// 行首那一枚「挡 」/「不动 」的标签（与 [`render_import_preview`] 给校正那几行加「校正 」同一形:
+/// 句子归 core,排版归桥）。
+fn render_file_check(blocking: &[String], unwritten: &[String]) -> String {
+    let mut out = String::new();
+    for b in blocking {
+        out.push_str(&format!("  挡 {b}\n"));
+    }
+    if let Some(line) = falcon_core::config::FileReport::unwritten_line(unwritten) {
+        out.push_str(&format!("  {line}\n"));
+    }
+    out
+}
+
+/// 「这一列行**装不下**的那几枚场上的组」那一句：名字里带着 `名字=成员` 这一族的分隔符
+/// （逗号、等号、竖线）的组，进不了档，因此也进不了预览那一份顺序表 —— 而步骤 5 落机器那一手
+/// 读的是 `PinSet` 本体的名册，它们不在新名册里就是**要撤的**（成员退回未分组）。
+///
+/// 单独一手是因为这一句既不是「将被覆盖」（没有那样一行）也不是「不动它们」（档没提过的族才归
+/// 那句），三者各有各的坏法（#453）。空名单一个字也不加：与 [`render_file_check`] 同一规矩，
+/// 尺要能读出空（#274）。
+fn render_unnamed(unnamed: &[String]) -> String {
+    if unnamed.is_empty() {
+        return String::new();
+    }
+    format!(
+        "  分组：场上这几枚的名字这份档写不出，因而不在上面那一列里；确认后会连组一起从场上撤掉\
+         （组里的贴图退回未分组）：{}\n",
+        unnamed.join(", ")
+    )
+}
+
+/// §5.12 那一族此刻在**这一台机器上**是哪一串：哪几枚组、各装着谁、按什么次序。
+///
+/// 装配手是 core 的 [`roster_of`]，桥这一侧不拼第二份（#281）：`PinSet` 那边是名字与
+/// `PinId`，档那边是名字与编号字符串，两处各数一次就会有一边把「组里几枚」数成另一样。
+/// 导出那一趟带的自此是这一串，而不是 `config.toml` 里那一格从来没人写回过的旧次序
+/// （§5.12.3 步 4 底下记的就是这笔欠账）。
+pub fn machine_groups() -> Vec<GroupRoster> {
+    crate::state::with(|s| roster_of(&s.set))
+}
+
+/// 导出那一趟的**本体**：本机这一份 settings ＋「此刻能不能问到一台机器」⇒ 交回要写的文本、
+/// 它数得出的键数、与那几枚写不出行的组名。
+///
+/// 分成这一手是为了让单测递得进「机器上有甲、乙两组而档上写的是另一串」这一对，而不必拿
+/// 用户那一份 `config.toml` 当分母。`machine` 为 `None` 那一支**不是**「按空的处理」：这一趟
+/// 问不到机器，就照档上原有的那一串写下去，并由 [`export_groups_note`] 把这一句说出来——
+/// 静默写下去就是拿一份没人核对过的旧次序当「用户此刻看见的那一串」卖到另一台机器去。
+fn graded_export(
+    cfg: &Config,
+    machine: Option<&[GroupRoster]>,
+) -> Result<(String, usize, Vec<String>), String> {
+    let mut out = cfg.clone();
+    let skipped = match machine {
+        Some(roster) => out.set_roster(roster),
+        None => Vec::new(),
+    };
+    let text = out.export_text().map_err(|e| e.to_string())?;
+    let keys = out.flat().map_err(|e| e.to_string())?.len();
+    Ok((text, keys, skipped))
+}
+
+/// 那一句「带过去的分组是谁的」。写它成独立一手，是因为三件事都得各有一行而不许共用一句
+/// （#453）：问到了一台有组的机器、问到了一台此刻没组的机器、压根问不到。第三件与第二件
+/// 在档面上的字可以一模一样，而它们是两种期待。
+fn export_groups_note(machine: Option<&[GroupRoster]>, skipped: &[String]) -> String {
+    let mut out = String::new();
+    match machine {
+        None => out.push_str("  分组：这一趟问不到机器（命令行的进程里没有一台活机器），带的是档上那一份\n"),
+        Some(r) if r.is_empty() => {
+            out.push_str("  分组：机器上此刻一枚也没有，档里带的也是空的\n");
+        }
+        Some(r) => out.push_str(&format!("  分组：带的是机器上那 {} 枚\n", r.len())),
+    }
+    if !skipped.is_empty() {
+        // `Config::set_roster` 略过的那些（名字里带着这一族的分隔符）不该静默消失：§8.3
+        // 「别静默吞掉」在这一趟要的就是这一句，而枚数与名字都出自它那一份返回值。
+        out.push_str(&format!(
+            "  这几枚组名在这份档里写不出，没有带过去：{}\n",
+            skipped.join(", ")
+        ));
+    }
+    out
 }
 
 /// §5.20.3 步骤 2:把这一台机器正在跑的 settings 写成一份可带走的档,返回它写了几枚键。
@@ -2142,20 +2480,21 @@ pub fn import_read(path: &Path, scope: ImportScope) -> Result<ImportRead, String
 /// 目标文件已有的注释与排版留住,那是「改自己这一份」的行为;导出给另一台机器的档不该
 /// 继承这一台的注释。键数取 [`falcon_core::config::Config::flat`] 的长度,于是那句
 /// 「写出 N 枚键」是盘上那份文件的读数,不是设置页自报的枚数。
-pub fn config_export(path: &Path) -> Result<String, String> {
-    let (text, keys) = with(|s| {
-        let cfg = &s.config;
-        cfg.export_text()
-            .and_then(|t| cfg.flat().map(|f| (t, f.len())))
-            .map_err(|e| e.to_string())
-    })?;
+///
+/// `machine` 是「这一趟问得到机器吗」：设置页那两枚钮递 [`machine_groups`] 那一串（用户屏幕上
+/// 就摆着那些组），命令行递 `None`（那个进程在 `app.exec()` 之前就退了，场上没有贴图）。
+/// 写的一直是**克隆**：导出一个字节也不改本机那一份，更不叫 [`Settings::save`]。
+pub fn config_export(path: &Path, machine: Option<&[GroupRoster]>) -> Result<String, String> {
+    let (text, keys, skipped) = with(|s| graded_export(&s.config, machine))?;
     if let Some(dir) = path.parent() {
         if !dir.as_os_str().is_empty() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
     }
     std::fs::write(path, text.as_bytes()).map_err(|e| format!("{}: {e}", path.display()))?;
-    Ok(format!("[export] 写出 {keys} 枚键到 {}\n", path.display()))
+    let mut out = format!("[export] 写出 {keys} 枚键到 {}\n", path.display());
+    out.push_str(&export_groups_note(machine, &skipped));
+    Ok(out)
 }
 
 /// §5.20.3 步骤 5 的那一句:盘写完之后报一次。
@@ -2186,9 +2525,29 @@ pub fn render_import_applied(applied: usize, ms: u64, corrections: &[String]) ->
 ///
 /// `confirm` 就是那一节里的「用户确认后应用」。没确认时除了预览那句,还专门补一行说
 /// 未应用 —— 退出码 0 在这一支是「档读得通」的意思,不是「已经改了」。
-pub fn config_import(path: &Path, scope: ImportScope, confirm: bool) -> Result<String, String> {
-    let read = import_read(path, scope)?;
+///
+/// `machine` 说的是另一件事，与 `confirm` 不可互换：档写完了，**场上那些组**要不要跟着改。
+/// 设置页那一趟答 `true`（屏幕上正摆着那些贴图与那些组，`Config::groups` 落的就是一串要落到
+/// 它们身上的名字），命令行答 `false`——那个进程在 `app.exec()` 之前就退了，`PinSet` 是空的，
+/// 拿一份档去「同步」一台不存在的机器，交回的那句「新建 1、改名 0…」就在骗屏幕上没有的东西。
+/// 因此 `false` 那一支**一行机器也不动**，并把这一句印在报告里（§8.3「别静默」），而不是让
+/// 用户以为另一台机器上的分组已经改好了。
+pub fn config_import(
+    path: &Path,
+    scope: ImportScope,
+    confirm: bool,
+    machine: bool,
+) -> Result<String, String> {
+    let read = import_read(path, scope, machine)?;
     let mut out = render_import_preview(&read.changes, &read.warnings, scope);
+    out.push_str(&render_file_check(&read.blocking, &read.unwritten));
+    out.push_str(&render_unnamed(&read.unnamed));
+    // 挡住的那一支排在 `confirm` 之前、也排在预览文本返回之前:退出码 0 在这一只手说的从来是
+    // 「档读得通」,而一份比本机新的档读不通 —— 让它带着「未应用」那一句退 0,下一次脚本就会
+    // 把它当导成功了。核心那一句（「先升级 Falconshot，再导入」）原样递出去。
+    if !read.blocking.is_empty() {
+        return Err(read.blocking.join("；"));
+    }
     if !confirm {
         out.push_str("[import] 未应用：加 --confirm 才会写入（§5.20.3 步骤 5）\n");
         return Ok(out);
@@ -2197,20 +2556,46 @@ pub fn config_import(path: &Path, scope: ImportScope, confirm: bool) -> Result<S
     // [`Settings::save`] 把写盘失败记进 `problems` 而自己只返回耗时:内存里的值照改。
     // 那一手对设置页是对的(§9.4),对 CLI 不行 —— PRD §5.17 要的是「文件写失败不得报告
     // 成功」。所以这里看的是 save 前后 `problems` 长没长,长了就当 Err 报出去。
-    let (outcome_ms, corrections) = with(|s| -> Result<(u64, Vec<String>), String> {
+    let (outcome_ms, corrections, to_land) = with(|s| -> Result<(u64, Vec<String>, bool), String> {
+        // 递的是**已经报给用户的那一列**（`read.changes` = 挑过之后留下的那一半），不是在这里
+        // 重算一次 preview:重算会把「档里没写的那一族」那些行又加回来,报的与做的就不是同一件事
+        // （`Config::apply_changes` 头顶那封信点名的正是这一形）。
         let corrections = s
             .config
-            .apply_import(&read.incoming, scope)
+            .apply_changes(&read.incoming, &read.changes)
             .map_err(|e| e.to_string())?;
         let before = s.problems.len();
         let ms = s.save();
         if s.problems.len() > before {
-            Err(s.problems[before].clone())
-        } else {
-            Ok((ms, corrections))
+            return Err(s.problems[before].clone());
         }
+        // 动机器的条件不是「这一趟问得到机器」，而是「报给用户的那一列里有分组的行」：
+        // `apply_changes` 见到 `groups.` 那一行才把整格 `incoming.groups` 换进本机，没那一行时
+        // 本机的 `Config::groups` 还是 `config.toml` 上那份没人写回过的旧次序（§5.12.3 记的就是
+        // 这笔欠账），拿它去 `sync_store_groups` 会当场删掉屏幕上那些档里从没提过的组 —— 那是
+        // 一件报都没报过的事（#261）。所以这里读的是 `read.changes` 那一列，与步骤 4 同一份。
+        Ok((
+            ms,
+            corrections,
+            machine && read.changes.iter().any(|c| c.key.starts_with("groups.")),
+        ))
     })?;
+    // 两把锁不叠着拿：`state::with` 里头那些手（落盘那一趟找目录）会回头叫
+    // `settings::with`，反过来嵌一次就是一条没人画过的锁序。
+    let landed = to_land.then(|| {
+        let roster = with(|s| s.config.roster());
+        crate::state::with(|st| sync_store_groups(&mut st.set, &roster).line())
+    });
     out.push_str(&render_import_applied(applied, outcome_ms, &corrections));
+    match landed {
+        Some(line) => out.push_str(&format!("  {line}\n")),
+        None if machine => out.push_str(
+            "  分组：这一列里没有分组的行，场上的组原样留着（档没写这一族，或范围不含它）\n",
+        ),
+        None => out.push_str(
+            "  分组：这一趟不落机器（命令行的进程里没有一台活机器），档改好了而场上的组没动\n",
+        ),
+    }
     Ok(out)
 }
 
@@ -2633,6 +3018,52 @@ mod tests {
         // here would rewrite the user's file with a pen they never set.
         assert_eq!(layer.tool_styles().len(), 0);
         assert_eq!(s.write_back(&layer), None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `[annotation] default_tool` 那一行经由**字节**抵达手里那支笔，而不是经由测试的记忆。
+    ///
+    /// 三格一起量的理由同一句：设置页按 `flat()` 枚举，这三行每一行都在屏幕上；而 `apply_to`
+    /// 是场上唯一把它们递给运行期的手。出厂那一格（空串 / 200 / 400）与另外三格各测一次，
+    /// 是因为「默认路径什么都没变」这一句也要有证人 —— 接线接坏了，最先受害的是没改过设置的人。
+    #[test]
+    fn the_default_tool_row_reaches_the_hand_that_holds_the_pen() {
+        let dir = sandbox("default-tool");
+        let path = file_in(&dir);
+        std::fs::write(
+            &path,
+            "[annotation]\ndefault_tool = \"marker\"\nstroke_color = \"#00FF00FF\"\n",
+        )
+        .expect("write the hand-made file");
+
+        let mut s = pinned(&dir);
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let mut layer = Layer::default();
+        assert_eq!(s.apply_to(&mut layer), 0, "这一行不是一张 tool_style 表");
+        assert_eq!(layer.tool(), Some(Kind::Marker), "档里那支笔没拿起来");
+        // 拿起来的是**这一支**笔，而它带过来的底色是档里那一行的色：`apply_annotation_defaults`
+        // 排在前，`select_tool` 才拿得到它；反了序就是一支出厂红的马克笔。alpha 那一格不是档说的，
+        // 是马克笔自己的 `MARKER_ALPHA`（§5.7.8 那一支笔天生半透）。
+        assert_eq!(
+            layer.color(),
+            [0, 255, 0, falcon_core::annotation::MARKER_ALPHA],
+            "换笔把笔色换回了出厂那一格"
+        );
+
+        // 认不出的一串：档那一头清成空串并且把话说出来，到不了 `apply_default_tool`，
+        // 于是手里那支笔一动不动 —— 两只手对同一串说同一句话。
+        std::fs::write(&path, "[annotation]\ndefault_tool = \"highlighter\"\n").expect("seed");
+        let s2 = Settings::open(&path, Some(&path));
+        assert!(
+            s2.warnings.iter().any(|w| w.contains("default_tool")),
+            "{:?}",
+            s2.warnings
+        );
+        let mut second = Layer::default();
+        let mut s2 = s2;
+        s2.apply_to(&mut second);
+        assert_eq!(second.tool(), None, "认不出的名字该留在空串那一格");
+        assert!(second.problems.is_empty(), "{:?}", second.problems);
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -3796,7 +4227,7 @@ mod tests {
         assert!(said.contains("没开"), "关着的答法要点名开关：{said}");
     }
 
-    /// §5.14.1 规则第三句「历史记录应包含时间、屏幕、**位置**、尺寸和截图内容」里那一枚**位置**：
+    /// §5.14.1 规则第三句「历史记录应包含时间、屏幕、位置、尺寸和截图内容」里那一枚**位置**：
     /// 这一格钉的不是"行上有没有两个数"，而是**那两个数是 `rec.rect` 的 x 与 y**——尺寸那一节
     /// （`64×32`）本轮之前就在，把行换成 `10,20 · 64×32` 之后，只有位置写得对、写得是那一节的位置
     /// 才过得了这一格（#281：`history_rows_joined` 是行文的唯一作者，别处不该有第二把对照）。
@@ -4475,6 +4906,356 @@ mod tests {
             "{three:?}"
         );
         assert!(three.contains("应用后又校正 3 项"), "{three:?}");
+    }
+
+    /// 从一份导出档里删掉某一节:表头自己,与它到下一枚表头之间的那几行。
+    ///
+    /// 找不到那一节就 panic —— 删不到,下面那一格就什么都没测(#274)。
+    fn without_section(text: &str, family: &str) -> String {
+        let header = format!("[{family}]");
+        let mut out = String::new();
+        let mut skipping = false;
+        let mut hit = false;
+        for line in text.lines() {
+            if line.trim() == header {
+                skipping = true;
+                hit = true;
+                continue;
+            }
+            if skipping && line.trim_start().starts_with('[') {
+                skipping = false;
+            }
+            if !skipping {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        assert!(hit, "档里没有 {header} 这一节:那一节根本没被删掉");
+        out
+    }
+
+    /// §5.20.3 步骤 4 那半道没接的闸:一份**压根没提某一族**的档,不许被读成「这一族是空的」。
+    ///
+    /// 反序列化对「没写 `[groups]`」与「写了而 `entries = []`」给的是同一个 `Config`,所以这一格
+    /// 的分母必须是**同一份内容、只少一节表头**:对照那一问先证明本机那两组的清空行报得出来,
+    /// 少了这一问,「没报清空」就可以来自任何一种坏(恒绿的尺,#274/#433)。
+    ///
+    /// 判据不只有「那一列没了」:该改的那一枚(`output.save_dir`)必须真改了,否则「没动分组」
+    /// 也可以是「这一趟什么都没做」—— 那是两种截然不同的期待,而这一格要钉的是前者。
+    #[test]
+    fn a_file_that_never_mentioned_a_family_leaves_that_family_alone() {
+        use falcon_core::config::GroupRoster;
+
+        let mut local = Config::default();
+        assert!(
+            local
+                .set_roster(&[
+                    GroupRoster {
+                        name: "甲".to_string(),
+                        members: vec!["1".to_string(), "2".to_string()]
+                    },
+                    GroupRoster {
+                        name: "乙".to_string(),
+                        members: vec!["3".to_string()]
+                    },
+                ])
+                .is_empty(),
+            "两枚组名都该写得出行"
+        );
+        // 「另一台机器」:组还没建过,输出目录不同。走 core 自己的导出,不手写 toml。
+        let mut incoming = local.clone();
+        incoming.set_roster(&[]);
+        incoming.output.save_dir = "D:/other-pics".to_string();
+        let text = incoming.export_text().expect("导出不了那份档");
+        assert!(text.contains("[groups]"), "对照组要删的就是这一节");
+
+        // ── 对照:同一份内容而 `[groups]` 还在 ⇒ 两组的清空行都报得出来。
+        let (cfg_full, rep_full) = inspect_file(&text).expect("对照组读不通");
+        assert!(!rep_full.missing.contains(&"groups".to_string()));
+        let full = grade_import(
+            &local,
+            cfg_full,
+            &rep_full.missing,
+            rep_full.blocking,
+            rep_full.warnings,
+            ImportScope::Suggested,
+            // 这一格的分母是 `local` 自己那份已经落过 roster 的 config，机器那一侧递 `None`：
+            // 单测不该读进程级的那台机器（#453 那一族，读数得是这一格摆出来的）。
+            None,
+        );
+        let cleared: Vec<&str> = full
+            .changes
+            .iter()
+            .filter(|c| c.key.starts_with("groups.removed."))
+            .map(|c| c.key.as_str())
+            .collect();
+        assert_eq!(cleared.len(), 2, "{cleared:?}");
+        assert!(cleared.contains(&"groups.removed.甲"), "{cleared:?}");
+        assert!(cleared.contains(&"groups.removed.乙"), "{cleared:?}");
+        assert!(full.unwritten.is_empty(), "{:?}", full.unwritten);
+
+        // ── 正面:删掉那一节 ⇒ 同一只闸报的是「这一族没写,不动」而不是「这一族清空」。
+        let stripped = without_section(&text, "groups");
+        let (cfg_gone, rep_gone) = inspect_file(&stripped).expect("少了那一节的档读不通");
+        assert_eq!(rep_gone.missing, vec!["groups".to_string()]);
+        let pruned = grade_import(
+            &local,
+            cfg_gone,
+            &rep_gone.missing,
+            rep_gone.blocking,
+            rep_gone.warnings,
+            ImportScope::Suggested,
+            None,
+        );
+        let still_groups: Vec<&str> = pruned
+            .changes
+            .iter()
+            .filter(|c| c.key.starts_with("groups."))
+            .map(|c| c.key.as_str())
+            .collect();
+        assert!(still_groups.is_empty(), "挑下来的只剩那一族:{still_groups:?}");
+        assert_eq!(pruned.unwritten, vec!["groups".to_string()]);
+        assert!(
+            pruned
+                .changes
+                .iter()
+                .any(|c| c.key == "output.save_dir"),
+            "别的族也被挑掉了:这一闸把导入整个废了 —— {:?}",
+            pruned.changes.iter().map(|c| &c.key).collect::<Vec<_>>()
+        );
+
+        // 报的与做的同一份名单:步骤 5 递的是这一列,本机那两组留在原地。
+        let mut applied = local.clone();
+        applied
+            .apply_changes(&pruned.incoming, &pruned.changes)
+            .expect("应用不了");
+        assert_eq!(
+            applied
+                .roster()
+                .iter()
+                .map(|g| g.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["甲".to_string(), "乙".to_string()],
+            "档里没写这一族 ⇒ 本机那两枚组一枚也不许没"
+        );
+        assert_eq!(
+            applied.output.save_dir, "D:/other-pics",
+            "该改的那一枚得真改了"
+        );
+    }
+
+    /// 「校验文件要说的一切」里不是「将被覆盖」的那几行:一句的作者仍是 core
+    /// [`falcon_core::config::FileReport::unwritten_line`],桥只加行首那一枚标签与换行(#281),
+    /// 所以这里比的是**那一手交回来的字**,不抄它的措辞(#455)。
+    #[test]
+    fn the_file_check_says_nothing_when_the_file_had_nothing_to_say() {
+        use falcon_core::config::FileReport;
+
+        // 没一句要说 ⇒ 一个字符也不加:留下「  」或空行,页上就会多出一行读数对不上的东西。
+        assert_eq!(render_file_check(&[], &[]), "");
+        let line = FileReport::unwritten_line(&["groups".to_string()]).expect("core 那句该在");
+        assert_eq!(render_file_check(&[], &["groups".to_string()]), format!("  {line}\n"));
+        // 没写而不止一族:那一句说的还是「哪几族」,而名单是 core 拼的。
+        let two = FileReport::unwritten_line(&["groups".to_string(), "pin".to_string()]).unwrap();
+        assert!(two.contains("groups") && two.contains("pin"), "{two:?}");
+        assert_eq!(
+            render_file_check(&[], &["groups".to_string(), "pin".to_string()]),
+            format!("  {two}\n"),
+        );
+        // 挡住的那几句各占一行,且排在「不动它们」之前:读的次序 = 处理的次序(先拒,再解释)。
+        let both = render_file_check(
+            &["这一句的作者挡住".to_string(), "那一句也是".to_string()],
+            &["pin".to_string()],
+        );
+        let lines: Vec<&str> = both.lines().collect();
+        assert_eq!(lines.len(), 3, "{both:?}");
+        assert_eq!(lines[0], "  挡 这一句的作者挡住", "{both:?}");
+        assert_eq!(lines[1], "  挡 那一句也是", "{both:?}");
+        assert_eq!(
+            lines[2],
+            format!("  {}", FileReport::unwritten_line(&["pin".to_string()]).unwrap()),
+            "{both:?}"
+        );
+    }
+
+    /// 一份比本机新的档:**挡住就是挡住**,不许带着「未应用」那一句退 0(§5.17「不得报告成功」
+    /// 同一族)。这一格只走 `confirm = false` —— 同一只手在另一支会写真档,而 `%APPDATA%` 里
+    /// 那一台不是草稿纸;挡住那一支排在 `confirm` 之前,两支都到不了写。
+    #[test]
+    fn a_file_newer_than_this_machine_is_refused_outright() {
+        let dir = sandbox("newer-version-refused");
+        let at = dir.join("newer.toml");
+        let mut incoming = Config::default();
+        incoming.output.save_dir = "D:/newer".to_string();
+        let text = format!(
+            "version = {}\n{}",
+            falcon_core::config::CONFIG_VERSION + 1,
+            incoming.export_text().expect("导出不了")
+        );
+        std::fs::write(&at, text.as_bytes()).expect("种不下那份档");
+
+        // 核心那一句原样递出去,不另拼一句「找不到文件」(#453)。
+        // 两支都递 `machine = false`：`confirm = false` 那一支到不了写，而这一格也不该在单测里
+        // 拿进程级那台机器当分母（上面那一格同理）。
+        let said = config_import(&at, ImportScope::Suggested, false, false);
+        match said {
+            Err(e) => {
+                assert!(e.contains("先升级 Falconshot"), "{e:?}");
+                assert!(!e.contains("未应用"), "{e:?}");
+            }
+            Ok(o) => panic!("这份档比本机新,却退回 Ok 并说了这一句:{o:?}"),
+        }
+        // 分母:同一份内容减去那一行 version ⇒ 走得下去(少了这一问,上面那个 Err 可以是任何一种坏)。
+        let ok_at = dir.join("same-version.toml");
+        std::fs::write(
+            &ok_at,
+            incoming.export_text().expect("导出不了").as_bytes(),
+        )
+        .expect("种不下那份档");
+        let ok = config_import(&ok_at, ImportScope::Suggested, false, false)
+            .expect("这一份不该被挡住");
+        assert!(ok.contains("[import] 未应用"), "{ok:?}");
+    }
+
+    /// 一枚组，写成 core 那一份顺序表要的形状。三格新单测都摆这个，而摆法只有一处（#281）。
+    fn grp(name: &str, members: &[&str]) -> GroupRoster {
+        GroupRoster {
+            name: name.to_string(),
+            members: members.iter().map(|m| m.to_string()).collect(),
+        }
+    }
+
+    /// #55 的第一半：**导出带的是机器上那一份**，而不是 `config.toml` 里那格从来没人写回过的
+    /// 旧次序。判据读的是「带出去的那一份文本再读回来」的 roster（不是本模块拼的串），于是
+    /// 对面是格式本身，不是我对手写形状的想象。
+    ///
+    /// 三句「带的是谁的」各占一支（#453）：机器上有几枚、机器上此刻一枚也没有、压根问不到。
+    /// 后两支在档面上可以一模一样（都是 `config.toml` 那份旧的），而它们是两种期待 —— 用户
+    /// 拿一份档去另一台机器时，得知道那一串是谁的。
+    #[test]
+    fn the_export_carries_the_machine_and_says_whose_list_it_is() {
+        let mut stale = Config::default();
+        assert!(stale.set_roster(&[grp("旧甲", &["1"])]).is_empty());
+        stale.output.save_dir = "D:/pics".to_string();
+        let machine = vec![grp("新甲", &["7", "8"]), grp("新乙", &[])];
+
+        let (text, keys, skipped) = graded_export(&stale, Some(&machine)).expect("导出不了");
+        assert!(skipped.is_empty(), "{skipped:?}");
+        let back = Config::parse_import(&text)
+            .expect("带出去的那一份读不回")
+            .0;
+        assert_eq!(back.roster(), machine, "档里落的不是机器上那一份");
+        assert!(
+            !text.contains("旧甲"),
+            "没人写回过的旧次序混进了带出去的那一份：{text}"
+        );
+        // 「写出 N 枚键」那句的对面是盘上那份文件，与读回来数的是同一份。
+        assert_eq!(
+            keys,
+            back.flat().expect("数不出键").len(),
+            "{keys} 与读回来的枚数不同"
+        );
+
+        let some = export_groups_note(Some(&machine), &skipped);
+        let none = export_groups_note(None, &skipped);
+        let empty = export_groups_note(Some(&[]), &skipped);
+        assert!(some != none && some != empty && none != empty, "{some:?} / {none:?} / {empty:?}");
+        // 那一枚名字这份档写不出去，就必须在报告里出声，而不是让它静默少一行（§8.3）。
+        let with_skipped = export_groups_note(Some(&machine), &["坏,名".to_string()]);
+        assert!(with_skipped.contains("坏,名") && !some.contains("坏,名"), "{with_skipped:?}");
+    }
+
+    /// #55 的另一半：**步骤 4 那一列行比的是机器上那一份**。换了分母，`groups.` 那一臂报的就
+    /// 是「场上将要发生的事」，步骤 5 落机器落的就是同一串 —— 「报的=做的」（#281）自此在
+    /// 分组这一族上也成立（它此前只在别的族上成立，因为那一族的分母从来就是内存里那份）。
+    ///
+    /// 两问并排跑是这一格的尺：`None` 那一支（命令行）看不见丙，因为它压根问不到机器；
+    /// 少了这一问，「`Some` 那一支报得出丙」可以是任何一种坏（#274）。
+    #[test]
+    fn the_groups_preview_is_counted_against_the_machine() {
+        let mut local = Config::default();
+        // 档上那份旧的只有乙；机器上此刻是乙 + 丙。档里带的是甲。
+        assert!(local.set_roster(&[grp("乙", &["1"])]).is_empty());
+        let machine = vec![grp("乙", &["1"]), grp("丙", &["2"])];
+        let mut incoming = Config::default();
+        incoming.output.save_dir = "D:/x".to_string();
+        assert!(incoming.set_roster(&[grp("甲", &["9"])]).is_empty());
+
+        let keys = |r: &ImportRead| -> Vec<String> {
+            r.changes.iter().map(|c| c.key.clone()).collect()
+        };
+        let graded = |machine: Option<&[GroupRoster]>| {
+            grade_import(
+                &local,
+                incoming.clone(),
+                &[],
+                Vec::new(),
+                Vec::new(),
+                ImportScope::Suggested,
+                machine,
+            )
+        };
+        let m = keys(&graded(Some(&machine)));
+        let n = keys(&graded(None));
+        assert!(
+            m.contains(&"groups.removed.丙".to_string()),
+            "场上那枚丙要被撤掉却没报：{m:?}"
+        );
+        assert!(
+            !n.contains(&"groups.removed.丙".to_string()),
+            "问不到机器那一支不该看得见场上的丙：{n:?}"
+        );
+        for name in ["groups.added.甲", "groups.removed.乙"] {
+            let want = name.to_string();
+            assert!(m.contains(&want) && n.contains(&want), "{name}：{m:?} / {n:?}");
+        }
+        // 换分母只动 `groups.` 那一臂：其余每一枚键的读数一字不差。
+        let others = |v: &[String]| -> Vec<String> {
+            v.iter()
+                .filter(|k| !k.starts_with("groups."))
+                .cloned()
+                .collect()
+        };
+        assert_eq!(others(&m), others(&n), "换分母把别的族也换了");
+        assert!(
+            others(&m).contains(&"output.save_dir".to_string()),
+            "两列里别的族一行也没有，上面那一问就是空转：{m:?}"
+        );
+    }
+
+    /// 场上那枚组的名字里带着这一族的分隔符（逗号、等号、竖线）：它进不了档，因而也进不了
+    /// 预览那一份分母 —— 而步骤 5 落机器读的是 `PinSet` 本体的名册，**不在新名册里就是要撤的**
+    /// （成员退回未分组）。这一句不出声，就是拿一列用户看过的行去确认一件行里没有的事。
+    ///
+    /// 「不在那一列里」这一问是分母的反面：它必须真的不在（`changes` 里没有它的名），否则
+    /// [`render_unnamed`] 那句就多余，而这一格也就没在测它声称测的事。
+    #[test]
+    fn a_group_name_the_file_cannot_write_is_voiced_before_it_is_dropped() {
+        let local = Config::default();
+        let machine = vec![grp("坏,名", &["3"]), grp("丙", &["2"])];
+        let mut incoming = Config::default();
+        assert!(incoming.set_roster(&[grp("丙", &["2"])]).is_empty());
+
+        let read = grade_import(
+            &local,
+            incoming,
+            &[],
+            Vec::new(),
+            Vec::new(),
+            ImportScope::Suggested,
+            Some(&machine),
+        );
+        assert_eq!(read.unnamed, vec!["坏,名".to_string()], "{:?}", read.unnamed);
+        assert!(
+            !read.changes.iter().any(|c| c.key.contains("坏,名")),
+            "写不出行的名字进了那一列，行数就对不上账：{:?}",
+            read.changes.iter().map(|c| &c.key).collect::<Vec<_>>()
+        );
+        let said = render_unnamed(&read.unnamed);
+        assert_eq!(said.lines().count(), 1, "{said:?}");
+        assert!(said.contains("坏,名"), "{said:?}");
+        // 尺要读得出空（#274）：没一枚要说时一个字符也不加。
+        assert_eq!(render_unnamed(&[]), "");
     }
 
     /// §5.19.1 第 1 步那三分岔本体逐臂各问一次:跟随系统时机器答 light / dark / 不答,

@@ -1,6 +1,6 @@
-//! §5.21.2「帮助文档」的那一只手：托盘第 1440 行那枚「帮助」按下去到底做什么。
+//! §5.21.2「帮助文档」的那一只手：§5.18.1 菜单建议里那枚「帮助」按下去到底做什么。
 //!
-//! PRD 那一节列了四行（第 1559–1562 行）：工具栏按钮的提示文本、快捷键设置页的功能说明、命令行
+//! PRD 那一节列了四行：工具栏按钮的提示文本、快捷键设置页的功能说明、命令行
 //! 配置处的参数文档入口、复杂功能的首次使用引导。这四行**早就各有唯一作者**——
 //! [`crate::annotate`] 的 `TOOL_TEXTS`、[`falcon_core::config`] 的 `ACTION_TEXTS`、
 //! [`crate::cli`] 的 `PARAM_DOC` / `doc_entry`、[`crate::guide`] 的 `ENTRIES`。所以这一档不写第五
@@ -25,7 +25,7 @@ use crate::annotate::tool_names;
 use crate::cli::{doc_entry, PARAM_DOC};
 use crate::guide::ENTRIES;
 
-/// §5.18.1 第 1440 行那一列的两个字。唯一作者在这里，托盘那一项与 `--help-menu` 门里那一格读的
+/// §5.18.1 菜单建议那一列的两个字。唯一作者在这里，托盘那一项与 `--help-menu` 门里那一格读的
 /// 都是它（#281，与 `history_window::TRAY_WORD` / `group_window::TRAY_WORD` / `update::TRAY_WORD`
 /// 同一枚理由）。
 pub const TRAY_WORD: &str = "帮助";
@@ -133,7 +133,7 @@ mod tests {
         assert!(c.sentence().contains("命令行参数文档"), "{}", c.sentence());
     }
 
-    /// 唯一作者那一格：`TRAY_WORD` 就是 PRD 第 1440 行那一列的两个字，且这一档不说「设置」/「说明」。
+    /// 唯一作者那一格：`TRAY_WORD` 就是 §5.18.1 菜单建议那一列的两个字，且这一档不说「设置」/「说明」。
     #[test]
     fn the_tray_word_is_the_docs_own_two_characters() {
         assert_eq!(TRAY_WORD, "帮助");

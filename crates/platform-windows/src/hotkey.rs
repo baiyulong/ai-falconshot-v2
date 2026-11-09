@@ -8,7 +8,8 @@
 //! `NOTIFYICONDATAW`. A `TrackPopupMenu` is modal to the thread that calls it, so
 //! the menu cannot be shown from a thread that pumps nothing.
 //!
-//! That thread is therefore a pump of its own - plan §2.1's "独占一条带消息泵
+//! That thread is therefore a pump of its own - this repo's standing rule,
+//! "独占一条带消息泵
 //! 线程". It is *not* Qt's thread: this window is not a `QWindow`, so Qt's event
 //! loop never sees these messages, and running a second pump on the GUI thread
 //! would starve it. Reaching the GUI thread from here is the product layer's job,

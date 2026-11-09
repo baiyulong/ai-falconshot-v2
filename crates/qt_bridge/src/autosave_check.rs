@@ -131,7 +131,7 @@ fn history_rows(dir: &Path) -> Result<u64, String> {
 
 /// 数完行数之后，这一把尺子问的是**具体那一行**在盘上写着什么：`cancelled` 那一格，
 /// 以及它记下的选区。仍是自己开一次 SQLite、不读 `MaskState` 里那两个字段——屏幕上
-/// 那句话与盘上那一行各说各话，正是 §5.14.3 里「找到标记为已取消的记录」要能分开的东西。
+/// 那句话与盘上那一行各说各话，正是 §5.14.3 里「找到标记为“已取消”的记录」要能分开的东西。
 fn history_row(dir: &Path, id: i64) -> Result<Option<(bool, falcon_core::PhysRect)>, String> {
     falcon_core::history::History::open(dir)
         .and_then(|h| h.get(id))
@@ -1511,17 +1511,43 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     // 会来一次 `EmptyClipboard`——那一下能把用户此刻的东西清掉，一次没发生的拿走不该拿"还清全部"
     // 当找回；**看不见**时同样的理由更硬，因为这时候 `auto_copy_out` 自己也先问 `usable()` 而拒了递。
     // 还没还上不由本程序说了算，读回一次系统递的东西对一对。
-    let unrepresentable = clip_before
-        .as_ref()
-        .is_some_and(|c| c.html.is_some() || !c.files.is_empty());
+    // 「这一份 `put_back` 表示不了」自此只有一名作者（#281）：`state::cannot_put_back`，
+    // 本档这一处与下面 #116 那腿共用它，第三处读者是 `annotate_check::clipboard_rows`
+    // 与 `hotkey::Clip::plant`。族里三形：文件列表（没有 `CF_HDROP` 的写手）、骑在图或文本
+    // 上的 html（`put_back` 一次只还一条腿，骑上去的那条就丢了）、以及一块什么可读的都没有
+    // 的板 —— 只装 `Rich Text Format` 这类本应用认不来的格式，`Contents::formats` 看得见它，
+    // 所以它不是「空的」，不许走 empty 分支那一下 `EmptyClipboard`（#88）。第三形对这一格
+    // 尤其要紧：走到这里说明 `auto_copy_out` 已经把板写了，那一形下 `put_back` 答 `Err`，
+    // 而下面 `owed` 那架梯子必须先认出「这一份本来就还不回去」，否则一台机器上恰好放着一块
+    // RTF 的板就能把这一格报成 FAIL —— 判的是机器状态，不是本档。
+    let unrepresentable = clip_before.as_ref().is_some_and(crate::state::cannot_put_back);
+    // 那一块板上写着哪些格式名（只有名字，没有一个字节：§9.1）。两处判据都要印它，所以只写
+    // 一遍（#281）：`had_html`/`had_files` 那两枚都答"没有"而这一列非空时，印出来的正是
+    // #88 那第三形——一块只装本应用读不来的格式的板，它不是"空的"。
+    let clip_fmts = match &clip_before {
+        Some(c) if c.formats.is_empty() => "（一个也没有）".to_string(),
+        Some(c) => c.formats.join(","),
+        None => "（那一块板不为读打开，名字本来就拿不到）".to_string(),
+    };
     let restored = if switch_copy && blind.is_none() {
         Some(crate::state::put_back(&clip_before))
     } else {
         None
     };
     let clip_now = platform_windows::clip::read().ok();
+    // 「还回去的那块板与进场那块相同」只有一把尺、一名作者（#281）：图与文本比字节，
+    // html 比 fragment——put_back 还的是自己重装信封的那一份，比整块字节量的是两种
+    // 信封写法而不是用户的内容；而只剩 html 的板子既然不再判 BLOCKED，就不许再靠
+    // 图与文本两对 None==None 白坐一个 PASS。
+    let same_board = |a: &platform_windows::clip::Contents,
+                      b: &platform_windows::clip::Contents| {
+        a.image_bytes == b.image_bytes
+            && a.text == b.text
+            && a.html.as_deref().map(falcon_core::clip::html_fragment)
+                == b.html.as_deref().map(falcon_core::clip::html_fragment)
+    };
     let back_same = match (&clip_before, &clip_now) {
-        (Some(a), Some(b)) => a.image_bytes == b.image_bytes && a.text == b.text,
+        (Some(a), Some(b)) => same_board(a, b),
         _ => false,
     };
     let said_back = match &restored {
@@ -1537,10 +1563,13 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
         // 但这一格量不到 ⇒ BLOCKED，并把"解锁会话再跑一趟"记进本轮欠账。
         (_, Some(_)) => Check::Blocked,
         (None, _) => Check::Pass,
+        // 进场时那份里有文件列表、有 html 骑在图/文本上、或干脆一块本应用读不来的板：
+        // `put_back` 表示不了那一份（一次只还一条腿），而递图那一下已经把它顶掉了。这是这台
+        // 机器此刻的状态给的限制，不是这档的判定 ⇒ BLOCKED，并把它记进本轮欠账。
+        // 这一枚必须排在下面那枚 `Err` **前面**：第三形下 `put_back` 正是答 `Err`，排在后面
+        // 就等于把一块 RTF 的板报成 FAIL（#88）。
+        (_, _) if unrepresentable => Check::Blocked,
         (Some(Err(_)), _) => Check::Fail,
-        // 进场时那份里有 html 或文件列表：`put_back` 表示不了那一份，而递图那一下已经把它顶掉
-        // 了。这是这台机器此刻的状态给的限制，不是这档的判定 ⇒ BLOCKED，并把它记进本轮欠账。
-        (Some(Ok(_)), _) if unrepresentable => Check::Blocked,
         (Some(Ok(_)), _) => Check::from(back_same),
     };
     rep.row(
@@ -1549,13 +1578,28 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
         format!(
             "`put_back` 那句={said_back:?}；还回去之后系统递回的图字节=\
              {now_img}（进场时 {img_before_len2} 个），文本={now_text} 字（进场时 {before_text} 字）\
-             ，两份一致={back_same}；进场时那份里有 html={had_html}、文件列表={had_files} 项{tail}",
+             ，html 的 fragment={now_frag} 字（进场时 {before_frag} 字）；两份一致={back_same}\
+             （图与文本比字节、html 比 fragment——装回去的是新信封，比整块量的是信封不是内容）；\
+             进场时那份里有 html={had_html}、文件列表={had_files} 项、板上写着这些格式名={fmts}\
+             （只有名字，没有一个字节：§9.1。上面那两枚都答「没有」而这一列非空时，正是 #88 那第三形\
+             ——一块只装着本应用读不来的格式的板，它不是「空的」，`is_empty` 自 `Contents::formats` \
+             起就看得见它）{tail}",
             now_img = clip_now
                 .as_ref()
                 .and_then(|c| c.image_bytes.as_ref())
                 .map(|b| b.len())
                 .unwrap_or(0),
             img_before_len2 = img_before.as_ref().map(|b| b.len()).unwrap_or(0),
+            now_frag = clip_now
+                .as_ref()
+                .and_then(|c| c.html.as_deref())
+                .map(|h| falcon_core::clip::html_fragment(h).chars().count())
+                .unwrap_or(0),
+            before_frag = clip_before
+                .as_ref()
+                .and_then(|c| c.html.as_deref())
+                .map(|h| falcon_core::clip::html_fragment(h).chars().count())
+                .unwrap_or(0),
             now_text = clip_now
                 .as_ref()
                 .map(|c| c.text.as_ref().map(|t| t.chars().count()).unwrap_or(0))
@@ -1569,9 +1613,14 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
                 .as_ref()
                 .map(|c| c.files.len())
                 .unwrap_or(0),
+            fmts = clip_fmts.clone(),
             tail = match &blind {
                 Some(_) => "——看不见那份东西就既没说还清、也没叫 put_back 去清它",
-                None if unrepresentable => "——那一份递不回去，判 BLOCKED 并记进本轮欠账",
+                // 只有真去还了的那一趟才谈得上"还不回去"：开关关着时本档一个字也没写，
+                // 那一块板是什么形状与这一格无关，判 PASS，不许把 BLOCKED 印在 PASS 那行上。
+                None if unrepresentable && switch_copy => {
+                    "——那一份递不回去，判 BLOCKED 并记进本轮欠账"
+                }
                 None if clip_before.is_none() && switch_copy => {
                     "——进场时剪贴板就没为读打开，那份东西本来就不可知，没得还"
                 }
@@ -1834,7 +1883,7 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     // 调用前那一枚 `esc_disk` 与调用后这一枚 `disk_after_restore` 都是从 SQLite 独立读回的，产品交
     // 回选区之后，库里那一行必须**一字不差**还是原来那一行（顺手把 `cancelled` 抹掉就等于替用户改
     // 账，而不是替他找回记录）。挑 `esc_row` 而不是 `commit_row`：§5.14.3 那四步通篇讲的是「找到
-    // 标记为已取消的记录」再把它找回来，已取消的那一行才是这一节的对面，而它此刻还在库里（要等下面
+    // 标记为“已取消”的记录」再把它找回来，已取消的那一行才是这一节的对面，而它此刻还在库里（要等下面
     // 那次确认过的清空才走）。反面那一臂借上面已经证过「确实不在」的那枚 `missing`：一个不存在的
     // 行号如果能把它推进去，前面那一格的红也就没分量了。
     let esc_id = esc_row.unwrap_or(0);
@@ -1969,8 +2018,9 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     // 还回去交的是 `clip_before` 而不是本格进场那一枚：上面那一格判的就是「这道门把剪贴板留成它找到
     // 的样子」，新腿不许改老账 ⇒ 那一格的红绿到这一趟跑完仍然成立，靠的正是这一次还。`usable()` 先答
     // 「占用」时（`blind`）本档一步也不动这一格：看不见那份东西就既不能说递成、也没得还，判 BLOCKED
-    // 而不是 FAIL；进场那份只有 html 或文件列表时同样 BLOCKED——`put_back` 表示不了那一份，本格欠的
-    // 那一笔还不上，形状与上面那一格为同一条理由判的形状一致（#192 那笔未结的债）。
+    // 而不是 FAIL；进场那份带着文件列表、或 html 骑在图/文本上时同样 BLOCKED——`put_back` 表示
+    // 不了那一份（一次只还一条腿），本格欠的那一笔还不上，形状与上面那一格为同一条理由判的
+    // 形状一致（#192 那笔未结的债）。
     let dims_of = |c: &Option<platform_windows::clip::Contents>| {
         c.as_ref()
             .and_then(|x| x.image_bytes.as_ref())
@@ -2020,7 +2070,7 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     };
     let clip_final = platform_windows::clip::read().ok();
     let left_found = match (&clip_before, &clip_final) {
-        (Some(a), Some(b)) => a.image_bytes == b.image_bytes && a.text == b.text,
+        (Some(a), Some(b)) => same_board(a, b),
         _ => false,
     };
     let rows_116 = history_rows(&hdir);
@@ -2088,10 +2138,16 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
              {door_s} 普查 {files_b116}→{files_116} 份、库里那一行={row_116_s}（要求与上面那一格读回的\
              一字不差：一次复制不许顺手把 `cancelled` 抹掉，那是替用户改账而不是替他找回记录）。还清：\
              本腿动了剪贴板两次，最后把**进场那一份** `clip_before` 交回 `put_back`，它答={handed_s}，\
-             还回去之后系统递回的图与文本与进场那一份一致={left_found}（要求 true）。判 BLOCKED 的三种\
+             还回去之后系统递回的图、文本与 html 的 fragment 与进场那一份一致={left_found}（要求 true，\
+             与上面那一格同一把尺）。判 BLOCKED 的三种\
              对面，各印各的：`usable()` 先答={blind_s}（看不见那份东西就既不能说递成、也没得还）；进场\
-             那份里有 html={had_html}、文件列表={had_files} 项（`put_back` 表示不了那一份，本格欠的那笔\
-             还不上）；库里那一行没图={no_picture} 或进场那一份的尺寸恰好就是 {want_dims:?}=\
+             那份里有 html={had_html}、文件列表={had_files} 项、板上写着这些格式名={fmts}（只有名字，\
+             没有一个字节：§9.1）——`put_back` 表示不了的是三形（与上面那一格同一个作者 \
+             `state::cannot_put_back`）：文件列表（没有 `CF_HDROP` 的写手）、骑在图/文本上的 html（它一次\
+             只还一条腿，那笔还不上）、以及一块什么可读的都没有的板（只装 `Rich Text Format` 这类本应用\
+             认不来的格式；`had_html`/`had_files` 两枚那时都答「没有」，只有这一列名字说得出它是谁，#88）。\
+             html 独自进场的那一份还得了，走的是下面 left_found 那把尺；库里那一行没图={no_picture} \
+             或进场那一份的尺寸恰好就是 {want_dims:?}=\
              {same_as_found}（控制组自己没摆出来，本格量不出「换了人」）。",
             copy_pic_s = picture_said(&copy_pic),
             bytes_b116 = bytes_of(&clip_b116),
@@ -2117,6 +2173,7 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
                 .as_ref()
                 .map(|c| c.files.len())
                 .unwrap_or(0),
+            fmts = clip_fmts,
         ),
     );
 
@@ -2874,7 +2931,8 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
     // P107 #197：这一格量的不是像素，是**时刻**。§5.4.3 的指针读自本轮起发生在 [`capture::freeze`]
     // 里，而不是 [`mask::MaskState::commit`] 那道门上；两者在这台机器上的差别是一个方向的问题：
     // 画面冻在遮罩开起来之前，而指针在屏幕上是走的，在门上当场问 ⇒ 贴上去的位置对应的是
-    // 「按下完成时指针在哪」，图里根本没有那块屏幕的对应物（PRD 第 419 行）。
+    // 「按下完成时指针在哪」，图里根本没有那块屏幕的对应物（§5.4.3 规则第 1 句「指针热点位置
+    // 应与实际屏幕位置一致」）。
     //
     // 判据取的是「多做一次 freeze，读数跟着动一格；这中间一次 commit 也没有」：旧写法在这一格
     // 会是红的（freeze 不吃指针，只有 commit 吃），所以它挡得住将来有人把那一问搬回门上去。
@@ -2907,7 +2965,7 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
              （`[capture] include_cursor`={key}），所以这两枚计数器数的是「代码在哪一格去问」而不是\
              「问到了什么」：键关着时那一问当场返回 `None`、一次平台调用也不发。这一格因此**不是** \
              §5.4.3 键开那一侧的像素证人（那枚欠着的自 P108 起是第 30 格），它是读数时刻的证人；而 \
-             PRD 第 420 行「延时截图应捕获倒计时结束时的指针状态」里的那枚 `capture.delay_seconds` \
+             §5.4.3 规则第 2 句「延时截图应捕获倒计时结束时的指针状态」里的那枚 `capture.delay_seconds` \
              自 P108 起有了第一位**行为**读者（`crates/qt_bridge/src/delay.rs` 的 `arm_from_config`），\
              倒计时那一臂自此是建了的、它的运行期证人在第 29 格；本格钉的仍是时刻那一头，两格各判\
              各的。失败那臂本轮现读\
@@ -2984,7 +3042,7 @@ pub fn measure(asked_ms: i32) -> (Check, String) {
              {dl_planned} ms、此刻还剩 {dl_left_armed} 枚、每枚 {dl_step} ms。三枚 tick 顺次交回 \
              {dl_one:?} / {dl_two:?} / {dl_three:?}，判据八件：前两张不许是 `Go`={armed_waits}/{waits_before_last}；\
              第三张必须是 `Go`={goes_only_last}；实测等满 {dl_held} ms 不小于计划 {dl_planned_last} ms=\
-             {held_out_planned}——这一条就是 PRD 第 420 行那句「倒计时结束时」里「结束」二字的实测部分；\
+             {held_out_planned}——这一条就是 §5.2.4 步骤 5「倒计时结束后进入截图状态」里「结束」二字的实测部分；\
              整场里 `capture::freeze()` 一格也没被叫过：冻结计数 {fz_b}→{fz_a}={froze_nothing}，因为画面只该\
              在数完之后才冻；账上 tick {tk_b}→{tk_a} 与走满 {hl_b}→{hl_a} 要求 +3 与 +1={accounted}；\
              一枚按下只交一次快门：数完还剩 {dl_left_after} 枚、再数交回 {dl_after_go:?}={one_shutter_only}；\

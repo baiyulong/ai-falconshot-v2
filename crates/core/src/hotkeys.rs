@@ -481,14 +481,6 @@ pub fn is_suppressed(exclusions: &[AppExclusion], foreground: &str, action: &str
     })
 }
 
-/// The keys the recorder needs to know are already bound, for "press a key" UI.
-pub fn bound_actions(actions: &BTreeMap<String, String>) -> Vec<(String, Spec)> {
-    actions
-        .iter()
-        .filter_map(|(id, spec)| parse(spec).ok().map(|s| (id.clone(), s)))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

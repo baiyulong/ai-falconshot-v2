@@ -12,10 +12,10 @@
 //!   `size_phys` is what the window is. Every setter that can change one routes
 //!   through [`PinItem::sync_size`], so the two can never disagree — which is what
 //!   lets §5.9.3 take a typed-in size and hand back a zoom.
-//! * **A pin must be able to point at pixels.** Per plan §6.3/line "R13 兜底",
-//!   grabbing our own window off the screen is not something we can promise, so
-//!   "copy this pin", "save this pin" and "show this pin after a restart" all read
-//!   [`ImageRef`] and flatten in Rust.
+//! * **A pin must be able to point at pixels.** Grabbing our own window back off
+//!   the screen is not something we can promise, so "copy this pin", "save this
+//!   pin" and "show this pin after a restart" all read [`ImageRef`] and flatten
+//!   in Rust.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -51,8 +51,10 @@ pub const OPACITY_STEPS: &[u32] = &[20, 30, 40, 50, 60, 70, 80, 90, 100];
 /// §5.9.1 "至少保留一部分窗口在可见区域".
 pub const MIN_VISIBLE_PX: u32 = 24;
 /// §5.9.10's "预设尺寸" fallback box: used when a `[pin]` config reaches
-/// [`thumb_preset_box`] with a zero edge, and by callers (tests, the menu) that
-/// pass an explicit box. The user's own preset lives in
+/// [`thumb_preset_box`] with a zero edge, and by the tests that pass an
+/// explicit box. No production hand passes one: the menu reads the config
+/// (see [`thumb_preset_box`]) and the restore path hands over the rect it
+/// saved. The user's own preset lives in
 /// [`crate::config::Pin::thumb_fixed_width`] / [`crate::config::Pin::thumb_fixed_height`],
 /// whose `Default` is spelled from this constant so 240 has one author.
 pub const THUMB_FIXED_DEFAULT: PhysSize = PhysSize::new(240, 240);
@@ -421,7 +423,7 @@ impl ImageRef {
     }
 }
 
-/// §5.9.10/§5.9.11 — plan §6.3 spells this `(mode, rect)`.
+/// §5.9.10/§5.9.11 — a thumbnail is the pair `(mode, rect)`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ThumbnailMode {
@@ -568,8 +570,8 @@ impl PlayState {
 /// than being read from a `Screen` attached object because the latter depends on
 /// which screen a window ended up on, which depends on the window's size, which
 /// depends on the ratio — a cycle. Sourced from the enumeration instead, the
-/// chain is one-directional and stays physical until QML (§5.9.1, plan §6.1
-/// "几何只用物理像素").
+/// chain is one-directional and stays physical until QML (§5.9.1 asks for
+/// cross-monitor moves, so each screen's ratio has to travel with the geometry).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Monitor {
     pub rect: PhysRect,
@@ -650,7 +652,7 @@ impl Desktop {
         })
     }
 
-    /// §8.5 第一句的后半 —— 「将**不可见**贴图移动到**主显示器**可见区域」。`r` is
+    /// §8.5 第一句的后半 —— 「将不可见贴图移动到主显示器可见区域」。`r` is
     /// answered by [`Desktop::keep_visible`] first, so this only asks the question
     /// the union cannot: nothing here moves a pin that some monitor is showing,
     /// even one half of which hangs off the edge.
@@ -1255,7 +1257,7 @@ impl PinItem {
     /// 等比锁定那一式，本档**唯一**一处：从 `shown`（此刻窗上那块的自然尺寸，
     /// [`Self::shown_size`]）出发，把「要装进宽 `w`、高 `h` 这一块里」读成一枚缩放。
     /// 两格都填取**更小**的那一枚，因为整张图都得装得下；只填一格就是那一格自己的比例，
-    /// 另一格由锁定比例跟着走 —— 这正是 PRD 第 1006 行「系统按锁定比例设置更新结果」要的
+    /// 另一格由锁定比例跟着走 —— 这正是 §5.9.3 步骤 4「系统按锁定比例设置更新结果」要的
     /// 那句话。两格都没填是 `None`，怎么说不归这里（[`PinItem::set_size_to`] 与
     /// [`size_zoom_request`] 各自的对面不是同一个人）。
     fn locked_zoom(w: Option<u32>, h: Option<u32>, shown: PhysSize) -> Option<f64> {
@@ -1431,13 +1433,6 @@ impl PinItem {
         }
         self.enter_fixed_thumbnail(box_size);
         true
-    }
-
-    /// §5.9.10 steps 1–3 driven by config: the box a fixed thumbnail is fitted
-    /// into is the preset the user set in `[pin]`, read here rather than at the
-    /// call site so the menu cannot pass an un-configured size.
-    pub fn toggle_thumbnail_preset(&mut self, cfg: &PinConfig) -> bool {
-        self.toggle_thumbnail(thumb_preset_box(cfg))
     }
 
     pub fn enter_fixed_thumbnail(&mut self, box_size: PhysSize) {
@@ -1788,8 +1783,12 @@ impl PinSet {
     }
 
     /// A click that lands on nothing clears the selection (§5.10.1 "点击空白区域").
-    /// `cycle` is §5.10.4's `cycle_on_click`: instead of grabbing the top pin of
-    /// a pile every time, take the one buried under it and bring it up.
+    /// `cycle`: instead of grabbing the top pin of a pile every time, take the one
+    /// buried under it and bring it up. No config key feeds this flag — the
+    /// `[pin] cycle_on_click` row was deleted in 2026-11 (§5.10.4 is batch
+    /// reset/close/destroy, and no PRD sentence asks for the switch). Until the
+    /// stacked-click hand §5.10.1 leaves open is scheduled, the tests below are
+    /// this arm's only witnesses.
     pub fn click_at(
         &mut self,
         at: PhysPoint,
@@ -1886,9 +1885,9 @@ impl PinSet {
             .reduce(|acc, r| acc.union(&r))
     }
 
-    /// 这一枚堆顶的主人只有一位：[`Self::click_at`]（`cycle_on_click` 那一手，点着谁谁
-    /// 站到最上）。§5.9.12「始终置顶」是每枚窗自己的 topmost 标志，由窗那侧落，与这里
-    /// 的堆序无关；批量菜单（§5.10.4）那三只手是重置/关闭/销毁，没有「置于顶层」这一枚。
+    /// 这一枚堆顶的主人只有一位：[`Self::click_at`]（点着谁谁站到最上）。§5.9.12「始终置顶」
+    /// 是每枚窗自己的 topmost 标志，由窗那侧落，与这里的堆序无关；批量菜单（§5.10.4）那三只手
+    /// 是重置/关闭/销毁，没有「置于顶层」这一枚。
     pub fn raise(&mut self, id: PinId) -> bool {
         let Some(i) = self.items.iter().position(|p| p.id == id) else {
             return false;
@@ -2269,6 +2268,13 @@ impl PinSet {
     }
 
     /// §8.5 — after a screen change: pull every pin back onto a screen.
+    ///
+    /// The shipping §8.5 leg does not come through here: the bridge walks
+    /// `PinItem::refit` per pin itself, because that hand has to answer three
+    /// questions at once — did the desktop change at all, how many pins were on
+    /// it, how many moved — and hand the page a sentence about them, which a
+    /// `usize` cannot carry. Same rule, whole set, and the witness is the core
+    /// unit test; that is also where §8.5's 证人 books it.
     pub fn refit_all(&mut self, desk: &Desktop) -> usize {
         let mut n = 0;
         for p in &mut self.items {
@@ -2441,7 +2447,7 @@ fn state_path(dir: &Path) -> PathBuf {
     dir.join(STATE_FILE)
 }
 
-/// tmp → fsync → rename, the same discipline plan §6.1 sets for `config.toml`:
+/// tmp → fsync → rename, the same discipline `config.toml` is written with:
 /// a snapshot written by a half-finished save is worse than no snapshot, because
 /// §7.2 would promise a restore it cannot deliver.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), PinError> {
@@ -3230,12 +3236,11 @@ mod tests {
     #[test]
     fn a_colour_value_nobody_can_read_is_refused_with_the_string_it_was_given() {
         let base = Card::default();
-        let mut typed = "papercolor".to_string();
         for raw in ["papercolor", ""] {
             let mut p = card_pin(1, CardPin::of_colour([0x12, 0x34, 0x56, 0xff]), &base);
             let before_size = p.size_phys;
             let before_text = p.card.as_ref().expect("身份").text.clone();
-            typed = raw.to_string();
+            let typed = raw.to_string();
             let why = p
                 .edit_card(
                     &base,
@@ -3435,7 +3440,7 @@ mod tests {
 
     // The window's `dpr` is answered from this table, so a per-screen ratio has
     // to survive the trip and a point on no screen has to answer anyway: an
-    // unknown ratio is an unsizable pin (plan §6.1 "几何只用物理像素").
+    // unknown ratio is an unsizable pin.
     #[test]
     fn the_ratio_is_the_one_of_the_monitor_under_the_point() {
         let desk = Desktop::from_monitors(vec![
@@ -4039,14 +4044,17 @@ mod tests {
         // 400×200 picture fitted 等比 into a 100×100 preset box is 100×50; the
         // same press a second time returns the pin to its original 400×200. That
         // the value is 100×50 and not the default's 240×120 is the proof the
-        // preset was read, not hardcoded.
+        // preset was read, not hardcoded. Both halves are spelled the way the
+        // only hand §5.9.10 has spells them — config read at the call site, box
+        // handed to [`PinItem::toggle_thumbnail`] — so what is measured here is
+        // the shipping arithmetic and not a wrapper's.
         let mut c = cfg();
         c.thumb_fixed_width = 100;
         c.thumb_fixed_height = 100;
         let mut p = pin(400, 200);
         let before = p.size_phys;
 
-        assert!(p.toggle_thumbnail_preset(&c));
+        assert!(p.toggle_thumbnail(thumb_preset_box(&c)));
         assert_eq!(p.thumbnail.map(|t| t.mode), Some(ThumbnailMode::Fixed));
         assert_eq!(
             p.size_phys,
@@ -4054,7 +4062,7 @@ mod tests {
             "the middle size is the preset, fitted 等比"
         );
 
-        assert!(!p.toggle_thumbnail_preset(&c));
+        assert!(!p.toggle_thumbnail(thumb_preset_box(&c)));
         assert_eq!(p.thumbnail, None);
         assert_eq!(p.size_phys, before, "the size the shortcut gave back");
     }

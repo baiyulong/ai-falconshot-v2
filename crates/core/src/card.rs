@@ -174,13 +174,8 @@ fn boxes(text: &str, card: &Card, glyphs: &dyn Glyphs) -> Vec<(Ink, u32)> {
     out
 }
 
-/// How many lines the card laid out — the number a door prints instead of the pixels.
-pub fn line_count(text: &str, card: &Card, glyphs: &dyn Glyphs) -> usize {
-    boxes(text, card, glyphs).len()
-}
-
 /// The box a card of `text` will occupy: the configured width, and as tall as its lines
-/// plus the padding. A caller that has to clamp a window asks this before pixels exist.
+/// plus the padding. [`render`] asks this to size the frame before it paints any pixel.
 ///
 /// Height is never less than `pad * 2`, which is the card with no font at all: still a
 /// real background, just one with nothing measured to sit in it.
@@ -252,7 +247,6 @@ mod tests {
         let f = render("hello", &c, &NoGlyphs).expect("card");
         assert_eq!((f.width, f.height), (200, pad(&c) * 2));
         assert_eq!(f.get(0, 0), [0xff, 0xff, 0xff, 0xff]);
-        assert_eq!(line_count("hello", &c, &NoGlyphs), 0);
     }
 
     #[test]
@@ -282,7 +276,7 @@ mod tests {
         let c = card(200);
         let col = column(&c);
         let text = "word ".repeat(40);
-        let n = line_count(&text, &c, &Blocks);
+        let n = boxes(&text, &c, &Blocks).len();
         assert!(n > 1, "one line for a 40-word paste: {n}");
         // Each block is 10 px per byte, so no line may carry more bytes than the column.
         for (ink, _) in boxes(&text, &c, &Blocks) {
@@ -294,8 +288,8 @@ mod tests {
     #[test]
     fn a_hard_break_starts_a_new_line_without_wrapping() {
         let c = card(2000);
-        assert_eq!(line_count("a\nb\nc", &c, &Blocks), 3);
-        assert_eq!(line_count("", &c, &Blocks), 1);
+        assert_eq!(boxes("a\nb\nc", &c, &Blocks).len(), 3);
+        assert_eq!(boxes("", &c, &Blocks).len(), 1);
     }
 
     #[test]

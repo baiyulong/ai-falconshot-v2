@@ -232,25 +232,78 @@ pub fn grip_point(e: &Element, grip: Grip) -> Option<PhysPoint> {
     Some(PhysPoint::new(x.round() as i32, y.round() as i32))
 }
 
+/// One object's handles **with the picture point each one lives at**, in
+/// [`Grip::grips_for`]'s own order.
+///
+/// This is the only place that zips the name list to the positions: everything downstream
+/// either picks out of it ([`grip_at`]) or reports it (the mask's drawn handles, through
+/// [`grips_held`]). Two authors of that zip are two chances for a handle the user can see
+/// and a handle the user can grab to drift apart — which is how a picture grows a dot that
+/// does nothing on a press, or a press that lands on nothing visible (#281).
+pub fn grips_of(e: &Element) -> Vec<(Grip, PhysPoint)> {
+    Grip::grips_for(e)
+        .into_iter()
+        .filter_map(|g| grip_point(e, g).map(|q| (g, q)))
+        .collect()
+}
+
+/// The square of picture pixels a press must land inside for the handle at `q` to take it —
+/// [`grip_at`]'s own measurement, turned into the one shape both sides can read. The edges
+/// are inclusive (`|Δ| <= slop`), which is why the side is the odd `2*slop + 1` and not
+/// `2*slop`: a box one pixel short would refuse a press on its own border that the test
+/// accepts.
+///
+/// The mask draws **this rectangle** rather than a dot it sized itself, so the thing on
+/// screen and the thing under the finger are not two numbers that happen to agree.
+pub fn grip_box(q: PhysPoint, slop: u32) -> PhysRect {
+    let s = slop as i32;
+    PhysRect::new(
+        q.x.saturating_sub(s),
+        q.y.saturating_sub(s),
+        slop.saturating_mul(2).saturating_add(1),
+        slop.saturating_mul(2).saturating_add(1),
+    )
+}
+
 /// The hottest grip under `p`, corners and ends before the turn that sits outside them.
 /// `None` means the press is on the body or on nothing, and is [`Document::topmost_at`]'s
 /// question instead.
 pub fn grip_at(e: &Element, p: PhysPoint, slop: u32) -> Option<Grip> {
-    Grip::grips_for(e).into_iter().find(|g| {
-        grip_point(e, *g)
-            .is_some_and(|q| (q.x - p.x).abs() <= slop as i32 && (q.y - p.y).abs() <= slop as i32)
-    })
+    grips_of(e)
+        .into_iter()
+        .find(|(_, q)| grip_box(*q, slop).contains(p))
+        .map(|(g, _)| g)
+}
+
+/// Every handle on the listed objects, **topmost object first and each object's own order
+/// inside it** — which is to say, the exact list [`grip_at_any`] picks from, in the exact
+/// order it picks.
+///
+/// Kept public because the mask needs the same list for a different purpose: drawing. A
+/// handle drawn from anywhere else is a handle that can disagree with the hit test, and the
+/// two ways that can go wrong look different on screen but feel the same to the user
+/// (#453) — a dot that ignores a press, or a press answered by an invisible hand. One list,
+/// read twice.
+pub fn grips_held(doc: &Document, ids: &[u64]) -> Vec<(u64, Grip, PhysPoint)> {
+    doc.paint_order()
+        .into_iter()
+        .rev()
+        .filter(|e| ids.contains(&e.id))
+        .flat_map(|e| {
+            let id = e.id;
+            grips_of(e).into_iter().map(move |(g, q)| (id, g, q))
+        })
+        .collect()
 }
 
 /// The same question for a list of objects, taking the topmost object's grip: a grip
 /// that is under another object's body is still that object's grip, or the last handle
 /// the user grabbed could not be grabbed again.
 pub fn grip_at_any(doc: &Document, ids: &[u64], p: PhysPoint, slop: u32) -> Option<(u64, Grip)> {
-    doc.paint_order()
+    grips_held(doc, ids)
         .into_iter()
-        .rev()
-        .filter(|e| ids.contains(&e.id))
-        .find_map(|e| grip_at(e, p, slop).map(|g| (e.id, g)))
+        .find(|(_, _, q)| grip_box(*q, slop).contains(p))
+        .map(|(id, g, _)| (id, g))
 }
 
 /// A travel of the pointer in picture space as the object sees it: the turn undone,
@@ -1192,6 +1245,133 @@ mod tests {
             grip_at_any(&doc, &[under], PhysPoint::new(70, 70), GRIP_SLOP),
             None
         );
+    }
+
+    /// #86 的那一位证人：「凡是 Rust 侧命中得了的把手就画出来，命中不了的一枚也不画」。
+    ///
+    /// 两个方向是两种坏法，坏在屏幕上长得不一样而按下去的手感一样（#453）：画了而握不到是
+    /// 一枚按下去不动的点，握得到而没画是一只看不见的手。[`grips_held`]（页上照着画的那一列）
+    /// 与 [`grip_at_any`]（一次按下归谁）读的是**同一个** [`grips_of`]，所以这一格量的不是
+    /// 两处恰好一致，而是那条唯一的腿自己站得住。
+    #[test]
+    fn the_drawn_handles_and_the_graspable_ones_are_one_list_read_twice() {
+        let mut doc = Document::new(100, 100);
+        // 一枚 圆角矩形（圆角 + 八角 + 转向 = 十枚）与一段线（两端，不转 = 两枚）。
+        let box_id = doc
+            .add(Kind::RoundedRect, Geom::Rect(rect(10, 10, 40, 30)), pen())
+            .id;
+        let line_id = doc
+            .add(
+                Kind::Line,
+                Geom::Segment {
+                    a: PhysPoint::new(70, 20),
+                    b: PhysPoint::new(90, 80),
+                },
+                pen(),
+            )
+            .id;
+        // 串外的一枚：它有自己的把手，而那一只既不该被画、也不该应答。
+        let out_id = doc
+            .add(Kind::Rect, Geom::Rect(rect(10, 70, 20, 20)), pen())
+            .id;
+
+        let ids = [box_id, line_id];
+        let drawn = grips_held(&doc, &ids);
+
+        // 名单不多不少：每枚选中对象各一套，一个共享的并集把手也不另立 —— §5.7.17 步 4 给
+        // 多选的是移动、复制、删除或样式调整，从来没有一枚共用的控制点，所以画在并集角上的
+        // 那一只会是握不到的那一只。
+        assert_eq!(
+            grips_of(doc.get(box_id).unwrap()).len(),
+            10,
+            "圆角矩形那一套的枚数变了，下面钉的 12 也就跟着不成立"
+        );
+        assert_eq!(grips_of(doc.get(line_id).unwrap()).len(), 2);
+        assert_eq!(
+            drawn.len(),
+            12,
+            "画出来的把手数不是两枚对象各自那套之和"
+        );
+        assert!(
+            drawn.iter().all(|(id, _, _)| ids.contains(id)),
+            "串外的对象把把手画进了这一列"
+        );
+
+        // 盒子就是命中带本身：边长是奇数 `2*slop+1`，因为 `|Δ| <= slop` 两边都含。少一个
+        // 像素的盒子会把自己边框上那一格说成握不到，而那一格 [`grip_at`] 是收的。
+        let line = doc.get(line_id).unwrap();
+        let q = grip_point(line, Grip::EndA).unwrap();
+        let b = grip_box(q, GRIP_SLOP);
+        let s = GRIP_SLOP as i32;
+        assert_eq!((b.w, b.h), (GRIP_SLOP * 2 + 1, GRIP_SLOP * 2 + 1));
+        assert_eq!((b.x, b.y), (q.x - s, q.y - s));
+        // 四角都收 —— 这一句正是 `2*slop` 那种写法的自证伪（#269）。
+        for c in [
+            PhysPoint::new(q.x - s, q.y - s),
+            PhysPoint::new(q.x + s, q.y - s),
+            PhysPoint::new(q.x - s, q.y + s),
+            PhysPoint::new(q.x + s, q.y + s),
+        ] {
+            assert!(b.contains(c), "画出来的盒子不含自己的角 {c:?}");
+            assert_eq!(
+                grip_at(line, c, GRIP_SLOP),
+                Some(Grip::EndA),
+                "盒子角上那一格在页上画着，按下却没人应"
+            );
+        }
+        // 盒子外面那一圈，一格也不收。
+        for o in [
+            PhysPoint::new(q.x - s - 1, q.y),
+            PhysPoint::new(q.x + s + 1, q.y),
+            PhysPoint::new(q.x, q.y - s - 1),
+            PhysPoint::new(q.x, q.y + s + 1),
+        ] {
+            assert!(!b.contains(o), "盒子收进了自己外面的一格 {o:?}");
+            assert_eq!(grip_at(line, o, GRIP_SLOP), None);
+        }
+
+        // 双向那一句：每一枚画出来的把手，连同它盒子外面一圈，逐格扫一遍。
+        let names: Vec<(u64, Grip)> = drawn.iter().map(|(id, g, _)| (*id, *g)).collect();
+        let (mut inside, mut outside) = (0usize, 0usize);
+        for (_, _, q) in &drawn {
+            let b = grip_box(*q, GRIP_SLOP);
+            for dy in -1..=b.h as i32 {
+                for dx in -1..=b.w as i32 {
+                    let p = PhysPoint::new(b.x + dx, b.y + dy);
+                    let ring = dx < 0 || dy < 0 || dx >= b.w as i32 || dy >= b.h as i32;
+                    let hit = grip_at_any(&doc, &ids, p, GRIP_SLOP);
+                    if ring {
+                        outside += 1;
+                        // 命中得了的 ⇒ 画的：外面那一圈若有人应，应的必须在这一列里。
+                        if let Some(h) = hit {
+                            assert!(
+                                names.contains(&h),
+                                "一次按下答出了 {h:?}，而页上没有这一枚可画"
+                            );
+                        }
+                    } else {
+                        inside += 1;
+                        // 画的 ⇒ 命中得了的：盒子里任何一格按下都有人应。应的那一只可能是
+                        // 压在上面的另一枚把手（先到先得，见上面那一格），但不能没有人。
+                        assert!(hit.is_some(), "画在 {} 的把手按下没人应", p);
+                    }
+                }
+            }
+        }
+        // 尺子得读得动「空」（#274）：一趟也没扫就是这一格自己在说谎。
+        assert!(
+            inside > 0 && outside > 0,
+            "扫了个空：盒子里 {} 格、盒子外 {} 格",
+            inside,
+            outside
+        );
+
+        // 串外那一枚的两半：不在这一列里，按下也不应 —— 而它自己单独在串里时是应的，
+        // 所以「不应」是名单筛的，不是这把尺子量不到。
+        let oq = grip_point(doc.get(out_id).unwrap(), Grip::Box(Handle::Nw)).unwrap();
+        assert!(!names.contains(&(out_id, Grip::Box(Handle::Nw))));
+        assert_eq!(grip_at_any(&doc, &ids, oq, GRIP_SLOP), None);
+        assert!(grip_at_any(&doc, &[out_id], oq, GRIP_SLOP).is_some());
     }
 
     #[test]

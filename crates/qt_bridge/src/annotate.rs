@@ -20,8 +20,8 @@
 //!   from the document.
 //! * **A new texture key per repaint.** The same rule the frozen frame follows in
 //!   [`crate::mask`]: `Image.cache: false` only re-requests when the URL changes, so
-//!   a constant key means the second stroke never reaches the screen - plan §3.6's
-//!   constraint 8, which P4 measured on the spike and which is easier to hit for
+//!   a constant key means the second stroke never reaches the screen - the
+//!   failure P4 measured on the spike, and one easier to hit for
 //!   real here, where every stroke is a whole new layer.
 //!
 //! Nothing in here needs a window. [`Layer::flush`] is the only call that touches
@@ -37,10 +37,10 @@ use falcon_core::annotation::model::{
 use falcon_core::annotation::undo::UndoStack;
 use falcon_core::annotation::{
     alpha_command, alpha_from_pct, clamp_rotation, colour_command, font_size_command, grip_at_any,
-    grip_point, intensity_command, patch_style_command, pct_from_alpha, radius_grip_command, raster,
-    resize_grip_command, resize_to_rect, rotate_command, rotation_at, text_command, Command, Dirty,
-    Grip, Selection, ALPHA_MIN_PCT, ALPHA_STEP_PCT, BLUR_RADIUS, EFFECT_MAX, EFFECT_MIN, FONT_MAX,
-    FONT_MIN, GRIP_SLOP,
+    grip_box, grips_held, intensity_command, patch_style_command, pct_from_alpha,
+    radius_grip_command, raster, resize_grip_command, resize_to_rect, rotate_command, rotation_at,
+    text_command, Command, Dirty, Grip, Selection, ALPHA_MIN_PCT, ALPHA_STEP_PCT, BLUR_RADIUS,
+    EFFECT_MAX, EFFECT_MIN, FONT_MAX, FONT_MIN, GRIP_SLOP,
 };
 use falcon_core::capture::ScreenSnapshot;
 use falcon_core::colors::{format as format_color, ColorFormat};
@@ -74,7 +74,7 @@ use crate::mask_view::shim;
 /// 编号 (§5.7.12) is in the list, and so is its interaction: [`Kind::Number`] lays out
 /// through the same paint path 文本 uses, the counter lives in [`Document`], and steps 2
 /// and 3 have their row — 一次点击落一枚号，起始编号是那一排的两枚钮。Step 5「删除中间
-/// 编号时可选择是否自动重排」是「对象」那一排删除旁边的那一枚（[`Layer::auto_renumber`]）：
+/// 编号时，可选择是否自动重排」是「对象」那一排删除旁边的那一枚（[`Layer::auto_renumber`]）：
 /// 亮着的删除由 [`falcon_core::annotation::delete_and_renumber_command`] 记成一条
 /// [`Command::Compound`]，于是一次 Ctrl+Z 退回复的是**那一次编辑**，不是它的两半。开关摆在
 /// 删除旁边而不是编号那一排，理由写在 `qml/AnnotationToolbar.qml` 的那一行头上。
@@ -386,7 +386,7 @@ pub struct Layer {
     /// §5.7.17 step 1 的「进入选择模式」：为真时箭头工具在选区里的一拖**框选**对象，而不是
     /// 抓住那块框。代价说在工具栏那一枚钮上：这一档里把手与单枚选中都让开，要挪东西得先退出。
     marquee: bool,
-    /// §5.7.12 step 5「删除中间编号时可选择是否自动重排」里的那一枚选择键。默认**灭**：亮着的
+    /// §5.7.12 step 5「删除中间编号时，可选择是否自动重排」里的那一枚选择键。默认**灭**：亮着的
     /// 这一次删除会挪动屏幕上其它编号的位置，那是用户没直接落的一笔，而「只删我一枚」是这一排
     /// 钮在被发明之前一直的行为。灭与亮各有一个入口，选哪一个由 [`Layer::delete_selected`] 问。
     auto_renumber: bool,
@@ -1460,6 +1460,37 @@ impl Layer {
             .collect()
     }
 
+    /// §5.7.1 步 2 那一问的另一半：进场时手里先拿哪一支笔，写的是
+    /// `annotation.default_tool`。空串是「档什么都没说」，那一支就停在 [`Layer::begin`]
+    /// 留下的那一枚上；非空则走 [`Layer::select_tool`] —— 换工具这一件事全仓只有那一只
+    /// 作者（拿起一支笔要把半拖的那一手放下来、要把面板交回笔），这里不第二次写它。
+    ///
+    /// 认不出的那一串记进 `problems`，与 [`Layer::apply_tool_styles`] 同一形状：文件的
+    /// `validate()` 早把它清成空串，所以到得了这里的认不出的串只能是在内存里造的档
+    /// （`apply_changes`、单测），而那一种情形下不出声就是替用户挑一支他没写过的笔。
+    pub fn apply_default_tool(&mut self, ann: &Annotation) {
+        let key = ann.default_tool.trim();
+        if key.is_empty() {
+            return;
+        }
+        match Kind::from_key(key) {
+            Some(kind) => self.select_tool(code_of(Some(kind))),
+            None => self.problems.push(format!(
+                "default tool {key:?}: no such tool, the config has to be edited by hand"
+            )),
+        }
+    }
+
+    /// 那两枚数进栈：能反悔几步（`annotation.undo_limit`）与连着几毫秒的样式算一条
+    /// （`annotation.undo_merge_ms`）。它住在 [`Layer::apply_annotation_defaults`] 之外，
+    /// 因为那一枚只管**手里那支笔**，这一枚改的是栈自己 —— 两个问题不共用一只手。
+    ///
+    /// 已经在栈里的那几步一步也不丢：core 的 `UndoStack::set_limits` 从最旧那一头剪，
+    /// 所以「正在标注的中途改了档」不会把手里的活清空。
+    pub fn apply_undo_limits(&mut self, ann: &Annotation) {
+        self.undo.set_limits(ann.undo_limit, ann.undo_merge_ms as u64);
+    }
+
     /// The selection in document space.
     ///
     /// `hole` is stored in physical desktop pixels because that is the space the
@@ -1839,24 +1870,28 @@ impl Layer {
             .map_or(0, |e| e.transform.rotation.round() as i32)
     }
 
-    /// §5.7.3 step 4 的那一枚圆角把手，在**文档坐标**里的位置；`None` 是「此刻屏幕上没有这一枚
-    /// 把手可画」。三位作者各管一段，谁也不写第二遍：有没有这一枚问
-    /// [`Grip::grips_for`]（与 [`grip_at_any`] 抢不到把手时判的是同一张名单，画在页上的点因此
-    /// 不会是握不到的那一个），住在哪儿问 [`grip_point`]（含那一枚对象自己的转向），而
-    /// 文档坐标 → 本窗 DIP 那一步在 [`crate::mask`] 里与文本框同一条腿。
+    /// 这一串选中对象**此刻握得到**的每一枚把手，连它自己的命中带一起，都在文档坐标里
+    /// （#86：§5.7.17 那八枚控制点、§5.7.15 的旋转把手、一段线的两端、§5.7.3 step 4 的圆角
+    /// 把手）。空表就是「此刻没有一枚可画」。
     ///
-    /// 只在串里**恰好一枚**对象时才递：两枚 圆角矩形 都在场时页上只能画一个点，那一个点说的是
-    /// 「这一只框的角」而屏幕上没有第二条路能讲清是哪一只（#453 两种失败保持分开 —— 这里选的
-    /// 是「不讲」而不是「讲错」）。
-    pub fn radius_handle(&self) -> Option<PhysPoint> {
-        let [id] = self.sel.ids() else {
-            return None;
-        };
-        let e = self.doc.get(*id)?;
-        if !Grip::grips_for(e).contains(&Grip::Radius) {
-            return None;
-        }
-        grip_point(e, Grip::Radius)
+    /// 递的是**矩形**而不是点：矩形那四边就是一次按下的命中带那四边（core 的
+    /// [`falcon_core::annotation::grip_box`] 与 [`grip_at_any`] 量的是同一块），所以页上画的
+    /// 方框与按下去有人应的那一块不是两个恰好对得上的数，而是同一个数。谁有把手、把手住在
+    /// 哪儿，也都只有 core 一位作者（[`grips_held`] 转手 [`Grip::grips_for`] 与
+    /// [`falcon_core::annotation::grip_point`]）；这一档只是转手，一个像素也不自己算。
+    ///
+    /// 多选时**每枚对象各一套**，串外的一枚也不进：§5.7.17 步 4 给多选的是移动、复制、删除或
+    /// 样式调整，从来没有一枚共用的控制点，所以画在并集角上的那一只会是握不到的那一只 ——
+    /// 宁可不画（#453：「不讲」而不是「讲错」）。
+    ///
+    /// 带着 [`Grip`] 一起递，是因为页上要把 §5.7.3 step 4 那一枚画成圆点、其余画成方框：
+    /// 拧角与改尺寸是两件事，长得一样就是一枚按下去会做错事的把手。分不分族是页上的事
+    /// （那是长相），有没有这一枚、在哪儿，仍然只问 core。
+    pub fn grip_boxes(&self) -> Vec<(Grip, PhysRect)> {
+        grips_held(&self.doc, self.sel.ids())
+            .into_iter()
+            .map(|(_, g, q)| (g, grip_box(q, GRIP_SLOP)))
+            .collect()
     }
 
     /// §5.7.15 step 2 的后一半「或输入旋转角度」：QML 只递方向，格的宽窄是这里的
@@ -2512,7 +2547,7 @@ impl Layer {
     /// [`Layer::finish_typing`] 收尾、Esc 阶梯上的同一格 [`Layer::abandon_typing`]），差别
     /// 只在框里预先放着原有的那串字（[`Layer::typing_text`]），并且记着它是来改谁的。
     ///
-    /// `false` 的那几样各是各的：手里是笔而不是箭头（步 1 说的是「选择"选择"工具」，而笔
+    /// `false` 的那几样各是各的：手里是笔而不是箭头（步 1 说的是「选择“选择”工具」，而笔
     /// 底下点哪都先落**新的一枚**，改不动已经在那儿的那一串）、框已经开着（不许叠第二只 ——
     /// [`Layer::typing_text`] 只有一份，前一只的字还挂在屏幕上）、串里不恰好一枚（多选没有
     /// "这一枚的字"，页上也只有一只框），以及 core 那两位作者的话：这一枚不接字
@@ -4087,6 +4122,87 @@ mod tests {
     }
 
     #[test]
+    fn the_two_undo_rows_re_limit_a_session_without_losing_the_work() {
+        // §5.7.19 的两枚数第一次从档里走到这台栈上。量的不是"能不能设"，而是**换数那一刻手里
+        // 有没有活**：修剪若从最新那一头下手，或者干脆重建一台栈，用户没保存的工作就没了。
+        // 场上这一只手目前只在遮罩开那一趟喂（`mask.rs` 里排在 `ink.begin` 之后，而 `begin`
+        // 刚把栈清成出厂那一副数 —— 每一场标注有自己的撤销，这是对的），所以这一档钉的是
+        // 这只手自己的规矩：哪一处把它接到还没结束的场上，那条性质已经在这儿了。
+        let one = PhysRect::new(0, 0, 200, 200);
+        let mut l = screens(&[("m0", one)], [70, 70, 70, 255]);
+        l.set_hole(one);
+        l.select_tool(code_of(Some(Kind::Rect)));
+        for x in [10, 60, 110] {
+            l.press(PhysPoint::new(x, 10));
+            l.drag(PhysPoint::new(x + 40, 40));
+            assert!(l.release());
+        }
+        assert_eq!(l.undo.depth(), 3);
+        assert_eq!(l.objects(), 3);
+
+        let mut ann = Annotation::default();
+        ann.undo_limit = 2;
+        ann.undo_merge_ms = 0;
+        l.apply_undo_limits(&ann);
+        assert_eq!(l.undo.cap(), 2, "档里那一格没递到栈上");
+        assert_eq!(l.undo.merge_window(), 0, "合并窗口那一格同理");
+        assert_eq!(l.undo.depth(), 2, "剪掉的该是最旧那一条,不是手里最近那一条");
+        assert_eq!(l.objects(), 3, "换一副数本身不是编辑,画上去的一枚也不该因此不见");
+
+        assert!(l.undo_step());
+        assert!(l.undo_step());
+        assert!(!l.undo_step(), "掉出上限的那一条退不回来");
+        assert_eq!(
+            l.objects(),
+            1,
+            "三枚里留在纸上的,是那条没被记着的"
+        );
+    }
+
+    #[test]
+    fn the_row_naming_a_tool_picks_up_that_pen_and_the_row_naming_none_moves_nothing() {
+        // `[annotation] default_tool` 接上之后,"认不出"在两个地方各判一次的可能性就出现了：
+        // 档那一头 `validate()` 清成空串，这一头 `Kind::from_key` 答 `None`。这一档量的是
+        // 两只手对同一串说同一句话 —— 出厂那一格（空）不动手里的笔，命名得上的换成那一支，
+        // 命名不上的（内存里造的档才会走到这里）不换笔并且把话说出来。
+        let one = PhysRect::new(0, 0, 200, 200);
+        let mut l = screens(&[("m0", one)], [70, 70, 70, 255]);
+        l.set_hole(one);
+        assert_eq!(l.tool(), None, "进场手里不拿笔");
+
+        let mut ann = Annotation::default();
+        l.apply_default_tool(&ann);
+        assert_eq!(l.tool(), None, "空串是「档什么都没说」,不是「换成第 0 格」");
+        assert!(l.problems.is_empty(), "{:?}", l.problems);
+
+        ann.default_tool = "arrow".into();
+        l.apply_default_tool(&ann);
+        assert_eq!(l.tool(), Some(Kind::Arrow), "那一支笔没拿起来");
+        assert_eq!(l.tool_code(), code_of(Some(Kind::Arrow)));
+
+        // 换笔走的是真正的那一只手，所以它自己那些副作用一并跟着来了（选中放下、半拖的
+        // 那一手放下 —— 那一条 `select_tool` 那档有人量过）。画一枚对象在场上多一格。
+        l.press(PhysPoint::new(20, 20));
+        l.drag(PhysPoint::new(90, 70));
+        assert!(l.release());
+        assert_eq!(l.objects(), 1, "上面那三行画的是一支箭头");
+        ann.default_tool = "marker".into();
+        l.apply_default_tool(&ann);
+        assert_eq!(l.tool(), Some(Kind::Marker));
+        assert_eq!(l.objects(), 1, "拿一支笔不是画一枚对象");
+
+        // 档自己那份名单从前收下过这一串（它抄的是 PRD 的目录，不是画得出的笔）。
+        ann.default_tool = "highlighter".into();
+        l.apply_default_tool(&ann);
+        assert_eq!(l.tool(), Some(Kind::Marker), "认不出就不该换笔");
+        assert!(
+            l.problems.iter().any(|p| p.contains("highlighter")),
+            "{:?}",
+            l.problems
+        );
+    }
+
+    #[test]
     fn what_no_longer_exists_leaves_the_panel() {
         // 撤销、重做与全清都会让对象消失。留着它们的读数是一枚亮着而不做事的钮：
         // `picked_count` 报「2 枚」，那一行就占着高度，而 core 对陌生 id 的答案是整条不建。
@@ -4113,7 +4229,7 @@ mod tests {
         assert_eq!(
             l.undo.cap(),
             UndoStack::CAP,
-            "遮罩这一场用的就是计划 §6.4 那一只 200 步的栈——「达到上限时优先保留最近操作」由它作证"
+            "遮罩这一场用的就是出厂那一格的 200 步——「达到上限时优先保留最近操作」由它作证"
         );
 
         // ① 绘制。
@@ -4329,6 +4445,17 @@ mod tests {
         );
     }
 
+    /// 页上照着画的那一列里，某一族把手的中心。中心**就是** core 报的那一点：`grip_box` 的
+    /// 边长是奇数 `2*GRIP_SLOP + 1`，所以 `x + w/2` 整除回原点，不多也不少一格。这一档要握住
+    /// 把手时从画出来的那一列里取，而不另问一次 core —— 「按在画着的地方」与「按在命中带里」
+    /// 在这一句里因此是同一件事（#86）。
+    fn drawn_centre(l: &Layer, g: Grip) -> Option<PhysPoint> {
+        l.grip_boxes()
+            .into_iter()
+            .find(|(k, _)| *k == g)
+            .map(|(_, r)| PhysPoint::new(r.x + r.w as i32 / 2, r.y + r.h as i32 / 2))
+    }
+
     #[test]
     fn the_round_handle_drags_the_corner_and_one_undo_takes_the_corner_back() {
         // §5.7.3 步骤 4「通过控制点调整……圆角」的第一趟真手势：箭头工具下握住那一枚把手、拖、
@@ -4357,7 +4484,7 @@ mod tests {
         assert_eq!(l.selected_count(), 1);
         assert_eq!(l.undo.depth(), 0, "单击选中不是编辑");
 
-        let at = l.radius_handle().expect("框里够大的 圆角矩形 该有那一枚把手");
+        let at = drawn_centre(&l, Grip::Radius).expect("框里够大的 圆角矩形 该有那一枚把手");
         // 拖两枚事件而不是一枚：栈上那一条的 "before" 必须是**握住把手那一刻**的那一枚数。
         // 预览写的是 `style`，而 [`SelDrag::from`] 那份快照只按回几何与转向 —— 少一步按回，
         // 第二条事件算出的命令就把第一条的预览当成了原始值，一次 Ctrl+Z 退回一拖拖到一半的角。
@@ -4379,9 +4506,9 @@ mod tests {
         assert!(l.redo_step());
         assert_eq!(l.doc.get(id).unwrap().style.corner_radius, 42);
 
-        // 那一枚点只在**恰好一枚**对象时才递：两枚都在串里时页上只能画一个点，而那一个点讲不
-        // 清说的是哪一只框 —— 这里选「不讲」而不是「讲错」。谁有把手、谁没有，是
-        // [`Grip::grips_for`] 在 core 里已经答过的那一问，这一档只量递不递。
+        // 两枚 圆角矩形 都在串里时，页上画**两枚**圆角把手，各在各自己那一只框的角上（#86）。
+        // 这一档早先只递得出一枚点，于是多选时只能选「不讲」；名单换成「每枚对象各一套」之后，
+        // 讲不清是哪一只框的那个理由就不在了 —— 每一枚都带着自己的位置。
         let mut other = Style::default();
         other.corner_radius = 30;
         l.doc.add(
@@ -4392,12 +4519,22 @@ mod tests {
         l.paint(None);
         let second = l.doc.elements[1].id;
         l.sel = Selection::of(&[id, second]);
-        assert_eq!(l.radius_handle(), None, "多选递出了一枚有主的把手");
+        assert_eq!(
+            l.grip_boxes()
+                .iter()
+                .filter(|(g, _)| *g == Grip::Radius)
+                .count(),
+            2,
+            "两枚 圆角矩形 都在串里，页上就该画两枚圆角把手"
+        );
         l.sel = Selection::of(&[second]);
         assert!(
-            l.radius_handle().is_some(),
+            drawn_centre(&l, Grip::Radius).is_some(),
             "串里只剩那一枚 圆角矩形 时把手没递回来"
         );
+        // 串里一枚也不剩时，页上一枚也不画：空表就是空表，不是「上一趟那一列还在」。
+        l.sel = Selection::of(&[]);
+        assert!(l.grip_boxes().is_empty());
     }
 
     #[test]
@@ -4524,7 +4661,7 @@ mod tests {
 
     #[test]
     fn a_bright_switch_makes_one_undo_take_back_the_delete_and_the_renumber() {
-        // §5.7.12 步骤 5「删除中间编号时可选择是否自动重排」。判据是**一次** Ctrl+Z：被删的那
+        // §5.7.12 步骤 5「删除中间编号时，可选择是否自动重排」。判据是**一次** Ctrl+Z：被删的那
         // 一枚回到场上、被挪走的那几枚回到原位，两件事一起来 —— 分成两半的撤销会留下一个「号
         // 回来了、中间还缺一号」的时刻，那不是用户按过的那一格。
         let one = PhysRect::new(0, 0, 300, 300);

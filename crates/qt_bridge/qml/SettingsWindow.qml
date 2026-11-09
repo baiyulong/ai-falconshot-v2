@@ -44,7 +44,7 @@ Window {
     property var rowsKind: []
 
     /// 当前是哪一类。开在哪一类由计划说了算（`--settings-window` 开在 §5.15 那一页，因为
-    /// PRD 第 1328 行写的是「用户打开"首选项 > 热区"」）；产品会话从 0 开始。
+    /// §5.15 步骤 1 写的是「用户打开"首选项 > 热区"」）；产品会话从 0 开始。
     property int which: 0
 
     /// §5.21.2 第四枚：这一页此刻欠着的那一句「首次使用引导」。空串 = 桥答「不递」，
@@ -1028,7 +1028,11 @@ Window {
                     radius: 6
                     color: win.which === index ? win.pick_fill : win.card_fill
                     border.color: win.which === index ? win.accent_fill : win.edge_fill
-                    border.width: 1
+                    // §7.4 第 3 条：「选中」不许只靠颜色说。底色与边框色那两枚是颜色通道，
+                    // 边框**宽窄**是形状通道 —— 1 px 与 2 px 的差别在黑白打印、在色盲、在
+                    // 截掉了颜色只剩轮廓的那一眼里都还在。手法抄的是本仓已有的那一处
+                    // （`GroupWindow.qml` 里聚焦那一行同样写 `? 2 : 1`），不是新发明的一枚。
+                    border.width: win.which === index ? 2 : 1
 
                     Text {
                         id: tabWord
@@ -1156,7 +1160,9 @@ Window {
                         radius: 5
                         color: win.pick === index ? win.pick_fill : win.card_fill
                         border.color: win.pick === index ? win.accent_fill : win.edge_fill
-                        border.width: 1
+                        // §7.4 第 3 条，与上面页签那一行同一枚手法、同一个理由：边框宽窄是
+                        // 颜色之外的那第二条通道。
+                        border.width: win.pick === index ? 2 : 1
 
                         Text {
                             id: rowWord
@@ -1894,7 +1900,10 @@ Window {
                         radius: 4
                         color: win.palPick === index ? win.pick_fill : win.card_fill
                         border.color: win.palPick === index ? win.accent_fill : win.edge_fill
-                        border.width: 1
+                        // §7.4 第 3 条，与上面页签那一行同一枚手法、同一个理由：边框宽窄是
+                        // 颜色之外的那第二条通道。这一行里已经有一枚色块，所以「哪一行被选中」
+                        // 与「这一行写的是哪枚色」必须是两条互不冒充的通道。
+                        border.width: win.palPick === index ? 2 : 1
 
                         Row {
                             anchors.verticalCenter: parent.verticalCenter
@@ -2092,7 +2101,9 @@ Window {
                         radius: 4
                         color: win.palScheme === index ? win.pick_fill : win.card_fill
                         border.color: win.palScheme === index ? win.accent_fill : win.edge_fill
-                        border.width: 1
+                        // §7.4 第 3 条，与上面页签那一行同一枚手法、同一个理由：边框宽窄是
+                        // 颜色之外的那第二条通道。
+                        border.width: win.palScheme === index ? 2 : 1
 
                         Text {
                             anchors.verticalCenter: parent.verticalCenter

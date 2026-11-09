@@ -1,4 +1,4 @@
-//! The annotated picture as a list of elements (plan §6.4, 技术方案 §8.1).
+//! The annotated picture as a list of elements (技术方案 §8.1).
 //!
 //! MVP paints the overlay into a bitmap, but the model is an element list from
 //! the first line of code: §5.7.16's per-object re-editing then replaces the
@@ -110,14 +110,6 @@ impl Kind {
             Kind::Blur => Effect::Blur { radius: v },
             _ => Effect::Mosaic { block: v },
         })
-    }
-
-    /// The two tools whose body is laid-out letters, and therefore the only two a 描边
-    /// can ring (§5.7.11). `raster` draws 编号 through 文本's path, so a ring asked of one
-    /// is asked of both — and §5.7.1's per-tool memory needs this to know which rows own
-    /// an outline at all, the same service [`Kind::has_effect`] gives the strength knob.
-    pub fn has_outline(self) -> bool {
-        matches!(self, Kind::Text | Kind::Number)
     }
 
     /// The things a tool is allowed to insist on when it is picked and the user has
@@ -1600,7 +1592,5 @@ mod tests {
         assert_eq!(style.outline_width, WIDTH_MAX);
         style.outline_width = 0;
         assert_eq!(style.outline_for().1, 1, "画出来的一圈至少一个像素");
-        assert!(Kind::Text.has_outline() && Kind::Number.has_outline());
-        assert!(!Kind::Rect.has_outline(), "描边是字的那一手，矩形没有它");
     }
 }

@@ -1,17 +1,17 @@
-//! §5.14.4 的那一扇「历史记录管理」窗（PRD 第 1305–1317 行），与 §5.18.1 第 1438 行那枚托盘项。
+//! §5.14.4 的那一扇「历史记录管理」窗，与 §5.18.1 菜单建议里那枚「历史记录」托盘项。
 //!
-//! **这一档存在的原因**：PRD 第 1309 行写「用户打开“历史记录管理”。」，而 §5.18.1 那十枚菜单建议里
+//! **这一档存在的原因**：§5.14.4 步骤 1 写「用户打开“历史记录管理”。」，而 §5.18.1 那十枚菜单建议里
 //! 「历史记录」那一枚至今在托盘上没有对面 —— `hotkey.rs` 头顶那封欠账信自己记着它
 //! （「菜单建议里的 图片分组 / 历史记录 / 帮助 / 检查更新 四条，本 build 都还没有能跑的那只手」）。
-//! 需要澄清的是：**§5.14.4 那四条规则里的每一条都不缺一只手**，缺的是那扇窗：
-//! * 「选择单条、多条或全部记录」（第 1310 行）对面是 [`crate::mask::MaskState::delete_history`]（P98）；
-//! * 「点击删除」（第 1311 行）对面是同一只手加 [`crate::mask::MaskState::clear_history`]（P99）；
-//! * 「系统释放相应磁盘空间」（第 1312 行）对面是 `falcon_core::history::Freed`（P89）；
-//! * 「清空全部历史前应二次确认」（第 1316 行）对面是 `clear_history(false)` 那一臂 —— 它**连库都不打开**；
-//! * 「自动清理不得删除…锁定的记录」（第 1317 行）对面是 `clear_history(true)` 里钉死的 `include_locked = false`。
+//! 需要澄清的是：**§5.14.4 除了步骤 1，其余五格都不缺一只手** —— 步骤 2、步骤 3、步骤 4 与规则那两句，逐格是：
+//! * 「选择单条、多条或全部记录」（§5.14.4 步骤 2）对面是 [`crate::mask::MaskState::delete_history`]（P98）；
+//! * 「点击删除」（§5.14.4 步骤 3）对面是同一只手加 [`crate::mask::MaskState::clear_history`]（P99）；
+//! * 「系统释放相应磁盘空间」（§5.14.4 步骤 4）对面是 `falcon_core::history::Freed`（P89）；
+//! * 「清空全部历史前应二次确认」（§5.14.4 规则第一句）对面是 `clear_history(false)` 那一臂 —— 它**连库都不打开**；
+//! * 「自动清理不得删除…锁定的记录」（§5.14.4 规则第二句）对面是 `clear_history(true)` 里钉死的 `include_locked = false`。
 //!
 //! 也就是说：这五格全部只被**量具**递过（`--autosave` 那一档经 `AnnotationToolbar.qml` 里那四条
-//! history 腿叫过同一批 invokable），一次也没有被**一扇用户能打开的窗**递过。PRD 第 1309 行要的是
+//! history 腿叫过同一批 invokable），一次也没有被**一扇用户能打开的窗**递过。§5.14.4 步骤 1 要的是
 //! 后者，而 `HistoryWindow.qml` 在 P171 之前是一枚 0 命中的名字（前置档 `p171_pre_A.txt` 逐档现读）。
 //! 这一档因此不重新发明任何一只手：窗上那四枚钮叫的是 `session.historyRows / historyDelete /
 //! historyClear / historyLock` 那四枚**已经存在**的 invokable，本页**不写第二份判据、不数第二遍字节**。
@@ -27,7 +27,7 @@
 //!
 //! **它不碰用户的历史**（§9.1 第十五条）：本档在 `engine.load()` 之前把 `MaskState` 的
 //! `history` / `history_dir` 两格钉进一枚进程私有的 temp 沙盒（[`retarget`]），并在沙盒库里
-//! 种下 [`ROWS`] 行已知尺寸的记录（[`arm`]）。窗上那几条腿删的就是这几行，所以第 1312 行
+//! 种下 [`ROWS`] 行已知尺寸的记录（[`arm`]）。窗上那几条腿删的就是这几行，所以 §5.14.4 步骤 4
 //! 「释放相应磁盘空间」有对面可读的字节数，而 `%APPDATA%\ai-falconshot\history\` 在这一趟
 //! 前后一字也不动（由门外的尺量那一枚目录 sha，不靠本档这句话）。
 
@@ -36,24 +36,24 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use crate::state::Check;
 
-/// PRD 第 1309 行那一串字，**窗标题的唯一作者**。这一档把它当判据的一部分而不只是措辞：
+/// §5.14.4 步骤 1 那一串字，**窗标题的唯一作者**。这一档把它当判据的一部分而不只是措辞：
 /// 那一行写的不是「打开历史」也不是「历史浏览」，而是「历史记录管理」这四个字，
 /// 门里 `history window` 那一格判的正是「页上那扇窗的 title 是不是这一串」。
 pub const TITLE: &str = "历史记录管理";
 
-/// §5.18.1 第 1438 行那一列菜单建议里的写法就是「历史记录」这四个字，**托盘那一项的名字唯一作者**
+/// §5.18.1 菜单建议那一列里的写法就是「历史记录」这四个字，**托盘那一项的名字唯一作者**
 /// 是这一枚常数：[`crate::hotkey::Work::History`] 的 `label()` 读它，本档 ⑨ 那一格也判它。
 /// 窗标题（[`TITLE`]）与菜单名分家是有意的两件事 —— 菜单要说「这里能翻到历史」，
-/// 窗标题要念的是 PRD 第 1309 行给那扇窗起的那个名。
+/// 窗标题要念的是 §5.14.4 步骤 1 给那扇窗起的那个名。
 pub const TRAY_WORD: &str = "历史记录";
 
-/// 页上那四枚钮的名字，次序就是 §5.14.4 那四步说话的样子：刷新（读第 1309 行之后要有东西）、
-/// 删除所选（第 1310–1311 行「选择单条、多条」+「点击删除」）、清空全部（「或全部」+ 规则 1）、
+/// 页上那四枚钮的名字，次序就是 §5.14.4 那四步说话的样子：刷新（读步骤 1 之后要有东西）、
+/// 删除所选（步骤 2–3「选择单条、多条」+「点击删除」）、清空全部（「或全部」+ 规则 1）、
 /// 关闭。名单住在这一档而不是长在 `.qml` 里，与 `custom::CELLS` 同一理由：页上抄一份名单，
 /// 改一天「钮上写着删除、递进产品的却是清空」只能靠数出来（#281）。
 pub const BUTTONS: [&str; 4] = ["刷新", "删除所选", "清空全部", "关闭"];
 
-/// 清单表头那一枚勾选框（第 1310 行「选择…**全部**记录」在页上的形状）。
+/// 清单表头那一枚勾选框（§5.14.4 步骤 2「选择…**全部**记录」在页上的形状）。
 pub const SELECT_ALL: &str = "全选";
 
 /// 按下「清空全部」之后页上亮出的那一问（规则 1「应二次确认」的**页上那一半**）。
@@ -101,6 +101,14 @@ pub fn rows_now() -> Vec<String> {
 /// 那一行 `Record` 此刻在不在清单上。判的是**分节后的第一段整等**那一枚行号，与 [`row_cancelled`]
 /// 同一把刀：`contains("7")` 会把第 17 行、把 1700×700 那一枚尺寸、把任何一处写着 7 的中文都
 /// 当成第 7 行，于是「回放之后那一行还在」会被读成一次谁也没删过的幸存。
+///
+/// **今天读它的两枚都是本档 `mod tests` 里的证人**（`a_row_is_found_by_its_number_not_by_a_digit`
+/// 与 `the_gauge_and_the_page_point_at_the_same_row`）：产品那一侧的常驻读腿 [`rows_now`] 只被
+/// `feedback_window.rs` 拿去数了个数（`.len()`），从来没有人在场上问过「第 N 行在不在」。所以这一枚
+/// 挂 `#[cfg(test)]` —— 不是把它藏起来，是把「谁在读」写在编译器能核的地方：哪天产品真长出第二个
+/// 读者，编译会当场要求把它放回去（#261 不许没有证人的判决；`#[allow(dead_code)]` 则是把这句话说反
+/// —— 那枚属性说的是「没人读也不要紧」，这里要说的是「只有证人在读」）。
+#[cfg(test)]
 pub fn row_present(rows: &[String], id: i64) -> bool {
     rows.iter()
         .any(|l| l.split(" · ").next().unwrap_or("").trim() == id.to_string())
@@ -111,6 +119,10 @@ pub fn row_present(rows: &[String], id: i64) -> bool {
 /// 只是把同一串字从**门自己那份计划**里读回来，于是页上 `win.plan[1]` 与 Rust 这一头问的
 /// 是同一个数（单测 `the_gauge_and_the_page_point_at_the_same_row` 钉的就是这一条）。
 /// 读不出来 ⇒ `-1`，那一枚行号在库里不存在，产品交回的是它自己那句「库里没有第 -1 行」。
+///
+/// **读者只有证人** `the_gauge_and_the_page_point_at_the_same_row`（与 [`row_present`] 同一个理由：
+/// 门那三条回放腿点名的行号是自己从计划串上读的，不经这一枚）。
+#[cfg(test)]
 pub fn replay_id() -> i64 {
     with(|g| {
         let p: Vec<&str> = g.plan.split('|').collect();
@@ -124,6 +136,12 @@ pub fn replay_id() -> i64 {
 /// 拿它去扫 `HistoryWindow.qml`，`every_leg_of_the_roster_is_declared_on_the_bridge` 拿它去扫
 /// `session.rs`）。主人那一列写的是**档与函数名**，不是这一档抄的判据 —— 它哪天挪了地方，
 /// 扫源码那一格不会红（扫的是 cxx_name），而门里那一格会因为句子点名点不到而红。
+///
+/// **读者只有证人**：读它的判据全在 `mod tests` 里（`the_page_binds_the_leg_the_roster_names` 扫
+/// `HistoryWindow.qml`、`every_leg_of_the_roster_is_declared_on_the_bridge` 扫 `session.rs`），加上
+/// 把这张表读成原文的 [`routes`] 与它的两枚小助手 [`leg_of`] / [`owner_of`]；`measure()` 那一趟问的是
+/// 页上那枚钮**真的**递到了哪条腿，不经这张表。
+#[cfg(test)]
 pub const ROUTES: [(&str, &str, &str); ACTIONS.len()] = [
     (
         "复制",
@@ -156,6 +174,10 @@ pub const ROUTES: [(&str, &str, &str); ACTIONS.len()] = [
 /// 「上一条、下一条」两枚钮，而 §5.14.2 的翻页与 §5.14.3 的重新进入原选区在产品里对的是
 /// 同一件事（`mask::flip_history_selection` 头上那段），所以这里两枚名字配同一枚 cxx_name ——
 /// 配成两条就是让页上长出第二套「什么算翻成了一页」。
+///
+/// **读者只有证人**（与 [`ROUTES`] 同一个理由）。两位名字 [`FLIP_BACK`] / [`FLIP_FWD`] 不跟着挂：
+/// [`flip_words`] 那一条常驻读腿在场上要它们。
+#[cfg(test)]
 pub const FLIP_ROUTES: [(&str, &str); 2] = [
     (FLIP_BACK, "historyFlip"),
     (FLIP_FWD, "historyFlip"),
@@ -163,17 +185,28 @@ pub const FLIP_ROUTES: [(&str, &str); 2] = [
 
 /// 动作名 → 页上该叫的那一条腿。认不出来的名字 ⇒ `None`（页上不许替它猜一条：猜出来的那条腿
 /// 与钮上的名字没有任何东西保证相等）。
+///
+/// **读者只有证人**（与 [`ROUTES`] 同一个理由）。
+#[cfg(test)]
 pub fn leg_of(name: &str) -> Option<&'static str> {
     ROUTES.iter().find(|(n, _, _)| *n == name).map(|(_, l, _)| *l)
 }
 
 /// 动作名 → 那条腿背后的主人（这一档不说它，只报它住在哪儿）。
+///
+/// **读者只有证人**（与 [`ROUTES`] 同一个理由）。
+#[cfg(test)]
 pub fn owner_of(name: &str) -> Option<&'static str> {
     ROUTES.iter().find(|(n, _, _)| *n == name).map(|(_, _, o)| *o)
 }
 
-/// [`ROUTES`] 的原文，`|` 分枚、`>` 分三格。量具把它随 `replay-*` 那几行一起递回报告，
-/// 读门的人因此能在同一格里看见「这一枚钮本该叫谁」。
+/// [`ROUTES`] 的原文，`|` 分枚、`>` 分三格。判据拿它数的是「这张表在拼成串的过程里一枚也没丢」
+/// （分段数 == [`ROUTES`] 长度）。
+///
+/// **订正**：这一枚先前写着「量具把它随 `replay-*` 那几行一起递回报告，读门的人因此能在同一格里
+/// 看见这一枚钮本该叫谁」—— 那是一句从没兑现过的许诺，`measure()` 一次也没调过它，报告里没有这
+/// 一串。读者只有证人，所以挂 `#[cfg(test)]`（#261 不许没有证人的判决，也不许把没发生的事写成读数）。
+#[cfg(test)]
 pub fn routes() -> String {
     ROUTES
         .iter()
@@ -222,7 +255,7 @@ pub fn record_count_of(usage: &str) -> Option<i64> {
         .and_then(|v| v.parse::<i64>().ok())
 }
 
-/// §5.14.2 第 4 步「用户可重新**复制、保存、标注或贴图**」那四件事在**每一行**上的名字，
+/// §5.14.2 第 4 步「用户可重新复制、保存、标注或贴图」那四件事在**每一行**上的名字，
 /// 尾巴再加 §5.14.3 第 4 步「重新进入原选区」那一枚 —— 两节 PRD 加起来五件事，页上就是五枚钮，
 /// 一件也不多、一件也不少。名单住在这一档而不是长在 `.qml` 里，与 [`BUTTONS`] 同一理由：
 /// 页上抄一份名单，改一天「钮上写着保存、递进产品的却是贴图」就只能靠人数（#281）。
@@ -244,7 +277,7 @@ pub const ACTIONS: [&str; 5] = ["复制", "保存", "贴图", "标注", "重进�
 pub const FLIP_BACK: &str = "上一条";
 pub const FLIP_FWD: &str = "下一条";
 
-/// §5.14.3 第 3 步「找到标记为**已取消**的记录」里那三个字。
+/// §5.14.3 第 3 步「找到标记为“已取消”的记录」里那三个字。
 ///
 /// **这一档不是它的作者**：清单里那一行挂不挂这三个字，由
 /// [`crate::settings::history_rows_joined`] 那一处说了算（写进去的也是那一处）。本档只是把
@@ -816,7 +849,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         (seg(&p, 1), seg(&p, 2), seg(&p, 3), seg(&p, 4), seg(&p, 5));
     let sum = |which: &[usize]| -> u64 { which.iter().map(|i| bytes[*i]).sum() };
 
-    // ① 第 1309 行「用户打开“历史记录管理”」那一格的全部对面：窗在不在、标题是不是那一串字、
+    // ① §5.14.4 步骤 1「用户打开“历史记录管理”」那一格的全部对面：窗在不在、标题是不是那一串字、
     //    页上真的造出几枚钮、清单这一趟列出几行。`visible` 是窗自己问 Qt 的那一枚数而不是
     //    「我们叫过 show()」，`btns` 是 delegate 的 `count` 而不是名单长度（与 `custom` ① 同一口径）。
     if let Some(open) = counted(&mut rep, "open") {
@@ -845,7 +878,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ② 第 1310 行「选择…**全部**记录」：表头那一枚全选点下去，勾上的枚数与清单行数、
+    // ② §5.14.4 步骤 2「选择…**全部**记录」：表头那一枚全选点下去，勾上的枚数与清单行数、
     //    与开工时那几行三者必须同数。勾上 0 枚也是一种"点到了"，所以三枚数一起判。
     if let Some(all) = counted(&mut rep, "select-all") {
         let s: Vec<&str> = all.split('|').collect();
@@ -877,7 +910,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ④⑤ 第 1310–1311 行那两步的另两档：单条与多条。
+    // ④⑤ §5.14.4 步骤 2–3 那两步的另两档：单条与多条。
     delete_leg(
         &mut rep,
         "delete-one",
@@ -942,7 +975,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ⑧ 第 1312 行「系统释放相应磁盘空间」：删前与删后各量一次占用，差必须等于产品四条腿各自
+    // ⑧ §5.14.4 步骤 4「系统释放相应磁盘空间」：删前与删后各量一次占用，差必须等于产品四条腿各自
     //    说过的那些字节之和 —— 而不是让产品那句话自己给自己作证。取 `original + thumb` 两枚而不取
     //    `total`：`total` 含 `history.db` 自己那一份，而 SQLite 删行不缩库（理由写在 [`image_bytes_of`]）。
     if let Some(after) = counted(&mut rep, "usage-after") {
@@ -1058,7 +1091,7 @@ pub fn measure(want_ms: i32) -> (Check, String) {
         );
     }
 
-    // ⑬ §5.18.1 第 1438 行那枚「历史记录」：判的是**装配出来的那份菜单**里有它，而不是
+    // ⑬ §5.18.1 菜单建议里那枚「历史记录」：判的是**装配出来的那份菜单**里有它，而不是
     //    `Work::History` 这一枚枚举存在。菜单的唯一作者是 `hotkey::tray_menu`，本档只问它要一份名字。
     let menu = crate::hotkey::tray_labels();
     let has = menu.iter().any(|name| name == TRAY_WORD);

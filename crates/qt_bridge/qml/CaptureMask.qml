@@ -199,6 +199,10 @@ Window {
     // the monitor name is what makes two of them tellable apart in the report. No
     // spaces: `pinTopLevels` splits its fields on whitespace, so a title with a
     // space in it is a title the harness cannot match.
+    // This line is the author of the prefix; `mask.rs`'s `MASK_TITLE_PREFIX` is a
+    // copy of it that production also reads (the live-background self-check has to
+    // know which HWNDs to take out of the screen read), and a unit test compares
+    // the two verbatim so the copy cannot drift.
     title: "falconshot-mask-" + view.name
 
     // Which of the two dim paths is actually drawing: the chosen one, unless the
@@ -226,6 +230,22 @@ Window {
     // `Component.onCompleted`: the first window may be built while `shown` is still
     // false, and activating a hidden window is a request the platform drops.
     onVisibleChanged: if (visible) win.requestActivate()
+
+    // §5.2.1 实时背景那一支的**取货钟**。节拍那一枚数（333 ms ≈ 每秒 3 帧）的作者在
+    // `mask.rs` 的 `LIVE_BUDGET_MS` —— 读取腿那趟线程按它睡；页上这一枚只是「隔一会儿去取
+    // 一次货」，两边差一点也不要紧：邮箱是攒着的，取得勤一点无非多几趟交回 `0` 的空手，
+    // 取得懒一点无非背景慢半拍。所以这里不另立一位作者，也不为这一枚数配一名证人。
+    //
+    // `running` 绑 `view.live_wanted`，判据全在 Rust 那一格（`freeze_frame` 开着 / 遮罩不在场 /
+    // 闸答了「不许」⇒ 停）。出厂那一枚 `freeze_frame` 是**开着**的，所以默认设置下这一枚钟
+    // 一转也不转 —— 闸门、`WDA_EXCLUDEFROMCAPTURE` 那两句、整屏读取，整条腿都在暗处。
+    Timer {
+        id: liveClock
+        interval: 333
+        repeat: true
+        running: win.view.live_wanted
+        onTriggered: win.view.liveTick()
+    }
 
     Component.onCompleted: {
         // The provider has to be on the engine this window renders with, and the
@@ -291,7 +311,7 @@ Window {
     // away), not for speed: P1 measured no advantage at 4K.
     //
     // `status` is reported to Rust either way, because "the .qsb was not in the
-    // package" is exactly the failure a green build can hide (plan §9.1).
+    // package" is exactly the failure a green build can hide.
     ShaderEffect {
         id: effect
         anchors.fill: parent
@@ -381,6 +401,11 @@ Window {
     // 这一页**不绑** `hover_liveChanged` 之类的信号名：`#[qproperty(bool, hover_live)]`
     // 生成的 notify 是 `hover_liveChanged` 而不是驼峰，绑错是静默的（本仓踩过两次）。
     // 绑值这条路没有名字可绑错。
+    //
+    // §5.3.3 起这一格亮的是**哪一块**由 Rust 那一侧决定：光标在一扇窗里压着控件时是那一枚
+    // 控件的边界（`MaskState::element_bounds`），问不出控件时才回到整窗（§5.3.2 第三步）。
+    // 页上不读链、不读层号，只读那五格 —— 一圈框的两个来历共用同一只手算出的矩形，
+    // 「高亮说 A、单击选中 B」在这种分法下没有地方长出来。
     Rectangle {
         x: win.view.hover_x
         y: win.view.hover_y
@@ -390,6 +415,22 @@ Window {
         color: "transparent"
         border.color: "#4cc2ff"
         border.width: 2
+    }
+
+    // §5.3.4 规则第一句「应显示当前层级变化的即时反馈」：这一行就是那句反馈。
+    //
+    // 字是 Rust 拼的（`MaskState::element_line`：「元素 第 2 / 4 层」，到最上级再补一句
+    // 「（最上级）」），页上只做一次绑定 —— 与上面那枚 `sizeUnit` 同一条口径：**句子留在
+    // Rust**，这里不出现「层」这个字，所以措辞改了不会有一行字留在页上没人管（#281）。
+    //
+    // 空串 = 此刻没有链，这一行整个不画。不是「画一行 0 / 0」：那一行说的是一件不存在的事
+    // （#274）。摆位跟着高亮框而不是跟着选区 —— 它说的是框里那一枚控件在第几层。
+    Text {
+        x: win.view.hover_x
+        y: Math.max(0, win.view.hover_y - 20)
+        visible: win.view.element_line !== ""
+        color: "#4cc2ff"
+        text: win.view.element_line
     }
 
     // §5.2.3's selection edge. 2 device-independent pixels, which is 4 at 200% -
@@ -460,21 +501,57 @@ Window {
         }
     }
 
-    // §5.7.3 步 4 的那一枚圆角把手，与上面八枚同一规：画出来给人握，而**不在页上点** —— 一枚
-    // 按下的归属是 `pressAt` 里 Rust 那一位作者判的，这里再摆一枚 MouseArea 就是让光标与拖拽
-    // 起点各答一次「用户握住了哪一枚」。位置也是 Rust 的（core 的 `grip_point`，加上本窗那一次
-    // 除法），页上一处坐标都不自己算；只有这一枚点画多大是页自己的事，因为那是给人看的数而不是
-    // 给人算的数。圆而不是方，是为了与那八枚角把手在屏幕上分得开：这一枚拧的是角有多圆。
-    Rectangle {
-        visible: win.view.radius_live
-        x: win.view.radius_x - 4
-        y: win.view.radius_y - 4
-        width: 8
-        height: 8
-        radius: 4
-        color: "white"
-        border.color: "black"
-        border.width: 1
+    // 标注对象自己那些把手。与上面八枚同一规：画出来给人握，而**不在页上点** —— 一枚按下的
+    // 归属是 `pressAt` 里 Rust 那一位作者判的，这里再摆一枚 MouseArea 就是让光标与拖拽起点各
+    // 答一次「用户握住了哪一枚」。
+    //
+    // #86 起连「画多大」也不是页自己的事了：每段 `x,y,w,h` 就是**够得着的那一圈本身**（core 的
+    // `grip_box`，本窗那一次除法在 `MaskState::grip_lines` 里做完），页上只把这四枚数摆成一个
+    // 矩形。于是「画出来的 = 命中得了的」不再是一句注释，而是屏幕上看得见的同一枚框 —— 它比
+    // 早先那枚写死的 8×8 大，大出来的那部分正是手指真够得着、而先前谁也看不见的那部分。
+    //
+    // 分成两串只为一件长相上的事：方的（八枚角把手、旋转把手、一段线那两个头）与圆的（§5.7.3
+    // 步 4 那一枚圆角把手）在屏幕上得分得开。而「哪一族」这一判是 Rust 那一次 `match` 做的
+    // （只有它拿得到 `Grip` 这枚标签），页上只画两列、一处也不筛。
+    //
+    // 那两枚零长段的闸不是防着什么的写法：QML 里 `"".split("|")` 答的是 `[""]` —— 一枚假条目，
+    // 摆出来就是左上角一段 `NaN` 大小的矩形。空串得读成「这一族此刻一枚也不画」。
+    Repeater {
+        model: win.view.grip_squares.length ? win.view.grip_squares.split("|") : []
+
+        delegate: Rectangle {
+            required property var modelData
+
+            readonly property var box: modelData.split(",")
+
+            x: Number(box[0])
+            y: Number(box[1])
+            width: Number(box[2])
+            height: Number(box[3])
+            radius: 1
+            color: "white"
+            border.color: "black"
+            border.width: 1
+        }
+    }
+
+    Repeater {
+        model: win.view.grip_dots.length ? win.view.grip_dots.split("|") : []
+
+        delegate: Rectangle {
+            required property var modelData
+
+            readonly property var box: modelData.split(",")
+
+            x: Number(box[0])
+            y: Number(box[1])
+            width: Number(box[2])
+            height: Number(box[3])
+            radius: Math.min(width, height) / 2
+            color: "white"
+            border.color: "black"
+            border.width: 1
+        }
     }
 
     // The whole pointer surface. One MouseArea for the entire screen is the shape
@@ -557,6 +634,25 @@ Window {
         onCanceled: view.releaseAt()
 
         onDoubleClicked: if (win.finishInkOrHole()) win.grabbed()
+
+        // §5.3.4 步 3-4 —— 滚轮在父元素与子元素之间换一层。
+        //
+        // 「向上滚 = 往外（父级）」是本轮定下的读法：文档只说「在父元素和子元素之间切换」，
+        // 没指定方向；取的是与下面那行层级读数一致的那一条 —— 数字往上走就是往外走，
+        // 「第 4 / 4 层」那个 4 是最外面那一层。
+        //
+        // `cycleElement` 交回的是「这一格换动了没有」：到了最上级或最下级它答 `false`，
+        // 于是这一格滚轮**原样交回 Qt**（§5.3.4 规则第二句「停止切换」= 不许绕回，而不是
+        // 不许滚），页上也不去自己数层 —— 层号、链长、那句话全在 Rust 那一格（#281）。
+        //
+        // 换动了才 `grabbed()`：高亮框与那行字是这一扇窗的读数，而**另一扇屏**上那张遮罩
+        // 窗也画同一枚控件，得跟着重读一次（与上面按下/拖动那几手同一条传播）。
+        onWheel: (wheel) => {
+            if (view.cycleElement(wheel.angleDelta.y > 0)) {
+                wheel.accepted = true
+                win.grabbed()
+            }
+        }
 
         Keys.onEscapePressed: (event) => {
             // `accepted`, not `accept()`: this event type's members are key, text,
@@ -791,6 +887,22 @@ Window {
         color: cell.active ? "#2d7ff7"
                            : (area.containsMouse ? "#3a3a41" : "transparent")
 
+        // §7.4 第 3 条：锁住的那个比例不许只靠颜色说。底色那枚蓝是颜色通道，这一条贴底的
+        // 下划条是形状通道 —— 与 `AnnotationToolbar` 的 `Cell` 同一枚手法、同一个理由：不是
+        // border，也不参与 `cap.implicitWidth + 14`，所以换比例时这一排不抖。
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            anchors.leftMargin: 2
+            anchors.rightMargin: 2
+            anchors.bottomMargin: 2
+            height: 2
+            radius: 1
+            visible: cell.active
+            color: "#ffffff"
+        }
+
         Text {
             id: cap
             anchors.centerIn: parent
@@ -818,6 +930,11 @@ Window {
         // 透明白板（§5.4.5）没有"拖出一张新选区"这一步：那张画布自己的尺寸就是选区，
         // 所以那一排在它上面没有可锁的东西。`board_clear` 是这一条分支唯一的读数。
         visible: !win.view.board_clear
+
+        // 「这一句锁不上」的理由，与 `sizeBar.refusal` 同一形状、同一条理由（§7.4 第 3 条）：
+        // 点灰只说"没锁上"，而灰与不灰分不出它的邻居 —— 用户还没按回车时框也不灰。
+        // 空串是"收下了"，不是"没话说"。
+        property string refusal: ""
 
         color: "#f0232326"
         border.color: "#55555c"
@@ -849,6 +966,10 @@ Window {
                             // 表里那一格自此是"当前比例"的唯一主人：文本框里上一句自定义就此
                             // 作废，而不是留着一句看着像还在的话。
                             ratioField.text = ""
+                            // 那一句拒绝说的也是文本框里那句自定义，芯片一按它就没有所指了 ——
+                            // 留着一句「锁不上这个比例」而旁边一枚 1:1 正亮着，是第 162 项 ⑤
+                            // 那一族"亮着却画不出锁"的镜像。
+                            ratioBar.refusal = ""
                             win.grabbed()
                         }
                     }
@@ -867,7 +988,8 @@ Window {
                 // 绑 Rust 的那句话而不是让面板自己记：两张窗、一个状态，与上面那排芯片同理。
                 text: win.view.ratio_spec
                 // 解不出来时点灰而不是清掉用户打的字：那句是他写的，而 `ratio_live` 说的是
-                // 这一句锁不上 —— 屏幕上得同时看得见这两件事。
+                // 这一句锁不上 —— 屏幕上得同时看得见这两件事。第三件由这一排末尾那句红字说
+                // （`ratioBar.refusal`）：点灰与"字还在"都分不出"还没按回车"，句子分得出。
                 color: (win.view.ratio_index < 0 && !win.view.ratio_live) ? "#8a8a90" : "#f2f2f2"
 
                 // 焦点是这条腿唯一真正的风险：`surface` 的 `focus: true` 是 Esc 与方向键的入口，
@@ -879,10 +1001,24 @@ Window {
                     // 清的是**这一格**：用户打过字之后 `text:` 那条绑定就没了（QML 里赋值会
                     // 摧毁绑定），所以光改 Rust 的那一格不会让这里的句子消失。
                     ratioField.text = ""
+                    ratioBar.refusal = ""
                     win.grabbed()
                     surface.forceActiveFocus()
                 }
-                onEditingFinished: win.view.applyRatioSpec(text)
+                // 交回的是**一句话**而不是一枚 bool：收下了是空串，锁不上是理由本身（句子住在
+                // Rust，`mask.rs` 那枚 `RATIO_REFUSAL` 是它唯一的作者）。
+                onEditingFinished: ratioBar.refusal = win.view.applyRatioSpec(text)
+            }
+
+            // §7.4 第 3 条那第三条通道，与 `sizeBar` 末尾那一格同一条理由、同一处省法：长在
+            // `Row` 的末尾且跟着 `visible` 走，而面板的宽写的就是 `ratioLine.implicitWidth + 12`
+            // ——`Row` 不数看不见的孩子，所以出现时长宽、消失时缩回，一枚几何也不用改。
+            Text {
+                visible: ratioBar.refusal.length > 0
+                text: ratioBar.refusal
+                font.pixelSize: 12
+                color: "#e06a6a"
+                anchors.verticalCenter: parent.verticalCenter
             }
         }
     }
@@ -901,16 +1037,21 @@ Window {
 
         visible: win.view.selected && !win.view.board_clear
 
-        // 被拒的那一次点灰而不是清字：那对数字是用户写的，而"没换掉尺寸"得看得见（与比例
-        // 文本框的 `ratio_live` 同一形状）。
-        property bool refused: false
+        // 被拒的那一次**把理由说出来**，并且不清字：那对数字是用户写的，而"没换掉尺寸"与
+        // "为什么没换成"是两件都得看得见的事（§7.4 第 3 条）。空串是"上一次提交收下了"，不是
+        // "没话说"。这一格因此是**这一扇窗自己的**账、不住在 Rust 里：选区只有一张（`MaskState`
+        // 那一份），而"谁刚被打回了"跟着的是哪一格文本框按的回车，两扇窗各有各的两格。
+        property string refusal: ""
         // 序号在 Rust（`size_anchor`），句子也在 Rust（`sizeAnchorNames()`）——这里只做一次下标。
         property string anchorName: win.view.sizeAnchorNames().split("|")[win.view.size_anchor]
 
         function commit() {
-            const took = win.view.applySize(Number(widthField.text), Number(heightField.text))
-            sizeBar.refused = !took
-            if (took) {
+            // `applySize` 交回的是**一句话**而不是一枚 bool：收下了是空串，被打回就是理由本身。
+            // 句子住在 Rust（`mask.rs` 那两支 `return Some` 是它唯一的作者），这一页只做两件事
+            // ——存下它、以及按它空不空决定要不要清掉那两格。
+            const said = win.view.applySize(Number(widthField.text), Number(heightField.text))
+            sizeBar.refusal = said
+            if (said.length === 0) {
                 widthField.text = ""
                 heightField.text = ""
                 // 两张屏、一个状态：与比例那排同一枚 `grabbed`，另一扇窗的选区跟着重画。
@@ -954,7 +1095,7 @@ Window {
                 font.pixelSize: 12
                 placeholderText: "宽"
                 placeholderTextColor: "#6a6a70"
-                color: sizeBar.refused ? "#e06a6a" : "#f2f2f2"
+                color: sizeBar.refusal.length > 0 ? "#e06a6a" : "#f2f2f2"
                 validator: IntValidator { bottom: 1; top: 99999 }
 
                 // 焦点这一条腿与比例文本框同一条风险：`surface` 的 `focus: true` 是 Esc 与
@@ -963,7 +1104,7 @@ Window {
                     event.accepted = true
                     widthField.text = ""
                     heightField.text = ""
-                    sizeBar.refused = false
+                    sizeBar.refusal = ""
                     surface.forceActiveFocus()
                 }
                 onEditingFinished: sizeBar.commit()
@@ -983,13 +1124,13 @@ Window {
                 font.pixelSize: 12
                 placeholderText: "高"
                 placeholderTextColor: "#6a6a70"
-                color: sizeBar.refused ? "#e06a6a" : "#f2f2f2"
+                color: sizeBar.refusal.length > 0 ? "#e06a6a" : "#f2f2f2"
                 validator: IntValidator { bottom: 1; top: 99999 }
                 Keys.onEscapePressed: (event) => {
                     event.accepted = true
                     widthField.text = ""
                     heightField.text = ""
-                    sizeBar.refused = false
+                    sizeBar.refusal = ""
                     surface.forceActiveFocus()
                 }
                 onEditingFinished: sizeBar.commit()
@@ -1036,6 +1177,21 @@ Window {
                     active: win.view.size_unit === index
                     onTapped: win.view.setUnit(index)
                 }
+            }
+
+            // §7.4 第 3 条要的那第三条通道：**把理由说出来**。上面那两格变红只说"这一次没成"，
+            // 而红与不红分不出它的邻居 —— 还没按回车时框也不红。这一句把"是哪一支"说出口。
+            //
+            // 它长在 `Row` 的末尾、跟着 `visible` 走，是量过的最省的一处：`Row` 排布与
+            // `implicitWidth` 都不数看不见的孩子，而面板的宽写的就是 `sizeLine.implicitWidth + 12`
+            // 且 `anchors.horizontalCenter` —— 于是这一格出现时面板自己长宽、消失时缩回去，
+            // 一枚几何也不用改。
+            Text {
+                visible: sizeBar.refusal.length > 0
+                text: sizeBar.refusal
+                font.pixelSize: 12
+                color: "#e06a6a"
+                anchors.verticalCenter: parent.verticalCenter
             }
         }
     }
