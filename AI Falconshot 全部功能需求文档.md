@@ -931,7 +931,7 @@
 >
 > **规则三「文本框应支持换行」的四件里，量到的是尺子那一半**：`crates/core/src/annotation/raster.rs:106 text_extent` 取的是**最宽那一段**、并把各行的高度相加（`raster.rs:1148 layout` 也是按段落分开的同一句话），`crates/qt_bridge/src/annotate.rs:2242 box_at` 的无字体兜底同样按换行符分行 —— 于是「一段一行、往下长」在文档、在框、在落笔三处是同一枚读数。证人叫 `a_newline_grows_the_box_downward_and_draws_the_second_line`（`annotate.rs` 的文本那一档），它用**同一枚开着的框**测三趟，那两个数都不是新造的：两行的宽 == 最长那单独一行量出来的宽、高 == 两行各按一行量出来的高之和、两行的先后倒过来写读数全等、锚点不动；再证提交之后文档里那枚串的换行符还在，以及**一行的下沿以下真数得出这一笔的绿**（measure 与 paint 两路各占一趟；没有字体那一档什么都不画，所以整条 gate 在 windows 上）。  
 >
-> **写字进去的那一只手没有**：`qml/CaptureMask.qml:629` 的 `field` 是 `TextInput`，`:654` 明写 `wrapMode: TextInput.NoWrap`（它上面那三行注释讲的是同一件事：会折行的字段比落进文档的那一枚多几行），而 `:681` 的 `Keys.onReturnPressed` 与 `:686` 的 `onEnterPressed` 两路都直接 `win.view.finishInk()`。`annotate.rs:2268 type_text` 是整串照收、不挑字符，缺的是把换行递进来的那个人。要成这一条得把那一格换成 `TextEdit`（可编辑的多行字段；`selectByMouse`、`clip`、`font.pixelSize`、`onTextChanged` 都还在，也没有任何 Rust 测试钉住 `TextInput` 这个类型），让 Shift+回车写下换行、单回车仍收笔 —— 框的高本来就是 Rust 递过去的 `text_h`，所以字段自己会跟着长，不需要第二把尺。这一条记在待办里，不算这一句过关。  
+> **写字进去的那一只手有了（2026-11-10 订正上一句）**：上一句说的缺口在 §5.7.11 的多行那几轮里已经补掉——`qml/CaptureMask.qml` 的 `field` 已是 `TextEdit`，`wrapMode: TextEdit.NoWrap`（"会折行的字段比落进文档的那一枚多几行"这句注释还在，折行至今没有回来），Shift+回车在串里写下换行、单回车仍直接收笔；这一整只形状由量具 `shift_enter_writes_the_newline_and_plain_enter_still_finishes_the_text` 钉住（含 `NoWrap` 的出现次数，`win.view.finishInk()` 的收笔行数都在闸内）。2026-11-10 再钉两枚把这一条锁住：桥上 `the_f2_field_reopens_a_multiline_object_and_one_undo_takes_string_and_box_back`——多行对象按裸 `F2` 复进换字框时 seed 逐字保真、一次撤销把串与框齐喝回上一态，五道拒门对串无知（抽检叠框与锁定两臂，各有一句话照旧）；核心 `a_multiline_retype_round_trips_the_newlines_and_the_redraw_covers_every_row`——改前/改后两串的换行符逐字节往返，合并矩形盖住每一行。这一句自此过关。  
 >
 > **这一句是四件一起写的**（「换行、缩放、移动和旋转」），所以它不因这一档结案；另外三件在别处各有口径，此处不重判：旋转见 §5.7.15，移动与改尺寸见 §5.7.16 那一串。
 

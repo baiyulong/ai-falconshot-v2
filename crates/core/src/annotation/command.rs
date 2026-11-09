@@ -1253,4 +1253,75 @@ mod tests {
         let b = wide.bounds(&doc).expect("复合命令报不出可重绘的区域");
         assert!(b.w >= 90 && b.h >= 12, "两半的区域没合到一次刷里：{b:?}");
     }
+
+    /// §5.7.11 规则三「文本框应支持换行」的多行那一读，落在改字那条命令上：换行串的存储
+    /// 形状就是字符串本身 —— `Command::Text` 的两串里 `\n` 直接驻留，没有转义也没有第二份
+    /// 持久态（改前改后各一串，一次 invert 字节退回）。重绘的两半闭在**同一枚盒子**里：
+    /// 新串多出来的那几行靠的是只长不缩的那只框（`resize_to_rect`，与桥上改字收尾把
+    /// `text_command` 与它拼成一条 `Compound` 的那一手同一口径），退回去的旧行也靠同一枚
+    /// 盒子重新铺出基底 —— 所以量宽在这里用测试自己的尺再量一次：一枚字符一方块字号，
+    /// 与 `raster` 测试里的 `Blocks` 同形（本模块没有字体，也不去向别的模块借测试的工厂）。
+    #[test]
+    fn a_multiline_retype_round_trips_the_newlines_and_the_redraw_covers_every_row() {
+        use crate::annotation::raster::{self, Ink, text_extent};
+
+        struct Rows;
+        impl raster::Glyphs for Rows {
+            fn ink(&self, line: &str, style: &Style) -> Option<Ink> {
+                Some(Ink::solid(
+                    (line.chars().count().max(1) as u32) * style.font_size,
+                    style.font_size,
+                ))
+            }
+        }
+
+        let style = Style::default();
+        let (old_w, old_h) =
+            text_extent("第一行\n第二行", &style, &Rows).expect("没把旧串量出来");
+        let (new_w, new_h) =
+            text_extent("第一行\n第二行\n第三行", &style, &Rows).expect("没把新串量出来");
+        let old = "第一行\n第二行";
+        let new = "第一行\n第二行\n第三行";
+
+
+        let mut doc = Document::new(300, 300);
+        let a = doc.add(
+            Kind::Text,
+            Geom::Rect(PhysRect::new(10, 10, old_w, old_h)),
+            style.clone(),
+        );
+        doc.get_mut(a.id).unwrap().text = old.to_string();
+        let before = doc.clone();
+
+        // 改成三行的那一次提交，桥上交回的就是这两半拼的一条（[`Command::Compound`]）：
+        // 字一条、框只长不缩。
+        let cmd = Command::Compound(vec![
+            text_command(&doc, a.id, new).unwrap(),
+            resize_to_rect(
+                &doc,
+                a.id,
+                PhysRect::new(10, 10, new_w.max(old_w), new_h.max(old_h)),
+            )
+            .unwrap(),
+        ]);
+        let dirty = cmd.apply(&mut doc);
+        assert_eq!(doc.get(a.id).unwrap().text, new, "提交把换行丢了");
+        let merged = dirty.merged().expect("多行改字连一格重绘都不给");
+        assert!(
+            merged.w >= new_w && merged.h >= new_h,
+            "这一次重绘盖不住新串的每一行：{merged:?} 对 {new_w}x{new_h}"
+        );
+
+        // 一次撤销：串与盒一起退回，退回去的那份重绘也要把旧串的每一行铺干净。
+        let back = cmd.invert(&mut doc);
+        assert_eq!(doc, before, "一次撤销没有退回两串与盒子的原样");
+        let merged = back.merged().expect("撤销连一格重绘都不给");
+        assert!(
+            merged.w >= old_w && merged.h >= old_h,
+            "退回去的那次重绘盖不住旧串的每一行：{merged:?} 对 {old_w}x{old_h}"
+        );
+
+        // 同一串是一座门：多行也一样，没动字就不多一条栈。
+        assert!(text_command(&doc, a.id, old).is_none());
+    }
 }

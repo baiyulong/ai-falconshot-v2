@@ -6855,6 +6855,91 @@ mod tests {
         assert_eq!(l.doc.get(id).unwrap().text, "hello world");
     }
 
+    /// 同一只 F2 框对**多行**那一读（§5.7.11 规则三「文本框应支持换行」与 §5.7.16 步 3 的
+    /// 交点）：换行符直接驻留在对象自己的那串里，那串现在是字段打开时的 seed —— 页上那枚
+    /// TextEdit 读它的时候一枚换行也不许少（`CaptureMask.qml` 的 `onVisibleChanged` 只读
+    /// 那一次）。框开在对象自己的角上、按对象自己的样式量，所以那格读数就是对象自己那只
+    /// 盒子（提交那一位当年量它和 F2 现在量它走的是同一把尺 [`raster::text_extent`]）。
+    /// 改一行交回的仍是一条撤步（桥 [`Layer::commit_typing`]：字一条、框只长不缩的那一半
+    /// 拼成 `Compound`），一次 Ctrl+Z 同时退回串与框；换行动锚点不动，框只往下长。与单行
+    /// 那一格 `f2_on_a_selected_text_object_reopens_the_field_on_its_own_letters` 同一条梯，
+    /// 串里多不另立口径：一字未改的回车什么也不建、框照关（§5.7.16 实现口径注
+    /// 「只撑不缩」那一段），锁着的与框开着的那两道拒门照旧只认位与锁，不认串里几行。
+    #[test]
+    fn the_f2_field_reopens_a_multiline_object_and_one_undo_takes_string_and_box_back() {
+        let mut l = retype_of("第一行\n第二行");
+        let id = l.sel.ids()[0];
+        // 提交那一位当年写给文档的盒子，退到桌面坐标就是 F2 现在摊开该落下的那格。
+        let old_box = l.doc.get(id).unwrap().geom.bounds();
+        let old_desk = old_box.offset(l.origin.x, l.origin.y);
+
+        assert!(l.edit_selected_text(), "多行那枚选上，F2 没开门");
+        assert_eq!(
+            l.typing_text(),
+            "第一行\n第二行",
+            "框里预放的那一串把换行丢了"
+        );
+        let open = l.typing_rect().expect("开门把框收走了");
+        assert_eq!(
+            (open.x, open.y, open.w, open.h),
+            (old_desk.x, old_desk.y, old_desk.w, old_desk.h),
+            "F2 摊开的框不是对象自己那只：换行在框里与在文档里不是同一枚读数"
+        );
+        // ② 框已经开着：不许叠第二只 —— 这一问对多行那只框照旧在。
+        assert!(!l.edit_selected_text(), "框开着的那一份多行叠出了第二只");
+
+        // 第三行与头两行等宽（三枚全角同样块），所以宽不该动、高该往下长一格。
+        l.type_text("第一行\n第二行\n第三行");
+        let tall = l.typing_rect().expect("第三行把框收走了");
+        assert_eq!(
+            (tall.x, tall.y),
+            (open.x, open.y),
+            "换行动了锚点而不是往下长"
+        );
+        assert!(tall.h > open.h, "第三行没有把框往下撑高");
+        assert_eq!(tall.w, open.w, "等宽的第三行动了宽度，最宽那一段说话不算数");
+
+        let depth = l.undo.depth();
+        assert!(l.finish_typing(), "多行改完回车没交出去");
+        assert_eq!(
+            l.doc.get(id).unwrap().text,
+            "第一行\n第二行\n第三行",
+            "提交把换行丢了"
+        );
+        assert!(l.typing_rect().is_none(), "提交之后那只框还亮着");
+        assert_eq!(l.undo.depth(), depth + 1, "多行那一次改字在栈上不止一条");
+        assert!(
+            l.doc.get(id).unwrap().geom.bounds().h > old_box.h,
+            "提交没有把框往下撑高"
+        );
+
+        // 一次 Ctrl+Z：串与盒两半一起退回。
+        assert!(l.undo_step());
+        assert_eq!(l.doc.get(id).unwrap().text, "第一行\n第二行", "撤销没退回两行");
+        assert_eq!(
+            l.doc.get(id).unwrap().geom.bounds(),
+            old_box,
+            "撤销没把盒退回原样"
+        );
+        assert!(l.redo_step());
+        assert_eq!(l.doc.get(id).unwrap().text, "第一行\n第二行\n第三行");
+
+        // 一字未改：什么也不建，框照关 —— 与空框同一契约（§5.7.16 那半句）。
+        assert!(l.edit_selected_text());
+        assert!(!l.finish_typing(), "一字未改的回车另建了一条");
+        assert_eq!(
+            l.doc.get(id).unwrap().text,
+            "第一行\n第二行\n第三行",
+            "一字未改却动了文档"
+        );
+        assert!(l.typing_rect().is_none(), "一字未改那只框没关上");
+
+        // ⑤ 锁着的：选中不等于许可，多行一样；而且拒的时候不开框。
+        l.doc.get_mut(id).unwrap().locked = true;
+        assert!(!l.edit_selected_text(), "锁着的那一枚多行照样开了门");
+        assert!(l.typing_rect().is_none(), "拒门把框亮给了用户");
+    }
+
     #[test]
     fn the_retype_door_refuses_each_of_the_five_it_cannot_answer() {
         // 五支拒门各有各的拦手，这里一支一支分开数（#453）：合成一句"开不了"就说不出哪一次
