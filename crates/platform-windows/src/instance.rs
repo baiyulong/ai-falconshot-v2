@@ -337,7 +337,7 @@ impl Receiver {
                 //
                 // 这两条不是"我这条腿的坏法"，是「客户端比我快」这一种正常形状 —— 把它们当成错，
                 // 就会把用户拖进来的那一批判成"接收口出错了"，而那一批其实好好地躺在管道里。
-                let err = unsafe { GetLastError() };
+                let err = GetLastError();
                 if err != ERROR_PIPE_CONNECTED && err != ERROR_NO_DATA {
                     return Err(format!("接不上那一头：{:?}", err));
                 }

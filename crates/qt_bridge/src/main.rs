@@ -95,6 +95,7 @@ mod custom;
 mod delay;
 mod drop_check;
 mod drop_in;
+mod drop_live;
 mod feedback_window;
 mod file_pins;
 mod group_window;
@@ -263,14 +264,21 @@ fn cli_capture_to_pin(select: cli::Select) -> Result<String, String> {
 /// 它写的仍是那一枚 `settings_open`，三档点的是同一扇窗 —— 并列时窗那侧说的话没有作者。P184 给同一
 /// 档补上步骤 4 与 5 那两枚钮：骨架一字未动，只是计划长了两段、腿多了三条。
 ///
-/// 最后进来的是 `--live`：§5.2.1 步 2 后半支那一档，`[capture] freeze_frame` **关着**跑一整场
+/// 进来的是 `--live`：§5.2.1 步 2 后半支那一档，`[capture] freeze_frame` **关着**跑一整场
 /// 遮罩，量实时背景那一支自己（两阶段自检 → `falcon_core::capture::live_gate` → 约每 333 ms 回灌
 /// 一帧）。它要数字同 ⑭，而且它要的数字比别的档都长（`mask_check::MIN_LIVE_MS`）：判据是
 /// `revision` 与 `live_frames` 之间的一条算术，两帧以下咬不住。它与 `--hotcorner` 同一族留在
 /// `GAUGE_FLAGS` 之外（`gauge_run` 只闸 `select`，而这一档压根不 select），但它**不进**
 /// [`WINDOW_DOORS`]（它不开一扇正常的窗，它开的还是那几扇遮罩窗）、也**不进** [`HISTORY_DOORS`]
 /// （它不种历史行）—— 它自己的「拒一切并列」那一格写在 `refusals` 里，理由有三条，逐条都在那儿。
-const EXTRA_DOORS: [&str; 10] = [
+///
+/// 最后进来的是 `--drop-live`：§5.8.4 方式二「把一张图拖到已存在的贴图窗上」那一支的**真机一档**
+/// —— `--drop-in` 那一门量的是这一支**调用的那三手**与**交给的两手**，它自己写着「这一档没有跑过
+/// `drop_in::start` 本体」；而本体要的那枚 `Pin<&mut Session>` 只有 QML 线程拿得到，所以这一档得
+/// **开着 QML** 才跑得起来。它**不进** [`WINDOW_DOORS`]：它不开一扇给人看的窗，它开的是那一枚贴图
+/// 窗，而那一格数的是「这一趟被点名了几扇**设置**窗」。它要数字同 ⑭ —— 本体两趟（一张真图换上去、
+/// 一张坏档换不上去）都要当场落地，没有这一格它就退化成一次等真人的会话。
+const EXTRA_DOORS: [&str; 11] = [
     "--reveal",
     "--autosave",
     "--hotcorner",
@@ -281,6 +289,7 @@ const EXTRA_DOORS: [&str; 10] = [
     "--history-window",
     "--group-window",
     "--live",
+    "--drop-live",
 ];
 
 /// `EXTRA_DOORS` 里那**三**档**要一扇真窗**的：`--settings-window` 量页上的一行跟不跟着值走
@@ -809,6 +818,24 @@ fn main() {
             }
         }
         file_pins::Invocation::Door => {}
+    }
+
+    // §5.8.4 方式二那一档（`--drop-live`）：它要的东西必须在 `settings::start()` **之前**备好 ——
+    // 它把自己的 config 指给 `FALCONSHOT_CONFIG`，而那一份档上写着「拖进来的那一张换到这一枚上」，
+    // 于是「换不换」那一格是这一档定下的；而指晚了，读到的就是用户那一份，于是这一档量到的
+    // 成了「用户开着什么」，不是这一档要量的那一支（用户的档一个字也不动，§9.1 第十五条）。
+    let mut drop_live_prepared: Option<drop_live::Prepared> = None;
+    if args.iter().any(|a| a == "--drop-live") {
+        match drop_live::plant_config() {
+            Ok(path) => {
+                std::env::set_var(crate::settings::ENV_OVERRIDE, &path);
+            }
+            Err(e) => eprintln!("[drop live] 本档那一份 config 造不出来：{e}"),
+        }
+        match drop_live::prepare() {
+            Ok(prepared) => drop_live_prepared = Some(prepared),
+            Err(e) => eprintln!("[drop live] 那几张图种不下去：{e}"),
+        }
     }
 
     // Before anything Qt has to say: a QML document that will not compile says so
@@ -1855,6 +1882,12 @@ fn main() {
         );
     }
 
+    // §5.8.4 方式二那一档（`--drop-live`）：本体两趟（一张真图换上去、一张坏档换不上去）都要
+    // 当场落地，而落地是 GUI 线程的事 —— 所以这一档得开着 QML 跑。它与上面那几档同一族：要给
+    // 数字、要在 `engine.load()` 之后才有一扇贴图窗、跑完自己退。
+    let drop_live_want = after("--drop-live");
+    let drop_live_ms = drop_live_want.map(|ms| ms.max(drop_live::MIN_MS));
+
     // Extra rounds of the same freeze-and-open, run once the process is warm. The
     // plan has to be written before the engine loads, because QML reads it in
     // `Component.onCompleted` and only a QML timer can fire afterwards.
@@ -1945,6 +1978,14 @@ fn main() {
     }
     if !drop_batch.is_empty() {
         file_pins::land_when_ready(std::mem::take(&mut drop_batch), "拖到应用图标");
+    }
+
+    // §5.8.4 方式二那一档（`--drop-live`）：在 GUI 线程上真跑一遍 [`crate::drop_in::start`] 本体。
+    // 排在 `engine.load()` **之后**：GUI 线程句柄是 QML 在 `Component.onCompleted` 里递过来的，
+    // 那之前递过去的那一趟只会一直排着。排不进去时那一格发 BLOCKED（没跑就是没跑），不拿一组
+    // 没跑出来的数字冒充跑过（#453）。
+    if let Some(prepared) = drop_live_prepared.as_ref() {
+        drop_live::drive(prepared);
     }
 
     // §5.21.1 那四步**之外**的那一支：`[about] auto_check_updates` 与 `check_every_days` 的读者。
@@ -2150,6 +2191,13 @@ fn main() {
         // 窗，走的是 `count` 那条腿）。缺了这一行就是 ⑭ 挡的那一副样子。
         state::quit_after(ms);
         armed.push("--group-window");
+    }
+    if let Some(ms) = drop_live_ms {
+        // 这一档等的不是窗，是**本体那两趟**：一张真图换上去、一张坏档换不上去。那两趟都要当场
+        // 落地（落地是 GUI 线程的事），所以缺了这一行就是 ⑭ 挡的那一副样子：一次等真人的会话，
+        // 而 stdout 是行缓冲的 ⇒ 零字节日志。
+        state::quit_after(ms);
+        armed.push("--drop-live");
     }
     // 贴图那一族被参数错拒掉、而这趟没有任何闹钟：给它一格，否则规则 2 的那一份帮助打印完之后就
     // 是一次等真人的会话，那个 3 交不回 shell。判据住在 [`cli::snap_refusal_needs_alarm`]，四格由
@@ -2494,6 +2542,27 @@ fn main() {
         );
         code = verdict_code(code, verdict);
     }
+    if let Some(ms) = drop_live_ms {
+        // 这一档读的是**本体那两趟**交回的话（真图那一趟换没换上去、坏档那一趟说的是不是第四句），
+        // 而「OS 那一手拖放」那一格永远是 BLOCKED —— 本档替不了 一次真的鼠标动作。
+        // 那几张图没种下去 ⇒ BLOCKED：这一档没有对面，不拿别处的读数顶上去（#453）。
+        let (verdict, report) = match drop_live_prepared.as_ref() {
+            Some(prepared) => drop_live::measure(prepared),
+            None => (
+                state::Check::Blocked,
+                "drop-live door: 那几张图没种下去，这一档没有对面。".to_string(),
+            ),
+        };
+        println!("{report}");
+        println!(
+            "[drop live after {ms} ms] 要求 {} ms 生效 {ms} ms，qml_loaded={} {} {}",
+            drop_live_want.unwrap_or(ms),
+            state::qml_loaded(),
+            exe_stamp(),
+            state::desktop_summary()
+        );
+        code = verdict_code(code, verdict);
+    }
     if let Some(ms) = custom_ms {
         // 七格里读的全是**窗那一侧**递回来的话，与上面两档同一分工：`custom` 手里那份模型只用
         // 来对，不用来说。窗一行也没递回来 ⇒ BLOCKED —— QML 文档编译不过与页上少一格是两种坏。
@@ -2637,8 +2706,8 @@ mod tests {
         doors.extend(crate::EXTRA_DOORS);
         assert_eq!(
             doors.len(),
-            16,
-            "本轮的门是十六枚（§5.2.1 步 2 后半支那一档 `--live` 进来）：多一枚少一枚都要先改这条再改代码"
+            17,
+            "本轮的门是十七枚（§5.8.4 方式二那一档 `--drop-live` 进来）：多一枚少一枚都要先改这条再改代码"
         );
 
         for name in doors {

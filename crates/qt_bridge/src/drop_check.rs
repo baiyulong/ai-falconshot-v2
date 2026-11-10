@@ -175,7 +175,11 @@ fn serve(mut stream: TcpStream, picture: &[u8]) {
 
 /// 本档自己的目录。`FALCONSHOT_DROP_DOOR_DIR` 是给跑级档用的：同一台机器上两趟并行时各自的图片
 /// fixture 得是各自的文件。没有它时退到固定临时目录，与 `update_check::door_dir` 同一形状。
-fn door_dir() -> PathBuf {
+///
+/// **不是 [`crate::drop_live`] 那一档的目录**：那一档有自己的一份（`FALCONSHOT_DROP_LIVE_DIR`），
+/// 两档并行时各自的图片 fixture 得是各自的文件 —— 共用一份的话，先跑的那一趟会把后跑的那一趟的
+/// 图片盖掉（那一份是**现编**的，名字也一样）。
+pub(crate) fn door_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("FALCONSHOT_DROP_DOOR_DIR") {
         let p = PathBuf::from(&d);
         if !p.as_os_str().is_empty() {
@@ -191,7 +195,16 @@ fn door_dir() -> PathBuf {
 ///
 /// 为什么由 `encode` 现编而不是放一份写死的字节：这一档判的是「盘上那一份/取回那一份**译得出
 /// 多大一张图**」，而写死的字节会在哪天 `encode` 换实现时对不上；现编的这一份永远是自己写的。
-fn plant_picture(dir: &Path, name: &str, w: u32, h: u32, tint: [u8; 4]) -> Option<(PathBuf, Vec<u8>)> {
+///
+/// **也是 [`crate::drop_live`] 那一档的手**：种一张真图片这件事只有一份编法，两处各写一份
+/// 就会在哪天 `encode` 换了实现时对不上（#281）。
+pub(crate) fn plant_picture(
+    dir: &Path,
+    name: &str,
+    w: u32,
+    h: u32,
+    tint: [u8; 4],
+) -> Option<(PathBuf, Vec<u8>)> {
     let frame = Frame::filled(w, h, tint).ok()?;
     let bytes = encode::encode(
         &frame,
@@ -213,24 +226,34 @@ fn plant_picture(dir: &Path, name: &str, w: u32, h: u32, tint: [u8; 4]) -> Optio
 /// 为什么不走用户那一份：那一枚开关的默认值与「档上写着 true 就读成 true」两件事，必须在门能
 /// 说清自己写了什么的那份档上问（§9.1 第十五条），而进程手里那一份 `SETTINGS` 是 `OnceLock` ——
 /// 它**换不掉**，所以「现读」那一半由 ⑮ 那格的源码形状与读数一起证，不是由这里改档再重启。
-fn store_switch(dir: &Path, name: &str, value: &str) -> Option<Config> {
+///
+/// 交回 `(路径, 读出来的那一份)`：路径是 [`crate::drop_live`] 那一档要的（它要把
+/// `FALCONSHOT_CONFIG` 指到这份档上，于是那一趟的读与写都落在临时档上，用户的档一个字也不动），
+/// 而**档的名字只写在这里一次** —— 两处各拼一次文件名，总有一天一处改了另一处没改（#281）。
+pub(crate) fn store_switch(dir: &Path, name: &str, value: &str) -> Option<(PathBuf, Config)> {
     let path = dir.join(name);
     std::fs::write(&path, format!("[pin]\ndrop_replaces_current = {value}\n")).ok()?;
-    Some(Settings::open(&path, Some(&path)).config)
+    Some((path.clone(), Settings::open(&path, Some(&path)).config))
 }
 
 /// `--drop-in` 报告里那一句「这一档不量过的事」。单独一只手写，是因为它同时是 ⑲ 那一格的正文与
 /// 这份欠账的落笔处（#281：同一句欠账在两处各写一遍，总有一天一处新过一处）。
+///
+/// **本体那一半已经收掉了**（`--drop-live` 那一档在真 Session 上真跑过一遍本体），所以这一格现在
+/// 只欠 **OS 那一手拖放**那半笔 —— 那一句由 [`crate::drop_live::remaining_leg`] 说，本档不重述
+/// （#281）。留着一句「本体没跑过」就是一句已经过期的话，而过期的话比没有话更坏（#453）。
 fn the_unmeasured_leg() -> String {
-    "这一档没有跑过 [`crate::drop_in::start`] 本体，也没有真把一张图片拖到过一扇贴图窗上：前者要的 \
-     `Pin<&mut Session>` 只有 QML 线程拿得到（`session.status` 那一格），后者要的是一次真的 OS 拖放 \
-     —— 按住浏览器里的一张图挪到窗上再松手。这一档跑在 `engine.load()` 之前，两样都拿不到。所以 \
-     ①–⑰ 量的是它**调用的那三手**（`pieces`／`one`／`running_line`）与它**交给的那两手** \
-     （`falcon_core::drop::sort`、`state::land_drop`），`drop_in.rs` 的接线位置由 ④⑩⑮⑰ 那四格的 \
-     源码形状读；「屏幕上真出现那一行、窗真换了一张」至今没有真机读数。穿透模式（§5.9.12 那枚 \
-     `Qt.WindowTransparentForInput`）那一支也没有真机读数：整扇窗对输入透明时这一格收不到落下， \
-     PRD 给的出口是 §5.9.13 那一枚「关掉穿透」。"
-        .to_string()
+    format!(
+        "这一档（`--drop-in`）跑在 `engine.load()` 之前，所以它**跑不了** [`crate::drop_in::start`] \
+         本体 —— 本体要的那枚 `Pin<&mut Session>` 只有 QML 线程拿得到（`session.status` 那一格）。\
+         那一半已经由 `--drop-live` 那一档在**真 Session** 上真跑过一遍（真图片、真落点、真换图、\
+         真那一行字都记在那一档的报告里）。**这一档剩下的欠账**：{} 而这一档量的 \
+         ①–⑰ 是本体**调用的那三手**（`pieces`／`one`／`running_line`）与它**交给的那两手** \
+         （`falcon_core::drop::sort`、`state::land_drop`），`drop_in.rs` 的接线位置由 ④⑩⑮⑰ 那四格的 \
+         源码形状读。穿透模式（§5.9.12 那枚 `Qt.WindowTransparentForInput`）那一支也没有真机读数：\
+         整扇窗对输入透明时这一格收不到落下，PRD 给的出口是 §5.9.13 那一枚「关掉穿透」。",
+        crate::drop_live::remaining_leg()
+    )
 }
 
 pub fn measure() -> (Check, String) {
@@ -832,8 +855,8 @@ pub fn measure() -> (Check, String) {
     // 以及一份本档写的档读回来是什么。
     let pin_page = settings_view_index_of("pin");
     let off_cfg = Config::default();
-    let on = store_switch(&dir, "switch-on.toml", "true");
-    let off = store_switch(&dir, "switch-off.toml", "false");
+    let on = store_switch(&dir, "switch-on.toml", "true").map(|(_, cfg)| cfg);
+    let off = store_switch(&dir, "switch-off.toml", "false").map(|(_, cfg)| cfg);
     let rows = settings_view_rows(pin_page, &off_cfg);
     let row = rows.iter().find(|(k, _, _)| k == "pin.drop_replaces_current");
     let line_shape = row.as_ref().map(|(_, v, k)| (v.clone(), k.clone()));

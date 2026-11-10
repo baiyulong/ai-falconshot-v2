@@ -2468,6 +2468,20 @@ fn read_refusal(path: &str, e: &encode::EncodeError) -> String {
     }
 }
 
+/// §8.2 那四句里的**第四句**（后缀认得、却解不出来）：门要问「坏档说的是不是这一句」时读它。
+///
+/// 为什么开这一手：那句话的作者是 [`read_refusal`]，而门里若把那一句中文抄一遍，两处就会各自
+/// 新过一遍（#281）—— 改了 `read_refusal` 忘了改门，门就会拿旧句子当新读数。
+///
+/// 只给**坏档**用：那一句的前提是「后缀在那七种里」（[`encode::Format::from_ext`] 认得它），
+/// 而这一枚 `Codec` 正是「后缀认得却解不出来」那一支的形状。
+pub(crate) fn corrupt_refusal(path: &str) -> String {
+    read_refusal(
+        path,
+        &encode::EncodeError::Codec("这一枚问的是第四句".to_string()),
+    )
+}
+
 /// What both output doors say about a pin that has no picture yet.
 ///
 /// One sentence rather than two copies because it is a promise to the user, not a
