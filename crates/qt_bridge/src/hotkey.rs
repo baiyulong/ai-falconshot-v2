@@ -1853,28 +1853,10 @@ fn open_picture_pins(tag: &str, mut session: Pin<&mut session::qobject::Session>
         }
     };
 
-    let batch = state::pin_pictures(&paths);
-    // 每一枚没成的都要单独落一行，而这一行说的话**全部来自那一批自己**：`why` 是
-    // [`crate::state::read_refusal`]（读坏的）或 [`falcon_core::pin::read_picture_batch`]
-    // （超上界的）写好的那一句，两处的句子里都已经带上路径，所以这里递 `why` 而不是再拼一遍
-    // 「{path}：{why}」—— 同一句话说两遍就是 #281。
-    for miss in batch.failed.iter().chain(batch.declined.iter()) {
-        note(format!("GUI 线程 {tag}：没有贴出来 {}", miss.why));
-    }
-    let said = batch.said();
-    session.as_mut().set_status(QString::from(&*said));
-    if batch.windows() > 0 {
-        // 与 `pin_clipboard` 同一条腿：Rust 改完名册要把读数搬过桥，窗才会长出来。一枚也没有
-        // 时不叫它 —— `refresh` 会让每一扇已有的窗把自己的那一份重求值一遍，而这一趟什么也没改。
-        session.as_mut().refresh();
-    }
-    note(format!(
-        "GUI 线程 {tag}：挑了 {} 枚，贴出 {} 扇，读坏 {} 枚，超上界 {} 枚 → {said}",
-        paths.len(),
-        batch.windows(),
-        batch.failed.len(),
-        batch.declined.len()
-    ));
+    // §5.8.3 第 3 步「读取图片并创建贴图」那**唯一**的一只手：托盘菜单这一支（这一段）与
+    // 「拖到应用图标」那一支（[`crate::file_pins`]）都走它 —— 两处各写一份读盘与落窗的规矩，
+    // 那两份就会各自漂移（#281）。
+    crate::file_pins::land(&paths, session.as_mut(), tag);
 }
 
 /// §5.12.4 操作步骤 步骤 1 那三个入口里的第三枚，在拥有 Qt 的这一条线程上的那一趟：现读那一份分组

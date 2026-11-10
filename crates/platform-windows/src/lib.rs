@@ -18,6 +18,11 @@ pub mod affinity;
 
 pub mod cursor;
 
+/// §5.8.3 第 1 步后半「或将文件拖到应用图标」的那两段路：谁在跑（那把锁）与那一批路径怎么
+/// 递过去（一根管道）。像 [`uia`] 一样无条件声明 —— 「这一台没有这一格」也是一个答，而不是一句
+/// 没有声明；判「路径是不是图片」始终在 `falcon_core::pin`。
+pub mod instance;
+
 #[cfg(windows)]
 pub mod glyphs;
 

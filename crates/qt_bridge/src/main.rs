@@ -96,6 +96,7 @@ mod delay;
 mod drop_check;
 mod drop_in;
 mod feedback_window;
+mod file_pins;
 mod group_window;
 mod guide;
 mod help;
@@ -757,6 +758,59 @@ fn main() {
     // The clock the cold-path split is measured from, stamped before Qt says
     // anything at all. See `state::stamp`.
     state::stamp("main");
+
+    // §5.8.3 第 1 步后半「或将文件拖到应用图标」：Explorer 把文件拖到 falconshot.exe（或它的
+    // 快捷方式）上时，Windows 起的是**新的一趟进程**，把被拖的那几枚路径当 argv 递进来 ——
+    // 托盘图标那一枚收不到拖放（`Shell_NotifyIcon` 没有放文件的目标接口），所以这一档认的是
+    // argv，不是拖放事件。
+    //
+    // 抢那把「接收口」的锁决定这一枚归谁：**抢得到 ⇒ 没人跑**，这一枚自己变成那一个（托盘照旧
+    // 挂上）并把这一批贴出来；**抢不到 ⇒ 已经有一个在跑**，这一批递给他，然后这一趟交完就退
+    // （屏幕上不多一枚托盘图标，也不多一扇贴图窗）。
+    //
+    // 这一段排在 Qt 与设置档之前：递过去那一趟不该开一扇窗、不该读用户的档、更不该在屏幕上闪一下。
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut drop_batch: Vec<std::path::PathBuf> = Vec::new();
+    let mut drop_receiver: Option<platform_windows::instance::Receiver> = None;
+    // 这一枚是不是**产品本体**（托盘常驻、热键装上、恢复门照走）。它与「这一枚抢没抢到那把
+    // 接收口的锁」是**两件事**：第二个常驻实例抢不到锁（有人在跑），但它**照样是产品本体** ——
+    // 托盘照旧挂上、热键照旧装上，它只是不接活（被拖到图标上的那一批交给在跑的那一个）。
+    // 把这两件事并成一件，第二个实例就会退化成一次什么都不干的空会话。
+    let mut resident = false;
+    match file_pins::classify(&args) {
+        file_pins::Invocation::Resident => {
+            resident = true;
+            // 产品本体那一趟：抢到锁的那一个就是接活的（后来被拖到图标上的那一批由它接）。
+            if platform_windows::instance::claim() {
+                drop_receiver = platform_windows::instance::Receiver::bind().ok();
+            }
+        }
+        file_pins::Invocation::Dropped(paths) => {
+            if platform_windows::instance::claim() {
+                // 没人跑 ⇒ 这一枚自己变成那一个，并且把这一批就地贴出来。
+                resident = true;
+                drop_batch = paths;
+                drop_receiver = platform_windows::instance::Receiver::bind().ok();
+            } else {
+                // 已经有一个在跑：这一批递给他，然后这一趟交完就退。
+                match file_pins::hand_over(&paths) {
+                    file_pins::Delivery::Handed => {
+                        println!(
+                            "[drop icon] 这一批已经交给在跑的那一个了：{} 枚",
+                            paths.len()
+                        );
+                        std::process::exit(0);
+                    }
+                    file_pins::Delivery::Refused(why) => {
+                        eprintln!("[drop icon] 这一批没能递过去：{why}");
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+        file_pins::Invocation::Door => {}
+    }
+
     // Before anything Qt has to say: a QML document that will not compile says so
     // only through the message handler, and a headless run would otherwise see a
     // silent zero.
@@ -992,7 +1046,6 @@ fn main() {
         std::process::exit(2);
     }
 
-    let args: Vec<String> = std::env::args().skip(1).collect();
     let flag = |name: &str| args.iter().any(|a| a == name);
     let after = |name: &str| -> Option<i32> {
         args.iter()
@@ -1821,7 +1874,11 @@ fn main() {
     // registers its keys, puts the icon in the notification area and stays up.
     let hot_want = after("--hotkeys");
     let hotkeys_ms = hot_want.map(|ms| ms.max(hotkey::MIN_MS));
-    let plain = args.is_empty();
+    // 「产品本体那一趟」的判据是**这一枚是不是那个接活的**（`resident`），不是「argv 空不空」：
+    // 没人跑而被拖到应用图标上的那一枚 argv 里带着那几枚路径，但它自己变成了产品本体 ——
+    // 托盘照旧挂上、热键照旧装上，同时把被拖的那一批贴出来。判成「不是产品本体」会让那一枚
+    // 不装热键、不挂托盘 —— 那不是「拖进来一张图」，那是「拖进来一张图，程序没起来」。
+    let plain = resident;
     // 浮窗只在两种运行里存在：产品本身，和点名要量它的那一档。别的量具档也写
     // `session.status`（`--pin` 的另存为就写），而它们读的是自己那扇窗——一句写给全进程的
     // 话要是每次都开一扇顶层窗，`pin window` 挑到的就可能不是它想的那一块。这不是"浮窗礼貌
@@ -1873,6 +1930,21 @@ fn main() {
                 println!("[hotkey] {}", row.said);
             }
         }
+    }
+
+    // §5.8.3 第 1 步后半支「或将文件拖到应用图标」的那两头接在这里：
+    // - **接收口**：这一枚抢到锁时那根管道开着，等着后来被拖到图标上的那一批（`file_pins::serve`）；
+    // - **这一枚自己带的那一批**：没人跑时这一枚自己就是那一个，把这一批就地贴出来
+    //   （`file_pins::land_when_ready`）。
+    //
+    // 两头都排在 `engine.load()` **之后**：贴图是 GUI 线程的事，而 GUI 线程句柄是 QML 在
+    // `Component.onCompleted` 里递过来的 —— `engine.load` 那一刻才可能到手。在那之前排队进去的
+    // 那一手会一直排着（`land_when_ready` 等它），但排在它后面才不多等那几拍。
+    if let Some(receiver) = drop_receiver.take() {
+        file_pins::serve(receiver);
+    }
+    if !drop_batch.is_empty() {
+        file_pins::land_when_ready(std::mem::take(&mut drop_batch), "拖到应用图标");
     }
 
     // §5.21.1 那四步**之外**的那一支：`[about] auto_check_updates` 与 `check_every_days` 的读者。

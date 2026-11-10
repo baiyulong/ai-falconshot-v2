@@ -37,6 +37,13 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
+    # §5.8.3 第 1 步后半「或将文件拖到应用图标」的那一根管道（`src/instance.rs`）：
+    # `CreateNamedPipeW` / `ConnectNamedPipe` / `DisconnectNamedPipe` / `WaitNamedPipeW`
+    # 都在 `Win32::System::Pipes` 这一族里，它自己只依赖 `Win32::System`（不引新的链接库）。
+    "Win32_System_Pipes",
+    # 同一族里那几扇门的 `OVERLAPPED` 指针住在 `Win32::System::IO`：`ConnectNamedPipe` /
+    # `ReadFile` / `WriteFile` 的签名里都带着它，所以这一族随它一起来（同样不引新的链接库）。
+    "Win32_System_IO",
     "Win32_System_Time",
     "Win32_System_Com",
     "Win32_System_DataExchange",
