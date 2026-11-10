@@ -2311,6 +2311,20 @@ fn run(work: Work, mut session: Pin<&mut session::qobject::Session>) {
             // its way out leaks nothing, but they would be the last thing the user
             // saw of a quit that was meant to be quiet.
             session.as_mut().end_mask();
+            // §6.2 第 4 条「临时文件应按策略自动清理」在**退出**这一趟也扫一次。
+            //
+            // 此前这一族只有「下一趟复制进梯子时扫一次」那一只手，于是**最后一次**复制承诺的那
+            // 一枚，要么被剪贴板一直点名而**不该**删（正是本条第一条规则），要么得等下一趟复制
+            // 才扫得掉 —— 退出这一趟不算「下一趟」。
+            //
+            // 这里用的是**同一只**扫盘的手（[`state::PinState::sweep_clip_files`]），所以「剪贴板
+            // 还点着名的那一枚不许删」那条规矩自动跟着走：退出这一趟也不例外，用户刚复制的那张
+            // 不会被自己退出时删掉。
+            let (deleted, kept) = state::with(|s| s.sweep_clip_files());
+            note(format!(
+                "GUI 线程 {tag}：退出前扫临时文件 —— 删了 {deleted} 枚、留着 {} 枚（留着的那些是剪贴板还点着名的）",
+                kept.len()
+            ));
             note(format!("GUI 线程 {tag}：退出请求已递交"));
             state::quit_after(0);
         }
@@ -4657,5 +4671,40 @@ mod tests {
         );
         assert_ne!(none, on, "场上没分组 ≠ 已经在这一组上");
         assert_ne!(on, done, "什么也没改 ≠ 切成了");
+    }
+
+    /// §6.2 第 4 条「临时文件应按策略自动清理」在**退出**这一趟也扫一次。
+    ///
+    /// 这一格扫源码（与上面那一枚同一条理由）：退出那一格要一枚 `Pin<&mut Session>`，headless 里
+    /// 拿不到；而「退出前扫一次」这件事本身是**接线**，钉住它钉的是「那一臂里有这一扫」。
+    ///
+    /// 扫的是**同一只**手（`state::PinState::sweep_clip_files`）—— 「剪贴板还点着名的那一枚不许删」
+    /// 这条规矩就自动跟着走；换成另一把扫帚，就成了两套清理规矩（#281）。
+    ///
+    /// 而扫盘必须**在退出请求递交之前**：递出去之后这一格就回不来了，扫盘那一趟根本来不及跑。
+    #[test]
+    fn the_quit_arm_sweeps_the_temporary_files_with_the_one_sweep_hand() {
+        let src = include_str!("hotkey.rs")
+            .split("mod tests")
+            .next()
+            .expect("装配代码里没有 mod tests 这一行");
+        let arm = src
+            .split("Work::Quit => {")
+            .nth(1)
+            .expect("装配代码里没有 Work::Quit 那一臂")
+            .split("\n        }")
+            .next()
+            .expect("那一臂没有尾巴");
+        assert!(
+            arm.contains("sweep_clip_files"),
+            "退出那一臂没有扫临时文件：{arm}"
+        );
+        assert!(
+            arm.contains("state::with(|s| s.sweep_clip_files())"),
+            "退出那一臂用的不是那只扫盘的手：{arm}"
+        );
+        let sweep_at = arm.find("sweep_clip_files").expect("扫盘那一手");
+        let quit_at = arm.find("quit_after").expect("退出请求那一手");
+        assert!(sweep_at < quit_at, "扫盘在退出请求之后 ⇒ 那一趟根本来不及跑");
     }
 }

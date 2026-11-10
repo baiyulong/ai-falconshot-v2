@@ -1699,8 +1699,14 @@ impl PinState {
     ) -> Result<(usize, std::path::PathBuf), String> {
         // Whatever a previous run (or a previous copy whose file the clipboard has since
         // dropped) left in our corner goes first: it is by definition no longer a live
-        // reference, and §6.2's 「按策略自动清理」 is this gesture's turn rather than a
-        // shutdown hook we do not have yet.
+        // reference, and §6.2's 「按策略自动清理」 is this gesture's turn.
+        //
+        // The **shutdown** turn exists too (2026-11-10): the 退出 arm of the tray menu
+        // sweeps this same directory before it hands the quit request over
+        // (`hotkey.rs`, `Work::Quit`). So the last file a copy promised is not left
+        // behind until the next copy happens - and, because it is the *same* hand, the
+        // rule 「a file the clipboard still names must not be deleted」 holds on that
+        // turn as well.
         self.sweep_clip_files();
         let dir = Self::clip_dir();
         let (width, height) = (frame.width, frame.height);
