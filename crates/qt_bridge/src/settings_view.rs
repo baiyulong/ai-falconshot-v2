@@ -588,6 +588,19 @@ fn machine_leg(key: &str, stored: &Option<String>) -> Machine {
 pub fn pin() -> PathBuf {
     let dir = door_dir();
     let _ = std::fs::create_dir_all(&dir);
+    // **引导状态也钉走**（[`crate::guide::ENV_DIR`]）：那一扇窗会**真按一次「知道了」**，而按一下
+    // 就写盘 —— 不钉走的话这一档写的是用户 `%APPDATA%` 里那份 `guide_seen.txt`（§9.1 第十五条：
+    // 门不写用户的档），而且「这一页欠不欠引导」那一格会读成**用户的历史**：这台机器早就收过
+    // 热区那一页，于是 `want_before` 恒为 0，那一格永远判红 —— 红的不是代码，是这台机器的历史。
+    // 钉到本档目录之后，开工那一刻的状态是**全新的**（没收过），那一格量的是它自己的题目。
+    let guide_dir = dir.join("guide");
+    let _ = std::fs::create_dir_all(&guide_dir);
+    std::env::set_var(crate::guide::ENV_DIR, &guide_dir);
+    // 每趟**清掉自己那份**：这一档的窗会真按一次「知道了」，那一下写的就是这份文件；而「收过」
+    // 的记录留在那里的话，下一趟开工时那一页就「不欠引导」了 —— 那一格量到的会是上一趟的余温，
+    // 不是这一趟的题目（那一格因此在本机上永远判红）。它是本档自己的草稿纸，不是用户的档，
+    // 所以清它是安全的（用户那份在 `%APPDATA%`，本档压根不碰它了）。
+    let _ = std::fs::remove_file(guide_dir.join(crate::guide::SEEN_FILE));
     let mut path = dir;
     path.push("pinned-config.toml");
     crate::settings::pin_writes(&path)
@@ -1158,7 +1171,14 @@ pub const LEG_MS: i32 = 400;
 /// 1,600 → 2,400：P160 把逐页那一趟从「每页一次桥」改成「每页两次桥」（引导那一句也要过一次），
 /// 又在中间加了一条真会落盘的腿（「知道了」写那份 `guide_seen.txt`）。这条地板是闹钟的下限，
 /// 不是某一格的读数 —— 加它的原因是「腿多了而闹钟没多」这一种坏会红的不是判据、是整趟没跑完。
-pub const MIN_WINDOW_MS: i32 = 2_400;
+///
+/// 2,400 → 6,000（2026-11-10）：**这一台机器上 2,400 那条地板压根不够** —— 那扇设置窗（12 页
+/// 126 行）在 4,000 ms 那一趟里压根没起来（窗递回 0 段、`settings_open` 读回「(没递)」），
+/// 6,000 ms 那一趟才整门绿。而 2,400 是这一族里**最矮**的一条地板：`custom` 12,000、
+/// `history_window` 6,000、`group_window` 6,000 —— 同一族的另外三扇都比它高 2.5–5 倍，而这一扇
+/// 跑的腿只多不少（逐页 12 页 × 2 次过桥 + 5 条腿）。抬到 6,000 与同族同量级，也与量出来的那一格
+/// 对得上：闹钟晚响的代价是多等几秒，红的代价是「腿没跑完」这一种坏（#453：宁可慢，不可假绿）。
+pub const MIN_WINDOW_MS: i32 = 6_000;
 
 /// `--settings-window` 那一档在自己这一趟里看见过的东西。
 ///
