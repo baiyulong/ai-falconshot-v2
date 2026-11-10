@@ -2729,6 +2729,60 @@ fn save_rows(rep: &mut Report, shipped: Option<&Frame>) {
         ),
     );
 
+    // ---- §8.3「保存失败时应提示原因」：**磁盘回退**那一支的真机读数。
+    //
+    // 这一支是 `Refusal::Write`（真写被 OS 回绝），与「路径无效」那一支（`Refusal::BadName`，
+    // 上面那几格量的就是它）**不是一件事**（#453）：前者说的是「盘上不让你放文件」，后者说的是
+    // 「那个路径压根不是一条能写的路径」。
+    //
+    // 触发它用的是**目录存在、而文件写不进去**的那一种：`C:\Windows\System32` 在一个未提权的进程
+    // 里读得到、进得去、写不进去（ACL 挡着）。于是 `create_dir_all` 成功而真写被回绝 ⇒ 正是磁盘
+    // 那一支（`Program Files` 与 `System32\config` 同一形状；本机实测三处都是 Access denied）。
+    //
+    // **这一台机器上那一支若压根没被触发**（提权的进程写得进去）⇒ 那一格发 BLOCKED 并写明
+    // 「这一台答得出与否」，不拿「路径无效」那一支的读数冒充它（#453）。
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_string());
+    let refused_path = std::path::PathBuf::from(&windir)
+        .join("System32")
+        .join("falconshot-save-probe.png");
+    let refused_text = refused_path.to_string_lossy().to_string();
+    let (refused_ok, refused_said) = mask::with(|m| {
+        let ok = m.save_out(&refused_text, "");
+        (ok, m.message.clone())
+    });
+    // 提权的机器上它真写下去了 ⇒ 那一枚是本档自己造的垃圾，当场收走（用户的系统目录不留东西）。
+    let left_behind = refused_path.exists();
+    if left_behind {
+        let _ = std::fs::remove_file(&refused_path);
+    }
+    let disk_branch = refused_said.contains("权限不足") || refused_said.contains("磁盘空间不足");
+    let invalid_branch = refused_said.contains("路径无效");
+    rep.row(
+        "disk refuses the write",
+        if refused_ok {
+            Check::Blocked
+        } else if disk_branch && !invalid_branch {
+            Check::Pass
+        } else {
+            Check::Fail
+        },
+        format!(
+            "往 {p} 真写一次（那一档的文件名在 {dir} 里，那一处读得到、进得去、写不进去）：\
+             产品答 {said:?}；写成了={ok}；留在盘上={left}（那一枚是本档自己造的，提权的机器上才有，\
+             当场收走）；磁盘那一支={disk}、「路径无效」那一支={invalid}",
+            p = refused_path.display(),
+            dir = refused_path
+                .parent()
+                .map(|d| d.display().to_string())
+                .unwrap_or_else(|| "(没父目录)".to_string()),
+            said = refused_said,
+            ok = refused_ok,
+            left = left_behind,
+            disk = disk_branch,
+            invalid = invalid_branch,
+        ),
+    );
+
     // ---- 写之前那一档提醒（§10 第 46 项 ①，§5.4.5 透明白板模式 规则 第 2 条的
     // "应提醒用户背景将被填充"、§5.5.5 另存为 支持格式要求 第 2 条的
     // "包含透明背景时，应推荐 PNG"）。这一格问的是**顺序**而不是文字：提醒要在文件还不存在的
