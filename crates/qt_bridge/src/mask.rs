@@ -1238,6 +1238,18 @@ pub struct MaskState {
     /// 且在**我们自己那一枚**目录下"；而下一次派发要先把上一枚收回（§6.2 存储规则第 4 条
     /// 「临时文件应按策略自动清理」在派发这一路上的那一次轮次）。
     pub send_to_landed: Option<std::path::PathBuf>,
+    /// §5.5.9「按具体目标派发」那三枚：按了几次、真递出去几次、最近那一句。
+    ///
+    /// 三枚与 [`Self::send_to_clicks`] / [`Self::send_to_acted`] / [`Self::send_to_last`] 同形：
+    /// 「按了」与「真交出去了」不是一件事（scheme 那一族的对面接不接得住是 shell 关联表的事），
+    /// 而**话**要单独占一格 —— 与 [`Self::send_to_last`] 同一个理由：通知那一行整块被「点击打开
+    /// 所在目录」那一枚 MouseArea 盖着，把派发那句放进去，用户按一次分享却揭示一张别的文件。
+    pub share_clicks: u32,
+    /// shell **收下**了几次「递给某一枚目标」的请求：`0` 不等于没按过，它是「这一程真往别人家
+    /// 的进程里交过一次东西」的唯一证据（与 [`Self::send_to_acted`] 同一条口径）。
+    pub share_acted: u32,
+    /// 最近一次「按某一枚目标分享」的话，成功失败都写这里而**不**写 [`Self::message`]。
+    pub share_last: String,
     /// §5.7.21 第二步（把工具栏那一排色块拖着换顺序）的那一句话，改成了与被拒绝都写这里而**不**写
     /// [`Self::message`]：「排头那一枚没有上一格」与「已保存到某个路径」要在屏幕上同时在场，而
     /// [`Self::reveal_last`] / [`Self::send_to_last`] 为同一条理由各占过一格。被拒绝那一句尤其要
@@ -1656,6 +1668,10 @@ impl MaskState {
         self.send_to_writes = 0;
         self.send_to_last.clear();
         self.send_to_landed = None;
+        // 分享那一族的三枚同样只说**这一次**：留着上一句，下一次按就会把上一句当成这一次的答复。
+        self.share_clicks = 0;
+        self.share_acted = 0;
+        self.share_last.clear();
         // 那一排色带的顺序**不**跟着一场流程走（它是档里的一行，跨窗、跨流程都在），所以这里清的
         // 只有那句话；`band_revisions` 反而一枚也不清 —— 见它自己那一格的口径。
         self.band_last.clear();
@@ -4789,6 +4805,58 @@ impl MaskState {
             Err(e) => {
                 self.message
                     .push_str(&format!("{e}。那份文件还在盘上，可以再分享一次。"));
+                false
+            }
+        }
+    }
+
+    /// §5.5.9「按**具体目标**派发」那**最后一手**：把这一张**递给某一枚目标**（slack / teams /
+    /// wecom / dingtalk / feishu），而不是递给关联表里的默认程序。
+    ///
+    /// 与 [`Self::share_out`] 同一副骨架，三道梯各答自己那一问：
+    ///  1. 落盘走 [`Self::quick_out`]：命名/格式/落点那几条规则不在这里第二次拼（#281）。它自己
+    ///     那三道拒绝（没有选区 / 拼不出图 / 没有目录可写）原样递回用户，这一格不替它补第二句。
+    ///  2. 地址由 [`crate::settings::share_scheme_for_all`] 拼 —— 那一族 scheme 串的**唯一**作者是
+    ///     settings 那一格（P86），这里不自己拼第二遍，也不自己抄那五枚模板。
+    ///  3. 递出去走 [`platform_windows::open::scheme`]：**只递不判** —— 对面那枚 IM 装没装是
+    ///     shell 关联表的事，它不肯接时它自己会说（`SE_ERR_NOASSOC` 原样带回来）。
+    ///
+    /// 序号越界只在「清单在两次读之间变了」时到得了（页上那几枚名字是工具条绑定时读的那一份，
+    /// 而这一枚数是从此刻这份清单里数的）—— 与 [`Self::send_to_target`] 同一句理由与同一种说法。
+    pub fn share_to_target(&mut self, index: usize) -> bool {
+        self.share_clicks += 1;
+        if !self.quick_out() {
+            return false;
+        }
+        let Some(path) = self.landed.clone() else {
+            // `quick_out` 交回 `true` 就一定先把路径写进了 `landed`（它成功那两臂都是这个次序）。
+            // 真到了这一格是它食言，而那句话该由它自己说：这里不替它编第二句。
+            return false;
+        };
+        let spelled = path.to_string_lossy().to_string();
+        let (known, _parse_refused, _unknown) = crate::settings::pipeline_share_targets(
+            &crate::settings::output_cfg().share_targets,
+        );
+        let pairs = crate::settings::share_scheme_for_all(&known, &spelled);
+        let Some((name, url)) = pairs.get(index).cloned() else {
+            self.share_last = format!(
+                "这一枚目标已经不在这份清单上了：此刻清单里只剩 {} 枚，请重新截一次图再选。",
+                pairs.len()
+            );
+            return false;
+        };
+        match platform_windows::open::scheme(&url) {
+            Ok(()) => {
+                self.share_acted += 1;
+                self.share_last = format!(
+                    "已按「分享给 {name}」把这张交给它（{spelled}）。它开在哪一扇、什么时候接住，本进程举不到。"
+                );
+                true
+            }
+            Err(e) => {
+                self.share_last = format!(
+                    "{e}。刚写的那张（{spelled}）还在盘上，可以再分享一次。"
+                );
                 false
             }
         }
@@ -9358,12 +9426,103 @@ mod tests {
         );
     }
 
+    /// §5.5.9「按具体目标派发」那一手：按一下的那一枚**不在清单上** ⇒ 一句自己的话，不递出去。
+    ///
+    /// 这一格**不**碰 shell：序号取 99（白名单那一族最多五枚 ⇒ 任何一份清单上都越界），所以
+    /// 越界那一支在递出去**之前**就答了 —— 于是这一格问得到「按得动而没处可去」那句话，而不必在
+    /// 用户的桌面上弹一扇「选择打开方式」（那件事归真机那一腿，见 PRD §5.5.9 那一格）。
+    #[test]
+    fn a_share_press_on_a_target_that_is_not_there_says_so_and_dispatches_nothing() {
+        let mut m = savable(PhysRect::new(10, 20, 100, 80));
+        let dir = sandbox("share-target");
+        m.naming = crate::settings::Naming {
+            dir: dir.to_string_lossy().into_owned(),
+            template: "%p-%i".into(),
+            prefix: "quick".into(),
+            collision: falcon_core::naming::Collision::Increment,
+        };
+        assert!(!m.share_to_target(99), "没有那一枚目标却答了递出去了");
+        assert_eq!(m.share_clicks, 1, "这一下没记上");
+        assert_eq!(m.share_acted, 0, "一次没递出去的按法递到了 shell 那里");
+        assert!(
+            m.share_last.contains("已经不在这份清单上了"),
+            "{:?}",
+            m.share_last
+        );
+        // 落盘那一句仍在 `message` 里（它是这份文件存在的证据），而派发那句话在 `share_last` 里 ——
+        // 两句各在一格，不互相顶掉。
+        assert!(m.message.contains("已保存到"), "{:?}", m.message);
+    }
+
+    /// §5.5.9 那一手在**开口之前**就该被拦下的那一格：还没有选区 ⇒ 落盘那一道梯自己拒，
+    /// **派发那句话一个字也不写**。
+    ///
+    /// 计数在动手之前加，所以「按了两次、一次也没递出去」这句话问得出来。
+    #[test]
+    fn a_share_press_without_a_selection_is_counted_and_says_nothing_of_its_own() {
+        let mut m = MaskState::default();
+        assert!(!m.share_to_target(0), "没有选区却答了递出去了");
+        assert_eq!(m.share_clicks, 1, "这一下没记上");
+        assert_eq!(m.share_acted, 0, "一次没选区的按法递到了 shell 那里");
+        assert!(
+            m.share_last.is_empty(),
+            "落盘那一道梯自己拒了，这一格不该再补第二句：{:?}",
+            m.share_last
+        );
+        assert!(
+            m.message.contains("还没有选区"),
+            "拒绝的话该在 `message` 那一格（那是它自己的话）：{:?}",
+            m.message
+        );
+    }
+
+    /// §5.5.9「按具体目标派发」在页上的那一排：**按得动**，而且递的是那一枚目标自己的 scheme
+    /// 地址（不是关联表里的默认程序）。
+    ///
+    /// 读的是 `AnnotationToolbar.qml` 那份源码（与工具栏每一档一样）：三道梯（落盘、拼地址、
+    /// 递出去）全在 Rust 那一格，QML 只把手搭过去；而**话**要单独占一格 —— 通知那一行整块被
+    /// 「点击打开所在目录」那一枚 MouseArea 盖着，把派发那句放进去，用户按一次分享却揭示一张别的
+    /// 文件。
+    #[test]
+    fn the_toolbar_wires_the_share_targets_as_cells_that_dispatch() {
+        let drawn = include_str!("../qml/AnnotationToolbar.qml");
+        let lines: Vec<&str> = drawn.lines().map(str::trim).collect();
+        let at = lines
+            .iter()
+            .position(|t| *t == "model: bar.share_menu")
+            .expect("分享那一排在");
+        let cell = &lines[at..at + 12];
+        assert!(
+            cell.contains(&"delegate: Cell {"),
+            "分享那一排还是只摆名字、点不动：{cell:?}"
+        );
+        assert!(
+            cell.contains(&"onTapped: bar.view.shareToTarget(index)"),
+            "按得动而没处可去：{cell:?}"
+        );
+        assert!(
+            drawn.contains("text: bar.view.share_last")
+                && drawn.contains("visible: bar.view.share_last.length > 0"),
+            "派发那句话没有自己的位置（它不能进通知那一行 —— 那一整块被 MouseArea 盖着）"
+        );
+        // 派发那句话**不许**在页上被重打一遍（Rust 那一格才是它的作者，#281）。
+        for rust_sentence in ["已按「分享给", "刚写的那张（"] {
+            assert!(
+                !drawn.contains(rust_sentence),
+                "Rust 那句「{rust_sentence}…」在 QML 里被重打了一遍"
+            );
+        }
+    }
+
     /// §5.5.9 的替代分支在页上的那一枚入口：接线在，而**话不在**。
     ///
     /// 读的是 `AnnotationToolbar.qml` 那份源码，理由与工具栏每一档一样：这一族的三道梯（落盘、
     /// 命名、话）全在 [`MaskState::share_out`] 那一格，QML 只需要把手搭过去。`hint` 那句是这一枚
     /// 钮唯一的解释，它说的是「交给系统默认的看图程序」而不是任何**具体目标**的名字 —— 下面那一排
-    /// `share_targets` 的名单仍是 `Text`，页上要是冒出一句「已分享给 slack」，那就是屏幕上有一句假话。
+    /// `share_targets` 的名单自 2026-11-10 起是**能按的 Cell**（另一枚按钮，见
+    /// [`the_toolbar_wires_the_share_targets_as_cells_that_dispatch`]）：它递的是那一枚目标自己的
+    /// scheme 地址，而这一枚钮递的是关联表里的默认程序 —— 两处各管一件事，页上要是冒出一句
+    /// 「已分享给 slack」，那就是屏幕上有一句假话。
     #[test]
     fn the_toolbar_wires_the_share_exit_without_retelling_it() {
         let drawn = include_str!("../qml/AnnotationToolbar.qml");

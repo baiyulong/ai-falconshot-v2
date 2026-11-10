@@ -213,6 +213,43 @@ pub fn file(path: &str) -> Result<(), OpenError> {
     Err(OpenError::Shell(shell_code(value)))
 }
 
+/// 把一句 **scheme URL** 交给 shell（`slack://share?file=…` 那一族）。
+///
+/// 与 [`browser`] 分开：那一枚只认 http(s)（域名含非 ASCII 字符时还拒），而这一枚是给「把这张图
+/// 递给某个 IM」那几枚用的 —— 它们的地址是 `slack://` / `msteams://` 那一族，
+/// [`falcon_core::link`] 那一道闸把它们答成「不是网页」，所以 [`browser`] 替不了它们。
+/// 与 [`dispatch`] 也分开：那一枚的参数形状是「一枚程序 + 一条已经拼好的参数」，scheme URL 不是
+/// 程序，它是 shell 关联表里的一个键。
+///
+/// **只递，不判**：这一层不判那个 scheme 有没有程序接，也不判地址是不是空 —— 那都是 shell 那一头
+/// 的关联表，与 [`file`] 同一个理由：两道判据一旦不一致，用户看到的提示就成了谎话；而真的没有
+/// 程序接时，`SE_ERR_NOASSOC` 会从 [`shell_code`] 原样报回来。
+#[cfg(windows)]
+pub fn scheme(url: &str) -> Result<(), OpenError> {
+    use windows::core::PCWSTR;
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let verb = wide("open");
+    let target = wide(url);
+
+    let opened = unsafe {
+        ShellExecuteW(
+            None,
+            PCWSTR::from_raw(verb.as_ptr()),
+            PCWSTR::from_raw(target.as_ptr()),
+            PCWSTR::null(),
+            PCWSTR::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    let value = opened.0 as isize;
+    if value > 32 {
+        return Ok(());
+    }
+    Err(OpenError::Shell(shell_code(value)))
+}
+
 #[cfg(not(windows))]
 pub fn browser(_url: &str) -> Result<(), OpenError> {
     Err(OpenError::Unsupported)
@@ -220,6 +257,12 @@ pub fn browser(_url: &str) -> Result<(), OpenError> {
 
 #[cfg(not(windows))]
 pub fn dispatch(_exe: &str, _parameters: &str) -> Result<(), OpenError> {
+    Err(OpenError::Unsupported)
+}
+
+/// 这一台不是 Windows：没有 shell 可以接一句 scheme。
+#[cfg(not(windows))]
+pub fn scheme(_url: &str) -> Result<(), OpenError> {
     Err(OpenError::Unsupported)
 }
 

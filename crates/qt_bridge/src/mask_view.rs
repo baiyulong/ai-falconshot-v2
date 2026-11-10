@@ -328,6 +328,9 @@ pub mod qobject {
         /// 「点了两次、一次也没递到」与「递到了而对面不在这个机器上」的区别。空串 = 这一场
         /// 还没按过那一枚芯片。
         #[qproperty(QString, send_to_last)]
+        /// §5.5.9「按某一枚目标分享」那一句（成功失败都在这里），与 `send_to_last` 同一形状：
+        /// 它**不**走 `message` 那一行 —— 那一整块被「点击打开所在目录」那一枚 MouseArea 盖着。
+        #[qproperty(QString, share_last)]
         /// 点击与揭示的两个计数，给这条腿在它自己前后各读一次用：一次点击记一次，
         /// 与开没开成窗无关；开了几个窗是另一个数。两个数并成一个就说不出"点了两次、
         /// 一次也没到 shell"这句话——而那正是默认设置下唯一该发生的事。
@@ -758,6 +761,21 @@ pub mod qobject {
         #[cxx_name = "shareOut"]
         fn share_out(self: Pin<&mut Self>) -> bool;
 
+        /// §5.5.9「按**具体目标**派发」那最后一手：把这一张**递给某一枚目标**（slack / teams /
+        /// wecom / dingtalk / feishu），而不是递给关联表里的默认程序。
+        ///
+        /// `index` 是**工具条那一排里的第几枚**（那一排的名字是绑定时读的那一份，与
+        /// [`crate::mask::MaskState::share_to_target`] 此刻读的那一份可能已经不同了 —— 那正是它
+        /// 自己有一句「这一枚目标已经不在这份清单上了」的原因）。
+        ///
+        /// `true` 是 shell **收下**了这条请求；话在 [`crate::mask::MaskState::share_last`] 里而
+        /// **不**在 [`crate::mask::MaskState::message`] 里 —— 与 [`Self::send_to_target`] 同一个
+        /// 理由：通知那一行整块被「点击打开所在目录」那一枚 MouseArea 盖着，把派发那句放进去，
+        /// 用户按一次分享却揭示一张别的文件。
+        #[qinvokable]
+        #[cxx_name = "shareToTarget"]
+        fn share_to_target(self: Pin<&mut Self>, index: i32) -> bool;
+
         /// §5.5.4 step 4：通知上那一次点击。`true` 是 shell 收下了这条请求，而话——
         /// 包括"这张图还没有落到任何地方"和"要揭示的东西不在盘上"那两句拒绝——在
         /// [`crate::mask::MaskState::reveal_last`]，和 复制/保存 一样不经返回值传话。
@@ -1112,6 +1130,7 @@ pub struct MaskViewRust {
     // 与出厂那一枚 `freeze_frame = true` 一致：还没 `reload` 过的窗不该转起来。
     live_wanted: bool,
     send_to_last: QString,
+    share_last: QString,
     history_last: QString,
     band_last: QString,
     band_revision: i32,
@@ -1177,6 +1196,7 @@ impl qobject::MaskView {
             pre_notice,
             history_last,
             send_to_last,
+            share_last,
             band_last,
             band_revision,
             ratio_spec,
@@ -1270,6 +1290,7 @@ impl qobject::MaskView {
                 m.pre_notice.clone(),
                 m.history_last.clone(),
                 m.send_to_last.clone(),
+                m.share_last.clone(),
                 // 那一排色带的两枚读数走的是同一条腿：话与钟。它们与上面那一样本同一次锁，所以
                 // 页上重读名单的那一刻不可能读到「话是这一趟的、钟是上一趟的」。
                 m.band_last.clone(),
@@ -1468,6 +1489,8 @@ impl qobject::MaskView {
             .set_history_last(QString::from(&*history_last));
         self.as_mut()
             .set_send_to_last(QString::from(&*send_to_last));
+        self.as_mut()
+            .set_share_last(QString::from(&*share_last));
         self.as_mut()
             .set_band_last(QString::from(&*band_last));
         self.as_mut().set_band_revision(band_revision);
@@ -2034,6 +2057,17 @@ impl qobject::MaskView {
     /// `reload` 与 [`Self::quick_save`] 同一条理由：话在那一枚共用的 mask 状态里。
     pub fn share_out(mut self: Pin<&mut Self>) -> bool {
         let done = mask::with(|m| m.share_out());
+        self.as_mut().reload();
+        done
+    }
+
+    /// §5.5.9「按具体目标派发」那一手：`index` 是工具条那一排里的第几枚。
+    ///
+    /// 与 [`Self::share_out`] 同一副骨架（落盘那一句由 [`crate::mask::MaskState::share_out`] 那一
+    /// 族自己说），而**递出去**的那一句住在 `share_last` 那一枚 qproperty 里 —— 不进 `message`，
+    /// 理由写在 [`Self::share_to_target`] 那一枚的声明上。
+    pub fn share_to_target(mut self: Pin<&mut Self>, index: i32) -> bool {
+        let done = mask::with(|m| m.share_to_target(index.max(0) as usize));
         self.as_mut().reload();
         done
     }

@@ -1763,10 +1763,15 @@ Rectangle {
         // [`crate::mask::MaskState::send_to_target`] → `falcon_core::sendto::plan` →
         // `platform_windows::open::dispatch`）已经长在 Rust 上，而 §5.5.10 步骤 2 要的正是
         // 「完成截图后点击“发送到应用”」——一枚点不动的按钮就是在邀请人点它，那一格如今反过来钉
-        // 的是"按得动而没处可去"。share 那一半仍是 `Text`：provider 派发（把这一张**递给 slack**
-        // 而不是递给关联表）到现在还没有 owner，所以它只把"有哪些目标"摆在屏幕上，不假装能按。
-        // §5.5.9 的替代分支那一枚入口不住在这一排，住在下面那一路的「打开方式」里
-        // （`bar.shareOut()`）——两处别读成两处入口：这一排是名单，那一枚才是按得动的手。
+        // 的是「按得动而没处可去」。
+        //
+        // share 那一半自 2026-11-10 起**也是能按的 Cell**（`shareToTarget(index)` →
+        // [`crate::mask::MaskState::share_to_target`] → `settings::share_scheme_for_all` →
+        // `platform_windows::open::scheme`）：§5.5.9「按具体目标派发」那最后一手此前**没有
+        // owner**，所以这一排只把「有哪些目标」摆在屏幕上、不假装能按；现在它按得动，递的是那一枚
+        // 目标自己的 scheme 地址（`slack://share?file=…` 那一族），而不是关联表里的默认程序 ——
+        // 「打开方式」那一枚入口不住在这一排，住在下面那一路的「打开方式」里（`bar.shareOut()`），
+        // 两处别读成两处入口：这一排是**按目标**，那一枚才是**按关联表**。
         //
         // 话（`sendToLast`）写在同一行的末尾而不是那条通知行里：通知那一行整块被
         // `MouseArea` 盖着（§5.5.4 步骤 4 的"点击打开所在目录"），把派发那句放进去会让人
@@ -1806,14 +1811,25 @@ Rectangle {
             Repeater {
                 model: bar.share_menu
 
-                delegate: Text {
+                delegate: Cell {
+                    required property int index
                     required property var modelData
 
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: modelData
-                    font.pixelSize: 12
-                    color: "#f2f2f2"
+                    label: modelData
+                    hint: "分享给" + modelData + "：把这张图交给它"
+                    onTapped: bar.view.shareToTarget(index)
                 }
+            }
+
+            // 分享那一路的话写在**这一排的末尾**，不进下面那条通知行：那一整块归「点击打开所在
+            // 目录」那一枚 MouseArea 盖着（§5.5.4 步骤 4），把派发那句放进去会让人按一次分享却
+            // 揭示一张别的文件（与 `sendToLast` 同一理由，同一枚形状）。
+            Text {
+                visible: bar.view.share_last.length > 0
+                anchors.verticalCenter: parent.verticalCenter
+                text: bar.view.share_last
+                font.pixelSize: 12
+                color: "#8e8e96"
             }
 
             Item { width: 8; height: 1 }
