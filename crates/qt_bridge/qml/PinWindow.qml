@@ -1835,7 +1835,13 @@ Window {
         context: Qt.WindowShortcut
         // 裁剪模式下让给下面那枚 `cropEscapeKey`：那时 `Esc` 说的是「退出这一层」，不是
         // 「清掉多选」（两枚 `enabled` 互斥，同一刻场上只有一枚在听）。
-        enabled: !win.cropMode
+        //
+        // **也让给 `win.typing`**（2026-11-10 补上）：框开着的时候（新建分组那一格、改尺寸那一格）
+        // `Esc` 说的是「把这扇框收掉」，Qt 自己会那么办 —— 窗不必趁势把名单清了。这一半是下面那枚
+        // `cropEscapeKey` 头顶那封信许过的（它写着「两支都再让一让 `win.typing`」），而代码上
+        // 当时只有裁剪那一支真的带了它：注释里有一个可能对不上的答案，谁赢取决于 Qt 自己的按键投递。
+        // 现在两支都让了，注释与代码是一件事。
+        enabled: !win.cropMode && !win.typing
         onActivated: clearSelectionAction.trigger()
     }
 

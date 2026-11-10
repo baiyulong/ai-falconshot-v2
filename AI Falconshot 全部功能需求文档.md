@@ -791,7 +791,7 @@
 > **接线时从档里翻出来的一处错**：`default_tool` 的合法值名单从前是本文件里手抄的一份 `ANNOTATION_TOOLS`，抄的却是 §5.7 那一章的**目录** —— `curve` / `polygon` / `highlighter` / `pen` / `counter` / `stamp` / `callout` / `crop` / `spotlight` / `measure` 十串没有一支笔对应得上，而真画得出的 `rounded_rect` / `double_arrow` / `marker` / `zoom` 反倒不在名单上（写 `marker` 会被清成空串）。抄错一直没代价，代价是「没人读」带来的；接上读者之后两个方向都成了用户看得见的错。那份 const 已删，判据只留一处：`Kind::from_key`，认不出答 `None` 而不是替用户挑一支。  
 > 「进场手里不拿笔」的写法是空串，不是 `"select"`：选择那一手在标注层里是 `tool = None`，不是第 17 种 `Kind`，给它再造一个词就是给 #281 添第二位作者。  
 > 证人：`cargo test -p falcon-core` 里 `the_tool_names_the_file_accepts_are_the_tools_someone_can_draw`（16 枚键名逐串走一圈 `validate` 一字不变，外加 `highlighter` / `pen` / `curve` / `select` / `MARKER` 五串照报照清）；`cargo test -p qt_bridge` 里 `the_row_naming_a_tool_picks_up_that_pen_and_the_row_naming_none_moves_nothing` 与 `the_default_tool_row_reaches_the_hand_that_holds_the_pen`（后者经的是**字节**：手写一份 `[annotation] default_tool = "marker"` + `stroke_color = "#00FF00FF"`，读回来手里那支笔带着档里那个 RGB，alpha 那一格是马克笔自己的 `MARKER_ALPHA` 而不是档说的 —— 顺序接反就会拿着一支出厂红的马克笔）。同一份档写 `"highlighter"` 时话在 load 那一步说完、手里那支笔一动不动。  
-> 本轮没有屏幕读数：桌面锁定，`--settings` 与 `--mask` 那几扇门跑不动，页上那一行拨完之后遮罩里换了笔这一件事仍欠一轮真机。
+> **这一格自此有一部分读数**（2026-11-10，桌面解锁之后）：`--mask` 与 `--settings` 那几扇门在解锁的桌面上跑通了（`--mask 4000` ⇒ `mask check: PASS`，含屏幕取样那一格 `measured=1.000 want 1.000`）。但「页上那一行拨完之后遮罩里换了笔」那一格住在 `--ink` 那一扇门上，而它此刻**读不稳**（见 §5.7.21 那一格：缺席的腿两趟读到的数还不一样，11 段 / 15 段）—— 所以这一格仍欠一次**稳定的**真机读数，欠的是把「缺席」与「失败」分开的那一手。
 
 > **实现口径（2026-11-07）：本节名下的两行从设置页上撤了**  
 >
@@ -1274,7 +1274,7 @@
 > 现读而不是启动快照：`settings::pin_cfg()` 那一枚快照说的是**新贴图长什么样**，而这一格说的是**这一下滚轮算不算**，属于一个正要发生的事件（§5.20.2「即时生效」在这一档上是前一支：改完下一次滚轮就跟着变，不必重启、不必重开贴图）。  
 > `+`、`-` 与菜单里「放大/缩小/重置缩放」那几手不受这一枚键管 —— 句子给的是两条并列出路，关掉一条不许把另一条也带走。Ctrl+滚轮（§5.9.4 透明度）与 Alt+滚轮（§5.9.14 播放速度）同理，它们各走自己那一只落点，不经过 `wheel_zoom`。  
 > 出厂那一格是 `true`，所以接线那一刻默认路径一字未变：没改过设置的人滚轮照旧改大小。  
-> 证人：`cargo test -p qt_bridge` 里 `the_wheel_size_switch_is_read_at_the_hand_that_turns_it` —— 四件事各判各的：那一枚门在 `pin_view.rs` 里只出现一次且排在 `self.gesture(` 之前、`wheel_zoom` 那一格里 `state::with` 为零枚（两只手叠锁的形状读得出来）；`settings.rs` 那一头取值的手只有一处且是 `with(|s| s.config.pin.wheel_resizes)` 现读、不读快照；页上 `win.view.wheelZoom(` 只有一处落点，且 `wheel_resizes` 这个词不在 QML 里；`Config::default().pin.wheel_resizes` 为 `true`。屏幕读数欠着：桌面锁定，`--pin` 那扇门本轮跑不动，"拨下去之后滚轮真的不动了"这一格仍只有源码证人。
+> 证人：`cargo test -p qt_bridge` 里 `the_wheel_size_switch_is_read_at_the_hand_that_turns_it` —— 四件事各判各的：那一枚门在 `pin_view.rs` 里只出现一次且排在 `self.gesture(` 之前、`wheel_zoom` 那一格里 `state::with` 为零枚（两只手叠锁的形状读得出来）；`settings.rs` 那一头取值的手只有一处且是 `with(|s| s.config.pin.wheel_resizes)` 现读、不读快照；页上 `win.view.wheelZoom(` 只有一处落点，且 `wheel_resizes` 这个词不在 QML 里；`Config::default().pin.wheel_resizes` 为 `true`。屏幕读数仍欠着，但理由换了一支：桌面锁定自 2026-11-10 起**不成立**（`--pin` 那扇门在解锁的桌面上跑起来了，227 段腿里红的那几格是文件对话框那一族，与滚轮无关）。而「拨下去之后滚轮真的不动了」这一格在门里**压根没有腿** —— 那一族现在只有源码形状的证人（`wheel_resizes` 那一枚是按下那一刻现读、不是启动快照、QML 里一次也不出现它）。所以这一格欠的是**门里那一段腿**（拨一次、滚一次、读回滚轮真的没动），不是读数的机会。
 
 ### 5.9.3 输入窗口尺寸和缩放比例
 
@@ -1471,7 +1471,7 @@
 > **桌面与别的窗那一边，这一臂一位读者也没有**：点桌面、点贴图以外的一切，本进程收不到那一击——全仓（含本档与 spike）读不到 `WH_MOUSE`/`SetWindowsHookEx` 任何一处，唯一那枚桌面级的输入读数是 `crates/platform-windows/src/proc.rs:138-147` 的 `GetAsyncKeyState`，而它只答 Ctrl/Shift/Alt/Win 四枚修饰键（§5.15 热区那一问用的）；贴图窗是一张张贴图自己的顶层窗（`PinWindow.qml:119 flags: Qt.Window | Qt.FramelessWindowHint | Qt.Tool`），铺满屏幕的那一扇只在一次截取期间存在；`src/hotkey.rs` 整档里 `clear_selection`/`clearSelection` 零命中，没有任何一枚全局键走到这一手。  
 > **欠的那只手其实早就写好了，缺的是一位读者**：core `pin.rs:1692 PinSet::click_at` 头顶那句 “A click that lands on nothing clears the selection (§5.10.1 点击空白区域)” 说的正是本步的第一臂，可它与它下面的 `stack_at` 在生产代码里一位读者也没有（全仓只读到 `pin.rs` 自己那几处单测调用）。所以这一臂要补的不是「清名单」（`clear_selection` 有手、有数、有发号），而是「这一下落在桌面上哪一点」那一读：一枚全局鼠标读数，或一扇盖住桌面的窗，外加一处把点交给 `click_at` 的装配。这两样都不便宜：前者的代价是这台机器上每一次左键都先过本进程一遍，后者的代价是一扇永远压在最前的透明窗——§5.9.13 为一枚「鼠标穿透」都要专门开一枚开关并写一句撤销的话，反过来常驻吃掉桌面点击更得先有口径可写。本轮**没有**去补它，本节按「或」的第二臂交付。  
 > **窗此刻对这一手一句也不说**：`Session::clear_selection` 只写 `selection_epoch` 与 `selection_count`（`src/session.rs:2244-2245`），没有任何一条腿写 `status`；`src/state.rs:768` 那句注释里描出来的「取消了 N 张贴图的选中状态」在产品里**没有一个作者**（全仓读不到那串中文）。于是按下 Esc 之后屏幕上只剩描边消失这一件事（步骤 3 那句「统一选中状态」绑的是 `PinWindow.qml:1350` 那一格 `win.view.selected`）。Action 自己带着 `text: "取消选中"` 而不挂进任何菜单——`:1733-1738` 那封信记的就是这个决定：批量那几枚入口早就在这扇窗的右键菜单上，退出多选这一枚不进去，因为步骤 4 点名的出口只有空白与 Esc 两只门。  
-> **一处没落，记在这里**：`PinWindow.qml:1754` 那枚 `enabled` 只让 `cropMode`，**没**让 `win.typing`（`:1281` 那一格读的是 `groupPrompt.visible || sizeDialog.visible`），而下面那枚 `cropEscapeKey` 头顶的信（约 `:1907-1911`）写的是「两支都再让一让 `win.typing`」——此刻读到的只有裁剪那一支真的带了它（`:1920`）。于是「新建分组/改尺寸那格框开着时按 Esc，名单到底清没清」这一问，码上没有答案、注释里有一个可能对不上的答案；谁赢取决于 Qt 自己的按键投递，本档不替它猜，欠的是一次读数或一枚 `!win.typing`。  
+> **这一处自此补上那一半**（2026-11-10）：`Esc` 那一枚（`clearSelectionAction` 那一支）的 `enabled` 自此是 `!win.cropMode && !win.typing` —— 框开着的时候（新建分组那一格、改尺寸那一格）`Esc` 说的是「把这扇框收掉」，窗不必趁势把名单清了。这一半是下面那枚 `cropEscapeKey` 头顶那封信许过的（「两支都再让一让 `win.typing`」），而当时**只有裁剪那一支真的带了它** ⇒ 码上没有答案、注释里有一个可能对不上的答案；现在两支都让了，注释与代码是同一件事。证人：桥上那一格源码形状（`pin_check.rs` 的 ②c：`Esc` 那一块的 `enabled` 必须逐字含 `!win.cropMode && !win.typing`）。**读数那一半仍欠**：真按一次 `Esc`、读回名单清没清 —— 那要一次真的按键，而本仓没有输入注入器（`SendInput` 零命中），欠的是 §10 第 35 项 ⑤ 那一族同一只手。  
 > **本节此前一句口径也没有**：这一块是 §5.10 全节第一次落字。步骤 1/2/3 与 §5.10.2/3/4 的批量那一臂在窗上早有对面（`dragTarget`/`resetTarget`/`destroyTarget` 与量规 `mov-*`/`rst-batch-*`/`des-*` 那些读数），本块量的只有第 4 步那两只门——第一臂只结了窗内那一半，桌面那一半是欠的。
 
 > **实现口径（2026-11-07）：`pin.cycle_on_click` 这一行从设置页上撤了**  
@@ -2268,7 +2268,7 @@ snip --last -o clipboard
 > **一行也没成时不闪一句**：出厂那九枚键全注册上 ⇒ 那一列是空的、`status` 一个字也不写——§8 整章判的是出了问题时说什么，不是为「一切正常」亮一下浮窗。这一格与托盘 tooltip 上那句「N 个全局热键待命」各说各的：一枚数待命的键，一列说要看一眼的行。  
 > **行的身份写在行自己身上，不靠数措辞**：此前「每个动作一行」那个分母靠的是 `starts_with("冲突")`——同一句话的第二个作者，改一天措辞普查当场少数一枚。现在每枚 `Row` 带着 `kind` 出生，分母（`per_action`）与「给用户看的那一列」（`to_be_seen`）读的都是写下那一句的同一手当场定的那一枚身份；`… 已注册` 与 `未绑定` 都不进那一列。钉它的是 `the_census_counts_rows_not_verdicts`、`every_action_gets_exactly_one_row` 与 `the_notice_line_counts_rows_and_caps_the_quotes` 三格。  
 > **第二句「不覆盖现有配置，直到用户完成修改」= 只报不改**：`validate` 报出同一份档里 `is bound twice` 与 `reserved by Windows` 那两类，真注册时 `RegisterHotKey` 当场回绝的那一枚由它自己那句原因说话，两处都不替用户挑赢家、也不动档上任何一串键。页上那一列是**本次启动的快照**（`hotkey.actions.` 在 `RESTART_PREFIXES` 里），用户改完那一串键要重启才换——这与 §5.16.1 第 4 步记的是同一处，那份措辞仍在那一节，这里不第二次写。  
-> **三处没落、不冒充已成**：① 页上那一列没有删、改或跳到那一枚键的手，它只把行摆出来，改键仍走页上原有的输入框（选中一行、改、保存）；② 屏幕上那两处仍**没有真机读数**：理由（桌面持续锁定，`LogonUI.exe` 与 `LockApp.exe` 都在）自 2026-11-10 起**不成立**了（那一趟读出「会话锁屏=false」）—— 欠的于是变成**读数本身**而不是读数的机会：`--hotkeys` 那一扇门在本轮还没跑过（它量的是托盘与热键在屏幕上的那一面）。③ `--settings-window` 那扇门本轮**没加**读那一列的腿——量具那一趟压根不写那份快照（只有产品本体那一趟写它，替门写就等于给量具造一份页上此刻没有的内容），所以门里那一列永远是空的。
+> **三处没落、不冒充已成**：① 页上那一列没有删、改或跳到那一枚键的手，它只把行摆出来，改键仍走页上原有的输入框（选中一行、改、保存）—— **2026-11-10 记下这一格为什么还欠**：三枚手要按的那一枚**键**压根不在那一列里（那一列是 `hotkey` 那一族的行，每行只有一句散文 `Row::said` 与它的身份 `RowKind`，没有键），所以页上要动手就得先让**每一行带着它自己的键**走到页上（那是 hotkey 那一族 `Row` 的一处形状改动 + 一条平行的键列），而 §8.4 的两条**规则**（显示冲突的组合键和相关功能 + 不覆盖现有配置直到用户完成修改）**已经满足** —— 这三枚手是便利，不是规则。② 屏幕上那两处仍**没有真机读数**：理由（桌面持续锁定，`LogonUI.exe` 与 `LockApp.exe` 都在）自 2026-11-10 起**不成立**了（那一趟读出「会话锁屏=false」）—— 欠的于是变成**读数本身**而不是读数的机会：`--hotkeys` 那一扇门在本轮还没跑过（它量的是托盘与热键在屏幕上的那一面）。③ `--settings-window` 那扇门本轮**没加**读那一列的腿——量具那一趟压根不写那份快照（只有产品本体那一趟写它，替门写就等于给量具造一份页上此刻没有的内容），所以门里那一列永远是空的。
 
 ## 8.5 显示器变化
 
