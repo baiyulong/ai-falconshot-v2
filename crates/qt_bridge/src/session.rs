@@ -907,6 +907,15 @@ pub mod qobject {
         #[cxx_name = "historyLock"]
         fn history_lock(self: Pin<&mut Self>, id: i64, locked: bool) -> QString;
 
+        /// §5.14.4 规则第二条 / §8.7「用户明确**收藏**」的那一枚：把历史第 `id` 行标成收藏
+        /// （或取消收藏）。
+        ///
+        /// 它与 [`Self::history_lock`] 同一副骨架、同一族的三道拒绝，但**不是同一件事**：锁定说的是
+        /// 「别被自动清理收走」，收藏说的是「这一枚我要留着」—— 两者都被自动清理与手动清空放过。
+        #[qinvokable]
+        #[cxx_name = "historyFavorite"]
+        fn history_favorite(self: Pin<&mut Self>, id: i64, favorite: bool) -> QString;
+
         /// §5.14.3 step 4「恢复该截图内容或重新进入原选区」里**选区**那一半（P102 建的
         /// [`crate::mask::MaskState::restore_history_selection`] 自此有了界面读者，P103 起）：
         /// 把历史里第 `id` 行记着的那一枚矩形交回遮罩，并把那一行说的话交给 `status`。
@@ -2572,6 +2581,12 @@ impl qobject::Session {
     pub fn history_lock(mut self: Pin<&mut Self>, id: i64, locked: bool) -> QString {
         mask::with(|m| m.lock_history(id, locked));
         let said = mask::with(|m| m.history_lock_last.clone());
+        self.as_mut().say(&said)
+    }
+
+    pub fn history_favorite(mut self: Pin<&mut Self>, id: i64, favorite: bool) -> QString {
+        mask::with(|m| m.favorite_history(id, favorite));
+        let said = mask::with(|m| m.history_favorite_last.clone());
         self.as_mut().say(&said)
     }
 

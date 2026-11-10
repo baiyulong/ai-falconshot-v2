@@ -107,6 +107,10 @@ pub struct Record {
     pub thumb: Option<Vec<u8>>,
     pub cancelled: bool,
     pub locked: bool,
+    /// §5.14.4 规则第二条 / §8.7「不得静默删除**收藏**或锁定的记录」—— 收藏是用户自己点名
+    /// 「这一枚别动」的那一位，与 [`Self::locked`] 各管一件事：锁定说的是「别被自动清理收走」，
+    /// 收藏说的是「这一枚我要留着」（它也顺带被自动清理放过）。
+    pub favorite: bool,
     pub ocr_text: Option<String>,
     pub note: String,
 }
@@ -135,6 +139,9 @@ pub struct Retention {
     pub max_age_ms: i64,
     pub max_bytes: u64,
     pub exempt_locked: bool,
+    /// §5.14.4 规则第二条 / §8.7：「自动清理不得删除用户明确**收藏**或锁定的记录」—— 「收藏」
+    /// 那一半的开关，与 [`Self::exempt_locked`] 同一形状、同一默认值（出厂 `true`）。
+    pub exempt_favorite: bool,
 }
 
 impl Retention {
@@ -144,6 +151,7 @@ impl Retention {
             max_age_ms: cfg.max_age_days as i64 * 86_400_000,
             max_bytes: cfg.max_size_mb as u64 * 1024 * 1024,
             exempt_locked: cfg.exempt_locked,
+            exempt_favorite: cfg.exempt_favorite,
         }
     }
 
@@ -207,7 +215,7 @@ pub struct Freed {
 
 pub const DB_FILE: &str = "history.db";
 pub const PICTURES_DIR: &str = "history";
-pub const SCHEMA_VERSION: i32 = 1;
+pub const SCHEMA_VERSION: i32 = 2;
 /// §6.2 budgets ≈15 KB for a 256 px JPEG; this is the quality that lands there.
 pub const THUMB_QUALITY: u8 = 80;
 
@@ -233,15 +241,17 @@ CREATE TABLE IF NOT EXISTS captures (
   thumb BLOB,
   cancelled INTEGER NOT NULL DEFAULT 0,
   locked INTEGER NOT NULL DEFAULT 0,
+  favorite INTEGER NOT NULL DEFAULT 0,
   ocr_text TEXT,
   note TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS captures_captured_at ON captures(captured_at);
 CREATE INDEX IF NOT EXISTS captures_locked ON captures(locked);
+CREATE INDEX IF NOT EXISTS captures_favorite ON captures(favorite);
 ";
 
 const COLUMNS: &str = "id, captured_at, monitor_id, x, y, w, h, source_kind, path, \
-                       thumb, cancelled, locked, ocr_text, note";
+                       thumb, cancelled, locked, ocr_text, note, favorite";
 
 pub struct History {
     conn: Connection,
@@ -265,6 +275,19 @@ impl History {
         }
         if version == 0 {
             conn.execute_batch(CREATE)?;
+            conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])?;
+        } else if version < SCHEMA_VERSION {
+            // 版本 1 → 2：加「收藏」那一列（§5.14.4 规则第二条 / §8.7「不得静默删除收藏或锁定
+            // 的记录」）。老库压根没有这一列，而 [`COLUMNS`] 已经在读它 ⇒ 不 ALTER 就读不回来
+            // （`no such column: favorite`）。加列带默认值 ⇒ 老行一律「没收藏」，与它们出厂时
+            // 的样子一样（那一列是 2026-11-10 才有的，此前谁也没标过收藏）。
+            //
+            // 这一步**不重写整本库**：一条 `ALTER TABLE … ADD COLUMN` 与一条 `CREATE INDEX`，
+            // 与这一族「加一枚键不动用户的其余内容」的规矩同一条。
+            conn.execute_batch(
+                "ALTER TABLE captures ADD COLUMN favorite INTEGER NOT NULL DEFAULT 0;\
+                 CREATE INDEX IF NOT EXISTS captures_favorite ON captures(favorite);",
+            )?;
             conn.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), [])?;
         }
         Ok(Self {
@@ -453,6 +476,15 @@ impl History {
         self.update("locked", id, params![locked, id])
     }
 
+    /// §5.14.4 规则第二条 / §8.7：「用户明确**收藏**」的那一位 —— 用户在历史窗上点一下「收藏」，
+    /// 这一枚行就记在那儿，自动清理与手动清空都放过它（[`Self::clear_all`] 与 [`Self::cleanup`]）。
+    ///
+    /// 与 [`Self::set_locked`] 同一副形状（同一张表、同一支 `update`），但**不是同一件事**：锁定是
+    /// 「别被自动清理收走」，收藏是「这一枚我要留着」（它顺带也被放过）。
+    pub fn set_favorite(&self, id: i64, favorite: bool) -> Result<(), HistoryError> {
+        self.update("favorite", id, params![favorite, id])
+    }
+
     /// §5.12: the text an OCR run found, kept with the picture it came from.
     pub fn set_ocr(&self, id: i64, text: Option<&str>) -> Result<(), HistoryError> {
         self.update("ocr_text", id, params![text, id])
@@ -494,12 +526,17 @@ impl History {
     }
 
     /// "Clear history". The 二次确认 belongs to the UI (§5.14.4); this only
-    /// declines to touch locked records unless told otherwise.
-    pub fn clear_all(&self, include_locked: bool) -> Result<Freed, HistoryError> {
-        let sql = if include_locked {
+    /// declines to touch locked **or favourited** records unless told otherwise.
+    ///
+    /// 两种都放过是 PRD §5.14.4 规则第二条的原话：「自动清理不得删除用户明确收藏或锁定的
+    /// 记录」—— 而 `qt_bridge::mask::MaskState::clear_history` 顶上那句写得更直白：那条规则
+    /// 「读的是一条口径，而不是一条只归自动清理的例外」。手动清空是用户点了、屏幕上有过问，
+    /// 所以它**不静默**；而这一格默认仍不碰那两种行 —— 要碰它们得由用户明说（`include_protected`）。
+    pub fn clear_all(&self, include_protected: bool) -> Result<Freed, HistoryError> {
+        let sql = if include_protected {
             "SELECT id FROM captures"
         } else {
-            "SELECT id FROM captures WHERE locked = 0"
+            "SELECT id FROM captures WHERE locked = 0 AND favorite = 0"
         };
         let ids = self.ids(sql)?;
         self.delete(&ids)
@@ -625,11 +662,12 @@ impl History {
             id: i64,
             captured_at: i64,
             locked: bool,
+            favorite: bool,
             path: Option<String>,
             bytes: u64,
         }
         let mut stmt = self.conn.prepare(
-            "SELECT id, captured_at, locked, path, COALESCE(LENGTH(thumb), 0) \
+            "SELECT id, captured_at, locked, favorite, path, COALESCE(LENGTH(thumb), 0) \
              FROM captures ORDER BY captured_at DESC, id DESC",
         )?;
         let rows = stmt
@@ -638,8 +676,9 @@ impl History {
                     id: r.get(0)?,
                     captured_at: r.get(1)?,
                     locked: r.get(2)?,
-                    path: r.get(3)?,
-                    bytes: r.get::<_, i64>(4)? as u64,
+                    favorite: r.get(3)?,
+                    path: r.get(4)?,
+                    bytes: r.get::<_, i64>(5)? as u64,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -659,7 +698,9 @@ impl History {
             truncated |= policy.max_items > 0 && kept_count >= policy.max_items;
             truncated |= policy.max_bytes > 0 && kept_bytes.saturating_add(size) > policy.max_bytes;
             if too_old || truncated {
-                if row.locked && policy.exempt_locked {
+                if (row.locked && policy.exempt_locked)
+                    || (row.favorite && policy.exempt_favorite)
+                {
                     kept_count += 1;
                     kept_bytes = kept_bytes.saturating_add(size);
                     continue;
@@ -935,6 +976,7 @@ fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<Record> {
         locked: r.get(11)?,
         ocr_text: r.get(12)?,
         note: r.get(13)?,
+        favorite: r.get(14)?,
     })
 }
 
@@ -977,6 +1019,7 @@ mod tests {
             max_age_ms: 0,
             max_bytes: 0,
             exempt_locked: false,
+            exempt_favorite: false,
         }
     }
 
@@ -991,6 +1034,91 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let h = History::open(dir.path()).unwrap();
         Store { _dir: dir, h }
+    }
+
+    /// 版本 1 的库（没有「收藏」那一列）自此升到版本 2：老行一律「没收藏」，而那些行**一个也不许丢**。
+    ///
+    /// 这一格钉的是「加一列不许重写整本库」：用户的 `history.db` 里那些行与那些图都得还在（§6.2
+    /// 存储规则那一句在历史这一族也是同一句），而迁移之后那一枚能写。
+    #[test]
+    fn an_older_library_gains_the_favorite_column_without_losing_a_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = {
+            let mut h = History::open(dir.path()).unwrap();
+            h.record(&at(1_000), &frame(8, 8, [1, 2, 3, 255]), &settings())
+                .unwrap()
+        };
+        // 把那份库按版本 1 的样子摆回去：索引先去掉（SQLite 不许 drop 一枚被索引着的列），再去掉
+        // 「收藏」那一列，版本号写回 1。
+        {
+            let conn = rusqlite::Connection::open(dir.path().join(DB_FILE)).unwrap();
+            conn.execute_batch(
+                "DROP INDEX IF EXISTS captures_favorite;\
+                 ALTER TABLE captures DROP COLUMN favorite;\
+                 PRAGMA user_version = 1;",
+            )
+            .unwrap();
+        }
+        // 再打开一次 ⇒ 迁移自己跑。
+        let mut h = History::open(dir.path()).unwrap();
+        assert_eq!(h.count().unwrap(), 1, "迁移把行弄丢了");
+        let rec = h.get(id).unwrap().expect("那一行还在");
+        assert!(!rec.favorite, "老行不该是收藏");
+        h.set_favorite(rec.id, true).unwrap();
+        assert!(
+            h.get(rec.id).unwrap().unwrap().favorite,
+            "迁移之后收藏写不进去"
+        );
+    }
+
+    /// §5.14.4 规则第二条 / §8.7「用户明确**收藏**或锁定的记录」—— 「收藏」那一半自此有对面：
+    /// 自动清理放过它、手动清空也放过它，而取消收藏之后它重新回到可被清理的那一批。
+    ///
+    /// 这一格钉四件事：① 收藏位写进库、读得回来；② 自动清理（`exempt_favorite` 开）放过它；
+    /// ③ 手动清空（`clear_all(false)`）**也**放过它 —— PRD §5.14.4 那句话「读的是一条口径，而不是
+    /// 一条只归自动清理的例外」；④ 取消收藏之后它不再被放过。
+    #[test]
+    fn a_favorite_row_survives_both_cleaners_and_stops_when_it_is_unfavorited() {
+        let mut t = store();
+        // 旧的那一枚与新的那一枚：清理是从新到旧走的（§5.14.4「优先清理未锁定的最旧记录」），
+        // 所以「该走的那一枚」是旧的这一枚 —— 收藏那一枚要是更新的那枚，它压根不会成为候选，
+        // 那一格就问不到「收藏真的被放过」这件事。
+        let plain = t
+            .h
+            .record(&at(1_000), &frame(8, 8, [1, 2, 3, 255]), &settings())
+            .unwrap();
+        let fav = t
+            .h
+            .record(&at(2_000), &frame(8, 8, [4, 5, 6, 255]), &settings())
+            .unwrap();
+
+        // ① 收藏位写进库、读得回来。
+        assert!(!t.h.get(fav).unwrap().unwrap().favorite, "新行不该是收藏");
+        t.h.set_favorite(fav, true).unwrap();
+        assert!(t.h.get(fav).unwrap().unwrap().favorite, "收藏位没读回来");
+
+        // ② 自动清理放过它：条数上限 1 枚 ⇒ 旧的那一枚超位（该走），而它没收藏 ⇒ 真的走了；
+        //    收藏的那一枚是新的那一枚，本来就占着位。
+        let mut policy = unset();
+        policy.max_items = 1;
+        policy.exempt_favorite = true;
+        let freed = t.h.cleanup(&policy).unwrap();
+        assert_eq!(freed.ids, vec![plain], "该走的是没收藏的那一枚：{:?}", freed.ids);
+        assert!(t.h.get(fav).unwrap().is_some(), "收藏的那一枚被自动清理收走了");
+
+        // ③ 手动清空也放过它（PRD §5.14.4 那句话「读的是一条口径，而不是一条只归自动清理的例外」）。
+        let freed = t.h.clear_all(false).unwrap();
+        assert!(freed.ids.is_empty(), "手动清空把收藏的那一枚也收了：{:?}", freed.ids);
+        assert!(t.h.get(fav).unwrap().is_some(), "收藏的那一枚被手动清空收走了");
+
+        // ④ 取消收藏之后，它重新回到可被清理的那一批（这一趟按「太旧」判，与条数上限无关）。
+        t.h.set_favorite(fav, false).unwrap();
+        assert!(!t.h.get(fav).unwrap().unwrap().favorite, "取消收藏没写进去");
+        let mut aged = unset();
+        aged.max_age_ms = 1;
+        aged.exempt_favorite = true;
+        let freed = t.h.cleanup(&aged).unwrap();
+        assert_eq!(freed.ids, vec![fav], "取消收藏之后它该被收走：{:?}", freed.ids);
     }
 
     #[test]
@@ -1432,6 +1560,7 @@ mod tests {
             max_age_ms: 0,
             max_bytes: 0,
             exempt_locked: false,
+            exempt_favorite: false,
         };
         let freed = h.cleanup(&policy).unwrap();
         assert_eq!(freed.ids.len(), ids.len() - 1, "只该留下最新那一行");
@@ -1551,6 +1680,7 @@ mod tests {
             t.h.cleanup(&Retention {
                 max_items: 2,
                 exempt_locked: true,
+                exempt_favorite: true,
                 ..unset()
             })
             .unwrap();
@@ -1707,6 +1837,7 @@ mod tests {
                 max_age_ms: days as i64 * 86_400_000,
                 max_bytes: budget as u64 * 512,
                 exempt_locked: exempt,
+                exempt_favorite: exempt,
             };
             let freed = h.cleanup(&policy).unwrap();
             let left = h.newest(4_096).unwrap();
@@ -1960,6 +2091,7 @@ mod tests {
             max_age_ms: 0,
             max_bytes: 1_000,
             exempt_locked: true,
+            exempt_favorite: true,
         };
         assert!(!policy.at_cap(&usage(2, 500)), "两枚上限都还没到");
         assert!(policy.at_cap(&usage(3, 500)), "条数到了上限却没说");
@@ -1978,6 +2110,7 @@ mod tests {
             max_bytes: 0,
             max_age_ms: 86_400_000,
             exempt_locked: true,
+            exempt_favorite: true,
         };
         assert!(
             !days_only.at_cap(&usage(500, 500)),

@@ -845,6 +845,7 @@ pub fn arm() -> Result<String, String> {
         max_size_mb: 0,
         save_all: true,
         exempt_locked: false,
+        exempt_favorite: false,
     };
     let mut store = falcon_core::history::History::open(&hdir)
         .map_err(|e| format!("种不进那一行：打不开 {}（{e}）", hdir.display()))?;

@@ -1913,6 +1913,15 @@ pub struct History {
     pub thumb_px: u32,
     /// §5.14.5 locked entries survive cleanup.
     pub exempt_locked: bool,
+    /// §5.14.4 规则第二条「自动清理不得删除用户明确**收藏**或锁定的记录」—— 这一枚是「收藏」
+    /// 那一半的开关，与 [`Self::exempt_locked`] 同一形状。
+    ///
+    /// 出厂 `true`：PRD 那句话默认就该成立（锁定那一半也是这么出厂的）。用户自己扳成 `false`
+    /// 是他自己的选择 —— PRD 那句禁的是**静默**删除（§8.7 那一节的原话），而这一枚是他自己说的。
+    ///
+    /// 它**只管自动清理**：手动「清空历史」那一条把两种都放过（`qt_bridge::mask::MaskState::
+    /// clear_history` 钉死 `include_locked = false`）—— 那一条是用户点了、且屏幕上有过问，不静默。
+    pub exempt_favorite: bool,
 }
 
 impl Default for History {
@@ -1926,6 +1935,7 @@ impl Default for History {
             keep_originals: true,
             thumb_px: 256,
             exempt_locked: true,
+            exempt_favorite: true,
         }
     }
 }

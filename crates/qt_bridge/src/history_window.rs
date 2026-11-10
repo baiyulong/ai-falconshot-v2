@@ -1298,6 +1298,7 @@ mod tests {
             thumb: None,
             cancelled,
             locked,
+            favorite: false,
             ocr_text: None,
             note: String::new(),
         }

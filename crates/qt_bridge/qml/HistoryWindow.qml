@@ -282,6 +282,16 @@ Window {
         win.readRows()
     }
 
+    /// 每一行右边那枚收藏。收藏与取消收藏都叫同一只手 `historyFavorite`，页上不自己记一枚 bool ——
+    /// 那一格的真值在库里，页上每次现读（与 [`toggleLock`] 同一条理由：库才是权威，页上记的那一枚
+    /// 只是一个猜测）。
+    function toggleFavorite(id) {
+        const at = win.rowIndexOf(id)
+        const marked = at >= 0 && String(win.rows[at]).indexOf("已收藏") >= 0
+        win.note = String(win.session.historyFavorite(id, !marked))
+        win.readRows()
+    }
+
     function rowIndexOf(id) {
         for (let i = 0; i < win.rows.length; i++)
             if (win.idOf(win.rows[i]) === id)
@@ -556,6 +566,14 @@ Window {
                     anchors.verticalCenter: parent.verticalCenter
                     text: String(modelData).indexOf("已锁定") >= 0 ? "解开" : "锁上"
                     onClicked: win.toggleLock(win.idOf(modelData))
+                }
+                // §5.14.4 规则第二条 / §8.7「用户明确**收藏**」那一半在屏幕上的对面：挨着锁定那一枚
+                // 放而**不**替了它 —— 锁定说的是「别被自动清理收走」，收藏说的是「这一枚我要留着」，
+                // 两句话各管一件事。真值同样从行里那一句现读（页上不自己记一枚 bool）。
+                Button {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: String(modelData).indexOf("已收藏") >= 0 ? "取消收藏" : "收藏"
+                    onClicked: win.toggleFavorite(win.idOf(modelData))
                 }
                 Repeater {
                     id: rowActions

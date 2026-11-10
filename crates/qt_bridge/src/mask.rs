@@ -1408,6 +1408,12 @@ pub struct MaskState {
     /// [`Self::lock_history`] 那一条腿说的话：锁上了还是解开了、或者**为什么**这次没跑成 ——
     /// 「这一场没有历史」「`enabled` 关着」「库打不开」「库里没有第 N 行」是四件不同的事。
     pub history_lock_last: String,
+    /// §5.14.4 规则第二条 / §8.7「用户明确**收藏**」的那一枚计数，与 [`Self::history_locks`]
+    /// 同一形状：点一下算一下，**与锁没跑成无关**（一次失败的收藏也吃计数——那正是
+    /// 「点了两次、一次也没成」这句话问得出来的地方）。
+    pub history_favorites: u32,
+    /// 最近一次「收藏/取消收藏」那一句，成功失败都写这里。
+    pub history_favorite_last: String,
     /// 这一场经 [`Self::restore_history_selection`] **重新进入原选区**几次（§5.14.3 step 4 的
     /// 第一条产品腿，P102 起）。单独一枚而不并进 [`Self::history_replays`]：那一枚数的是
     /// "把图读回来再落一次盘"（§5.14.2），这一枚一次也没往盘上写，它动的只有遮罩的选区。
@@ -1729,6 +1735,8 @@ impl MaskState {
         self.history_delete_last.clear();
         self.history_clear_last.clear();
         self.history_lock_last.clear();
+        self.history_favorites = 0;
+        self.history_favorite_last.clear();
         // §5.14.3 那一格同理：上一场把几行交回过原选区，与这一场点没点是两件事。
         self.history_restores = 0;
         self.history_restore_last.clear();
@@ -3919,6 +3927,53 @@ impl MaskState {
             Err(e) => {
                 self.history_lock_last =
                     format!("锁没跑成：{dir:?} 的库里第 {id} 行改不动（{e}）。");
+                None
+            }
+        }
+    }
+
+    /// §5.14.4 规则第二条 / §8.7「用户明确**收藏**」的那一手：把历史第 `id` 行标成收藏（或取消）。
+    ///
+    /// 与 [`Self::lock_history`] 同一副骨架（同一张表、同一支 `history_open_in`、同一族的三道
+    /// 拒绝与两句「没跑」），但**不是同一件事**：锁定说的是「别被自动清理收走」，收藏说的是
+    /// 「这一枚我要留着」—— 两者都被自动清理与手动清空放过（§5.14.4 规则第二条那句话是
+    /// 「自动清理不得删除用户明确收藏或锁定的记录」，而 `clear_history` 那条把两种都放过）。
+    ///
+    /// 不碰的账同 [`Self::lock_history`]，理由也同：库里那一行此刻收藏没有，本条不替它下结论。
+    pub fn favorite_history(&mut self, id: i64, favorite: bool) -> Option<()> {
+        let (Some(cfg), Some(dir)) = (
+            self.history.clone(),
+            (!self.history_dir.as_os_str().is_empty()).then(|| self.history_dir.clone()),
+        ) else {
+            self.history_favorite_last = "收藏没跑：这一场没有历史可收藏。".to_string();
+            return None;
+        };
+        let history = match crate::settings::history_open_in(&dir, &cfg) {
+            Ok(Some(h)) => h,
+            Ok(None) => {
+                self.history_favorite_last =
+                    "收藏没跑：`[history] enabled` 是关的，库里没有可收藏的行。".to_string();
+                return None;
+            }
+            Err(e) => {
+                self.history_favorite_last =
+                    format!("收藏没跑：打不开 {dir:?} 里的 history.db（{e}）。");
+                return None;
+            }
+        };
+        match history.set_favorite(id, favorite) {
+            Ok(()) => {
+                self.history_favorites += 1;
+                self.history_favorite_last = if favorite {
+                    format!("收藏了历史第 {id} 行，自动清理与清空都不许再动它。")
+                } else {
+                    format!("取消收藏历史第 {id} 行，它重新回到可被清理的那一批里。")
+                };
+                Some(())
+            }
+            Err(e) => {
+                self.history_favorite_last =
+                    format!("收藏没跑成：{dir:?} 的库里第 {id} 行改不动（{e}）。");
                 None
             }
         }
@@ -8259,6 +8314,104 @@ mod tests {
         assert_eq!(m.hole, hole_b, "④ 翻回来了而遮罩的选区没跟着过去");
         assert_eq!(m.history_viewed, Some(id_b), "④ 一次成功的翻页没留下锚点");
         assert_eq!(m.history_records, 2, "④ 一次恢复与一次翻页凭空多记了一行");
+    }
+
+    /// §5.14.4 规则第二条 / §8.7「用户明确**收藏**」那一半在桥侧的那一手：三道拒绝、一枚计数、
+    /// 一次真写。
+    ///
+    /// 与锁定那一枚同一副骨架（同一张库、同一族的三道拒绝、同一句「只许动那一枚布尔」），但**不是
+    /// 同一件事**：锁定说的是「别被自动清理收走」，收藏说的是「这一枚我要留着」—— 两者都被自动
+    /// 清理与手动清空放过（规则第二条那句话「读的是一条口径，而不是一条只归自动清理的例外」）。
+    #[test]
+    fn favoring_a_named_history_row_writes_the_mark_and_nothing_else() {
+        let hole = PhysRect::new(10, 20, 100, 80);
+        let hdir = sandbox("favorite-history");
+        let mut m = savable(hole);
+        m.history = Some(falcon_core::config::History {
+            max_items: 0,
+            max_age_days: 0,
+            max_size_mb: 0,
+            ..Default::default()
+        });
+        m.history_dir = hdir.clone();
+        let rows = || {
+            falcon_core::history::History::open(&hdir)
+                .and_then(|h| h.count())
+                .unwrap_or(u64::MAX)
+        };
+        let favorite_of = |id: i64| -> Option<bool> {
+            let store = falcon_core::history::History::open(&hdir).ok()?;
+            store.get(id).ok()?.map(|rec| rec.favorite)
+        };
+
+        // ① 这一场没有历史：换一枚不存在的落点，"开没开库"当场数得出来。
+        let fresh = sandbox("favorite-no-history").join("brand-new");
+        m.history = None;
+        m.history_dir = fresh.clone();
+        assert!(
+            m.favorite_history(1, true).is_none(),
+            "① 没有历史的一场反倒去收藏了"
+        );
+        assert!(
+            !fresh.join("history.db").exists(),
+            "① 没有历史却把库建了出来"
+        );
+        assert!(
+            m.history_favorite_last.contains("没有历史"),
+            "① 要说清是这一场没有历史: {:?}",
+            m.history_favorite_last
+        );
+        assert_eq!(m.history_favorites, 0, "① 一次没跑成的收藏吃了计数");
+
+        // ② 正面：记成一行，收藏它。写成的那一次只许动那一枚布尔。
+        m.history = Some(falcon_core::config::History {
+            max_items: 0,
+            max_age_days: 0,
+            max_size_mb: 0,
+            ..Default::default()
+        });
+        m.history_dir = hdir.clone();
+        assert_eq!(m.commit(), Some(hole), "② 那一行没记成，收藏无从可收藏");
+        let id = m.history_last_id.expect("② §5.14.1 没报出行号");
+        assert!(
+            m.favorite_history(id, true).is_some(),
+            "② 库里明明有那一行，收藏却没写成"
+        );
+        assert_eq!(favorite_of(id), Some(true), "② 收藏上了盘上却读不到");
+        assert_eq!(m.history_favorites, 1, "② 收藏成了却没数到");
+        assert!(
+            m.history_favorite_last.contains(&format!("第 {id} 行"))
+                && m.history_favorite_last.contains("收藏"),
+            "② 成了却没点名行号、或没说清是收藏上了: {:?}",
+            m.history_favorite_last
+        );
+        assert_eq!(rows(), 1, "② 一把收藏带走了库里那一行");
+
+        // ③ 取消收藏：用户改主意也是「用户明确」（与锁定那一枚同一条理由）。
+        assert!(m.favorite_history(id, false).is_some(), "③ 取消收藏没写成");
+        assert_eq!(favorite_of(id), Some(false), "③ 取消了盘上却还带着收藏");
+        assert_eq!(m.history_favorites, 2, "③ 取消那一臂没数到");
+
+        // ④ 库里没有的那一行 ⇒ 一句自己的话，不许转述成收藏成了、也不许吃计数。
+        let ghost = 90_000_000_i64;
+        assert!(
+            m.favorite_history(ghost, true).is_none(),
+            "④ 库里没有的那一行也收藏成了"
+        );
+        assert_eq!(m.history_favorites, 2, "④ 一次被拒的收藏吃了计数");
+        assert!(
+            m.history_favorite_last.contains("改不动")
+                && m.history_favorite_last.contains(&ghost.to_string()),
+            "④ 要说清是第 {ghost} 行改不动: {:?}",
+            m.history_favorite_last
+        );
+        assert_eq!(rows(), 1, "④ 一次空手把库里那一行也带走了");
+        assert_eq!(favorite_of(id), Some(false), "④ 一次空手把②那枚收藏也改了");
+
+        // ⑤ 与规则第二条对上：收藏着 ⇒ `clear_history(true)` 带不走它。
+        assert!(m.favorite_history(id, true).is_some(), "⑤ 前置：那一行没收藏上");
+        let cleared = m.clear_history(true).expect("⑤ 清空没跑成");
+        assert_eq!(cleared.ids, vec![], "⑤ 收藏着的那一行被清空带走了");
     }
 
     #[test]

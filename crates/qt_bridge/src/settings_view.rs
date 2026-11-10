@@ -4362,6 +4362,13 @@ mod tests {
             "core/src/history.rs",
             "exempt_locked",
         ),
+        // §5.14.4 规则第二条 / §8.7「用户明确**收藏**」那一半的开关：读者是 core 那一格
+        // `Retention::from`（自动清理认它），与锁定那一半同一形状。
+        (
+            "history.exempt_favorite",
+            "core/src/history.rs",
+            "exempt_favorite",
+        ),
         // [advanced]
         ("advanced.cli_enabled", "qt_bridge/src/main.rs", "cli_enabled"),
         (
@@ -4529,8 +4536,8 @@ mod tests {
             "名单上这几枚键 flat() 已经不递了：键删了就划掉那一行 {extra:?}"
         );
 
-        assert_eq!(flat.len(), 123, "出厂默认递出来的键数不是那一百二十三枚");
-        assert_eq!(READERS.len(), 120, "有读者的键数不是一百二十枚");
+        assert_eq!(flat.len(), 124, "出厂默认递出来的键数不是那一百二十四枚");
+        assert_eq!(READERS.len(), 121, "有读者的键数不是一百二十一枚");
         assert_eq!(RECITAL.len(), 1, "只念回去的键不是一枚");
         assert_eq!(NO_READER.len(), 2, "没人读的键不是两枚");
 

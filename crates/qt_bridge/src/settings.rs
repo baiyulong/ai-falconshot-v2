@@ -1866,6 +1866,12 @@ pub fn history_rows_joined(records: &[falcon_core::history::Record], offset_min:
             if rec.locked {
                 label.push_str(" · 已锁定");
             }
+            // 「已收藏」是 §5.14.4 规则第二条 / §8.7 那一半在清单里的字样：用户点一下「收藏」，
+            // 那一行就得在清单里读得到它 —— 与「已锁定」同一形状、同一理由（§5.14.3「找到标记为
+            // “已取消”的记录」那一条路靠的就是字样在清单里读得到）。
+            if rec.favorite {
+                label.push_str(" · 已收藏");
+            }
             // §5.16 那枚 `[advanced] recognize_text` 落进 `ocr_text` 的那一格的**第一位读者**
             // （P148）：库里那三种形状在清单里说三句话，一句也不并成一句 ——
             // 「没识别过」是 NULL、「识别过而一个字也没有」是空串、「有字」才数长度。
@@ -3962,6 +3968,7 @@ mod tests {
                 thumb: None,
                 cancelled,
                 locked,
+                favorite: false,
                 ocr_text: None,
                 note: String::new(),
             };
@@ -4026,6 +4033,7 @@ mod tests {
             thumb: None,
             cancelled: false,
             locked: false,
+            favorite: false,
             ocr_text: ocr.map(str::to_string),
             note: String::new(),
         };
@@ -4249,6 +4257,7 @@ mod tests {
                 thumb: None,
                 cancelled: false,
                 locked: false,
+                favorite: false,
                 ocr_text: None,
                 note: String::new(),
             }
