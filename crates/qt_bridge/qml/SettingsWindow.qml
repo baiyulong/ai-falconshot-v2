@@ -428,7 +428,7 @@ Window {
     /// 页上就有被倒过来写的一日。这里不判任何事 —— 判据全在桥那三枚读者里，页上只是递话（#281）。
     ///
     /// 这四枚键没有一枚在 `RESTART_KEYS` 里（core 的名单），所以这一只手就是它们「即时」的全部
-    /// 对面；在名单里的那几枚（`general.language` 等）页上带着`（需重启）`那几个字，这一只手
+    /// 对面；在名单里的那几枚（`general.show_tray` 等）页上带着`（需重启）`那几个字，这一只手
     /// 对它们什么都不做。
     function syncAppearance() {
         win.session.refreshTheme()

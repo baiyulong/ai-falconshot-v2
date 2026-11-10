@@ -4433,15 +4433,14 @@ mod tests {
         "format_startup_banner",
     )];
 
-    /// 页上有一行、场上没人读的那三枚。留着是**有意**的，理由就写在第二列；改判之前先读它。
+    /// 页上有一行、场上没人读的那两枚。留着是**有意**的，理由就写在第二列；改判之前先读它。
+    ///
+    /// （`general.language` 那一枚自 2026-11-10 起不在这里了：它**两头都缺** —— PRD 没有一句要
+    /// 「界面语言」，场上也没有读者，于是整枚删掉，见 `core/src/config.rs` 的 `General`。）
     const NO_READER: &[(&str, &str)] = &[
         (
             "general.close_to_tray",
             "关窗收进托盘那一道拦截还没做（`settings.rs` 自己承认这一格待做）：页照旧存这一枚，存完没有人问它",
-        ),
-        (
-            "general.language",
-            "多语言加载还没做；这一枚是 RESTART_EVIDENCE 名单里唯一把读者记成 None 的，并由 core 那一格单测钉住",
         ),
         (
             "annotation.palette_schemes",
@@ -4530,10 +4529,10 @@ mod tests {
             "名单上这几枚键 flat() 已经不递了：键删了就划掉那一行 {extra:?}"
         );
 
-        assert_eq!(flat.len(), 124, "出厂默认递出来的键数不是那一百二十四枚");
+        assert_eq!(flat.len(), 123, "出厂默认递出来的键数不是那一百二十三枚");
         assert_eq!(READERS.len(), 120, "有读者的键数不是一百二十枚");
         assert_eq!(RECITAL.len(), 1, "只念回去的键不是一枚");
-        assert_eq!(NO_READER.len(), 3, "没人读的键不是三枚");
+        assert_eq!(NO_READER.len(), 2, "没人读的键不是两枚");
 
         for (k, file, needle) in READERS.iter().chain(RECITAL.iter()) {
             assert!(
@@ -4842,7 +4841,7 @@ mod tests {
                 .all(|r| !r.restart && !r.text().contains("需重启")),
             "热区那一类里有行被标成需重启"
         );
-        assert!(needs_restart("general.language"));
+        assert!(needs_restart("general.show_tray"));
         assert!(!needs_restart("hot_corner.dwell_ms"));
         assert!(!needs_restart(""));
     }
@@ -5894,7 +5893,7 @@ mod tests {
             before,
             "克隆那一腿把活的那一份改了"
         );
-        assert!(text_with("general.language", "zh-CN").ends_with("（需重启）"));
+        assert!(text_with("general.show_tray", "false").ends_with("（需重启）"));
         assert!(!text_with(SAVE_KEY, "700").contains("需重启"));
     }
 
@@ -6361,7 +6360,6 @@ mod tests {
             "history.max_items",
             "pin.alpha_bg",
             "hot_corner.corners.top_left",
-            "general.language",
             "appearance.theme",
             "nope.nope",
         ] {

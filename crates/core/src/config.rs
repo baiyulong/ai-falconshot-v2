@@ -46,7 +46,6 @@ pub const AUTOSTART_KEY: &str = "general.launch_at_startup";
 /// 而 install 全仓只有 `main.rs` 里调用一次 —— 页上拨下去，托盘既不消失也不出现，直到下一趟进程。
 /// 「既不即时、又没标记」的那一枚就是它（§5.20.2 第一、二条同时不成立）。
 pub const RESTART_KEYS: &[&str] = &[
-    "general.language",
     AUTOSTART_KEY,
     "general.show_tray",
     "advanced.data_dir",
@@ -121,12 +120,6 @@ pub struct RestartEvidence {
 /// `hot_corner_cfg` 每一秒 / `tray_cfg` 每一次点击 / `history_open_in` 每一趟）都是现问 config，
 /// 不是进程起来那一次读。
 pub const RESTART_EVIDENCE: &[RestartEvidence] = &[
-    RestartEvidence {
-        key: "general.language",
-        timing: ApplyTiming::Startup,
-        reader: None,
-        probe: "界面那一句中文：今天读不到 —— i18n 还没落地，这一枚键在桥里没有任何调用点",
-    },
     RestartEvidence {
         key: AUTOSTART_KEY,
         timing: ApplyTiming::Machine,
@@ -511,8 +504,6 @@ pub struct General {
     pub show_tray: bool,
     /// §5.1.1 预期结果「应用在后台持续运行」：关窗不退、驻留下去。
     pub close_to_tray: bool,
-    /// `auto`, or a BCP 47 tag such as `zh-CN` / `en`.
-    pub language: String,
 }
 
 impl Default for General {
@@ -522,7 +513,6 @@ impl Default for General {
             launch_at_startup: false,
             show_tray: true,
             close_to_tray: true,
-            language: "auto".into(),
         }
     }
 }
@@ -5048,17 +5038,17 @@ actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
             .hotkey
             .actions
             .insert("capture".into(), "f13".into());
-        incoming.general.language = "en".into();
+        incoming.general.show_tray = false;
         let current = Config::default();
         let changes = current.preview_import(&incoming, ImportScope::All);
         let keys: Vec<&str> = changes.iter().map(|c| c.key.as_str()).collect();
         assert!(keys.contains(&"hotkey.actions.capture"), "{keys:?}");
-        assert!(keys.contains(&"general.language"), "{keys:?}");
-        let language = changes
+        assert!(keys.contains(&"general.show_tray"), "{keys:?}");
+        let tray = changes
             .iter()
-            .find(|c| c.key == "general.language")
+            .find(|c| c.key == "general.show_tray")
             .unwrap();
-        assert!(language.restart_required, "language needs a restart");
+        assert!(tray.restart_required, "托盘那一枚要重启才生效");
         let hotkey = changes
             .iter()
             .find(|c| c.key == "hotkey.actions.capture")
@@ -5089,9 +5079,9 @@ actions = { capture = "CTRL+SHIFT+A", solo = "shift+ctrl+a", pin_edit = "f1" }
             .apply_import(&incoming, ImportScope::Suggested)
             .unwrap();
         assert_eq!(applied.hotkey.actions["capture"], "f13");
-        assert_eq!(applied.general.language, "auto", "out of scope stays put");
+        assert!(applied.general.show_tray, "out of scope stays put");
         applied.apply_import(&incoming, ImportScope::All).unwrap();
-        assert_eq!(applied.general.language, "en");
+        assert!(!applied.general.show_tray);
         // Importing yourself changes nothing.
         assert!(current
             .preview_import(&current, ImportScope::All)
@@ -5675,7 +5665,7 @@ actions = [\"capture\", \"solo\"]
         assert_eq!(cfg.get_bool("history.max_items"), None, "整数不是开关");
         assert_eq!(cfg.get_bool("pin.alpha_bg"), None, "枚举串不是开关");
         assert_eq!(cfg.get_bool("hot_corner.corners.top_left"), None);
-        assert_eq!(cfg.get_bool("general.language"), None);
+        assert_eq!(cfg.get_bool("advanced.log_level"), None);
         assert_eq!(
             cfg.get_bool("nope.nope"),
             None,
@@ -6399,15 +6389,18 @@ actions = [\"capture\", \"solo\"]
         );
         // 表上「压根没有读者」的那些：§5.20.2 两句对它都不成立，报出来而不是算成名单的错。
         //
-        // 这一格的前提**自本轮起变了**：`advanced.cli_enabled` 那一行原来写的是 `reader: None`
-        // （「命令行没人认参数」），所以它同 `general.language` 一起在这一列里。现在它有了读者
-        // （`qt_bridge::cli_gate`），于是它从这一列出去 —— 留在名单里（`timing: Startup`）不变，
-        // 因为 argv 的解释确实只在一趟进程起来那一刻发生一次。**没有删掉这一格**，改的是它判的
-        // 那一枚键：`language` 仍然必须报「没人读」，`cli_enabled` 现在必须**不**报。
+        // 这一格的前提**自本轮起又变了一次**：`general.language` 那一行原来写的是 `reader: None`
+        //（「i18n 还没落地，桥里一处调用点也没有」），它与 `advanced.cli_enabled` 一起在这一列里。
+        // `cli_enabled` 后来有了读者（`qt_bridge::cli_gate`），从这一列出去了；而 `language`
+        // 自本轮起**整枚删掉**（2026-11-10）：PRD 没有一句要「界面语言」，场上也没有读者，一枚
+        // 拨了什么都不动、重启也不动的开关留着只是让用户去扳一个扳了也不动的东西 —— 与
+        // `pin.cycle_on_click` 那一枚删得同一个理由。于是这一列**空了**：名单上每一枚键都有读者。
+        // 这一格因此比从前更强：从前它钉的是「那一枚必须报没人读」，现在它钉的是「**不许**再有
+        // 没人读的」—— 往后谁想加回一枚没有读者的键，这一格当场红。
         let unread = restart_unread();
         assert!(
-            unread.contains(&"general.language"),
-            "i18n 那一枚键没有读者，§5.20.2 两句对它都不成立：{unread:?}"
+            unread.is_empty(),
+            "名单上还有没人读的键：{unread:?}（要么给它一位读者，要么把它删掉 —— 拨了什么都不动的那种）"
         );
         assert!(
             !unread.contains(&"advanced.cli_enabled"),

@@ -509,13 +509,14 @@ pub fn capture_cfg() -> falcon_core::config::Capture {
 /// 于是「档里写着开而注册表里没有」这一族在这一档里没有可达的写法，而这一枚键仍是
 /// `RESTART_KEYS` 里的那一枚：启动项是立刻写进机器的，**用它登录一次**才是它生效的时候。
 ///
-/// 其余 2 枚键（`close_to_tray` 需要窗口关闭拦截、`language` 需要 i18n 装填）**由快照字段
-/// 而不是由独立调用点**建了读者：`hotkey::install` 里 clone 一次整段 `[general]`，`show_tray`
-/// 那一支真分岔，其余两支**待改码接进各自的调用点**（§5.15 那一族）。这两枚与上面删掉的
-/// 两枚不同处要记着：`close_to_tray` 有 PRD 自己的句子（§5.1.1「应用在后台持续运行」），缺的
-/// 是手不是据；`language` 则两头都缺 —— PRD 没有一句要「界面语言」，场上也没有读者，它能活过
-/// 2026-11 那轮删除只因那一轮的名单钉在审出来的十枚上，下一轮的逐键证人（每一枚键要么给据、
-/// 要么进例外名单）要重新判它。与 [`pin_cfg`] / [`capture_cfg`] 同形：一次 clone 整段快照，
+/// 其余 1 枚键（`close_to_tray` 需要窗口关闭拦截）**由快照字段而不是由独立调用点**建了读者：
+/// [`crate::hotkey::install`] 里 clone 一次整段 `[general]`，`show_tray` 那一支真分岔，它
+/// **待改码接进它自己的调用点**（§5.15 那一族）。它与上面删掉的两枚不同处要记着：
+/// `close_to_tray` 有 PRD 自己的句子（§5.1.1「应用在后台持续运行」），缺的是手不是据；
+/// 而 `language` 是**两头都缺**（PRD 没有一句要「界面语言」，场上也没有读者）—— 它已于
+/// 2026-11-10 **整枚删掉**（`core/src/config.rs` 的 `General` 里没有那个字段了，`RESTART_KEYS`
+/// 与 `RESTART_EVIDENCE` 两张表里也没有它了），与 `pin.cycle_on_click` 那一枚删得同一个理由。
+/// 与 [`pin_cfg`] / [`capture_cfg`] 同形：一次 clone 整段快照，
 /// 而 `launch_at_startup` 那一支自本轮起每次问的是机器。
 pub fn general_cfg() -> falcon_core::config::General {
     with(|s| s.config.general.clone())
