@@ -440,9 +440,25 @@ Rectangle {
     /// 屏幕上这一块画面，用户没打算为它交出目录、名字和一次磁盘。判据全在
     /// `MaskState::pin_selection` 那一格，页上这一步只是把它的返回值交给 `delivered`——那一面答的
     /// 就是"这一刻屏幕上多了一张贴图吗"。
+    ///
+    /// **贴成了就把标注层收掉**（2026-11-11）：§5.8.1 步 3 要的是「独立悬浮窗口」、步 4 是
+    /// 「用户拖动贴图到合适位置」——这一枚按完，这一轮标注就结束了，遮罩没有理由继续压着屏幕。
+    /// 而遮罩那层是**整块屏幕**的一扇窗（盖住任务栏与托盘），它留着的话：托盘那枚「退出」点不
+    /// 出来（用户退不出去），贴图自己那枚右键菜单也未必抢得到手（关闭不了贴图）——真机实测过这两
+    /// 件事（2026-11-11，见 PRD §5.8.1 那段口径）。
+    ///
+    /// **只在这一枚按成了的时候收**：没成（没有选区、拼不出画面）的时候留着遮罩，用户还得在
+    /// 这一轮里接着画。
+    ///
+    /// 收它的手是**「取消」那同一枚**（`session.endMask()`），不新造第二个作者；走 `Qt.callLater`
+    /// 同样是抄「取消」那一句的理由：`endMask` 从模型里毁掉这些窗，而从正在跑的一枚遮罩窗的
+    /// handler 里毁掉它，是 QML 不会警告的 use-after-free。
     function pin() {
         bar.delivered = bar.view.pinSelection()
         bar.grabbed()
+        if (bar.delivered) {
+            Qt.callLater(() => session.endMask())
+        }
     }
 
     // The `--ink` gauge at this door. Everything above is the product's own path; what

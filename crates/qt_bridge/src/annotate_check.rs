@@ -7246,6 +7246,98 @@ mod tests {
         );
     }
 
+    /// §5.8.1「贴图」按完之后，**标注遮罩那层要收掉**（2026-11-11）。
+    ///
+    /// 这一格钉的是**页上那一手**的形状，量的是三件事，各有各的理由：
+    ///
+    /// ① `pin()` 贴成了（`pinSelection` 交回 true）就要收遮罩——§5.8.1 步 3 要「独立悬浮窗口」、
+    /// 步 4 要「用户拖动贴图到合适位置」，而遮罩那层是**整块屏幕**的一扇窗（真机实测：
+    /// `falconshot-mask-m0-display1`，0,0–3072,1920）：它留着的时候任务栏与托盘都在它里面 ⇒
+    /// 托盘那枚「退出」点不出来、贴图自己那枚右键菜单也抢不到手。
+    ///
+    /// ② 收它的手是**「取消」那同一枚**（`session.endMask()`），不是新造的一个作者（#281）：
+    /// 两处各写一遍 `endMask` 就是「收遮罩」这件事有了两个主人。走 `Qt.callLater` 的理由抄
+    /// 「取消」那一句——`endMask` 从模型里毁掉遮罩那些窗，而从正在跑的遮罩窗 handler 里毁掉它是
+    /// QML 不警告的 use-after-free。
+    ///
+    /// ③ 「复制 / 快速保存」那一族**不**收遮罩：它们做完用户还要**接着在这一轮里标注**，遮罩留着
+    /// 是它们要的。这一条钉的是「别顺手把那一族也改了」——只查 `pin()` 里那一句收，别处的收是
+    /// 另一件事。
+    ///
+    /// 尺子与全档同一把：`hint_check::qml_code` 剥注释（一句散文过不了这一格），
+    /// `include_str!` 拿的是编译进这一手的那一份源。摘掉 `pin()` 里那一句收，计数就得掉一枚
+    /// （#269 同一族）。
+    #[test]
+    fn the_pin_cell_ends_the_annotation_layer_and_its_siblings_do_not() {
+        const QML: &str = include_str!("../qml/AnnotationToolbar.qml");
+        let code = crate::hint_check::qml_code(QML);
+
+        // `pin()` 那一个函数体：切出来，免得把别处的 `endMask` 数进来。
+        let pin_body = {
+            let start = code
+                .find("function pin() {")
+                .expect("页上那枚「贴图」钮的 `pin()` 不见了");
+            let rest = &code[start..];
+            let end = rest
+                .find("\n    }")
+                .expect("`pin()` 没有收尾的那一行");
+            &rest[..end]
+        };
+
+        // ① 贴成了才收：那一枚收在 `if (bar.delivered)` 里面 —— 没成的时候（没有选区、拼不出
+        // 画面）用户还得在这一轮里接着画，遮罩留着。
+        assert!(
+            pin_body.contains("bar.view.pinSelection()"),
+            "`pin()` 没有走 `pinSelection` 那一格：贴图那一枚的判据不在页上"
+        );
+        assert!(
+            pin_body.contains("if (bar.delivered)"),
+            "`pin()` 没有按「贴成了没有」分岔：没成的时候收遮罩，用户就没法在这一轮里接着画"
+        );
+        assert!(
+            pin_body.contains("session.endMask()"),
+            "`pin()` 贴成之后没收掉标注遮罩：那层是整块屏幕的一扇窗（盖住任务栏与托盘），\
+             托盘那枚「退出」就点不出来、贴图自己那枚右键菜单也抢不到手"
+        );
+        // ② 走事件环，不在 handler 里当场毁掉自己所在的那扇窗。
+        assert!(
+            pin_body.contains("Qt.callLater(() => session.endMask())"),
+            "`pin()` 收遮罩没有走 `Qt.callLater`：`endMask` 从模型里毁掉遮罩那些窗，\
+             从正在跑的遮罩窗 handler 里毁掉它是 QML 不警告的 use-after-free"
+        );
+
+        // ③ 「复制 / 快速保存」那一族不收：它们的函数体里不许出现 `endMask`。
+        for (name, marker) in [
+            ("copy", "function copy() {"),
+            ("quickSave", "function quickSave() {"),
+        ] {
+            let body = {
+                let start = code
+                    .find(marker)
+                    .unwrap_or_else(|| panic!("页上那枚 `{name}` 的函数不见了"));
+                let rest = &code[start..];
+                let end = rest.find("\n    }").expect("那一个函数没有收尾的那一行");
+                &rest[..end]
+            };
+            assert!(
+                !body.contains("endMask"),
+                "`{name}` 那一族做完用户还要接着在这一轮里标注，收掉遮罩是它不该做的事"
+            );
+        }
+
+        // 尺子自己也被量一次：摘掉 `pin()` 里那一句收，计数就得掉一枚（#269 同一族）。
+        let ends = code.matches("session.endMask()").count();
+        let dropped = code
+            .replacen("Qt.callLater(() => session.endMask())", "", 1)
+            .matches("session.endMask()")
+            .count();
+        assert_eq!(
+            dropped + 1,
+            ends,
+            "摘掉 `pin()` 里那一句收之后计数没变 ⇒ 这一格没在数"
+        );
+    }
+
     /// §5.7.11 规则三「文本框应支持换行」在**页上那一手**的判据。
     ///
     /// 换行怎么被量、怎么被画，`annotate.rs` 里那一格
