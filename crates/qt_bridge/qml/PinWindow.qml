@@ -430,6 +430,20 @@ Window {
         gaugeSay("rst-lone-zoom", String(win.view.zoom))
         gaugeSay("rst-lone-rev", String(win.view.revision))
         gaugeSay("rst-lone-epoch-end", String(win.session.reset_epoch))
+        // §5.9.2「关闭后，滚轮不缩放贴图」那一格：把开关在**内存里**关掉（盘上一个字节也不动 ——
+        // 门不许写用户的档，§9.1 第十五条），走**真实滚轮那一手**（`wheelZoom` 正是滚轮事件叫的那
+        // 一个，见上面那枚 `onWheel`），看贴图的缩放**没有**变，然后把开关还原成用户原本那一枚。
+        //
+        // 为什么门自己叫那一手而不是等一次真的滚轮：一次真的滚轮要一枚输入注入器（本仓
+        // `SendInput` 零命中），而这一格要判的判据就在那只手**里面**（`pin_view::wheel_zoom`
+        // 开头那一问「这一下缩不缩放」）⇒ 走的是同一只手，读的是同一件事。
+        const wheelZoomBefore = win.view.zoom
+        const wheelWas = win.session.pinWheelProbe(false)
+        win.view.wheelZoom(true, 20, 20)
+        gaugeSay("wheel-off", String(win.view.zoom))
+        gaugeSay("wheel-off-before", String(wheelZoomBefore))
+        win.session.pinWheelProbe(wheelWas)
+        gaugeSay("wheel-off-restored", String(wheelWas))
         // 一扇已经关掉的窗剩下的那一次鼠标事件：id 不在集里。取场上最大那枚 id 加一 —— 那是本档
         // 唯一一枚保证还没被发出去的数，写死一枚数是猜（#261）。
         let top = 0

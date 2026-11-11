@@ -916,6 +916,18 @@ pub mod qobject {
         #[cxx_name = "historyFavorite"]
         fn history_favorite(self: Pin<&mut Self>, id: i64, favorite: bool) -> QString;
 
+        /// §5.9.2「关闭后，滚轮不缩放贴图」那一格的**证人脚手架**：把 `[pin] wheel_resizes` 在
+        /// **内存里**翻成 `asked`，交回**翻之前**那一枚。
+        ///
+        /// 为什么是内存而不是盘上：门不许写用户的档（§9.1 第十五条），而这一格要的就是「开关
+        /// 关着时滚轮不动」那一读 ⇒ 内存里翻一下、读回、**还原**，盘上一个字节也不动。
+        ///
+        /// 交回旧值是给还原用的：调用方拿着它把开关放回原样（`pinWheelProbe(旧值)`），于是用户
+        /// 自己的那一枚「开/关」在这一趟前后一字不差。
+        #[qinvokable]
+        #[cxx_name = "pinWheelProbe"]
+        fn pin_wheel_probe(self: &Self, asked: bool) -> bool;
+
         /// §5.14.3 step 4「恢复该截图内容或重新进入原选区」里**选区**那一半（P102 建的
         /// [`crate::mask::MaskState::restore_history_selection`] 自此有了界面读者，P103 起）：
         /// 把历史里第 `id` 行记着的那一枚矩形交回遮罩，并把那一行说的话交给 `status`。
@@ -2588,6 +2600,19 @@ impl qobject::Session {
         mask::with(|m| m.favorite_history(id, favorite));
         let said = mask::with(|m| m.history_favorite_last.clone());
         self.as_mut().say(&said)
+    }
+
+    /// §5.9.2 那一格的证人脚手架：把 `[pin] wheel_resizes` 在**内存里**翻成 `asked`，交回翻之前
+    /// 那一枚 —— 盘上一个字节也不动（理由写在那一枚 qinvokable 的声明上）。
+    ///
+    /// 交回旧值是给还原用的：调用方拿着它把开关放回原样，于是用户自己那一枚「开/关」在这一趟
+    /// 前后一字不差。
+    pub fn pin_wheel_probe(&self, asked: bool) -> bool {
+        crate::settings::with(|s| {
+            let was = s.config.pin.wheel_resizes;
+            s.config.pin.wheel_resizes = asked;
+            was
+        })
     }
 
     pub fn history_window_title(&self) -> QString {

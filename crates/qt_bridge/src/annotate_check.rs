@@ -4191,23 +4191,42 @@ fn mask_dialog_rows(rep: &mut Report, dir: &Path, mask_png: &Path) {
     let got = std::fs::read(&clicked).ok();
     let wrote = said(&lines, "dlg-accepted").unwrap_or("");
     let landed = PathBuf::from(crate::save::local_path(wrote).into_owned());
+    // **缺席 ≠ 失败**（2026-11-11）：读不到「点完之后对话框写下了哪个名字」时，门分不出「产品没写」
+    // 与「这一台机器没把对话框带到接受」—— 而那两件事的修法完全不同（一个是产品，一个是门/环境）。
+    // 所以读不到就发 BLOCKED 并写明读到了什么，不拿 FAIL 冒充（与旁边那枚「点了但没成 ⇒ FAIL /
+    // 问不了 ⇒ BLOCKED」同一族规矩，#453、#274）。
+    //
+    // 两个名字都印出来：**门要的那个**（`dlg-name`，在对话框打开**之前**问的 —— Qt 的原生对话框
+    // 开起来时会把 `currentFile` 重置，所以它时有时无）与**真的落地的那个**（`dlg-accepted`）——
+    // 报告里摆着这两个，下一轮才分得清「名字没进去」与「产品没存」。
+    let asked_name = said(&lines, "dlg-name").unwrap_or("");
+    let no_landing = wrote.is_empty() || landed.as_os_str().is_empty();
     rep.row(
         "mask save via real click",
-        Check::from(
-            got.is_some()
-                && got == std::fs::read(mask_png).ok()
-                && landed == clicked
-                && now.starts_with("已保存到"),
-        ),
+        if no_landing {
+            Check::Blocked
+        } else {
+            Check::from(
+                got.is_some()
+                    && got == std::fs::read(mask_png).ok()
+                    && landed == clicked
+                    && now.starts_with("已保存到"),
+            )
+        },
         format!(
-            "对话框写 {:?} 与 rust 那份字节一致={}；{:?} 读成 {:?}，要求 {:?}；那句 {now:?}",
+            "对话框写 {:?} 与 rust 那份字节一致={}；{:?} 读成 {:?}，要求 {:?}；那句 {now:?}；门要的名字 {asked_name:?}{}",
             clicked
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned()),
             got.is_some() && got == std::fs::read(mask_png).ok(),
             wrote,
             landed,
-            clicked
+            clicked,
+            if no_landing {
+                "；这一格读不到落地的那个名字 ⇒ 判「这一台机器没把对话框带到接受」，不判失败"
+            } else {
+                ""
+            }
         ),
     );
 

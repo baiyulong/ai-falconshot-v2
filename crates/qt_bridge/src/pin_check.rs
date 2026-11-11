@@ -465,6 +465,9 @@ pub(crate) const PIN_SCHEDULE: &[&str] = &[
     "rst-lone-zoom",
     "rst-lone-rev",
     "rst-lone-epoch-end",
+    "wheel-off",
+    "wheel-off-before",
+    "wheel-off-restored",
     "mov-ghost",
     "mov-epoch-ghost",
     "op-epoch-ghost-before",
@@ -2881,6 +2884,43 @@ const DES_ROWS: [&str; 5] = [
 /// 本窗不能被带走，也不能是名单里唯一的那一枚：说这十八行的正是它（第 55 项那一封同一枚理由）。
 /// 所以这一腿点的是**别的**两枚，而 `victim` 的取法里排除的那一枚 `gauge[10]` 是量规自己的排期
 /// 约束（那扇会动的贴图长着一段腿），不是产品的规则——逐名记在门档。
+/// §5.9.2「关闭后，滚轮不缩放贴图」那一问的**真机读数**（2026-11-11）。
+///
+/// 判据三件：① 开关**关着**时走**真实滚轮那一手**（`wheelZoom` 正是滚轮事件叫的那一个，见
+/// `PinWindow.qml` 那枚 `onWheel`），贴图的缩放**没有**变；② 那一枚开关在这一趟前后**一字不差**
+/// —— 门在**内存里**翻、页上还原 ⇒ 用户的档一个字节也没有动（§9.1 第十五条）；③ 那一问真的住在
+/// 那只手**里面** —— 源码形状那一格另有其人（本文件里 `wheel_resizes` 那一族钉着「按下那一刻现读、
+/// 不是启动快照、QML 里一次也不出现它」）。
+///
+/// 为什么门自己叫那一手而不是等一次真的滚轮：一次真的滚轮要一枚输入注入器（本仓 `SendInput` 零
+/// 命中），而这一格要判的判据就在那只手**里面** ⇒ 走的是同一只手，读的是同一件事。
+///
+/// 三枚腿读不满 ⇒ 那一格**问不了**（BLOCKED），不是失败（#453、#274：缺席与失败是两件事）。
+fn wheel_rows(lines: &[String]) -> Vec<(Check, &'static str, String)> {
+    let before = said(lines, "wheel-off-before");
+    let after = said(lines, "wheel-off");
+    let restored = said(lines, "wheel-off-restored");
+    let now = crate::settings::wheel_resizes();
+    let asked = before.is_some() && after.is_some() && restored.is_some();
+    let unchanged = before == after;
+    let back = restored.as_deref() == Some(now.to_string().as_str());
+    vec![(
+        if !asked {
+            Check::Blocked
+        } else if unchanged && back {
+            Check::Pass
+        } else {
+            Check::Fail
+        },
+        "pin wheel resize off",
+        format!(
+            "开关关着的时候滚轮那一手走过去：缩放 {before:?} → {after:?}（要一字不差）；\
+             开关这一趟前后 {restored:?} 而此刻档里是 {now}（要一字不差——门在内存里翻、页上还原，\
+             用户的档一个字节也没动）",
+        ),
+    )]
+}
+
 fn des_rows(lines: &[String], id: PinId) -> Vec<(Check, &'static str, String)> {
     let num = |k: &str| said(lines, k).and_then(|v| v.parse::<i64>().ok());
     let read = |k: &str| -> String {
@@ -4370,6 +4410,11 @@ pub fn measure() -> (Check, String) {
     for (verdict, label, detail) in rst_rows(&lines) {
         rep.row(label, verdict, detail);
     }
+    // §5.9.2「关闭后，滚轮不缩放贴图」那一问读的是长在 `rst-lone-epoch-end` 之后的三枚
+    // `wheel-*`：开关在内存里关掉、走真实滚轮那一手、读回缩放没变，再把开关还原。
+    for (verdict, label, detail) in wheel_rows(&lines) {
+        rep.row(label, verdict, detail);
+    }
     // §5.9.18 / §5.10.4「销毁 + 撤销 + 影响数量」的五问读的是长在 `mov-pos-after` 之后、`menu`
     // 之前的十八枚 `des-*`：这一腿点的是**别的那些枚**，所以本窗能一路说到 `done`（第 55 项那一封
     // 同一枚理由：说话者与受害者必须是两扇窗）。五枚判据同样一枚也不并。
@@ -4783,13 +4828,32 @@ pub fn measure() -> (Check, String) {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // **缺席 ≠ 失败**（2026-11-11）：这一格读的是「那一次点击之后，对话框写下了哪个名字」。
+    // 读不到它的时候，门分不出「产品没写」与「这一台机器没把对话框带到接受」—— 而那两件事的修法
+    // 完全不同（一个是产品，一个是门/环境）。所以读不到就发 BLOCKED 并写明读到了什么，不拿 FAIL
+    // 冒充（与旁边那枚「点了但没成 ⇒ FAIL / 问不了 ⇒ BLOCKED」同一族规矩，#453、#274）。
+    //
+    // 两个名字都印出来：**门要的那个**（`dlg-name`，在对话框打开**之前**问的 —— Qt 的原生对话框
+    // 开起来时会把 `currentFile` 重置，所以它时有时无）与**真的落地的那个**（`dlg-accepted`，
+    // 点完之后问的）—— 报告里摆着这两个，下一轮才分得清「名字没进去」与「产品没存」。
+    let asked_name = said(&lines, "dlg-name").unwrap_or("");
+    let no_landing = dlg_url.is_empty() || dlg_name.is_empty();
     rep.row(
         "pin save via real click",
-        Check::from(
-            same_as_rust && same_file(&dlg_landed, &dialog) && now.starts_with("已保存到"),
-        ),
+        if no_landing {
+            Check::Blocked
+        } else {
+            Check::from(
+                same_as_rust && same_file(&dlg_landed, &dialog) && now.starts_with("已保存到"),
+            )
+        },
         format!(
-            "对话框写 {dlg_name:?} 与 rust 那份字节一致={same_as_rust}；{dlg_url:?} 读成 {dlg_landed:?}，要求 {dialog:?}；那句 {now:?}"
+            "对话框写 {dlg_name:?} 与 rust 那份字节一致={same_as_rust}；{dlg_url:?} 读成 {dlg_landed:?}，要求 {dialog:?}；那句 {now:?}；门要的名字 {asked_name:?}{}",
+            if no_landing {
+                "；这一格读不到落地的那个名字 ⇒ 判「这一台机器没把对话框带到接受」，不判失败"
+            } else {
+                ""
+            }
         ),
     );
     // The filter has a reader now. §10 第 37 项 ④ listed `selectedNameFilter` as a value
@@ -7119,10 +7183,16 @@ mod tests {
             "启动快照里的那一枚 `wheel_resizes` 说的是新贴图的默认长相，不是这一下滚轮"
         );
 
+        // **两处落点，而第二处是量具自己叫的同一只手**（2026-11-11）：真实滚轮那一处（`onWheel`
+        // 里的那一行）与 §5.9.2 那一格的证人腿自己叫的那一处 —— 后者量的正是「开关关着时那只手
+        // 不动」，它必须走**那一只手**（判据就在那只手里面），不是另写一份判断。
+        //
+        // 真正的保证仍是下面那一条：`wheel_resizes` 这个词**一次也不出现在 QML 里** ⇒ 判据只在
+        // Rust 那一侧，窗侧不可能自己判出「该不该缩放」。
         assert_eq!(
             qml.matches("win.view.wheelZoom(").count(),
-            1,
-            "滚轮在页上只有一处落点"
+            2,
+            "滚轮在页上该有两处落点：真实滚轮那一处，与量具自己叫的同一只手那一处"
         );
         assert!(
             !qml.contains("wheel_resizes") && !qml.contains("wheelResizes"),
