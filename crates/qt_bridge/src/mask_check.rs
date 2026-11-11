@@ -137,6 +137,37 @@ pub fn open(shader: bool, frozen: bool) -> Result<String, String> {
     // against this one when the cold path is split up.
     crate::state::stamp("asked");
     let opened = mask::open_from_freeze(shader)?;
+    // The hole this harness measures is **planted here**, and it is planted
+    // *off-centre* on purpose.
+    //
+    // The rows below ask the mask two questions about the same hole: "is the area
+    // outside the selection dimmed to `1 - DIM`?" and "is the area inside it left
+    // at full brightness?". The second one can only fail if the hole is somewhere a
+    // mistake would not put it - and a hole in the middle of the screen is its own
+    // mirror image. A shader that flipped the hole's vertical test drew it in the
+    // same place, so the row stayed green while the user saw no bright rectangle
+    // inside the selection at all (measured 2026-11-12: the hole landed mirrored,
+    // the whole screen stayed dim, and this harness reported `hole=1.000`).
+    //
+    // The planted hole is the top-left quarter of the primary, so its mirror image
+    // is the bottom-left quarter - a different place, and a row that can see it.
+    let planted = opened
+        .snap
+        .monitors
+        .iter()
+        .find(|m| m.info.primary)
+        .map(|m| m.info.bounds)
+        .map(|b| {
+            PhysRect::new(
+                b.x + (b.w / 8) as i32,
+                b.y + (b.h / 8) as i32,
+                b.w / 4,
+                b.h / 4,
+            )
+        });
+    if let Some(hole) = planted {
+        mask::with(|m| m.set_hole(hole));
+    }
     let (pixels, hole) = mask::with(|m| (m.pixels_ms.unwrap_or(0), m.hole));
     // Every number this harness prints depends on which RHI drew them, and the only
     // way to ask is the environment - Qt has no "which backend did I pick" call that
@@ -456,9 +487,10 @@ pub fn measure() -> (Check, String) {
     let (phys_hole, shader, desktop, problems) =
         mask::with(|m| (m.hole, m.shader, m.desktop(), m.problems.clone()));
 
-    // The default hole, asserted as a relationship: the middle half of the primary
-    // is a quarter of its area and inside it. Content-independent, so it holds on
-    // any desktop on any number of screens.
+    // The hole, asserted as a relationship: it is inside the desktop and it is not
+    // empty. Content-independent, so it holds on any desktop on any number of
+    // screens - and it is the *planted* hole now (see [`open`]), not whatever the
+    // product opens with.
     let fits = phys_hole
         .intersection(&desktop)
         .is_some_and(|i| i == phys_hole)

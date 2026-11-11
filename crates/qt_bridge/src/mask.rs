@@ -5750,6 +5750,49 @@ mod tests {
         );
     }
 
+    /// The mask's dim-with-a-hole is one shader, and **where that shader puts the
+    /// hole** is the whole of "the selection is bright and the rest of the screen is
+    /// dimmed" - the one sentence §5.3.1's mask is read for.
+    ///
+    /// The hole's position inside the window has to come from the **texture
+    /// coordinate**. It used to come from `gl_FragCoord`, and that is the
+    /// fragment's position in the framebuffer: which corner the framebuffer counts
+    /// from is the RHI's business, not GLSL's. Measured on this machine
+    /// (2026-11-12) the RHI counted from the top while the GLSL convention counts
+    /// from the bottom, so the hole's vertical test came out upside down - the hole
+    /// landed mirrored, away from the selection, and the mask showed one evenly
+    /// dimmed screen with no bright rectangle in it. That is what "the highlight is
+    /// not inside the selection" reads as from the outside.
+    ///
+    /// This is a witness on the **source**, because a shader cannot be called
+    /// without a GPU. The behavioural witness is `--mask`'s `hole of` row, which
+    /// measures the pixels inside the hole against the frozen frame - and which only
+    /// sees a mirror now that the harness plants its hole off-centre (see
+    /// [`crate::mask_check::open`]).
+    #[test]
+    fn the_shader_places_the_hole_with_the_texture_coordinate() {
+        let src = include_str!("../shaders/dim_hole.frag");
+        // The comments explain the mistake and name it, so the **code** is what is
+        // judged here: a comment that says "not gl_FragCoord" is not a use of it.
+        let code: String = src
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or(""))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let dip = code
+            .lines()
+            .find(|l| l.contains("vec2 dip"))
+            .unwrap_or_else(|| panic!("the shader has no `dip` line:\n{code}"));
+        assert!(
+            dip.contains("qt_TexCoord0"),
+            "the window-local position has to come from the texture coordinate: {dip}"
+        );
+        assert!(
+            !code.contains("gl_FragCoord"),
+            "the framebuffer's position must not decide where the hole is:\n{code}"
+        );
+    }
+
     /// The pairing has to survive mixed scale, because that is the only reason a
     /// mask window and its frame could disagree about size: Qt answers in DIP, the
     /// snapshot in device pixels, and neither names the other's monitor.
