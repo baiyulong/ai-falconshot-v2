@@ -414,10 +414,30 @@ struct Route {
 /// 要「用户要过一枚键而它没成」那一列，而这两问在过去只有一串字可读 —— 拿 `starts_with("冲突")`
 /// 去数就是给同一句话造第二个作者（#281），改一天措辞普查当场少数一枚。kind 由写下那一句子的
 /// 同一手当场定：它比任何后来的读客都清楚自己刚说的是哪一种事。
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Row {
     pub said: String,
     pub kind: RowKind,
+    /// 这一行涉及的**动作与它那一枚键**。
+    ///
+    /// 「用户要过一枚键而它没成」那一行（[`RowKind::Trouble`]）说的是**一枚**动作的事，
+    /// 「同一串键被两枚动作共用」那一行（[`RowKind::Conflict`]）说的是**两枚**动作的事 —— 而页上
+    /// 要动手就得知道**是哪一枚动作的哪一枚键**（§8.4 那一列的「删 / 改 / 跳」三枚手都按在某一枚
+    /// 动作上；「同一串键被两枚共用」那一行按哪一个都是猜 ⇒ 所以那一行给**两枚**，歧义由行自己
+    /// 解掉）。
+    ///
+    /// 这一格是那几枚手唯一的指路牌：它由写下那一句的**同一手**当场定（#281），页上不自己猜
+    /// 哪一行对应哪一枚动作（那是「行与动作各走各的」那一族坏法）。
+    pub targets: Vec<Target>,
+}
+
+/// 一枚动作与它那一枚键。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    /// 动作 id（`hotkey.actions.<id>` 那一枚键里的 `<id>`）。
+    pub action: String,
+    /// 那枚动作的完整键（`hotkey.actions.<id>`）—— 页上要改要删，就是它。
+    pub key: String,
 }
 
 /// 一行的四种身份。两轴都在这里定死，读的人不需要再猜：
@@ -440,25 +460,39 @@ impl Row {
         Self {
             said,
             kind: RowKind::Taken,
+            targets: Vec::new(),
         }
     }
-    fn trouble(said: String) -> Self {
+    fn trouble(said: String, target: Target) -> Self {
         Self {
             said,
             kind: RowKind::Trouble,
+            targets: vec![target],
         }
     }
     fn idle(said: String) -> Self {
         Self {
             said,
             kind: RowKind::Idle,
+            targets: Vec::new(),
         }
     }
-    fn conflict(said: String) -> Self {
+    fn conflict(said: String, targets: Vec<Target>) -> Self {
         Self {
             said,
             kind: RowKind::Conflict,
+            targets,
         }
+    }
+}
+
+/// 一枚动作的**目标**（它与它那一枚键）—— §8.4 那一列的手要按的就是它。
+///
+/// 键的那一串由 [`hotkeys::action_key`] 拼（core 那一族已经在写它 ⇒ 不许在这里再拼第二遍，#281）。
+fn target_of(action: &str) -> Target {
+    Target {
+        action: action.to_string(),
+        key: hotkeys::action_key(action),
     }
 }
 
@@ -468,10 +502,13 @@ fn per_action(rows: &[Row]) -> usize {
 }
 
 /// §8.4 要用户看一眼的那几行。
-fn to_be_seen(rows: &[Row]) -> Vec<&str> {
+///
+/// 交回**行**而不是那一串字：§8.4 那一列在页上要动手，而动手要的是「这一行涉及哪几枚动作与它们
+/// 哪一枚键」（[`Row::targets`]）—— 只交字的话，页上就得从散文里猜哪一行对应哪一枚动作，那正是
+/// 「行与动作各走各的」那一族坏法（#281）。
+fn to_be_seen(rows: &[Row]) -> Vec<&Row> {
     rows.iter()
         .filter(|row| matches!(row.kind, RowKind::Trouble | RowKind::Conflict))
-        .map(|row| row.said.as_str())
         .collect()
 }
 
@@ -539,7 +576,7 @@ static HISTORY: Mutex<Vec<String>> = Mutex::new(Vec::new());
 ///
 /// 只有产品本体那一趟会写它（`plain`，见 [`install`] 里那一格）—— 量具那一趟读的是自己的判据，
 /// 不该顺手把一页的内容换成一次测量的中间数。
-static WATCHED: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static WATCHED: Mutex<Vec<Row>> = Mutex::new(Vec::new());
 
 fn held<R>(cell: &Mutex<R>) -> MutexGuard<'_, R> {
     cell.lock().unwrap_or_else(PoisonError::into_inner)
@@ -559,9 +596,12 @@ pub fn history() -> Vec<String> {
     held(&HISTORY).clone()
 }
 
-/// 本次启动那一列「要用户看一眼」的行，逐字交回。「快捷键」那一页画的就是这一串
+/// 本次启动那一列「要用户看一眼」的**行**，逐行交回。「快捷键」那一页画的就是这一串
 /// （[`crate::settings_view::conflicts`]），浮窗只引前几枚，所以这里必须是**全列**而不是屏幕上那三句。
-pub fn watched() -> Vec<String> {
+///
+/// 交回**行**而不只是那一句字：页上那几枚手（§8.4「删 / 改 / 跳」）按的是**行里的目标**
+/// （[`Row::targets`]）—— 只交字的话页上就得从散文里猜哪一行对应哪一枚动作（#281）。
+pub fn watched() -> Vec<Row> {
     held(&WATCHED).clone()
 }
 
@@ -646,23 +686,27 @@ fn plan(actions: &std::collections::BTreeMap<String, String>) -> Plan {
         let parsed = match hotkeys::parse_bindable(text) {
             Ok(spec) => spec,
             Err(e) => {
-                out.rows
-                    .push(Row::trouble(format!("{action} {text:?} 注册不了：{e}")));
+                out.rows.push(Row::trouble(
+                    format!("{action} {text:?} 注册不了：{e}"),
+                    target_of(action),
+                ));
                 continue;
             }
         };
         let canonical = parsed.canonical();
         let display = hotkeys::display(parsed);
         if let Some(why) = parsed.reserved_reason() {
-            out.rows.push(Row::trouble(format!(
-                "{action} {display} 是系统保留组合：{why}（不注册）"
-            )));
+            out.rows.push(Row::trouble(
+                format!("{action} {display} 是系统保留组合：{why}（不注册）"),
+                target_of(action),
+            ));
             continue;
         }
         let Some(work) = Work::of(action) else {
-            out.rows.push(Row::trouble(format!(
-                "{action} {display} 未接线（不注册，键留给系统）"
-            )));
+            out.rows.push(Row::trouble(
+                format!("{action} {display} 未接线（不注册，键留给系统）"),
+                target_of(action),
+            ));
             continue;
         };
         match bind(parsed, &canonical) {
@@ -681,9 +725,10 @@ fn plan(actions: &std::collections::BTreeMap<String, String>) -> Plan {
                 });
                 out.next += 1;
             }
-            Err(e) => out.rows.push(Row::trouble(format!(
-                "{action} {display} 递不出注册：{e}"
-            ))),
+            Err(e) => out.rows.push(Row::trouble(
+                format!("{action} {display} 递不出注册：{e}"),
+                target_of(action),
+            )),
         }
     }
     out
@@ -1205,11 +1250,16 @@ pub fn install(plain: bool) -> Result<Launch, String> {
     let mut rows = planned.rows;
     for clash in hotkeys::conflicts(&actions) {
         if clash.actions.len() > 1 {
-            rows.push(Row::conflict(format!(
-                "冲突 {}：{} 都在用这一串键",
-                clash.display,
-                clash.actions.join(" + ")
-            )));
+            // 这一行说的是**两枚**动作共用一串键 ⇒ 它的目标也是**两枚**：页上那枚「删」按哪一个
+            // 都是猜 ⇒ 歧义由这一行自己解掉（每枚动作各一枚）。
+            rows.push(Row::conflict(
+                format!(
+                    "冲突 {}：{} 都在用这一串键",
+                    clash.display,
+                    clash.actions.join(" + ")
+                ),
+                clash.actions.iter().map(|a| target_of(a)).collect(),
+            ));
         }
     }
 
@@ -1242,10 +1292,13 @@ pub fn install(plain: bool) -> Result<Launch, String> {
             .find(|route| route.id == refusal.id)
             .map(|route| route.display.clone())
             .unwrap_or_else(|| refusal.canonical.clone());
-        rows.push(Row::trouble(format!(
-            "{} {display} 注册失败：{}（Win32 {}）",
-            refusal.action, refusal.why, refusal.win32_error
-        )));
+        rows.push(Row::trouble(
+            format!(
+                "{} {display} 注册失败：{}（Win32 {}）",
+                refusal.action, refusal.why, refusal.win32_error
+            ),
+            target_of(&refusal.action),
+        ));
     }
     for (id, action) in &started.registered {
         let display = routes
@@ -1284,16 +1337,18 @@ pub fn install(plain: bool) -> Result<Launch, String> {
     // 一个字也不写 —— §8 整章判的是出了问题时说什么，不是为「一切正常」闪一下浮窗。
     if plain {
         let seen = to_be_seen(&rows);
-        // 先记全列，再拼屏幕上那一句：浮窗放不下四句，页上放得下，两处读的是同一枚 `Vec<&str>`
+        // 先记全列，再拼屏幕上那一句：浮窗放不下四句，页上放得下，两处读的是同一枚 `Vec<&Row>`
         // ——「哪几行要用户看一眼」这件事仍然只由 [`RowKind`] 判一次（#281）。
-        let full: Vec<String> = seen.iter().map(|line| (*line).to_string()).collect();
+        let full: Vec<Row> = seen.iter().map(|row| (*row).clone()).collect();
         note(format!(
             "§8.4 交给「快捷键」页的那一列：{} 行（全列在页上，屏幕上那行只引前 {SAID_MAX} 枚）",
             full.len()
         ));
         *held(&WATCHED) = full;
         if !seen.is_empty() {
-            let said = notice_line(&seen);
+            // 屏幕上那一句引的是**同一批行**的字 —— 名单与引文都出自这一次过滤（#281）。
+            let quotes: Vec<&str> = seen.iter().map(|row| row.said.as_str()).collect();
+            let said = notice_line(&quotes);
             note(format!("§8.4 交给屏幕的那一行：{said}"));
             if let Err(e) = handle.queue(move |mut session| {
                 session.as_mut().set_status(QString::from(&*said));
@@ -4077,12 +4132,12 @@ mod tests {
         let seen = to_be_seen(&planned.rows);
         assert_eq!(seen.len(), 3, "屏幕那一行该只数要用户看的三形：{seen:?}");
         assert!(
-            !seen.iter().any(|line| line.contains("未绑定")),
+            !seen.iter().any(|line| line.said.contains("未绑定")),
             "没写过键的那一行被交给了屏幕：{seen:?}"
         );
         for needle in ["系统保留组合", "注册不了", "未接线"] {
             assert!(
-                seen.iter().any(|line| line.contains(needle)),
+                seen.iter().any(|line| line.said.contains(needle)),
                 "{needle} 那一行没进屏幕那一列"
             );
         }
@@ -4544,11 +4599,60 @@ mod tests {
         // 数 —— 那一判就是同一句话的第二个作者（#281），改一天措辞普查当场少数一枚；现在两轴读的
         // 是写下那一句的同一手当场定的 kind。
         let rows = vec![
-            Row::conflict("冲突 Ctrl+Shift+A：capture + solo 都在用这一串键".to_string()),
+            // 那一行说的是**两枚**动作共用一串键 ⇒ 它的目标也是两枚（页上给两枚「删」，
+            // 歧义由行自己解掉）。
+            Row::conflict(
+                "冲突 Ctrl+Shift+A：capture + solo 都在用这一串键".to_string(),
+                vec![target_of("capture"), target_of("solo")],
+            ),
             Row::taken("capture Ctrl+Shift+A 已注册".to_string()),
         ];
         assert_eq!(per_action(&rows), 1, "冲突那一行被算进了「每个动作一行」的分母");
         assert_eq!(to_be_seen(&rows).len(), 1, "已注册那一行被交给了屏幕");
+    }
+
+    /// §8.4 那一列的**目标**：每一行要带着它涉及的动作与那一枚键走到页上，页上的手才按得到**那一枚**
+    /// （只交一句散文的话，页上就得从文字里猜哪一行对应哪一枚动作 ⇒ 那会删错键）。
+    ///
+    /// 三件事各问一次：① `Trouble` 那一行的目标**一枚**；② `Conflict` 那一行的目标**两枚**（页上给两枚
+    /// 「删」，歧义由行自己解掉）；③ **每一处** `Row::trouble(` 都传了目标（源码形状）—— 漏一处 ⇒
+    /// 那一行在页上按不到任何一枚键，而那一行仍然会显示 ⇒ 用户看得见问题却动不了手。
+    #[test]
+    fn a_row_carries_the_actions_it_is_about() {
+        let one = Row::trouble(
+            "capture alt+tab 是系统保留组合：已被占用（不注册）".to_string(),
+            target_of("capture"),
+        );
+        assert_eq!(one.targets.len(), 1, "Trouble 那一行的目标是一枚");
+        assert_eq!(one.targets[0].action, "capture");
+        assert_eq!(one.targets[0].key, "hotkey.actions.capture");
+
+        let two = Row::conflict(
+            "冲突 Ctrl+Shift+A：capture + solo 都在用这一串键".to_string(),
+            vec![target_of("capture"), target_of("solo")],
+        );
+        assert_eq!(two.targets.len(), 2, "Conflict 那一行的目标是两枚");
+        assert_eq!(two.targets[1].action, "solo");
+        assert_eq!(two.targets[1].key, "hotkey.actions.solo");
+
+        // 装配代码里每一处 `Row::trouble(` 都要配一枚 `target_of(`，而「两枚共用」那一处是
+        // `clash.actions` 逐枚映出来的（多出那一枚）⇒ 两者的个数差该正好是 1。
+        let src = include_str!("hotkey.rs")
+            .split("mod tests")
+            .next()
+            .expect("装配代码里没有 mod tests 这一行");
+        let trouble_sites = src.matches("Row::trouble(").count();
+        let targets = src.matches("target_of(").count();
+        assert_eq!(
+            targets,
+            trouble_sites + 2,
+            "每一处 Row::trouble 都要带目标（多出两枚：`fn target_of` 的定义，与「两枚共用」那一处的\
+             逐枚映射）：trouble {trouble_sites} 处、target_of {targets} 处"
+        );
+        assert!(
+            src.contains("clash.actions.iter().map(|a| target_of(a))"),
+            "「同一串键被两枚动作共用」那一行的目标该是**两枚**"
+        );
     }
 
     /// §8.4 那一行浮窗的字：数目读行数、引文逐字取自 `Row::said`、过上限的那几行说清去哪看。

@@ -3869,6 +3869,31 @@ pub fn conflict_block(lines: &[String], which: usize) -> String {
     }
 }
 
+/// 页上那几枚手（§8.4「删 / 改 / 跳」）要按的**目标**：每一行涉及哪几枚动作、各自那一枚键。
+///
+/// 交回的是**与 [`Self::conflicts`] 同一批行、同一个次序**的平行一份：行与目标各走各的，两处就会
+/// 错开一行（页上按着 A 行的那枚钮，解绑的却是 B 行的键 ⇒ 而那是**删错键**）。
+/// ⇒ 所以两处读的是**同一次** [`crate::hotkey::watched`]（一遍过滤、一次 clone，#281）。
+///
+/// 每一行的形状：`动作=键`，多枚动作用 `|` 隔（`同一串键被两枚动作共用`那一行就是两枚 ⇒ 页上给两枚
+/// 「删」，歧义由行自己解掉）；几行之间用 [`RECORD`] 隔 —— 与那一列的说句是同一种分隔法（#281）。
+pub fn conflict_targets(which: usize) -> String {
+    let rows = crate::hotkey::watched();
+    if index_of("快捷键") != Some(which) {
+        return String::new();
+    }
+    rows.iter()
+        .map(|row| {
+            row.targets
+                .iter()
+                .map(|t| format!("{}={}", t.action, t.key))
+                .collect::<Vec<String>>()
+                .join("|")
+        })
+        .collect::<Vec<String>>()
+        .join(RECORD)
+}
+
 /// 页上此刻的那一列：全列读的是本次启动记下的那几行（[`crate::hotkey::watched`]），逐字交回。
 ///
 /// 这是一份**本次启动的快照**，不是「此刻档里写着什么」：`hotkey.actions.` 在
@@ -3876,7 +3901,13 @@ pub fn conflict_block(lines: &[String], which: usize) -> String {
 /// 现有配置，直到用户完成修改」要的就是这一形：页上说的是这一趟真的注册了什么、哪一枚被系统挡了、
 /// 哪两枚共用一串键，而「替他改档」这件事本模块一处也不做。
 pub fn conflicts(which: usize) -> String {
-    conflict_block(&crate::hotkey::watched(), which)
+    // 说句与目标读的是**同一批行**（[`crate::hotkey::watched`] 那一个静态）⇒ 两处的次序不可能错开
+    // （行与目标各读一遍不同的来源才是错开一行 ⇒ 页上会删错键）。
+    let saids: Vec<String> = crate::hotkey::watched()
+        .into_iter()
+        .map(|row| row.said)
+        .collect();
+    conflict_block(&saids, which)
 }
 
 #[cfg(test)]
@@ -4602,6 +4633,39 @@ mod tests {
         assert!(
             !drawn.iter().any(|l| l.contains(EXCLUSION_ADD_WORD)),
             "页上抄走了那几个字：改一天措辞就得开两处"
+        );
+    }
+
+    /// §8.4 那一列在页上**按得动**：每一行带的每一枚动作各一枚「解绑」钮 ⇒ 那一枚钮按的是**那一枚
+    /// 键**（写空串把它解开），而不是从散文里猜出来的一枚。
+    ///
+    /// 读的是页的源码（与上面那格同一把刀：去掉注释行以后的那一份 ⇒ 注释里写一句「有解绑钮」
+    /// 不算数）；这一格钉的是**接线**，而「解绑」那一手的效果由 core 那一族的 cleared 那一臂自己判
+    /// （空串在 `set_hotkey_action` 那里就是「清掉这一枚」）。
+    #[test]
+    fn the_conflict_list_gives_every_target_its_own_unbind() {
+        const QML: &str = include_str!("../qml/SettingsWindow.qml");
+        let code: String = QML
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//"))
+            .collect::<Vec<&str>>()
+            .join("\n");
+        assert!(
+            code.contains("win.session.settingsConflictTargets(win.which)"),
+            "页上没读那一列的目标"
+        );
+        assert!(
+            code.contains("function unbindAction(key)"),
+            "页上没有解绑那一手"
+        );
+        assert!(
+            code.contains("win.unbindAction(String(modelData).split(\"=\")[1])"),
+            "那一枚钮按的不是那一枚键"
+        );
+        assert!(
+            code.contains("win.session.settingsSet(key, \"\")"),
+            "解绑走的不是设置页那一只写键的手"
         );
     }
 

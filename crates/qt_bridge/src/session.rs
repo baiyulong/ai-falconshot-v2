@@ -916,6 +916,17 @@ pub mod qobject {
         #[cxx_name = "historyFavorite"]
         fn history_favorite(self: Pin<&mut Self>, id: i64, favorite: bool) -> QString;
 
+        /// §8.4 那一列的**目标**：每一行涉及哪几枚动作、各自那一枚键。
+        ///
+        /// 与 [`Self::settings_conflicts`] 读的是**同一批行、同一个次序**（两处各读一遍会错开一行 ⇒
+        /// 页上按着 A 行的那枚钮、解绑的却是 B 行的键 ⇒ 那是**删错键**）。
+        ///
+        /// 形状：行之间用 `settings_view::RECORD` 隔、行内多枚动作用 `|` 隔、动作与键之间是 `=`。
+        /// 页上自己按那一枚键去解绑（写空串）与去改（跳到那一行），Rust 那边**不替用户改档**。
+        #[qinvokable]
+        #[cxx_name = "settingsConflictTargets"]
+        fn settings_conflict_targets(self: &Self, which: i32) -> QString;
+
         /// §5.9.2「关闭后，滚轮不缩放贴图」那一格的**证人脚手架**：把 `[pin] wheel_resizes` 在
         /// **内存里**翻成 `asked`，交回**翻之前**那一枚。
         ///
@@ -2951,6 +2962,15 @@ impl qobject::Session {
         // 与 `settings_exclusion_word` 同一个口径 —— 压根不存在的那一页不该有内容。
         match usize::try_from(which) {
             Ok(i) => QString::from(crate::settings_view::conflicts(i).as_str()),
+            Err(_) => QString::default(),
+        }
+    }
+
+    /// §8.4 那一列的目标（每一行涉及哪几枚动作与它们那一枚键）—— 与 [`Self::settings_conflicts`]
+    /// 同一个次序（两处各读一遍会错开一行 ⇒ 页上会删错键）。
+    pub fn settings_conflict_targets(&self, which: i32) -> QString {
+        match usize::try_from(which) {
+            Ok(i) => QString::from(crate::settings_view::conflict_targets(i).as_str()),
             Err(_) => QString::default(),
         }
     }

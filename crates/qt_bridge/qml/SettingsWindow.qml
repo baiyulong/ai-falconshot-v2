@@ -102,6 +102,19 @@ Window {
     /// 这一页压根不是「快捷键」，或者这一趟一行也没什么要用户看（出厂那九枚全成）。
     property var conflictLines: []
 
+    /// §8.4 那一列的**目标**：每一行涉及哪几枚动作、各自那一枚键（桥交回的原文，
+    /// `settingsConflictTargets()`，按 `RECORD` 切好的每一行）。
+    ///
+    /// 与 [`conflictLines`] **同一个次序**（两处各读一遍会错开一行 ⇒ 页上按着 A 行的那枚钮、解绑的
+    /// 却是 B 行的键 ⇒ 那是**删错键**）。
+    ///
+    /// 空的读法有两种，与 `conflictLines` 一样画法相同：这一页压根不是「快捷键」，或者这一趟一行
+    /// 也没什么要用户看 ⇒ 空数组。
+    readonly property var conflictTargetRows: {
+        const raw = String(win.session.settingsConflictTargets(win.which))
+        return raw.length === 0 ? [] : raw.split(String.fromCharCode(0x1d))
+    }
+
     /// 那一列此刻画没画、画了几行。与 `updateBlockDrawn`、`guideDrawn` 同一族：腿里读的是绑到
     /// 本文件那两枚 id 上的**值** —— 「桥那一格递了几行」不等于「屏上有那几行」。
     readonly property bool conflictBlockDrawn: conflictBox.visible
@@ -471,6 +484,18 @@ Window {
         if (k < 0 || k >= win.rowsText.length)
             return
         win.statusLine = String(win.session.settingsToggle(win.which, k))
+        win.refreshPage()
+    }
+
+    /// §8.4 那一列的**「删」**：把那一枚动作的键**解开**（写空串），于是它不再占着那一串键。
+    ///
+    /// 删的是「这一枚动作占着这串键」这件事，不是删掉那一行说明 —— 那一行说明是桥的话，它照旧在。
+    /// 写的仍是 `settingsSet` 那一条完整的路（语法闸、原子落盘），页上印的是桥那句原文；空串在
+    /// core 那一族里就是「清掉这一枚」（`set_hotkey_action` 的 cleared 那一臂），不是一枚非法值。
+    ///
+    /// 「同一串键被两枚动作共用」那一行**给两枚**（每枚动作一枚）—— 删哪一个不由页去猜（#281）。
+    function unbindAction(key) {
+        win.statusLine = String(win.session.settingsSet(key, ""))
         win.refreshPage()
     }
 
@@ -1388,15 +1413,49 @@ Window {
                 id: conflictList
 
                 model: win.conflictLines
-                delegate: Text {
+                delegate: Column {
+                    id: conflictRow
+
+                    required property int index
+                    // 这一行涉及的那几枚动作（桥交回的目标，与上面那一列**同一个次序**）。
+                    readonly property var targets: win.conflictTargetRows[index]
+                                              ? win.conflictTargetRows[index].split("|")
+                                              : []
                     width: conflictBox.width
+                    spacing: 4
+
                     // 每一行都是 `Row::said` 那一整串，中间不许省略：被系统挡下的那一枚与共用
                     // 同一串键的那两枚动作，说得一半不剩就是没说（与上面 `guideWord` 同一理由）。
-                    text: modelData
-                    color: win.word_fill
-                    font.pixelSize: uiFont.px(13)
-                    font.family: uiFont.family
-                    wrapMode: Text.Wrap
+                    Text {
+                        width: conflictBox.width
+                        text: modelData
+                        color: win.word_fill
+                        font.pixelSize: uiFont.px(13)
+                        font.family: uiFont.family
+                        wrapMode: Text.Wrap
+                    }
+
+                    // §8.4 那一列的手：这一行涉及的**每一枚**动作各一枚「解绑」（删的是「这一枚动作
+                    // 占着这串键」这件事，不是删掉那一行说明）。同一串键被两枚动作共用时这里有
+                    // **两枚** ⇒ 删哪一个不由页去猜（#281）。
+                    Repeater {
+                        model: conflictRow.targets
+                        delegate: Row {
+                            required property var modelData
+                            spacing: 6
+                            Text {
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: String(modelData).split("=")[0]
+                                color: win.faint_fill
+                                font.pixelSize: uiFont.px(12)
+                                font.family: uiFont.family
+                            }
+                            Button {
+                                text: "解绑"
+                                onClicked: win.unbindAction(String(modelData).split("=")[1])
+                            }
+                        }
+                    }
                 }
             }
         }

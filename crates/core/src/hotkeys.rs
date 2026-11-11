@@ -172,6 +172,14 @@ fn key_label(key: Key) -> String {
 
 /// The label a settings page shows. Modifier order is the one Windows writes in
 /// its own hotkey dialogs.
+/// 一枚动作的**完整键**（`hotkey.actions.<id>`）。
+///
+/// 页上那几枚手（§8.4 那一列的「删 / 改 / 跳」）按的就是这一枚键，而 core 已经在写这一串
+/// （`Config::set_hotkey_action` 那一族）⇒ 这一格住在 core，桥与页都不许自己再拼一遍（#281）。
+pub fn action_key(id: &str) -> String {
+    format!("hotkey.actions.{id}")
+}
+
 pub fn display(spec: Spec) -> String {
     let mut parts: Vec<String> = Vec::new();
     if spec.mods.ctrl {
