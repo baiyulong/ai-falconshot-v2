@@ -5302,6 +5302,10 @@ mod tests {
     /// 形状与上面 [`the_copy_has_one_route_and_two_doors_in_the_qml`] 一模一样，因为 §5.9.16 步骤 2
     /// 与 §5.9.18 步骤 1 是同一件事的两种说法（「A 或 B」两只门一只手）。
     ///
+    /// **自此那只手是三扇门**（2026-11-12）：菜单那一行、标准关闭键序那一枚、以及 `Esc` 那一枚
+    /// ——用户报的就是「贴图后按 ESC 退出贴图」而那一支此前没有实现。落点仍是一处（`routes`
+    /// 那一格），多出来的只是**又一枚门**（`fired` 从一枚变两枚）。
+    ///
     /// 这一格判的是**两只门共指一只手**，不是「键按下去了」：全仓一枚注入器也没有（`SendInput`
     /// 零命中），所以「按下那一只手有没有动」在本档没有证人，记在欠账里，不拿注册冒充按下。
     /// 还有第二件没证到的事，一并逐名记着：`StandardKey.Close` 在**这台机器上**是否真被 Qt 答出
@@ -5326,7 +5330,7 @@ mod tests {
     /// 不在本轮），所以 QML 里讲这件事的那封信**仍然不许把落点照抄出来**：它如今只说
     /// 「`session.closePin` 加本窗的 id」。
     #[test]
-    fn the_close_has_one_route_and_two_doors_in_the_qml() {
+    fn the_close_has_one_route_and_its_three_doors_in_the_qml() {
         let src = include_str!("../qml/PinWindow.qml");
         // 剥注释的那把尺子是 `hint_check::qml_code`（`pub(crate)`，`annotate_check`、
         // `history_window`、`mask_view` 三处已在用；core 的 `pin.rs` 够不着它、只好自己滤 `//` 开头
@@ -5335,12 +5339,12 @@ mod tests {
         // 先证尺子本身在剥（#274）：这一串只活在一行 `//` 注释里，剥之前读得到、剥之后必须读不到。
         // 少了这两句，一枚把 `src` 原样交回来的尺子会让下面四格全绿——那就不是「量到了」而是「没量」。
         assert_eq!(
-            src.matches("没有一枚关闭键").count(),
+            src.matches("快捷键那一只门自此有了手").count(),
             1,
             "这一串该只在注释里出现一次，读到不同就是尺子的前提变了"
         );
         assert_eq!(
-            code.matches("没有一枚关闭键").count(),
+            code.matches("快捷键那一只门自此有了手").count(),
             0,
             "剥过注释之后那一串必须读不到，读得到就是尺子没剥"
         );
@@ -5357,8 +5361,8 @@ mod tests {
             "关闭快捷键那一支路只该出现一次，读到 {shortcuts} 处"
         );
         assert_eq!(
-            fired, 1,
-            "快捷键点的必须就是菜单那枚 Action，读到 {fired} 处"
+            fired, 2,
+            "快捷键点的手必须就是菜单那枚 Action（标准关闭键序 + `Esc` 两扇门），读到 {fired} 处"
         );
         assert_eq!(
             bound, 1,
@@ -6375,17 +6379,19 @@ mod tests {
     /// ① `selectPin` 只许一处落点（两处就是两套路，迟早一路是装饰）—— 量规那一段因此也走这
     /// 同一处（`win.selectSelf`），量的与按的是同一条语句；② Ctrl+单击这一支
     /// 必须读 `event.modifiers & Qt.ControlModifier`，滚轮那一路的 `wheel.modifiers` 不算证人
-    /// （本轮之前 `Ctrl` 只在滚轮上被读过，那正是开工戳记下的那一枚陷阱）；③「点空白」与
-    /// 「按 Esc」两扇门共用一只手，所以 `session.clearSelection(` 只出现一次；
-    /// `clearSelectionAction.trigger()` 在场上有**六枚读者** —— 两扇门各一枚，量规那四腿各一枚
+    /// （本轮之前 `Ctrl` 只在滚轮上被读过，那正是开工戳记下的那一枚陷阱）；③「点空白」这一扇门
+    /// 与菜单里那两枚（`sel` / `des`）共用一只手，所以 `session.clearSelection(` 只出现一次；
+    /// `clearSelectionAction.trigger()` 在场上有**五枚读者** —— 三扇门各一枚，量规那两腿各一枚
     /// （`sel` 腿收名单为 P128 那一族服务，`des` 腿收名单为 P134 那一族服务，`solo` 段前那一次为
     /// §5.11 的「空名单上按热键」那一臂把名单清空、段末那一次把本族点过的名收回 —— 四枚量规读者
-    /// 都是「同一只手多出来的一个测量读者」，不是第三扇门）。第七枚才是多出来的一套路，而 Esc
-    /// 那一门的 handler 单独点名（一枚 Shortcut 一枚 handler）；
+    /// 都是「同一只手多出来的一个测量读者」，不是第三扇门）。
+    /// **「按 Esc」不再是这一族的门**（2026-11-12）：`Esc` 在贴图窗上是**关掉这一枚贴图**
+    /// （§5.9.18 步骤 1 的「关闭快捷键」），走的是另一枚 Action（`closeAction`）——那件事由
+    /// [`the_escape_key_on_a_pin_window_closes_that_pin`] 单独钉。
     /// ④ 统一选中状态绑的是
     /// `win.view.selected` 那一枚值，窗侧不另存名单。
     #[test]
-    fn the_qml_gives_selection_one_landing_and_two_doors_out() {
+    fn the_qml_gives_selection_one_landing_and_one_door_out() {
         let src = include_str!("../qml/PinWindow.qml");
         let routes = src.matches("win.session.selectPin(").count();
         let ctrl = src.matches("event.modifiers & Qt.ControlModifier").count();
@@ -6419,16 +6425,16 @@ mod tests {
         );
         assert_eq!(clear, 1, "退出多选只该有一只手，读到 {clear} 处");
         assert_eq!(
-            doors, 6,
-            "那一只手在场上的读者该是枚数分得清的六枚（空白门 / Esc 门 / sel 量规腿 / des 量规腿 / solo 段前那一次清名 / solo 段末那一次收回），读到 {doors} 处"
+            doors, 5,
+            "那一只手在场上的读者该是枚数分得清的五枚（空白门 / sel 量规腿 / des 量规腿 / solo 段前那一次清名 / solo 段末那一次收回），读到 {doors} 处"
         );
         assert_eq!(
             echoed, 0,
             "那枚字面串在注释里每抄一次，这枚尺就多读出一枚假读者，读到 {echoed} 行"
         );
         assert_eq!(
-            esc_door, 1,
-            "Esc 那一门的 handler 只该有一枚，读到 {esc_door} 处"
+            esc_door, 0,
+            "Esc 不再是退出多选的那扇门（它是关掉这一枚贴图的那一枚），读到 {esc_door} 处"
         );
         assert_eq!(bound, 1, "选中状态只该有一处绑定，读到 {bound} 处");
         assert_eq!(esc, 1, "Esc 那一支只该写一遍，读到 {esc} 处");
@@ -6438,6 +6444,53 @@ mod tests {
             src.matches("selected").count() > bound,
             "裸 `selected` 的枚数本就该大于一枚绑定，这把尺才分得开两族：{} vs {bound}",
             src.matches("selected").count()
+        );
+    }
+
+    /// §5.9.18 步骤 1 的「关闭快捷键」那一支：贴图窗上按 `Esc` **关掉这一枚贴图**。
+    ///
+    /// 此前 `Esc` 在这扇窗上是「退出多选」（§5.10.1 步骤 4），而 §5.9.18 步骤 1 点名的
+    /// 「用户打开贴图菜单**或使用关闭快捷键**」那一支**没有实现** —— 用户按 `Esc` 什么也没
+    /// 发生（用户报的就是「贴图后，图片无法退出，应该是按 ESC 键退出贴图」）。现在它走的是
+    /// **菜单上已经在的那一枚「关闭」**（`closeAction` → `win.session.closePin(win.pinId)`），
+    /// 不新造第二个作者（#281）：「关掉这一枚」这件事只有一处回答，菜单与键帽是它的两只门。
+    ///
+    /// 钉四件事：`Esc` 只绑一枚、那一枚的手走的是「关闭这一枚」那一格、那一格自己只有一位
+    /// 作者、以及 `Esc` **不再**是清多选的那扇门（多选自己留着「点空白区域」那一扇）。
+    #[test]
+    fn the_escape_key_on_a_pin_window_closes_that_pin() {
+        let src = include_str!("../qml/PinWindow.qml");
+        let shortcut = src.matches("sequences: [StandardKey.Cancel]").count();
+        let close_hand = src.matches("onActivated: closeAction.trigger()").count();
+        let close_author = src
+            .matches("onTriggered: win.session.closePin(win.pinId)")
+            .count();
+        let clear_hand = src
+            .matches("onActivated: clearSelectionAction.trigger()")
+            .count();
+        assert_eq!(shortcut, 1, "`Esc` 只该绑一枚，读到 {shortcut} 处");
+        // 「关掉这一枚」那只手有**两扇门**（标准关闭键序 + `Esc`），所以数那枚 handler 得到的是
+        // 2；「`Esc` 那一枚的手是不是那只手」要单问：把 `Esc` 那一段切出来看它自己说了什么。
+        assert_eq!(
+            close_hand, 2,
+            "「关掉这一枚」的两扇门（标准关闭键序 + `Esc`）各写一次那枚 Action，读到 {close_hand} 处"
+        );
+        let esc_block = src
+            .split("sequences: [StandardKey.Cancel]")
+            .nth(1)
+            .and_then(|rest| rest.split("}").next())
+            .unwrap_or("");
+        assert!(
+            esc_block.contains("onActivated: closeAction.trigger()"),
+            "`Esc` 那一枚的手必须是「关闭这一枚」那一枚 Action，而它那一段里说的是：{esc_block}"
+        );
+        assert_eq!(
+            close_author, 1,
+            "「关掉这一枚」只该有一位作者（菜单那枚 Action），读到 {close_author} 处"
+        );
+        assert_eq!(
+            clear_hand, 0,
+            "`Esc` 不再是清多选的那扇门，读到 {clear_hand} 处"
         );
     }
 
