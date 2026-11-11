@@ -25,6 +25,7 @@
 //! explain why rather than as a failure.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, PoisonError};
 
 use falcon_core::capture::{LiveGate, ScreenSnapshot};
 use falcon_core::frame::Frame;
@@ -46,6 +47,16 @@ use crate::{capture, session};
 /// 迟早分家（#281）。别名指向生产那一枚，于是这里改一个字都改不动 —— 要改只能改 `mask.rs`，
 /// 而那一枚有 QML 那头逐字对账的单测看着。
 pub(crate) const TITLE: &str = crate::mask::MASK_TITLE_PREFIX;
+
+/// The selection the **product** opened with, read before this harness plants its
+/// own hole. `None` = the door never ran [`open`].
+///
+/// 自由区域那一档进场**没有选区**（§5.3.1 步 1：用户还没拖）。这一格是那件事在门上的读者：
+/// 门自己种的那块洞是**门要的**（量暗化与洞要用一块已知大小的洞），它**不能**替产品回答
+/// 「进场带不带选区」——所以产品在门种洞之前交回来的那一块被记在这里，由 [`measure`] 那一行
+/// 单独判。少这一行的话，「`apply_opening` 忘了用 `opening_hole`」这一族错（单测量的是那枚
+/// 纯函数，不是这条接线）在门上就看不见。
+static ENTRY_HOLE: Mutex<Option<PhysRect>> = Mutex::new(None);
 
 /// Per-channel floor below which a source pixel cannot carry a ratio. Black times
 /// anything is black, so a dim measured over a black desktop is 0/0 and not 0.400.
@@ -137,6 +148,9 @@ pub fn open(shader: bool, frozen: bool) -> Result<String, String> {
     // against this one when the cold path is split up.
     crate::state::stamp("asked");
     let opened = mask::open_from_freeze(shader)?;
+    // 门自己种洞之前，先把**产品进场时**那一块记下来：自由区域这一档进场**没有选区**
+    // （§5.3.1 步 1）。这一格答的是产品那一件事，门自己那块洞不参与。
+    *ENTRY_HOLE.lock().unwrap_or_else(PoisonError::into_inner) = Some(mask::with(|m| m.hole));
     // The hole this harness measures is **planted here**, and it is planted
     // *off-centre* on purpose.
     //
@@ -486,6 +500,17 @@ pub fn measure() -> (Check, String) {
 
     let (phys_hole, shader, desktop, problems) =
         mask::with(|m| (m.hole, m.shader, m.desktop(), m.problems.clone()));
+
+    // The selection the **product** opened with, read before the harness planted
+    // its own hole: free-region capture enters with **no** selection (§5.3.1 step 1).
+    // This is the only row that answers that question - the harness's own hole is
+    // measured below, and it must not answer it for the product.
+    let entry = *ENTRY_HOLE.lock().unwrap_or_else(PoisonError::into_inner);
+    rep.row(
+        "the product opens with no selection",
+        Check::from(entry.is_some_and(|r| r.is_empty())),
+        format!("{entry:?}"),
+    );
 
     // The hole, asserted as a relationship: it is inside the desktop and it is not
     // empty. Content-independent, so it holds on any desktop on any number of

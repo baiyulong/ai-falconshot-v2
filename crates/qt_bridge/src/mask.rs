@@ -1034,9 +1034,10 @@ pub struct MaskState {
     pub hover_win: Option<(u32, PhysRect)>,
     /// 这一场用户**已经按下去过一次**了 —— 于是 §5.3.2 第三步的高亮不再报。
     ///
-    /// 为什么需要这一格，而不是让 QML 用「有没有选区」来判：[`Self::open`] 是带着一枚
-    /// 默认选区（[`Self::default_hole`]，主屏中间那半块）开门的，`selected` 从第一场按下
-    /// 热键起就是 `true`，拿它当闸门就等于把这一路整个关掉。这一格说的才是真正那件事：
+    /// 为什么需要这一格，而不是让 QML 用「有没有选区」来判：[`Self::open`] 进场时是带着
+    /// **空选区**开的门（§5.3.1 步 1：用户还没拖），而 §5.3.2 那一档进场就带着自己那一块
+    /// （那一扇窗），`selected` 在那一档从第一场按下热键起就是 `true`，拿它当闸门就等于把这一路
+    /// 整个关掉。这一格说的才是真正那件事：
     /// 「用户还在挑吗」—— 挑的阶段亮，已经开始画/已经选中了就不亮，而 Esc 第一档
     /// ([`Self::escape`]) 把选区清掉之后又回到「还在挑」，高亮跟着回来。
     ///
@@ -1502,9 +1503,6 @@ pub struct MaskState {
 /// `window` / `last` / `element` 是 `Option` 而不是空矩形：「这一刻问不出」在那三臂都是**合法答案**而不是
 /// 失败，把它写成 `PhysRect::new(0,0,0,0)` 就会与「光标下真有一扇零大小的窗」混成同一格（#453）。
 pub struct OpeningFacts {
-    /// `[capture] default_mode = region`（出厂那一侧）用的：[`MaskState::default_hole`] 算出来
-    /// 的那一块，一字不改。
-    pub free: PhysRect,
     /// `fullscreen` 用的：整块桌面（所有显示器的并集），而不是主屏 —— 两块屏的机器上「全屏」
     /// 问的是用户看得见的全部。
     pub desktop: PhysRect,
@@ -1585,7 +1583,9 @@ impl MaskState {
             return Err("快照里没有任何显示器".into());
         }
         self.shader = shader;
-        self.hole = Self::default_hole(snap);
+        // 进场**没有选区**（§5.3.1 步 1）：这一格在 [`Self::apply_opening`] 之后会被那一枚键
+        // 决定（自由区域 = 空、窗口检测 = 那一扇窗……），而这里给的是它之前的那个值。
+        self.hole = PhysRect::default();
         self.pixels_ms = None;
         self.message.clear();
         self.pre_notice.clear();
@@ -1771,8 +1771,8 @@ impl MaskState {
         self.virtual_bounds = snap.virtual_bounds;
         // `[capture] default_mode`、`[capture] freeze_frame`、`[advanced] privacy_no_temp_files`
         // 三枚键在产品里的**唯一读者**就在这一行：一场遮罩进场的那一刻。选这一格而不是选在
-        // [`crate::hotkey`] 那一趟里，是因为这里已经有快照、有候选窗口表、有那一位算默认选区的
-        // 作者（[`Self::default_hole`]），另起一处就会把这些事实各问第二遍（#281）；选在**每场
+        // [`crate::hotkey`] 那一趟里，是因为这里已经有快照、有候选窗口表、有那一位算进场选区的
+        // 作者（[`Self::opening_hole`]），另起一处就会把这些事实各问第二遍（#281）；选在**每场
         // `open` 现读档**而不是启动时缓存，是因为 §5.20.2「设置应即时生效」—— 与上面那几枚
         // `crate::settings::*_cfg()` 同一时刻取值，所以设置页改完模式，下一次按下热键就用新的，
         // 而已经开着的这一场不动。
@@ -1984,18 +1984,19 @@ impl MaskState {
         code
     }
 
-    /// The selection a mask opens with: the middle half of the primary monitor,
-    /// or of the whole desktop if the enumeration names no primary. A fixed shape
-    /// on purpose - the hole the user drags is M3's, and until then the only
-    /// honest test of a hole is one whose size is known in advance.
-    fn default_hole(snap: &ScreenSnapshot) -> PhysRect {
-        let b = snap
-            .monitors
-            .iter()
-            .find(|m| m.info.primary)
-            .map(|m| m.info.bounds)
-            .unwrap_or(snap.virtual_bounds);
-        PhysRect::new(b.x + b.w as i32 / 4, b.y + b.h as i32 / 4, b.w / 2, b.h / 2)
+    /// §5.3.1 步 1 之后**还没有选区**：自由区域这一档进场是**空的**，用户按住鼠标左键拖了才有
+    /// 选区（步 2-3）。
+    ///
+    /// 这一格是「自由区域进场长什么样」的**唯一**作者（#281）。别的几档进场时带着**自己**那一块
+    /// ——整块桌面（§5.3.2 全屏）、光标下那一扇窗（§5.3.2 窗口检测）、上一次那块（§5.2.5 重复
+    /// 上次截图）、光标下那一枚控件（§5.3.3 元素检测）——只有这一档**自己那一块就是没有**。
+    ///
+    /// 此前这里是一块「主屏中间那半块」（当年叫 `default_hole`），那是 M3 时代的临时形状：用户
+    /// 先看到一块选区、再去拖它，与 §5.3.1 步 1「用户进入截图状态」和步 2「按住鼠标左键并拖动」
+    /// 的字面口径不合，也与用户报的那一条（进场就有一块选取）不合。那一块形状自此删掉：**门自己
+    /// 要的洞由门自己种**（`mask_check::open`），产品的进场选区不再由门代答。
+    fn free_opening() -> PhysRect {
+        PhysRect::default()
     }
 
     /// `[capture] default_mode` 的**分岔本体**：一次没有点名模式的截图（§5.2.1 的快捷键、
@@ -2007,9 +2008,10 @@ impl MaskState {
     /// 不抓屏、不问桌面，所以 §9.1 第十条那一半（拨一下读得回两样答案）能在 `cargo test` 里判，
     /// 而不是只在真机上被看见。[`MaskState::open`] 是唯一递真事实进来的地方。
     ///
-    /// 每一臂各自对面，而**出厂那一臂（`Region`）一字不改** —— 这一枚键从「档里没人读」变成
-    /// 有人读的那一刻，默认路径的进场选区必须还是 [`Self::default_hole`] 算出来的那一块：
-    /// * `Region` ⇒ 就是 `free`，不开口（§5.3.1 自由区域，一直是那样）。
+    /// 每一臂各自对面，而**出厂那一臂（`Region`）是「还没有选区」** —— 这一枚键从「档里没人读」
+    /// 变成有人读的那一刻，默认路径的进场选区必须还是 §5.3.1 步 1 说的那样：**用户还没拖，所以
+    /// 没有选区**：
+    /// * `Region` ⇒ 空（[`Self::free_opening`]），不开口（§5.3.1 自由区域：拖了才有）。
     /// * `Fullscreen` ⇒ `desktop` = 整桌面那一块（遮罩本来就铺满每一块屏，所以这里取快照的
     ///   `virtual_bounds`：两块屏的机器上「全屏」= 用户看得见的全部，而不是只有主屏）。
     ///   选区仍可被拖、被改，进场那一块只是起点。
@@ -2021,19 +2023,20 @@ impl MaskState {
     ///   问法与遮罩里 hover 那一路共用同一枚闸：[`falcon_core::capture::WindowExtras::element_chain`]
     ///   交 raw 矩形、[`falcon_core::capture::element_chain_of`] 判链）。这一臂另有两句话可说，
     ///   且两句不是同一件事（#453）：`element_switch` 关着 = 用户自己把控件级那条路整条关了，
-    ///   开着而 `element` 是 `None` = 这一刻桌面上问不出控件。两者都按 `free` 进场，不静默。
+    ///   开着而 `element` 是 `None` = 这一刻桌面上问不出控件。两者都按自由区域（空选区）进场，
+    ///   不静默。
     pub fn opening_hole(
         mode: falcon_core::config::CaptureMode,
         facts: &OpeningFacts,
     ) -> Opening {
         use falcon_core::config::CaptureMode as M;
         match mode {
-            M::Region => Opening::at(facts.free),
+            M::Region => Opening::at(Self::free_opening()),
             M::Fullscreen => Opening::at(facts.desktop),
             M::Window => match facts.window {
                 Some(rect) => Opening::at(rect),
                 None => Opening::falling_back(
-                    facts.free,
+                    Self::free_opening(),
                     "[capture] default_mode = window：这一刻问不出光标下是哪一扇窗\
                      （窗口枚举交回空表，或指针不在任何窗上），这一场按自由区域进场。"
                         .to_string(),
@@ -2042,7 +2045,7 @@ impl MaskState {
             M::Repeat => match facts.last {
                 Some(rect) => Opening::at(rect),
                 None => Opening::falling_back(
-                    facts.free,
+                    Self::free_opening(),
                     "[capture] default_mode = repeat：这一趟进程还没有过一次选区，可重复的\
                      「上一次截图」是 §5.2.5 那一枚快捷键的事；这一场按自由区域进场。"
                         .to_string(),
@@ -2050,7 +2053,7 @@ impl MaskState {
             },
             M::Element => match (facts.element_switch, facts.element) {
                 (false, _) => Opening::falling_back(
-                    facts.free,
+                    Self::free_opening(),
                     "[capture] default_mode = element，可 `[capture] highlight_element` 关着：\
                      控件级那一条路（高亮、滚轮换层、单击选中元素）整条是这一枚键管的，\
                      这一场按自由区域进场。"
@@ -2058,7 +2061,7 @@ impl MaskState {
                 ),
                 (true, Some(rect)) => Opening::at(rect),
                 (true, None) => Opening::falling_back(
-                    facts.free,
+                    Self::free_opening(),
                     "[capture] default_mode = element：这一刻问不出光标下是哪一枚控件\
                      （指针不在任何可截窗上，或那一扇窗里 UIA 交回空表），这一场按自由区域进场。"
                         .to_string(),
@@ -2206,7 +2209,6 @@ impl MaskState {
         use falcon_core::config::CaptureMode as M;
         let mode = self.capture.default_mode;
         let mut facts = OpeningFacts {
-            free: Self::default_hole(snap),
             desktop: snap.virtual_bounds,
             window: None,
             last: None,
@@ -5587,22 +5589,32 @@ pub fn open_board(shader: bool) -> Result<Opened, String> {
     let slots = with(|state| {
         let n = state.open(&snap, shader)?;
         state.board = Some(surface);
-        if let falcon_core::whiteboard::Size::Canvas { width, height } = size {
-            let b = snap
-                .monitors
-                .iter()
-                .find(|m| m.info.primary)
-                .map(|m| m.info.bounds)
-                .unwrap_or(snap.virtual_bounds);
-            let want = PhysRect::new(
-                b.x + (b.w.saturating_sub(width) / 2) as i32,
-                b.y + (b.h.saturating_sub(height) / 2) as i32,
-                width,
-                height,
-            );
-            if let Some((hole, _)) = want.clamp_to(&b) {
-                state.set_hole(hole);
+        // 白板自己带一块**能画的地方**：标注的裁剪跟着选区走（[`MaskState::set_hole`] →
+        // `ink.set_hole`），而选区是空的就**没有地方可画**（§5.4.4 步 2「与屏幕或指定区域匹配」）。
+        // `Size::Screen` = 整块虚拟桌面；`Size::Canvas` = 居中在主屏上的那一块。
+        //
+        // 这一格**不读** `[capture] default_mode`：白板不是那一档截图，它自己的尺寸才是它的事
+        // （#281：同一件事只许一处回答）。
+        let hole = match size {
+            falcon_core::whiteboard::Size::Screen => Some(snap.virtual_bounds),
+            falcon_core::whiteboard::Size::Canvas { width, height } => {
+                let b = snap
+                    .monitors
+                    .iter()
+                    .find(|m| m.info.primary)
+                    .map(|m| m.info.bounds)
+                    .unwrap_or(snap.virtual_bounds);
+                let want = PhysRect::new(
+                    b.x + (b.w.saturating_sub(width) / 2) as i32,
+                    b.y + (b.h.saturating_sub(height) / 2) as i32,
+                    width,
+                    height,
+                );
+                want.clamp_to(&b).map(|(hole, _)| hole)
             }
+        };
+        if let Some(hole) = hole {
+            state.set_hole(hole);
         }
         Ok::<_, String>(n)
     })?;
@@ -5735,19 +5747,58 @@ mod tests {
         assert_eq!(m.hole_for(&right), PhysRect::new(0, 10, 20, 100));
     }
 
-    /// `--mask` asserts against this shape, so it is decided here: the middle half
-    /// of the *primary*, never of the whole desktop - a two-monitor desktop whose
-    /// primary is the right-hand one must not open a hole over the other screen.
+    /// §5.3.1 步 1 之后**没有选区**：自由区域这一档进场是空的，用户按住鼠标拖了才有。
+    ///
+    /// 此前这里带着一块「主屏中间那半块」（当年叫 `default_hole`），用户先看到一块选区、再去
+    /// 拖它 —— 与步 1「用户进入截图状态」和步 2「按住鼠标左键并拖动」的字面口径不合，也与用户
+    /// 报的那一条（进场就有一块选取）不合。
+    ///
+    /// 判据分两半：**这一档**是空的，**别的几档**照旧带着自己那一块（§5.3.2 全屏 = 整块桌面、
+    /// §5.3.2 窗口检测 = 光标下那一扇窗、§5.2.5 重复上次截图 = 上一次那块、§5.3.3 元素检测 =
+    /// 那一枚控件）。两半都要钉住 —— 只钉「自由区域是空的」的话，把另外几档也清空成空的那一改，
+    /// 这一枚照样绿。
     #[test]
-    fn the_default_hole_is_the_middle_half_of_the_primary() {
-        let snap = snapshot(vec![
-            monitor("m0", 0, 0, 1920, 1080, 1.0, false),
-            monitor("m1", 1920, 0, 1920, 1080, 1.0, true),
-        ]);
-        assert_eq!(
-            MaskState::default_hole(&snap),
-            PhysRect::new(2400, 270, 960, 540)
+    fn a_free_region_capture_opens_with_no_selection_and_the_others_keep_theirs() {
+        use falcon_core::config::CaptureMode as M;
+        let facts = opening_facts();
+        let region = MaskState::opening_hole(M::Region, &facts);
+        assert!(
+            region.hole.is_empty(),
+            "自由区域进场没有选区，等用户拖：{:?}",
+            region.hole
         );
+        assert!(region.said.is_none(), "照办的那一臂不开口");
+        // 别的几档**照旧**带着自己那一块
+        assert_eq!(
+            MaskState::opening_hole(M::Fullscreen, &facts).hole,
+            facts.desktop,
+            "全屏带的是整块桌面"
+        );
+        assert_eq!(
+            MaskState::opening_hole(M::Window, &facts).hole,
+            facts.window.unwrap(),
+            "窗口检测带的是光标下那一扇窗"
+        );
+        assert_eq!(
+            MaskState::opening_hole(M::Repeat, &facts).hole,
+            facts.last.unwrap(),
+            "重复上次截图带的是上一次那一块"
+        );
+        assert_eq!(
+            MaskState::opening_hole(M::Element, &facts).hole,
+            facts.element.unwrap(),
+            "元素检测带的是那一枚控件"
+        );
+        // 而「问不出」的那几臂按自由区域进场 ⇒ 同样是空的，且**说出来**（#433/#453）
+        let mut no_window = opening_facts();
+        no_window.window = None;
+        let win_no = MaskState::opening_hole(M::Window, &no_window);
+        assert!(
+            win_no.hole.is_empty(),
+            "问不出窗就按自由区域进场，没有选区：{:?}",
+            win_no.hole
+        );
+        assert!(win_no.said.is_some(), "问不出要说出来");
     }
 
     /// The mask's dim-with-a-hole is one shader, and **where that shader puts the
@@ -10927,9 +10978,9 @@ mod tests {
         assert_eq!(m.hover_win.map(|(h, _)| h), Some(7));
     }
 
-    /// 一组进场事实：主屏 640×480 上「自由区域」是中间那半块（[`MaskState::default_hole`] 自己
-    /// 算的，本函数只是把它的读数抄下来），整桌面是**两块**屏的并集，所以 `desktop` 与 `free`
-    /// 天生不同一块 —— 这正是 `fullscreen` 那一臂要被判的地方。
+    /// 一组进场事实：整桌面是**两块**屏的并集，而每一档自己那一块是**另一块**地方 ——
+    /// 这正是 `default_mode` 那一枚键要被判的地方（自由区域那一档**没有**自己那一块：
+    /// [`MaskState::free_opening`] 是空的）。
     fn opening_facts() -> OpeningFacts {
         let snap = snapshot(vec![
             monitor("m0", 0, 0, 640, 480, 1.0, true),
@@ -10937,7 +10988,6 @@ mod tests {
         ]);
         let desktop = snap.virtual_bounds;
         OpeningFacts {
-            free: MaskState::default_hole(&snap),
             desktop,
             window: Some(PhysRect::new(12, 34, 200, 100)),
             last: Some(PhysRect::new(300, 200, 120, 90)),
@@ -10950,17 +11000,20 @@ mod tests {
     /// （[`MaskState::opening_hole`]）。判法就是把**同一组事实**递给两拨法，问两次答案：
     /// 拨一下读不回两样，这一枚键就还停在「档里没人读」。
     ///
-    /// 每一格各有对面，而**出厂那一臂（`region`）与本轮之前字节相同**：`free` 就是
-    /// [`MaskState::default_hole`] 的那一块、也不开口，所以第一次有人读这枚键的那一刻，默认
-    /// 路径上没有任何一格变了行为 —— 这是「新读者不许顺手改旧答案」的唯一证人。
+    /// 每一格各有对面，而**出厂那一臂（`region`）是「还没有选区」**：自由区域这一档进场没有
+    /// 选区（§5.3.1 步 1：用户还没拖），也不开口。
     #[test]
     fn the_default_mode_key_decides_where_the_mask_enters() {
         use falcon_core::config::CaptureMode as M;
         let facts = opening_facts();
         let region = MaskState::opening_hole(M::Region, &facts);
         let full = MaskState::opening_hole(M::Fullscreen, &facts);
-        // ① 两拨法 ⇒ 两块选区。这一格就是「键被读了」本身。
-        assert_eq!(region.hole, facts.free, "出厂那一臂必须是今天那块默认选区");
+        // ① 两拨法 ⇒ 两样答案。这一格就是「键被读了」本身。
+        assert!(
+            region.hole.is_empty(),
+            "出厂那一臂是「还没有选区」：{:?}",
+            region.hole
+        );
         assert_eq!(full.hole, facts.desktop, "全屏那一臂要的是整块桌面");
         assert_ne!(region.hole, full.hole, "拨了 `default_mode` 而选区没动 = 这枚键没人读");
         assert!(
@@ -10977,7 +11030,11 @@ mod tests {
         let win_no = MaskState::opening_hole(M::Window, &no_window);
         assert_eq!(win_yes.hole, facts.window.unwrap(), "光标下那扇窗就是进场选区");
         assert!(win_yes.said.is_none());
-        assert_eq!(win_no.hole, facts.free, "问不出窗也要进得了场（§5.3.1 那条腿不能断）");
+        assert!(
+            win_no.hole.is_empty(),
+            "问不出窗就按自由区域进场，没有选区：{:?}",
+            win_no.hole
+        );
         let said_win = win_no.said.expect("问不出窗必须开口");
         assert!(
             said_win.contains("[capture] default_mode") && said_win.contains("window"),
@@ -11009,7 +11066,11 @@ mod tests {
         let mut no_elem = opening_facts();
         no_elem.element = None;
         let elem_dry = MaskState::opening_hole(M::Element, &no_elem);
-        assert_eq!(elem_dry.hole, facts.free, "问不出控件也要进得了场（§5.3.3 退化那条）");
+        assert!(
+            elem_dry.hole.is_empty(),
+            "问不出控件就按自由区域进场，没有选区：{:?}",
+            elem_dry.hole
+        );
         let said_dry = elem_dry.said.expect("问不出控件必须开口");
         assert!(
             !said_dry.contains("highlight_element")
@@ -11021,7 +11082,11 @@ mod tests {
         let mut off = opening_facts();
         off.element_switch = false;
         let elem_off = MaskState::opening_hole(M::Element, &off);
-        assert_eq!(elem_off.hole, facts.free, "开关关着时进场停在自由区域");
+        assert!(
+            elem_off.hole.is_empty(),
+            "开关关着时进场停在自由区域（没有选区）：{:?}",
+            elem_off.hole
+        );
         let said_off = elem_off.said.expect("用户自己关了那条路也要说出来，不许静默");
         assert!(
             said_off.contains("highlight_element"),

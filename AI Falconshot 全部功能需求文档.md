@@ -348,6 +348,13 @@
 > **判据两枚**：源码形状的那一枚是 `mask::tests::the_shader_places_the_hole_with_the_texture_coordinate`（洞的位置由 `qt_TexCoord0` 算、且代码里不出现 `gl_FragCoord`；坏的那一版实测该用例 **FAILED**）；行为上的那一枚是 `--mask` 的 `hole of` 行。  
 > **`--mask` 那一行此前是「瞎」的，一并补上**：门自己量的洞是**主屏正中那一半**，而**正中的一块是它自己的镜像** ⇒ 洞画错了地方（上下翻转）也仍落在同一处 ⇒ 破的那一版照样报 `hole of m0-display1 PASS measured=1.000`（绿着的门看不见这一类错）。自此门**自己种一块洞**（`mask_check::open`：主屏**左上四分之一**，镜像落在左下四分之一——另一个地方），坏的那一版实测 `hole of m0-display1 FAIL measured=0.398 want 1.000` ⇒ `mask check: FAIL`；好的一版 PASS。
 
+> **实现口径（2026-11-12）**  
+> **自由区域这一档进场**没有选区**：步 1「用户进入截图状态」与步 2「按住鼠标左键并拖动」之间**没有**一块选区——拖了才有。此前进场就带着一块「主屏中间那半块」（M3 时代的临时形状），用户先看到一块选区、再去拖它，与那两步的字面口径不合，也与用户报的那一条（启动截图就有一个选取）不合。那一块形状自此删掉（`MaskState::default_hole` 没了）。  
+> **别的几档照旧带自己那一块**：§5.3.2 全屏 = 整块桌面（所有显示器的并集）、§5.3.2 窗口检测 = 光标下那一扇**可截**的窗、§5.2.5 重复上次截图 = 上一次截成的那一块、§5.3.3 元素检测 = 光标下那一枚**最内层控件**。「问不出」的那几臂（窗口/上次/控件）按**自由区域**进场并**说出来**（#433/#453），所以它们进场时同样没有选区。  
+> **落到代码**：`MaskState::opening_hole` 的 `Region` 一臂交的是**空选区**（`MaskState::free_opening`），`MaskState::apply_opening` 只递事实、不自己再答一遍（#281）。  
+> **白板（§5.4.4 / §5.4.5）自此自己带一块能画的地方**：`Size::Screen` = 整块虚拟桌面、`Size::Canvas` = 居中在主屏上的那一块。标注的裁剪跟着选区走（`MaskState::set_hole` → `ink.set_hole`），选区是空的**就没有地方可画**——白板那一族不读 `[capture] default_mode`，它自己的尺寸才是它的事。  
+> **判据两枚**：单测 `mask::tests::a_free_region_capture_opens_with_no_selection_and_the_others_keep_theirs`（自由区域空、别的几档照旧带着自己那一块、问不出时也空且说出来；把 `free_opening` 改回一块矩形实测该用例 **FAILED**）；门上的 `the product opens with no selection` 一行（门**自己种洞之前**记下产品进场那一块——门那块洞是门要的，它不替产品回答「进场带不带选区」；这一行也顺带钉住「`apply_opening` 真的用了 `opening_hole`」这条接线）。
+
 ### 5.3.2 窗口检测
 
 **操作步骤**
