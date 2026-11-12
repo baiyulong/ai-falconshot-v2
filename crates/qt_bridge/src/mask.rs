@@ -4818,6 +4818,71 @@ impl MaskState {
         true
     }
 
+    /// §5.5.4 那一枚钮（**快速保存**）自此**总是**把所在目录打开（用户 2026-11-12 定的：
+    /// 「点击快速保存，按钮区域不要显示文件路径了，不如直接退出截图，然后打开所在目录」）。
+    ///
+    /// 这一格是**那一枚钮自己的门**：文件由 [`Self::quick_out`] 写（那一条路也管「打开方式」
+    /// 「发送到应用」两扇门，它们各自有各自的事，所以揭示不能塞进那里）。
+    ///
+    /// 揭示**恰好一次**：`quick_out` 在 `[output] reveal_after_save` 开着时自己已经揭示过一次，
+    /// 那一枚开关关着时这一格补上 —— 于是无论那一枚开关是开是关，用户按这一枚钮都看到目录
+    /// 被打开，而**只**被打开一次。判据是 [`Self::reveal_missing`]，它是一枚纯函数，所以
+    /// 「恰好一次」这件事在单测里判得出（#274：读得到的那一处就是量的那一处）。
+    pub fn quick_out_and_reveal(&mut self) -> bool {
+        let done = self.quick_out();
+        if done && Self::reveal_missing(self.reveal_after_save) {
+            self.reveal_auto();
+        }
+        done
+    }
+
+    /// 快速保存那一枚钮之后**要不要补**一次揭示：开关开着时落盘自己已经揭示过了（那一句在
+    /// [`Self::quick_out`] 里），关着时这一枚补上 —— 两种情况下都恰好一次。
+    fn reveal_missing(switch_on: bool) -> bool {
+        !switch_on
+    }
+
+    /// §5.5.5 步骤 2 那张对话框**该先替用户填好一个文件名**（用户 2026-11-12 定的：
+    /// 「点击保存弹出保存对话框之后，应该默认给个文件名称」）。
+    ///
+    /// 那个名字是**命名引擎的活**（§5.5.3 那三条规则：[`falcon_core::naming`]），所以这一格
+    /// **不自己拼**——它算的是 [`crate::save::quick_to`] 算的那一个：同一个模板、同一个前缀、
+    /// 同一个撞名规则、同一个时钟。它与那一条路的差别只有一处：**不写盘**。
+    ///
+    /// 序号用的是 `quick_saves + 1`，也就是「此刻按快速保存会写到的那个序号」——这一格答的是
+    /// 「现在叫什么」，不是「待会儿叫什么」：用户在对话框里把名字改了，随后按的快速保存写的是
+    /// 另一个文件，两件事不必是同一个。
+    ///
+    /// `None` = 这一台机器说不出目录（`[output] save_dir` 没填）与「拼不出画面」两件**不同**的
+    /// 事：前者是设置的问题，后者是选区的问题（#453 不许把两件事说成同一句）。这一格不替它们
+    /// 说话——它交回「没有名字」，页上就让对话框空着开场，那与今天一样。
+    pub fn suggested_save_path(&mut self) -> Option<std::path::PathBuf> {
+        let dir = self.naming.directory()?;
+        let frame = self.delivered()?;
+        let (epoch, offset_min) = platform_windows::clock::wall_clock();
+        let facts = naming::NameFacts {
+            width: frame.width,
+            height: frame.height,
+            monitor: "",
+            tool: self.ink.tool().map(|kind| kind.key()).unwrap_or(""),
+        };
+        let asked = naming::file_name(
+            &self.naming.template,
+            naming::LocalStamp::from_epoch(epoch, offset_min),
+            &self.naming.prefix,
+            self.quick_saves + 1,
+            facts,
+            self.export.format.ext(),
+        );
+        // 撞名规则与落盘那一条同源（`naming::resolve_on_disk` 是 `resolve` 的真盘变体）：
+        // 预填的那个名字**就是真的能写下去的那一个**（`Increment` 会把序号算好），
+        // 而不是「先写一个、撞了再说」。
+        Some(
+            naming::resolve_on_disk(&dir, &asked, &self.naming.collision)
+                .unwrap_or_else(|| dir.join(&asked)),
+        )
+    }
+
     /// §5.5.9 的替代分支：本产品**没有**原生分享面板，分享因此由「用系统默认程序打开」承担。
     ///
     /// 那一臂按 2026-11-02 的划界不做（Windows 的原生分享是 WinRT 的 `DataTransferManager`，
@@ -12035,6 +12100,23 @@ class=QQuickDropShadowWindow visible=1 hwnd=0x6a0d60 phys=0,0,3072,1920
             nosnap.message, before,
             "第二回来不许把那句拒绝再说一遍：{:?}",
             nosnap.message
+        );
+    }
+
+    /// §5.5.4 那一枚钮（**快速保存**）之后，所在目录被打开**恰好一次**：开关开着时落盘自己
+    /// 已经揭示过一次（那一句在 [`Self::quick_out`] 里），关着时这一枚补上。
+    ///
+    /// 判据是那一枚纯函数（[`Self::reveal_missing`]）：「恰好一次」这件事在单测里判得出，
+    /// 而门与真机量的是「资源管理器开了几扇窗」（那是另一格的事）。
+    #[test]
+    fn the_quick_save_button_reveals_the_folder_exactly_once_either_way() {
+        assert!(
+            MaskState::reveal_missing(false),
+            "[output] reveal_after_save 关着时这一枚钮要补一次揭示"
+        );
+        assert!(
+            !MaskState::reveal_missing(true),
+            "[output] reveal_after_save 开着时落盘自己已经揭示过了，不许再补一次"
         );
     }
 }

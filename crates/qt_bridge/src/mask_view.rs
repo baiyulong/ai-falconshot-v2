@@ -713,6 +713,14 @@ pub mod qobject {
         #[cxx_name = "copySelection"]
         fn copy_selection(self: Pin<&mut Self>) -> bool;
 
+        /// §5.5.5 步骤 2 那张对话框**先替用户填好的那个文件名**（用户 2026-11-12 定的）。
+        ///
+        /// 交回去的是一条 **file URL**（`file:///C:/…`），空串 = 这一台机器说不出该叫什么
+        /// （页上就让那张对话框空着开场，与今天一样）。
+        #[qinvokable]
+        #[cxx_name = "suggestedSavePath"]
+        fn suggested_save_path(self: Pin<&mut Self>) -> QString;
+
         /// §5.5.5's 另存为: the same stitched frame 复制 puts on the clipboard, written
         /// to the path the file dialog chose. `filter` is the extension text of the
         /// format the dialog was showing (`png`, `jpg`), which decides a name typed
@@ -1869,6 +1877,23 @@ impl qobject::MaskView {
         done
     }
 
+    /// §5.5.5 步骤 2 那张对话框**先替用户填好的那个文件名**（用户 2026-11-12 定的）。
+    ///
+    /// 交回去的是一条 **file URL**（`file:///C:/…`），不是一条盘符路径：Qt 那张对话框的
+    /// `currentFile` 要的就是 URL，而路径交给它要由页上自己拼一次 URL —— 那是页上第二次拼
+    /// 路径（#281）。正斜杠是 URL 的规矩、盘符路径是 Windows 的规矩，两边各写一遍就会在
+    /// 某一台上分家（带空格的目录名那一类最先分家）。
+    pub fn suggested_save_path(self: Pin<&mut Self>) -> QString {
+        let path = mask::with(|m| m.suggested_save_path());
+        match path {
+            Some(p) => {
+                let text = p.to_string_lossy().replace('\\', "/");
+                QString::from(format!("file:///{text}"))
+            }
+            None => QString::default(),
+        }
+    }
+
     /// §5.5.2's 另存为. `to_string` rather than a borrowed `&str` because the path is
     /// Qt's to keep: `MaskState::save_out` hands it to `std::path`, which wants an
     /// owned name on a Windows drive that may not be one this process can read.
@@ -2044,8 +2069,12 @@ impl qobject::MaskView {
     /// name and the directory are Rust's `[output]` reading, taken when the mask opened.
     /// The `reload` is the same one 复制 needs - the sentence lives in the one mask state
     /// and both windows have to re-read it after the write rather than before.
+    ///
+    /// 这一枚钮走的是 [`crate::mask::MaskState::quick_out_and_reveal`]（不是 `quick_out`）：
+    /// 用户按它要的是「存好 + 打开所在目录」这一件事，而揭示**恰好一次**由那一格判
+    /// （用户 2026-11-12 定的）。
     pub fn quick_save(mut self: Pin<&mut Self>) -> bool {
-        let done = mask::with(|m| m.quick_out());
+        let done = mask::with(|m| m.quick_out_and_reveal());
         self.as_mut().reload();
         done
     }

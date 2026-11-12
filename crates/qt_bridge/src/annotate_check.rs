@@ -7260,9 +7260,14 @@ mod tests {
     /// 「取消」那一句——`endMask` 从模型里毁掉遮罩那些窗，而从正在跑的遮罩窗 handler 里毁掉它是
     /// QML 不警告的 use-after-free。
     ///
-    /// ③ 「复制 / 快速保存」那一族**不**收遮罩：它们做完用户还要**接着在这一轮里标注**，遮罩留着
-    /// 是它们要的。这一条钉的是「别顺手把那一族也改了」——只查 `pin()` 里那一句收，别处的收是
-    /// 另一件事。
+    /// ③ 「复制 / 快速保存」那一族自此**也**收遮罩（2026-11-12 改）：用户报的是「确定选区之后
+    /// 点复制，截图就应该结束了，现在点复制之后选取还在」——遮罩是整块屏幕的一扇窗，用户复制完
+    /// 还得先把它关掉才拿得到桌面。这一族收的是**成了的时候**（`if (bar.delivered)` 里）：没成
+    /// 的时候（没有选区、拼不出画面、剪贴板被占着、目录写不进去）用户还得在这一轮里接着画，
+    /// 遮罩留着。
+    ///
+    /// ④ 收它的手仍是**「取消」那同一枚**（`session.endMask()`），四扇门（取消 / 复制 / 贴图 /
+    /// 快速保存）共用手一个作者（#281）：新造第二个作者就是「收遮罩」这件事有了两个主人。
     ///
     /// 尺子与全档同一把：`hint_check::qml_code` 剥注释（一句散文过不了这一格），
     /// `include_str!` 拿的是编译进这一手的那一份源。摘掉 `pin()` 里那一句收，计数就得掉一枚
@@ -7306,7 +7311,8 @@ mod tests {
              从正在跑的遮罩窗 handler 里毁掉它是 QML 不警告的 use-after-free"
         );
 
-        // ③ 「复制 / 快速保存」那一族不收：它们的函数体里不许出现 `endMask`。
+        // ③ 「复制 / 快速保存」那一族自此**也**收遮罩（2026-11-12 改）：收在**成了**的那一档里
+        // （`if (bar.delivered)`），没成的时候用户还得在这一轮里接着画，遮罩留着。
         for (name, marker) in [
             ("copy", "function copy() {"),
             ("quickSave", "function quickSave() {"),
@@ -7320,8 +7326,13 @@ mod tests {
                 &rest[..end]
             };
             assert!(
-                !body.contains("endMask"),
-                "`{name}` 那一族做完用户还要接着在这一轮里标注，收掉遮罩是它不该做的事"
+                body.contains("if (bar.delivered)"),
+                "`{name}` 那一族没有按「成了没有」分岔：没成的时候收掉遮罩，用户就没法在这一轮里接着画"
+            );
+            assert!(
+                body.contains("Qt.callLater(() => session.endMask())"),
+                "`{name}` 成了之后没收掉遮罩：那层是整块屏幕的一扇窗（盖住任务栏与托盘），\
+                 用户得先把它关掉才拿得到桌面"
             );
         }
 
@@ -7542,6 +7553,87 @@ mod tests {
             dropped.matches(INSERT).count() + 1,
             block.matches(INSERT).count(),
             "摘掉 {insert_line:?} 之后计数没变 ⇒ 这一格没在数"
+        );
+    }
+
+    /// 截图这一轮**输出那三扇门**的形状，逐段读 `AnnotationToolbar.qml`（用户 2026-11-12 定的）：
+    /// ① **复制**成功之后这一轮就结束（遮罩是整块屏幕的一扇窗，用户复制完还得先把它关掉才拿得到
+    /// 桌面）；② **快速保存**存完之后这一轮也结束，并把**所在目录**打开（按钮区域那一条路径通知
+    /// 不必再留着）；③ **保存**弹出来的那张对话框**先替用户填好一个文件名**。
+    ///
+    /// 每一条都从**那一段函数体**里读，而不是从全文里数那枚字面串：全文里数的是「这句话在文件里
+    /// 出现过几次」，而「这一扇门说没说要收遮罩」是那一段函数体的事（#274 同一族：尺子要量它要量的
+    /// 那一处）。
+    ///
+    /// 收遮罩的那一手是**同一枚**（`session.endMask()`，与「取消」「贴图」共用的那一枚），所以这里
+    /// 量的不是「有没有收」而是「收的是不是那一枚」——新造第二个作者（#281）会当场红。
+    #[test]
+    fn the_three_output_doors_end_the_round_and_prefill_the_save_dialog() {
+        const QML: &str = include_str!("../qml/AnnotationToolbar.qml");
+        let body = |name: &str| -> String {
+            let head = format!("function {name}() {{");
+            let start = QML
+                .find(&head)
+                .unwrap_or_else(|| panic!("页上那一段 {name}() 不在了"));
+            let rest = &QML[start..];
+            let end = rest.find("\n    }").unwrap_or(rest.len());
+            rest[..end].to_string()
+        };
+
+        let copy = body("copy");
+        // 尺子的前提：它读到的是**那一段函数体**，不是空串（空串会让下面每一句都变成「没有」）。
+        assert!(
+            copy.contains("copySelection()"),
+            "读到的那一段不是复制那一段：{copy}"
+        );
+        assert!(
+            copy.contains("session.endMask()"),
+            "复制成功之后这一轮要收掉：{copy}"
+        );
+        assert!(
+            copy.contains("session.sayText("),
+            "那一句话要递给提示窗（遮罩一收它就没处站了）：{copy}"
+        );
+
+        let quick = body("quickSave");
+        assert!(
+            quick.contains("quickSave()"),
+            "读到的那一段不是快速保存那一段：{quick}"
+        );
+        assert!(
+            quick.contains("session.endMask()"),
+            "快速保存之后这一轮要收掉：{quick}"
+        );
+        // 打开目录那件事在 Rust 那一头（`quick_out_and_reveal`，揭示恰好一次）：页上**不许**
+        // 自己再开一次目录 —— 那会是第二次揭示（#281）。
+        assert!(
+            !quick.contains("revealLanded"),
+            "打开目录由 Rust 那一格做，页上不许再开一次：{quick}"
+        );
+
+        let save = body("save");
+        assert!(
+            save.contains("saveAs.open()"),
+            "读到的那一段不是保存那一段：{save}"
+        );
+        assert!(
+            save.contains("suggestedSavePath()"),
+            "保存那张对话框要先替用户填好一个文件名：{save}"
+        );
+        assert!(
+            save.contains("saveAs.currentFile"),
+            "填好的那个名字要交给对话框那一格 `currentFile`：{save}"
+        );
+
+        // 收遮罩的那一枚手在场上是**一枚**（与「取消」「贴图」共用）：多了就是第二个作者。
+        //
+        // 数的是**剥过注释的**那份源码：注释里写着「收它的手是 `session.endMask()`」是散文，
+        // 不是读者（#274 同一族：抄一遍字面串就多一枚假读者）。
+        let code = crate::hint_check::qml_code(QML);
+        assert_eq!(
+            code.matches("session.endMask()").count(),
+            4,
+            "收遮罩那一枚手（`session.endMask()`）场上该有四处（取消 / 复制 / 贴图 / 快速保存），读到不同就是有人新造了一个作者"
         );
     }
 }

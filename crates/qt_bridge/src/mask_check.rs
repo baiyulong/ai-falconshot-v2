@@ -512,6 +512,26 @@ pub fn measure() -> (Check, String) {
         format!("{entry:?}"),
     );
 
+    // §5.5.5 步骤 2：那张对话框该**先替用户填好一个文件名**（用户 2026-11-12 定的）。
+    // 这一格判的是「**有**名字可填」——名字是命名引擎的活（§5.5.3 那三条规则），门要量的是
+    // 「那一格真的算得出一个名字」，不是「那个名字好不好看」。
+    //
+    // 这一台机器说不出该写在哪儿时（`[output] save_dir` 没填、也找不到图片文件夹）是**另一件
+    // 事**（#453），所以那一句交出去是 Blocked 而不是红。
+    let suggested = mask::with(|m| m.suggested_save_path());
+    match &suggested {
+        Some(path) => rep.row(
+            "the save dialog has a name to offer",
+            Check::Pass,
+            format!("{}", path.display()),
+        ),
+        None => rep.row(
+            "the save dialog has a name to offer",
+            Check::Blocked,
+            "这一台机器说不出该写在哪儿（[output] save_dir 没填且找不到图片文件夹）".to_string(),
+        ),
+    }
+
     // The hole, asserted as a relationship: it is inside the desktop and it is not
     // empty. Content-independent, so it holds on any desktop on any number of
     // screens - and it is the *planted* hole now (see [`open`]), not whatever the

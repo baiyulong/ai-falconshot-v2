@@ -357,17 +357,32 @@ Rectangle {
     /// there is one gesture with one owner rather than two paths that can disagree
     /// about what a copy does to the flow.
     ///
-    /// It does not close the mask, whatever the outcome: see
-    /// [`crate::mask::MaskState::copy_out`]. `grabbed()` fires either way, because the
-    /// sentence is on the one mask state both windows read and the toolbar has to
-    /// re-read it after the write rather than before.
+    /// **复制成功之后这一轮就结束了**（用户 2026-11-12 定的）：遮罩是**整块屏幕**的一扇窗，
+    /// 用户复制完还要先把它关掉才拿得到桌面。
+    ///
+    /// 收它的手是**「取消」那同一枚**（`session.endMask()`），走 `Qt.callLater` —— 同一理由：
+    /// `endMask` 从模型里毁掉遮罩那些窗，而从正在跑的那一枚 handler 里毁掉它是 QML 不会警告的
+    /// use-after-free。
+    ///
+    /// 那句话（`copy_out` 写的那句「已复制 …」）住在遮罩那一格 `message` 上，随遮罩一起走掉，
+    /// 所以**先**递给提示窗（`HintWindow.qml` 读 `session.status` 那一格）—— 话仍旧是 Rust
+    /// 写的那一句，页上只递（#281）。**没复制成时不收遮罩**：用户还得在这一轮里接着画。
     function copy() {
         bar.delivered = bar.view.copySelection()
         bar.grabbed()
+        if (bar.delivered) {
+            session.sayText(String(bar.view.message))
+            Qt.callLater(() => session.endMask())
+        }
     }
 
     /// §5.5.5's 另存为, from this cell or from `Ctrl+S`: the dialog is opened, and the
     /// answer comes back through [`Self.delivered`] when the user names a file.
+    ///
+    /// **那张对话框先替用户填好一个文件名**（用户 2026-11-12 定的：「点击保存弹出保存对话框
+    /// 之后，应该默认给个文件名称」）：名字是命名引擎的活（§5.5.3 那三条规则），所以这一格
+    /// 只向 Rust 要那一个名字，不自己拼（#281）；交回来的是一条 file URL，Qt 那张对话框要的
+    /// 就是它。问不出名字时（这台机器说不出目录、或拼不出画面）就空着开场，与今天一样。
     ///
     /// Nothing is decided here about *which* format - the extension the user typed is
     /// the format, and a name without one becomes the configured default in Rust. The
@@ -381,11 +396,26 @@ Rectangle {
     /// `Member "saveAs" not found on type "Rectangle"`, and every other id reference in
     /// this file is written the short way for the same reason.
     function save() {
+        const suggestion = String(bar.view.suggestedSavePath())
+        if (suggestion.length > 0) {
+            saveAs.currentFile = suggestion
+        }
         saveAs.open()
     }
 
     /// §5.5.4's 快速保存, from this cell or from `Ctrl+Shift+S`: the same stitched picture
     /// 保存 writes, into the file `[output]` names, with no dialog at all.
+    ///
+    /// **存完之后这一轮也结束，并把所在目录打开**（用户 2026-11-12 定的：「点击快速保存，
+    /// 按钮区域不要显示文件路径了，不如直接退出截图，然后打开所在目录」）。遮罩一收，工具条
+    /// 上那一条路径通知就跟着走掉了 —— 它不必再留着。
+    ///
+    /// **打开目录那件事在 Rust 那一头**（`quick_out_and_reveal`：揭示**恰好一次**，开关开着
+    /// 时落盘自己已经揭示过、关着时那一格补上），页上不自己再开一次目录 —— 那会是第二次
+    /// 揭示（#281）。
+    ///
+    /// 收遮罩的手是**「取消」那同一枚**（`session.endMask()`，走 `Qt.callLater`），理由抄
+    /// 「复制」那一句。
     ///
     /// Nothing is asked of the user, which is the feature rather than a shortcut for it -
     /// §5.5.4 step 3 is "无需打开文件对话框，直接保存截图". What the settings have to have
@@ -394,6 +424,10 @@ Rectangle {
     function quickSave() {
         bar.delivered = bar.view.quickSave()
         bar.grabbed()
+        if (bar.delivered) {
+            session.sayText(String(bar.view.message))
+            Qt.callLater(() => session.endMask())
+        }
     }
 
     /// §5.5.9 的替代分支：这一枚按下去，先把这一张写成一份文件，再把那枚路径交给 shell 的

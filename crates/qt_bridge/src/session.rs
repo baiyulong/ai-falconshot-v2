@@ -442,6 +442,16 @@ pub mod qobject {
         #[cxx_name = "endMask"]
         fn end_mask(self: Pin<&mut Self>);
 
+        /// 把一句话交给**提示窗**（`HintWindow.qml` 读 `status` 那一格）。
+        ///
+        /// 存在的理由只有一处：§5.5.2 复制成功之后遮罩就收掉了，而那一句「已复制 …」住在
+        /// 遮罩那一格 `message` 上，随遮罩一起走掉 —— 用户就什么也没看见。话**仍旧是 Rust
+        /// 写的那一句**（`MaskState::copy_out` 写的），这一格只把它递到提示窗那一格槽位上，
+        /// 不造句子也不改句子（#281）。
+        #[qinvokable]
+        #[cxx_name = "sayText"]
+        fn say_text(self: Pin<&mut Self>, text: &QString);
+
         /// Take the warm-round plan written from the command line. See
         /// [`crate::state::WarmPlan`] for why a QML call is the only way in.
         #[qinvokable]
@@ -1886,6 +1896,18 @@ impl qobject::Session {
         // capture, not per process.
         mask::with(|m| m.close());
         self.as_mut().set_mask_count(0);
+    }
+
+    /// §5.5.2 复制成功之后那一句的去处：遮罩收掉了，话得有一处站着。
+    ///
+    /// 递的是**遮罩那一头写好的那句**（`MaskState::copy_out` 写进 `message` 的那一句），
+    /// 这一格只把它放到 `status` 那一格槽位上——提示窗（`HintWindow.qml`）读的就是那一格，
+    /// 它的 `onStatusChanged` 把它亮出来。
+    ///
+    /// 「复制成不成功」这件事的答案仍然只有一处（`copy_out` 的 `bool`）；这一格说的是
+    /// **那一句话摆在哪儿**，不是「复制成了没有」。
+    pub fn say_text(mut self: Pin<&mut Self>, text: &QString) {
+        self.as_mut().say(&text.to_string());
     }
 
     pub fn refresh_warm(mut self: Pin<&mut Self>) {
