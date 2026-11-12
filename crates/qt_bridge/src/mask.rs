@@ -9022,11 +9022,13 @@ mod tests {
         let cells: Vec<&str> = drawn
             .lines()
             .map(str::trim)
-            .filter(|t| t.starts_with("label:"))
+            .filter(|t| t.starts_with("label:") || t.starts_with("icon:"))
             .collect();
+        // 2026-11-12 起那两枚钮画的是**图标**而不是字（§5.21.2 的图标族），所以这里认的是
+        // 那一行 `icon:` —— 两句退路指的仍是**这两枚钮**，它们换了个画法没换人。
         assert!(
-            cells.iter().any(|t| *t == r#"label: "保存""#)
-                && cells.iter().any(|t| *t == r#"label: "复制""#),
+            cells.iter().any(|t| *t == r#"icon: bar.glyphs["save"]"#)
+                && cells.iter().any(|t| *t == r#"icon: bar.glyphs["picture"]"#),
             "两句退路指的是工具栏上没有的两枚钮：{cells:?}"
         );
     }
@@ -9845,7 +9847,7 @@ mod tests {
         );
         let at = lines
             .iter()
-            .position(|t| *t == r#"label: "打开方式""#)
+            .position(|t| *t == r#"icon: bar.glyphs["open-with"]"#)
             .expect("入口不在");
         let cell = &lines[at..at + 4];
         assert!(

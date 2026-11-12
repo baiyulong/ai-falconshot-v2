@@ -350,11 +350,15 @@ mod tests {
             t.components, t.active, t.usable, t.underline, t.edge, t.strikeout
         );
 
-        // 八枚组件是今天实测的全场：AnnotationToolbar 三枚（Cell / Caption / Swatch）、
+        // 九枚组件是今天实测的全场：AnnotationToolbar 四枚（Cell / Caption / Swatch / ToolIcon）、
         // CaptureMask 一枚（RatioCell）、CodesPanel 一枚（Chip）、CustomCaptureWindow 一枚
         // （FieldRow）、OcrPanel 一枚（Chip）、PinWindow 一枚（Grip）。钉住它是为了让人数对不上
         // 时先停下来看一眼：新长一枚组件是常事，而**少**一枚通常意味着上面那把尺子切歪了。
-        assert_eq!(t.components, 8, "全场组件数到 {} 枚，不是 8", t.components);
+        //
+        // 8 → 9 是 2026-11-12 那一轮加的 `ToolIcon`（工具条的图标那一枚，§5.21.2 的图标族）。
+        // 它**不声明** active/usable（那两枚状态在 `Cell` 那一格里），所以下面 active 与 usable
+        // 两个读数一枚没动。
+        assert_eq!(t.components, 9, "全场组件数到 {} 枚，不是 9", t.components);
         // 声明「选中」的三枚：AnnotationToolbar 的 Cell 与 Swatch、CaptureMask 的 RatioCell。
         assert_eq!(t.active, 3, "声明 active 的组件数到 {} 枚，不是 3", t.active);
         // 声明「禁用」的三枚：AnnotationToolbar 的 Cell、CodesPanel 的 Chip、OcrPanel 的 Chip。

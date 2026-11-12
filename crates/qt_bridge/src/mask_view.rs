@@ -866,6 +866,15 @@ pub mod qobject {
         #[cxx_name = "toolHints"]
         fn tool_hints(self: &Self) -> QString;
 
+        /// 工具那一排的**图标**，与 [`Self::toolNames`] 同枚数同序 —— 三个串（名字、提示、图标）
+        /// 都出自 [`crate::annotate`] 的同一张表，所以第 `i` 枚图标只能落在第 `i` 枚钮上
+        /// （#281：一份清单只长一处；名字与图标分家了，页上没有一处绑定能查出来）。
+        ///
+        /// 交回去的是一段一段的 **SVG path data**，用 `|` 分开（path 语法里没有那一枚字符）。
+        #[qinvokable]
+        #[cxx_name = "toolIcons"]
+        fn tool_icons(self: &Self) -> QString;
+
         /// §5.3.8 第一、二步：比例那一排的标签，与 [`Self::ratioHints`] 同枚数同序 —— 两个串
         /// 都出自 [`crate::mask::RATIO_CELLS`] 同一张表，所以第 `i` 句提示只能落在第 `i` 枚芯片上
         /// （与 [`Self::toolNames`] / [`Self::toolHints`] 同一条口径）。
@@ -1911,6 +1920,11 @@ impl qobject::MaskView {
 
     pub fn tool_hints(&self) -> QString {
         QString::from(&*annotate::tool_hints())
+    }
+
+    /// 工具那一排的图标，与 [`Self::tool_names`] / [`Self::tool_hints`] 同枚数同序。
+    pub fn tool_icons(&self) -> QString {
+        QString::from(&*annotate::tool_glyphs())
     }
 
     pub fn ratio_names(&self) -> QString {

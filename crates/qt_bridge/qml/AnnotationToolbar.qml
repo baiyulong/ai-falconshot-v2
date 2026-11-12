@@ -1,6 +1,9 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Dialogs
+// §5.21.2 的图标族：`Shape` 与 `PathSvg` 住在这一模块里（没有它，图标那一枚是「Shape is not a
+// type」，而那一枚按得动、看不见 —— `--mask` 那一扇门的「no qml complaints」那一行当场判红）。
+import QtQuick.Shapes
 import dev.falconshot 1.0
 
 // §5.7's annotation toolbar, as a panel that floats next to the selection.
@@ -799,12 +802,132 @@ Rectangle {
         }
     }
 
+    // 工具条上那些**按钮**的图标（SVG path data，画在 16×16 的格子上）。
+    //
+    // 名字只在这一份清单里（#281：一份清单只长一处）：页上每一枚按得动的钮按它的**名字**来要
+    // 那一枚形状，而形状在这里。读数格（细 / 中 / 粗、小 / 中 / 大、百分比、序号、描边宽度、
+    // 圆角半径、字号）**不是按钮**，它们说的是一个值，字比图清楚，所以留着字。
+    //
+    // 工具那一排（16 枚）的图标**不在这里**：它们住在 Rust 的 `annotate::TOOL_GLYPHS` 里，
+    // 与那一排的名字、提示同表同序（名字与图标分家了，页上没有一处绑定能查出来）。
+    readonly property var glyphs: ({
+        // —— 笔刷形状 ——
+        "brush-circle": "M 8 3.5 A 4.5 4.5 0 1 1 7.99 3.5",
+        "brush-rect": "M 3.5 3.5 H 12.5 V 12.5 H 3.5 Z",
+        "brush-ellipse": "M 8 4 A 5 4 0 1 1 7.99 4",
+        // —— 箭头样式 ——
+        "head-triangle": "M 8 3 L 13 12 H 3 Z",
+        "head-chevron": "M 4 3 L 12 8 L 4 13",
+        "head-circle": "M 8 4 A 4 4 0 1 1 7.99 4",
+        // —— 文字那一族 ——
+        "text": "M 3 4 H 13 M 8 4 V 13",
+        "font": "M 3 13 L 8 3 L 13 13 M 5.2 9.5 H 10.8",
+        "align-left": "M 2.5 4 H 13.5 M 2.5 8 H 10 M 2.5 12 H 13.5",
+        "align-center": "M 2.5 4 H 13.5 M 4.5 8 H 11.5 M 2.5 12 H 13.5",
+        "align-right": "M 2.5 4 H 13.5 M 6 8 H 13.5 M 2.5 12 H 13.5",
+        "outline": "M 2.5 3.5 H 13.5 V 12.5 H 2.5 Z M 4.5 5.5 H 11.5 V 10.5 H 4.5 Z",
+        "bg": "M 3.5 3.5 H 12.5 V 12.5 H 3.5 Z M 6 6 H 10 V 10 H 6 Z",
+        "border": "M 3.5 3.5 H 12.5 V 12.5 H 3.5 Z M 5.5 5.5 H 10.5 V 10.5 H 5.5 Z",
+        // —— 效果那一族 ——
+        "highlight": "M 3 13 L 5 9 L 11.5 2.5 L 13.5 4.5 L 7 11 Z",
+        "blur": "M 8 2.5 A 5.5 5.5 0 1 1 7.99 2.5 Z M 8 5.5 A 2.5 2.5 0 1 1 7.99 5.5 Z",
+        "mask": "M 2.5 4 H 13.5 V 12 H 2.5 Z M 6 8 A 2 2 0 1 0 10 8 A 2 2 0 1 0 6 8 Z",
+        "clear-bg": "M 3.5 3.5 H 12.5 V 12.5 H 3.5 Z M 6 6 L 10 10 M 10 6 L 6 10",
+        "grayscale": "M 8 2.5 A 5.5 5.5 0 1 1 7.99 2.5 Z M 8 2.5 V 13.5",
+        "invert": "M 3 3 H 13 V 13 H 3 Z M 3 3 L 13 13",
+        "smooth": "M 2.5 8 C 5 3.5 7 12.5 10 8 C 11 6 12 6 13.5 7.5",
+        "corner": "M 12.5 3 V 8 A 4.5 4.5 0 0 1 8 12.5 H 3.5",
+        // —— 对象那一排 ——
+        "marquee": "M 2.5 5 V 2.5 H 5 M 11 2.5 H 13.5 V 5 M 13.5 11 V 13.5 H 11 M 5 13.5 H 2.5 V 11",
+        "clone": "M 5.5 2.5 H 12.5 V 9.5 H 9.5 M 3.5 6.5 H 10.5 V 13.5 H 3.5 Z",
+        "delete": "M 4 4 L 12 12 M 12 4 L 4 12",
+        "renumber": "M 5 4 H 13.5 M 5 8 H 13.5 M 5 12 H 13.5 M 2.5 3 V 9 M 1 7.5 L 2.5 9.5 L 4 7.5",
+        "rotate-left": "M 3.5 8 A 4.5 4.5 0 1 1 8 12.5 M 3.5 8 V 4.5 M 3.5 8 H 7",
+        "rotate-right": "M 12.5 8 A 4.5 4.5 0 1 0 8 3.5 M 12.5 8 V 4.5 M 12.5 8 H 9",
+        // —— 编辑与输出 ——
+        "undo": "M 6 4 L 3 7 L 6 10 M 3 7 H 9.5 A 3.5 3.5 0 0 1 9.5 14",
+        "redo": "M 10 4 L 13 7 L 10 10 M 13 7 H 6.5 A 3.5 3.5 0 0 0 6.5 14",
+        "clear": "M 3 4.5 H 13 M 6 4.5 V 3 H 10 V 4.5 M 4.5 4.5 L 5.3 13.5 H 10.7 L 11.5 4.5",
+        "picture": "M 2.5 3.5 H 13.5 V 12.5 H 2.5 Z M 2.5 10 L 6 6.5 L 8.5 9 L 11 6.5 L 13.5 9",
+        "ocr": "M 6.5 2.5 A 4 4 0 1 1 6.5 10.5 A 4 4 0 1 1 6.5 2.5 Z M 9.6 9.6 L 13 13 M 5 4.5 H 8 M 6.5 4.5 V 8",
+        "scan": "M 2.5 5 V 2.5 H 5 M 11 2.5 H 13.5 V 5 M 13.5 11 V 13.5 H 11 M 5 13.5 H 2.5 V 11 M 5 5 H 8 V 8 H 5 Z",
+        "save": "M 3 3 H 11 L 13 5 V 13 H 3 Z M 5.5 3 V 6.5 H 10.5 V 3 M 5.5 13 V 9.5 H 10.5 V 13",
+        "quick-save": "M 8 2 V 10 M 4.5 6.5 L 8 10.5 L 11.5 6.5 M 3 13.5 H 13",
+        "open-with": "M 3 8 L 8 4 L 13 8 M 4.5 7 V 12.5 H 11.5 V 7 M 8 4 V 9.5 M 6 7.5 L 8 9.5 L 10 7.5",
+        "pin": "M 6 2.5 H 10 V 6 L 12 8 H 4 L 6 6 Z M 8 8 V 13.5",
+        "send": "M 2.5 8 L 13.5 3 L 9.5 13.5 L 7.5 9.5 Z M 7.5 9.5 L 13.5 3",
+        // —— 放大那一族 ——
+        "connect": "M 2.5 3.5 H 6.5 V 7.5 H 2.5 Z M 9.5 8.5 H 13.5 V 12.5 H 9.5 Z M 6.5 5.5 L 9.5 10.5",
+        // —— 工具条摆位 ——
+        "edge-left": "M 10 3 L 5 8 L 10 13 M 5 8 H 13",
+        "edge-right": "M 6 3 L 11 8 L 6 13 M 3 8 H 11",
+        // —— 收尾那两枚 ——
+        "check": "M 3 8.5 L 6.5 12 L 13 4.5",
+        "cancel": "M 8 2.5 A 5.5 5.5 0 1 1 7.99 2.5 Z M 4.5 11.5 L 11.5 4.5",
+        "save-pin": "M 6 2.5 H 10 V 6 L 12 8 H 4 L 6 6 Z M 8 8 V 11 M 4 13 H 12"
+    })
+
+    // 一枚**图标**：描边画出来的，没有位图、没有新依赖、也没有 Canvas（Canvas 画在每一枚钮
+    // 上就是悬停一次重画一次）。
+    //
+    // 形状是 **SVG path data**，画在 16×16 的格子上；描边宽度、颜色与圆角端点全在这一枚里
+    // （全工具条一样），path 本身只说形状。
+    component ToolIcon: Shape {
+        id: ico
+
+        /// 那一段 path data。空 = 什么都不画（于是这一枚看不见，而不是一枚空框）。
+        property string glyph: ""
+        /// 描边的颜色：可用时是工具条的白，按不动时是灰（与字那一枚同一套颜色口径）。
+        property color tint: "#f2f2f2"
+        /// 按不动：形状变灰。
+        property bool dim: false
+
+        implicitWidth: 16
+        implicitHeight: 16
+
+        ShapePath {
+            strokeColor: ico.dim ? "#6a6a70" : ico.tint
+            strokeWidth: 1.3
+            fillColor: "transparent"
+            capStyle: ShapePath.RoundCap
+            joinStyle: ShapePath.RoundJoin
+
+            PathSvg {
+                path: ico.glyph
+            }
+        }
+
+        // §7.4 第 3 条：「禁用」也不许只靠颜色说。灰色是颜色通道，**这一道斜杠**是形状通道 ——
+        // 与字那一枚的删除线同一枚比喻（一个字被划掉，一枚图标被划掉）。
+        //
+        // `ShapePath` 没有 `visible`（它不是一枚 item，是一段路径），所以「不画」是**颜色透明**。
+        ShapePath {
+            strokeColor: ico.dim ? "#6a6a70" : "transparent"
+            strokeWidth: 1.3
+            fillColor: "transparent"
+            capStyle: ShapePath.RoundCap
+
+            PathSvg {
+                path: "M 3.5 3.5 L 12.5 12.5"
+            }
+        }
+    }
+
     // One button. `tapped` is the only thing a delegate has to say; everything the
     // button *looks* like is a property the caller binds to `view`.
     component Cell: Rectangle {
         id: cell
 
         property string label: ""
+        /// 一枚**图标**（SVG path data）。给了它就画图标、不画字；没给才画字。
+        ///
+        /// 字与图标的关系是**二选一**：一枚钮要么有一个名字（字），要么有一个形状（图标），
+        /// 两样都摆出来就是一枚 40 px 宽的钮挤在一条密排里。
+        ///
+        /// **读数格留字**：细 / 中 / 粗、小 / 中 / 大、百分比、序号、描边宽度、圆角半径、字号
+        /// 那些格子说的是**一个值**，字比图清楚，所以它们不填这一格（它们本来也不是按得动的
+        /// 钮，而是读数或一档开关）。
+        property string icon: ""
         property bool active: false
         property bool usable: true
         // §5.21.2 第一枚的入口。`required` 而不是 `property string hint: ""`：空串是一枚
@@ -814,7 +937,7 @@ Rectangle {
         required property string hint
         signal tapped()
 
-        width: cap.implicitWidth + 14
+        width: cell.icon === "" ? cap.implicitWidth + 14 : 30
         height: 24
         radius: 3
         // The checked state is a fill, not a border: at 24 px tall a 1 px border is
@@ -843,6 +966,8 @@ Rectangle {
             id: cap
             anchors.centerIn: parent
             text: cell.label
+            // 有图标就不画字：字与图标是**二选一**（一枚钮要么有一个名字，要么有一个形状）。
+            visible: cell.icon === ""
             // `font.pixelSize` and not a point size: this panel is drawn at the
             // window's device ratio, and a point size would make the bar's height
             // depend on the system font DPI rather than on the screen it is on.
@@ -854,21 +979,33 @@ Rectangle {
             color: cell.usable ? "#f2f2f2" : "#6a6a70"
         }
 
+        // 图标那一枚：形状是 SVG path data，描边的宽度与颜色是全工具条一套。
+        ToolIcon {
+            anchors.centerIn: parent
+            visible: cell.icon !== ""
+            glyph: cell.icon
+            dim: !cell.usable
+        }
+
         MouseArea {
             id: area
             anchors.fill: parent
             hoverEnabled: true
-            enabled: cell.usable
+            // 不 `enabled: cell.usable`：按不动的钮也得**说得清自己是什么**——图标那一族的名字
+            // 住在气泡里（§5.21.2），字那一族的时代不需要这一句（名字就摆在钮上）。
+            //
+            // 「按不动的钮不假装正在被指着」这一条仍然在：底色亮不亮（`containsMouse && usable`）
+            // 与光标是什么（`Qt.ArrowCursor`）都各自判着 `usable` ✓，只是**气泡**照旧说话。
+            enabled: true
             cursorShape: cell.usable ? Qt.PointingHandCursor : Qt.ArrowCursor
             // Release-on-target, not press: a press that slides off the button is a
             // pointer that wanted to draw on the picture under the panel.
-            onReleased: if (containsMouse) cell.tapped()
+            onReleased: if (containsMouse && cell.usable) cell.tapped()
         }
 
         // §5.21.2 第一枚的落点：一只气泡长在钮本体上，而不是每一枚实例各开一只。可见性
-        // 绑的是这枚钮自己的 hover，所以 `enabled: cell.usable` 那枚灰掉的钮没有气泡——
-        // 与它自己的底色（`containsMouse && usable` 才亮）同一个口径：按不动的钮不假装
-        // 正在被指着。
+        // 绑的是这枚钮自己的 hover —— 按不动的钮**也有**气泡（图标那一族的名字住在那里，
+        // 见上面 `MouseArea` 那一句），而底色与光标照旧不假装它按得动。
         ToolTip.text: cell.hint
         ToolTip.visible: area.containsMouse
         ToolTip.delay: 300
@@ -970,6 +1107,10 @@ Rectangle {
                     required property var modelData
 
                     label: modelData
+                    // 图标与名字、提示同表同序（Rust 的 `annotate::TOOL_GLYPHS`）：三样都出自
+                    // 同一张表，所以第 `i` 枚图标只能落在第 `i` 枚钮上（#281：名字与图标分家了，
+                    // 页上没有一处绑定能查出来）。
+                    icon: bar.view.toolIcons().split("|")[index]
                     hint: bar.view.toolHints().split("|")[index]
                     active: bar.view.tool === index
                     onTapped: bar.view.selectTool(index)
@@ -1196,7 +1337,7 @@ Rectangle {
             }
 
             Cell {
-                label: "圆头"
+                icon: bar.glyphs["brush-circle"]
                 hint: "笔刷形状：圆的笔头，荧光笔与马赛克都跟着它"
                 active: bar.view.brush_shape === 0
                 onTapped: {
@@ -1206,7 +1347,7 @@ Rectangle {
             }
 
             Cell {
-                label: "方头"
+                icon: bar.glyphs["brush-rect"]
                 hint: "笔刷形状：方的笔头，涂一块是一块"
                 active: bar.view.brush_shape === 1
                 onTapped: {
@@ -1392,7 +1533,7 @@ Rectangle {
             Item { width: 1; height: 18 }
 
             Cell {
-                label: "边框"
+                icon: bar.glyphs["border"]
                 hint: "边框：给放大图描一圈边"
                 active: bar.view.zoom_border
                 onTapped: {
@@ -1402,7 +1543,7 @@ Rectangle {
             }
 
             Cell {
-                label: "连接线"
+                icon: bar.glyphs["connect"]
                 hint: "连接线：从源区到放大图之间牵一条线"
                 active: bar.view.connection_line
                 onTapped: {
@@ -1551,7 +1692,7 @@ Rectangle {
             Item { width: 1; height: 18 }
 
             Cell {
-                label: "背景"
+                icon: bar.glyphs["bg"]
                 hint: "背景：给文字垫一块底板"
                 active: bar.view.text_bg
                 onTapped: {
@@ -1561,7 +1702,7 @@ Rectangle {
             }
 
             Cell {
-                label: "描边"
+                icon: bar.glyphs["outline"]
                 hint: "描边：给文字勾一圈边"
                 active: bar.view.text_outline
                 onTapped: {
@@ -1726,7 +1867,7 @@ Rectangle {
             }
 
             Cell {
-                label: "框选"
+                icon: bar.glyphs["marquee"]
                 hint: "框选：拖一个框，框到的都进这一串"
                 active: bar.view.marquee_mode
                 onTapped: {
@@ -1736,7 +1877,7 @@ Rectangle {
             }
 
             Cell {
-                label: "复制"
+                icon: bar.glyphs["clone"]
                 hint: "复制：给这一串做一份副本，副本接着被选中"
                 usable: bar.view.picked_count > 0
                 onTapped: {
@@ -1746,7 +1887,7 @@ Rectangle {
             }
 
             Cell {
-                label: "删除"
+                icon: bar.glyphs["delete"]
                 hint: "删除：抹掉这一串，一次撤销整组拿回"
                 usable: bar.view.picked_count > 0
                 onTapped: {
@@ -1761,7 +1902,7 @@ Rectangle {
             // 删除的那一刻（箭头工具在手）反而找不着它。亮与灭读 `auto_renumber` 这一枚 qproperty，
             // 界面不另记一份（同一档开关的另一种写法见上面「框选」）。
             Cell {
-                label: "重排"
+                icon: bar.glyphs["renumber"]
                 hint: "自动重排：删掉中间一号后，后面的号自己往前补上那个空档"
                 active: bar.view.auto_renumber
                 onTapped: {
@@ -1771,7 +1912,7 @@ Rectangle {
             }
 
             Cell {
-                label: "左转"
+                icon: bar.glyphs["rotate-left"]
                 hint: "左转：每一枚绕它自己的中心转一格"
                 usable: bar.view.picked_count > 0
                 onTapped: {
@@ -1781,7 +1922,7 @@ Rectangle {
             }
 
             Cell {
-                label: "右转"
+                icon: bar.glyphs["rotate-right"]
                 hint: "右转：每一枚绕它自己的中心转一格"
                 usable: bar.view.picked_count > 0
                 onTapped: {
@@ -1912,7 +2053,7 @@ Rectangle {
             spacing: 2
 
             Cell {
-                label: "撤销"
+                icon: bar.glyphs["undo"]
                 hint: "撤销：收回最后一步改动"
                 usable: bar.view.can_undo
                 onTapped: {
@@ -1923,7 +2064,7 @@ Rectangle {
             }
 
             Cell {
-                label: "重做"
+                icon: bar.glyphs["redo"]
                 hint: "重做：把刚收回的那一步放回去"
                 usable: bar.view.can_redo
                 onTapped: {
@@ -1934,7 +2075,7 @@ Rectangle {
             }
 
             Cell {
-                label: "全清"
+                icon: bar.glyphs["clear"]
                 hint: "全清：一次抹掉这一层所有标注"
                 usable: bar.view.objects > 0
                 onTapped: {
@@ -1947,7 +2088,7 @@ Rectangle {
             Item { width: 8; height: 1 }
 
             Cell {
-                label: "复制"
+                icon: bar.glyphs["picture"]
                 hint: "复制：把选区里的图送进剪贴板"
                 usable: bar.view.selected
                 onTapped: bar.copy()
@@ -1990,7 +2131,7 @@ Rectangle {
             // `asked` 的写法与上面「文字提取」那一封同一封信：递进去而不是绑出来，绑成一串就会
             // 被面板自己那颗「收起」踩掉。
             Cell {
-                label: "扫码"
+                icon: bar.glyphs["scan"]
                 hint: "扫码：读出选区里的二维码与条形码"
                 usable: bar.view.selected
                 onTapped: {
@@ -2003,7 +2144,7 @@ Rectangle {
             // for the reason 复制 is - a save with nothing selected is a refusal the
             // user has to be handed a sentence for, not a dialog.
             Cell {
-                label: "保存"
+                icon: bar.glyphs["save"]
                 hint: "保存：把选区里这张图写进一个文件"
                 usable: bar.view.selected
                 onTapped: bar.save()
@@ -2015,7 +2156,7 @@ Rectangle {
             // the one the settings already hold.
             Cell {
                 id: quickCell
-                label: "快速保存"
+                icon: bar.glyphs["quick-save"]
                 hint: "快速保存：不问名字，按设置里的路径直接落盘"
                 usable: bar.view.selected
                 onTapped: bar.quickSave()
@@ -2031,7 +2172,7 @@ Rectangle {
             // 仍是 `Text`、仍不可按），用户就会以为自己递给了那一枚目标。挨着 快速保存 放，
             // 是因为两枚按的都是「先把这一张写成文件」这一条腿。
             Cell {
-                label: "打开方式"
+                icon: bar.glyphs["open-with"]
                 hint: "打开方式：把这一张写成文件，再交给系统默认的看图程序"
                 usable: bar.view.selected
                 onTapped: bar.shareOut()
@@ -2044,7 +2185,7 @@ Rectangle {
             // 带着那份文件）。两枚共用的画面是同一张，分开的是「要不要一份文件」这一件事，
             // 屏幕上读得出。
             Cell {
-                label: "贴图"
+                icon: bar.glyphs["pin"]
                 hint: "贴图：把选区里这张图浮成一张贴图，不写成文件"
                 usable: bar.view.selected
                 onTapped: bar.pin()
@@ -2055,7 +2196,7 @@ Rectangle {
             // as a 贴图, so what floats is the artifact the user named (§10 第 43 项 ①). Greyed with
             // the selection for the same reason 保存 is.
             Cell {
-                label: "存完再钉图"
+                icon: bar.glyphs["save-pin"]
                 hint: "存完再钉图：先落成文件，再把这个文件贴成浮图"
                 usable: bar.view.selected
                 onTapped: bar.saveAndPin()
@@ -2069,7 +2210,7 @@ Rectangle {
             }
 
             Cell {
-                label: "取消"
+                icon: bar.glyphs["cancel"]
                 hint: "取消：什么都不留下，关掉这一层"
                 onTapped: bar.cancel()
             }

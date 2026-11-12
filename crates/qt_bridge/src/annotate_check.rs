@@ -7636,4 +7636,78 @@ mod tests {
             "收遮罩那一枚手（`session.endMask()`）场上该有四处（取消 / 复制 / 贴图 / 快速保存），读到不同就是有人新造了一个作者"
         );
     }
+
+    /// §5.21.2 的图标族（用户 2026-11-12 定的：「所有的文字按钮能不能换成图标」）：工具条上那些
+    /// **按得动的钮**画的是图标，字搬进气泡里（气泡本来就是 §5.21.2 要求的提示文本）。
+    ///
+    /// 判据三件：① 页上用到的每一个图标名字**都在**那份清单里（写错一个名字就是一枚空白的图标 ——
+    /// 那一枚按得动、看不见、也说不出是什么）；② 工具那一排的图标**住在 Rust**
+    /// （`annotate::TOOL_GLYPHS`，与那一排的名字、提示同表同序），页上不许自己抄一份（#281）；
+    /// ③ 图标那一枚的**禁用**有一道不是颜色的通道（斜杠），与字那一枚的删除线同一枚比喻
+    /// （§7.4 第 3 条：禁用不许只靠颜色说）。
+    #[test]
+    fn every_icon_on_the_page_has_a_shape_behind_it() {
+        const QML: &str = include_str!("../qml/AnnotationToolbar.qml");
+        let code = crate::hint_check::qml_code(QML);
+
+        // ① 清单里有哪些名字（`"name": "path"`），页上用了哪些名字（`glyphs["name"]`）。
+        let defined: Vec<&str> = code
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                let rest = t.strip_prefix('"')?;
+                let end = rest.find('"')?;
+                rest.get(..end)
+            })
+            .filter(|name| code.contains(&format!("glyphs[\"{name}\"]")))
+            .collect();
+        let used: Vec<&str> = code
+            .lines()
+            .filter_map(|l| {
+                let at = l.find("glyphs[\"")?;
+                let rest = &l[at + 8..];
+                let end = rest.find('"')?;
+                rest.get(..end)
+            })
+            .collect();
+        assert!(!used.is_empty(), "页上一枚图标都没有 —— 那这一族是空的");
+        for name in &used {
+            assert!(
+                defined.contains(name),
+                "页上用了图标 `{name}`，而清单里没有它 —— 那一枚会画成一片空白"
+            );
+        }
+        // 清单里也不该有没人用的形状（多一枚形状就是多一位没人叫得出名字的作者）。
+        for name in &defined {
+            assert!(
+                used.contains(name),
+                "清单里的 `{name}` 没有人用 —— 多一位作者"
+            );
+        }
+
+        // ② 工具那一排的图标住在 Rust。
+        assert!(
+            code.contains("icon: bar.view.toolIcons().split(\"|\")[index]"),
+            "工具那一排的图标该从 Rust 那张表来（与名字、提示同序），不是页上抄一份"
+        );
+        assert_eq!(
+            crate::annotate::tool_glyphs().split('|').count(),
+            crate::annotate::TOOLS.len(),
+            "图标那份表的枚数与工具那一排对不上"
+        );
+        assert!(
+            crate::annotate::tool_glyphs()
+                .split('|')
+                .all(|g| !g.trim().is_empty()),
+            "有一枚图标是空的 —— 那一枚按得动、看不见、也说不出是什么"
+        );
+
+        // ③ 禁用那一道不是颜色的通道（斜杠）。`ShapePath` 没有 `visible`，所以「不画」是颜色透明 ——
+        // 尺子认的是那一句**颜色**，不是一枚不存在的属性。
+        assert!(
+            code.contains("ico.dim ? \"#6a6a70\" : \"transparent\"")
+                && code.contains("M 3.5 3.5 L 12.5 12.5"),
+            "图标那一枚的禁用没有形状通道 —— §7.4 第 3 条：禁用不许只靠颜色说"
+        );
+    }
 }

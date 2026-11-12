@@ -212,6 +212,61 @@ const TOOL_TEXTS: [(Option<Kind>, &str, &str); 16] = [
 
 const _: () = assert!(TOOLS.len() == TOOL_TEXTS.len());
 
+/// 工具那一排的**图标**，与 [`TOOLS`] 同序同枚数：每一枚是一段 SVG path data，画在 16×16
+/// 的格子上（描边，不填色）。
+///
+/// 为什么不放在 QML 那一侧：那一排钮的**名字**住在 [`TOOL_TEXTS`] 里，页上按 index 递（#281：
+/// 一份清单只长一处）。图标若在页上另抄一份，第 `i` 枚图标就会与第 `i` 枚名字分家 —— 而
+/// 「名字与图标说的是同一件工具」这件事没有绑定能查出来。
+///
+/// 画法：`qml/AnnotationToolbar.qml` 里的 `ToolIcon` 是一枚 `Shape`，把这一段 path 交给
+/// `PathSvg` 描出来。描边宽度、颜色与圆角端点都是那一枚组件的事（全工具条一样），这里只给
+/// 形状。
+pub const TOOL_GLYPHS: [&str; 16] = [
+    // 0 None —— 指针（选与拖那一枚）
+    "M 4 2 L 4 13 L 7 10.5 L 9 14.5 L 11 13.5 L 9 9.8 L 13 9.5 Z",
+    // 1 Rect
+    "M 2.5 4 H 13.5 V 12 H 2.5 Z",
+    // 2 RoundedRect
+    "M 5 4 H 11 A 2 2 0 0 1 13 6 V 10 A 2 2 0 0 1 11 12 H 5 A 2 2 0 0 1 3 10 V 6 A 2 2 0 0 1 5 4 Z",
+    // 3 Ellipse
+    "M 8 3.5 A 5.5 4.5 0 1 1 7.99 3.5",
+    // 4 Line
+    "M 3 13 L 13 3",
+    // 5 Polyline
+    "M 2.5 11 L 6 6 L 9 10 L 13.5 4",
+    // 6 Arrow
+    "M 3 13 L 13 3 M 8 3 H 13 V 8",
+    // 7 DoubleArrow
+    "M 3 13 L 13 3 M 8 3 H 13 V 8 M 3 13 H 8 V 8",
+    // 8 Pencil —— 尖头
+    "M 2.5 13.5 L 4.2 9.2 L 10.8 2.6 L 13.4 5.2 L 6.8 11.8 Z",
+    // 9 Marker —— 扁头（与铅笔那一枚靠笔头分得开）
+    "M 2.5 12 L 2.5 13.5 L 4 13.5 L 13 4.5 L 11.5 3 Z",
+    // 10 Mosaic
+    "M 2.5 2.5 H 6 V 6 H 2.5 Z M 10 2.5 H 13.5 V 6 H 10 Z M 6.5 6.5 H 10 V 10 H 6.5 Z M 2.5 10 H 6 V 13.5 H 2.5 Z M 10 10 H 13.5 V 13.5 H 10 Z",
+    // 11 Blur —— 两圈同心（外圈大、内圈小）
+    "M 8 2.5 A 5.5 5.5 0 1 1 7.99 2.5 Z M 8 5.5 A 2.5 2.5 0 1 1 7.99 5.5 Z",
+    // 12 Text —— 一个 T
+    "M 3 4 H 13 M 8 4 V 13",
+    // 13 Number —— 一枚号牌（圈里一个 1）
+    "M 8 2.5 A 5.5 5.5 0 1 1 7.99 2.5 Z M 6.5 6 L 8 4.5 L 8 11.5",
+    // 14 Zoom
+    "M 7 2.5 A 4.5 4.5 0 1 1 7 11.5 A 4.5 4.5 0 1 1 7 2.5 Z M 10.4 10.4 L 13.5 13.5",
+    // 15 Eraser
+    "M 3 11 L 8 6 L 13 11 L 11 13 H 5 Z",
+];
+
+const _: () = assert!(TOOLS.len() == TOOL_GLYPHS.len());
+
+/// The toolbar's icons, in [`TOOLS`] order and pipe-separated —— 与 [`tool_names`] 同一枚
+/// 分隔符、同一枚数、同一序，所以第 `i` 枚图标落在第 `i` 枚钮上。
+///
+/// path data 本身**不含** `|`（SVG 路径语法里没有那一枚字符），所以分隔符是安全的。
+pub fn tool_glyphs() -> String {
+    TOOL_GLYPHS.join("|")
+}
+
 /// The toolbar's labels, in [`TOOLS`] order and pipe-separated.
 ///
 /// Rust owns the list because a QML copy of it is a second source of truth that can
