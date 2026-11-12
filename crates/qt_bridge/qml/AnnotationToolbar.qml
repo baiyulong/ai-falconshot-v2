@@ -820,7 +820,6 @@ Rectangle {
         "head-chevron": "M 4 3 L 12 8 L 4 13",
         "head-circle": "M 8 4 A 4 4 0 1 1 7.99 4",
         // —— 文字那一族 ——
-        "text": "M 3 4 H 13 M 8 4 V 13",
         "font": "M 3 13 L 8 3 L 13 13 M 5.2 9.5 H 10.8",
         "align-left": "M 2.5 4 H 13.5 M 2.5 8 H 10 M 2.5 12 H 13.5",
         "align-center": "M 2.5 4 H 13.5 M 4.5 8 H 11.5 M 2.5 12 H 13.5",
@@ -829,14 +828,8 @@ Rectangle {
         "bg": "M 3.5 3.5 H 12.5 V 12.5 H 3.5 Z M 6 6 H 10 V 10 H 6 Z",
         "border": "M 3.5 3.5 H 12.5 V 12.5 H 3.5 Z M 5.5 5.5 H 10.5 V 10.5 H 5.5 Z",
         // —— 效果那一族 ——
-        "highlight": "M 3 13 L 5 9 L 11.5 2.5 L 13.5 4.5 L 7 11 Z",
-        "blur": "M 8 2.5 A 5.5 5.5 0 1 1 7.99 2.5 Z M 8 5.5 A 2.5 2.5 0 1 1 7.99 5.5 Z",
-        "mask": "M 2.5 4 H 13.5 V 12 H 2.5 Z M 6 8 A 2 2 0 1 0 10 8 A 2 2 0 1 0 6 8 Z",
-        "clear-bg": "M 3.5 3.5 H 12.5 V 12.5 H 3.5 Z M 6 6 L 10 10 M 10 6 L 6 10",
-        "grayscale": "M 8 2.5 A 5.5 5.5 0 1 1 7.99 2.5 Z M 8 2.5 V 13.5",
-        "invert": "M 3 3 H 13 V 13 H 3 Z M 3 3 L 13 13",
-        "smooth": "M 2.5 8 C 5 3.5 7 12.5 10 8 C 11 6 12 6 13.5 7.5",
-        "corner": "M 12.5 3 V 8 A 4.5 4.5 0 0 1 8 12.5 H 3.5",
+        // （马赛克 / 模糊 / 荧光那几枚工具的图标在 Rust 的 `TOOL_GLYPHS` 里 —— 一份清单只长一处。）
+        "erase-transparent": "M 2.5 3.5 H 13.5 V 12.5 H 2.5 Z M 9.5 12.5 V 8.5 H 13.5",
         // —— 对象那一排 ——
         "marquee": "M 2.5 5 V 2.5 H 5 M 11 2.5 H 13.5 V 5 M 13.5 11 V 13.5 H 11 M 5 13.5 H 2.5 V 11",
         "clone": "M 5.5 2.5 H 12.5 V 9.5 H 9.5 M 3.5 6.5 H 10.5 V 13.5 H 3.5 Z",
@@ -855,17 +848,32 @@ Rectangle {
         "quick-save": "M 8 2 V 10 M 4.5 6.5 L 8 10.5 L 11.5 6.5 M 3 13.5 H 13",
         "open-with": "M 3 8 L 8 4 L 13 8 M 4.5 7 V 12.5 H 11.5 V 7 M 8 4 V 9.5 M 6 7.5 L 8 9.5 L 10 7.5",
         "pin": "M 6 2.5 H 10 V 6 L 12 8 H 4 L 6 6 Z M 8 8 V 13.5",
-        "send": "M 2.5 8 L 13.5 3 L 9.5 13.5 L 7.5 9.5 Z M 7.5 9.5 L 13.5 3",
         // —— 放大那一族 ——
         "connect": "M 2.5 3.5 H 6.5 V 7.5 H 2.5 Z M 9.5 8.5 H 13.5 V 12.5 H 9.5 Z M 6.5 5.5 L 9.5 10.5",
-        // —— 工具条摆位 ——
-        "edge-left": "M 10 3 L 5 8 L 10 13 M 5 8 H 13",
-        "edge-right": "M 6 3 L 11 8 L 6 13 M 3 8 H 11",
         // —— 收尾那两枚 ——
         "check": "M 3 8.5 L 6.5 12 L 13 4.5",
         "cancel": "M 8 2.5 A 5.5 5.5 0 1 1 7.99 2.5 Z M 4.5 11.5 L 11.5 4.5",
-        "save-pin": "M 6 2.5 H 10 V 6 L 12 8 H 4 L 6 6 Z M 8 8 V 11 M 4 13 H 12"
+        "save-pin": "M 6 2.5 H 10 V 6 L 12 8 H 4 L 6 6 Z M 8 8 V 11 M 4 13 H 12",
+        // —— 笔与形状那几枚 ——
+        "dashed": "M 2.5 8 H 5 M 7 8 H 10 M 11.5 8 H 13.5",
+        "filled": "M 2.5 3.5 H 13.5 V 12.5 H 2.5 Z M 3.5 11 L 5.5 12.5 M 6.5 9 L 9 11.5 M 9.5 7 L 13 10.5",
+        "corner-sharp": "M 12.5 3 V 8 L 8 12.5 H 3.5",
+        "corner": "M 12.5 3 V 8 A 4.5 4.5 0 0 1 8 12.5 H 3.5",
+        "erase-transparent": "M 2.5 3.5 H 13.5 V 12.5 H 2.5 Z M 9.5 12.5 V 8.5 H 13.5",
+        "font-small": "M 5.5 12.5 L 8 5 L 10.5 12.5 M 6.6 10 H 9.4",
+        "font-mid": "M 4.5 13 L 8 4 L 11.5 13 M 5.7 10 H 10.3",
+        // 「细 / 中 / 粗」那三枚：形状是同一根线，**粗细不同** —— 描边宽度随形状一起来
+        // （`{ d, w }`），所以它们在 16 px 上分得开。
+        "width-thin": { d: "M 3 8 H 13", w: 0.8 },
+        "width-mid": { d: "M 3 8 H 13", w: 1.6 },
+        "width-thick": { d: "M 3 8 H 13", w: 2.6 }
     })
+
+    // 三枚一组的图标，按 index 递（名单与形状都在页上，名字也都在页上，所以这三组不必回 Rust 取）。
+    readonly property var headIcons: ["head-triangle", "head-chevron", "head-circle"]
+    readonly property var alignIcons: ["align-left", "align-center", "align-right"]
+    readonly property var widthIcons: ["width-thin", "width-mid", "width-thick"]
+    readonly property var fontIcons: ["font-small", "font-mid", "font"]
 
     // 一枚**图标**：描边画出来的，没有位图、没有新依赖、也没有 Canvas（Canvas 画在每一枚钮
     // 上就是悬停一次重画一次）。
@@ -875,8 +883,10 @@ Rectangle {
     component ToolIcon: Shape {
         id: ico
 
-        /// 那一段 path data。空 = 什么都不画（于是这一枚看不见，而不是一枚空框）。
-        property string glyph: ""
+        /// 那一段 path data（或 `{ d: path, w: 描边宽 }` —— 「细 / 中 / 粗」那三枚要的正是
+        /// **粗细不同**，而描边宽度是这一枚组件的事，所以它随形状一起来）。空 = 什么都不画
+        /// （于是这一枚看不见，而不是一枚空框）。
+        property var glyph: ""
         /// 描边的颜色：可用时是工具条的白，按不动时是灰（与字那一枚同一套颜色口径）。
         property color tint: "#f2f2f2"
         /// 按不动：形状变灰。
@@ -885,15 +895,21 @@ Rectangle {
         implicitWidth: 16
         implicitHeight: 16
 
+        readonly property bool isObject: typeof glyph === "object" && glyph !== null
+        // `glyphPath` 与 `strokeWidth`：**不叫 `path` / `width`** —— 后两个是 `Shape`/`Item` 自己
+        // 的属性（`width` 还是一枚 FINAL 的），自己再声明一遍就是「Cannot override FINAL property」。
+        readonly property string glyphPath: ico.isObject ? String(glyph.d) : String(glyph)
+        readonly property real strokeWidth: ico.isObject && glyph.w ? glyph.w : 1.3
+
         ShapePath {
             strokeColor: ico.dim ? "#6a6a70" : ico.tint
-            strokeWidth: 1.3
+            strokeWidth: ico.strokeWidth
             fillColor: "transparent"
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
 
             PathSvg {
-                path: ico.glyph
+                path: ico.glyphPath
             }
         }
 
@@ -919,7 +935,11 @@ Rectangle {
         id: cell
 
         property string label: ""
-        /// 一枚**图标**（SVG path data）。给了它就画图标、不画字；没给才画字。
+        /// 一枚**图标**（SVG path data，或 `{ d: path, w: 描边宽 }`）。给了它就画图标、不画字；
+        /// 没给才画字。
+        ///
+        /// **`var` 而不是 `string`**：「细 / 中 / 粗」那三枚的形状带**描边宽度**（一个对象），
+        /// 而 `string` 那一档接不住它（Qt 会说「Unable to assign QVariantMap to QString」）。
         ///
         /// 字与图标的关系是**二选一**：一枚钮要么有一个名字（字），要么有一个形状（图标），
         /// 两样都摆出来就是一枚 40 px 宽的钮挤在一条密排里。
@@ -927,7 +947,7 @@ Rectangle {
         /// **读数格留字**：细 / 中 / 粗、小 / 中 / 大、百分比、序号、描边宽度、圆角半径、字号
         /// 那些格子说的是**一个值**，字比图清楚，所以它们不填这一格（它们本来也不是按得动的
         /// 钮，而是读数或一档开关）。
-        property string icon: ""
+        property var icon: ""
         property bool active: false
         property bool usable: true
         // §5.21.2 第一枚的入口。`required` 而不是 `property string hint: ""`：空串是一枚
@@ -1226,7 +1246,7 @@ Rectangle {
                         required property var modelData
 
                         // 细 / 中 / 粗, indexed against the same list the click sends.
-                        label: ["细", "中", "粗"][index]
+                        icon: bar.glyphs[bar.widthIcons[index]]
                         hint: ["细：下一笔最窄", "中：下一笔中等宽", "粗：下一笔最宽"][index]
                         active: bar.view.pen_width === modelData
                         onTapped: bar.view.setWidth(modelData)
@@ -1251,7 +1271,7 @@ Rectangle {
             Item { width: 1; height: 18 }
 
             Cell {
-                label: "虚线"
+                icon: bar.glyphs["dashed"]
                 hint: "虚线：把接下来画的线改成虚线"
                 active: bar.view.dashed
                 onTapped: {
@@ -1261,7 +1281,7 @@ Rectangle {
             }
 
             Cell {
-                label: "填充"
+                icon: bar.glyphs["filled"]
                 hint: "填充：闭形标注里灌上笔色"
                 active: bar.view.filled
                 onTapped: {
@@ -1357,7 +1377,7 @@ Rectangle {
             }
 
             Cell {
-                label: "扁头"
+                icon: bar.glyphs["brush-ellipse"]
                 hint: "笔刷形状：§5.7.8 那句「椭圆形笔刷」—— 扁着走的那一支，垂直于走笔方向那一侧宽出一倍。标签不叫「椭圆」：那是上面工具排里那枚画椭圆的工具的名字"
                 active: bar.view.brush_shape === 2
                 onTapped: {
@@ -1389,7 +1409,7 @@ Rectangle {
                     required property var modelData
 
                     // `index` 是 Rust 那张表里的序号：0 实心三角、1 空心 V、2 圆点。
-                    label: modelData
+                    icon: bar.glyphs[bar.headIcons[index]]
                     hint: "箭头样式：箭头那头画成" + modelData
                     active: bar.view.arrow_head === index
                     onTapped: {
@@ -1414,7 +1434,7 @@ Rectangle {
             }
 
             Cell {
-                label: "更小"
+                icon: bar.glyphs["corner-sharp"]
                 hint: "圆角：把这枚矩子的圆角收小一格"
                 onTapped: {
                     bar.view.stepCornerRadius(-1)
@@ -1423,7 +1443,7 @@ Rectangle {
             }
 
             Cell {
-                label: "更大"
+                icon: bar.glyphs["corner"]
                 hint: "圆角：把这枚矩子的圆角放大一格"
                 onTapped: {
                     bar.view.stepCornerRadius(1)
@@ -1455,7 +1475,7 @@ Rectangle {
             }
 
             Cell {
-                label: "更小"
+                icon: bar.glyphs["corner-sharp"]
                 hint: "编号：把下一枚号往回退一步"
                 onTapped: {
                     bar.view.stepCounterStart(-1)
@@ -1464,7 +1484,7 @@ Rectangle {
             }
 
             Cell {
-                label: "更大"
+                icon: bar.glyphs["corner"]
                 hint: "编号：把下一枚号往前进一步"
                 onTapped: {
                     bar.view.stepCounterStart(1)
@@ -1586,7 +1606,7 @@ Rectangle {
 
                         // 小 / 中 / 大 against the same list the click sends, the shape
                         // `pens` gives 细 / 中 / 粗.
-                        label: ["小", "中", "大"][index]
+                        icon: bar.glyphs[bar.fontIcons[index]]
                         hint: ["小：框里的字最小", "中：框里的字中等大", "大：框里的字最大"][index]
                         active: bar.view.pen_font === modelData
                         onTapped: {
@@ -1679,7 +1699,7 @@ Rectangle {
                     required property var modelData
 
                     // `index` is the code Rust's ladder answers to: 0 左, 1 中, 2 右.
-                    label: modelData
+                    icon: bar.glyphs[bar.alignIcons[index]]
                     hint: "对齐：这段文字" + modelData
                     active: bar.view.text_align === index
                     onTapped: {
@@ -1773,7 +1793,7 @@ Rectangle {
                             required property int index
                             required property var modelData
 
-                            label: ["细", "中", "粗"][index]
+                            icon: bar.glyphs[bar.widthIcons[index]]
                             hint: ["细：那一圈边最窄", "中：那一圈边中等宽", "粗：那一圈边最宽"][index]
                             active: bar.view.outline_width === modelData
                             onTapped: {
@@ -1824,7 +1844,7 @@ Rectangle {
             }
 
             Cell {
-                label: "擦除到透明"
+                icon: bar.glyphs["erase-transparent"]
                 hint: "擦除到透明：橡皮擦过的地方连原始像素一起擦掉"
                 active: bar.view.erase_transparent
                 onTapped: {
@@ -2110,8 +2130,8 @@ Rectangle {
             // `usable` 里那半句而不是把 `onTapped` 掏空：`Cell` 的 `MouseArea` 绑在 `usable` 上，
             // 掏空 `onTapped` 会留下一枚按得下去却什么都不发生的钮（§7.4 条 3 不许）。
             Cell {
-                label: "文字提取" + bar.session.ocr_unavailable
-                hint: "文字提取：读出选区里的字，交进剪贴板"
+                icon: bar.glyphs["ocr"]
+                hint: "文字提取：读出选区里的字，交进剪贴板" + bar.session.ocr_unavailable
                 usable: bar.view.selected && bar.session.ocr_unavailable === ""
                 onTapped: {
                     ocrPanel.asked = true
@@ -2203,7 +2223,7 @@ Rectangle {
             }
 
             Cell {
-                label: "确认选区"
+                icon: bar.glyphs["check"]
                 hint: "确认选区：收下这块选区，走完成后的那一步"
                 usable: bar.view.selected
                 onTapped: bar.commit()

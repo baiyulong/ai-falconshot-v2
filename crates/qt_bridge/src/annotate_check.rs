@@ -7650,8 +7650,16 @@ mod tests {
         const QML: &str = include_str!("../qml/AnnotationToolbar.qml");
         let code = crate::hint_check::qml_code(QML);
 
-        // ① 清单里有哪些名字（`"name": "path"`），页上用了哪些名字（`glyphs["name"]`）。
-        let defined: Vec<&str> = code
+        // ① 清单里有哪些名字（`"name": ...` 那些行）—— 只扫**清单那一块**，不扫全文
+        // （全文里别的行也以一个引号开头，那是别处的句子，不是形状的名字）。
+        let map_start = code
+            .find("readonly property var glyphs: ({")
+            .expect("那份形状清单不见了");
+        let map_end = code[map_start..]
+            .find("\n    })")
+            .expect("那份形状清单没有收尾")
+            + map_start;
+        let defined: Vec<&str> = code[map_start..map_end]
             .lines()
             .filter_map(|l| {
                 let t = l.trim();
@@ -7659,9 +7667,10 @@ mod tests {
                 let end = rest.find('"')?;
                 rest.get(..end)
             })
-            .filter(|name| code.contains(&format!("glyphs[\"{name}\"]")))
             .collect();
-        let used: Vec<&str> = code
+        // 页上用了哪些名字：直接写死的那几枚（`glyphs["name"]`）**与**三组一组的名单
+        // （`xxxIcons: ["name", …]` —— 名字在名单里，页上按 index 递）。
+        let mut used: Vec<&str> = code
             .lines()
             .filter_map(|l| {
                 let at = l.find("glyphs[\"")?;
@@ -7670,6 +7679,15 @@ mod tests {
                 rest.get(..end)
             })
             .collect();
+        for l in code.lines() {
+            let t = l.trim();
+            if !t.starts_with("readonly property var ") || !t.contains("Icons: [") {
+                continue;
+            }
+            for part in t.split('"').skip(1).step_by(2) {
+                used.push(part);
+            }
+        }
         assert!(!used.is_empty(), "页上一枚图标都没有 —— 那这一族是空的");
         for name in &used {
             assert!(
