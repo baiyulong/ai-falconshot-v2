@@ -1,0 +1,14 @@
+   Compiling qt_bridge v0.1.0 (C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\crates\qt_bridge)
+warning: unnecessary `unsafe` block
+   --> crates\platform-windows\src\instance.rs:340:27
+    |
+332 |         unsafe {
+    |         ------ because it's nested under this `unsafe` block
+...
+340 |                 let err = unsafe { GetLastError() };
+    |                           ^^^^^^ unnecessary `unsafe` block
+    |
+    = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: `platform-windows` (lib) generated 1 warning
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 18s

@@ -1,0 +1,371 @@
+[startup cfg] history.enabled=true history.max_items=1000 advanced.log_level=info advanced.data_dir=(platform default)
+[appearance cfg] appearance.theme=System appearance.accent=#0078D7 appearance.toolbar_placement=auto appearance.ui_font_size=9 appearance.ui_font_family=Microsoft YaHei UI appearance.magnifier_border=1 appearance.magnifier_corner_radius=6 appearance.magnifier_foreground=#FFFFFF appearance.magnifier_background=#1F1F1F
+[theme cfg] appearance.theme=System system.theme=dark resolved.theme=Dark
+[autostart cfg] 档里=false 机器=ai-falconshot 不在（登录时不会启动本程序） ⇒ 一致
+[about cfg] about.auto_check_updates=true about.check_every_days=7 about.channel=stable about.send_diagnostics=false
+[output cfg] output.share_targets=(none) output.send_to_apps=(none) output.reuse_last_file=false output.hide_pins_on_dialog=false output.copy_as_file=false
+[send_to cfg] send_to parsed=0 refused=0
+[share cfg] share parsed=0 refused=0
+[share filter] share known=0 unknown=0
+[send_to validate] send_to validated=0 refused=0
+[send_to pipeline] pipeline final=0 parse_refused=0 validate_refused=0
+[share pipeline] pipeline final=0 parse_refused=0 unknown=0
+[send_to menu] menu entries=0
+[share menu] menu entries=0
+[send_to resolve] resolve (empty)
+[share scheme] scheme (empty)
+[send_to argv] argv (empty)
+[share scheme all] scheme_all 0 entries
+[send_to argv first] argv_first (empty)
+[share scheme first] scheme_first (empty)
+[send_to names] names 0 []
+[share names] names 0 []
+[history usage] history records=2 original=276084B thumb=10615B db=28672B total=315371B
+[history neighbors] history anchor=2 prev=1 next=-
+[pin] 贴图 0 的窗在 608,380 320x200，写进 C:\Users\baiyl3\AppData\Local\Temp\falconshot-pin-gauge，另有一个不存在的 id 999999，真点击那一格交给 dialog 的对话框自己取名，from-file.png 先由 `save::write_to` 写成再交 `add_from_file` 钉成贴图 2，from-gif.gif 由同一份两帧夹具写成再交同一扇门钉成会动的贴图 3（窗在 944,380 40x30），贴图 1 在 608,596 320x200 是腿最后要关掉的那一枚
+[pin leg] gif-frames|2
+[pin leg] gif-frame|0
+[pin leg] gif-playing|true
+[pin leg] gif-items-closed|0
+[pin leg] gif-items-still-closed|0
+[pin leg] alpha-closed|holes=true;items=0;marked=1;mode=0;rev=1;hole=false;body=true
+[pin leg] gif-items-still|0
+[pin leg] alpha-open|holes=true;items=4;marked=1;mode=0;rev=1;hole=false;body=true
+[pin leg] alpha-turn|found=0;took=true;board=holes=true;items=4;marked=1;mode=2;rev=2;hole=true;body=true;cleared=true;transparent=holes=true;items=4;marked=1;mode=0;rev=3;hole=false;body=true;restored=true;after=holes=true;items=4;marked=1;mode=0;rev=3;hole=false;body=true
+[pin leg] mov-pos-before|608,380
+[pin leg] sel-before-count|0
+[pin leg] sel-before-self|false
+[pin leg] sel-plain|1
+[pin leg] sel-plain-count|1
+[pin leg] sel-plain-self|true
+[pin leg] mov-epoch-before|0
+[pin leg] mov-rev-before|3
+[pin leg] mov-lone|1
+[pin leg] mov-epoch-lone|1
+[pin leg] mov-rev-lone|3
+[pin leg] op-lone-start|100
+[pin leg] op-lone-epoch-before|0
+[pin leg] op-lone-set|1
+[pin leg] op-lone-opacity|50
+[pin leg] op-lone-restore|1
+[pin leg] op-lone-restored|100
+[pin leg] op-lone-epoch-end|2
+[pin leg] rst-lone-base|100
+[pin leg] rst-lone-turned|90
+[pin leg] rst-lone-epoch-before|0
+[pin leg] rst-lone-rev-before|3
+[pin leg] rst-lone|1
+[pin leg] rst-lone-zoom|100
+[pin leg] rst-lone-rev|3
+[pin leg] rst-lone-epoch-end|1
+[pin leg] mov-ghost|0
+[pin leg] mov-epoch-ghost|1
+[pin leg] op-epoch-ghost-before|2
+[pin leg] op-ghost|0
+[pin leg] op-epoch-ghost|2
+[pin leg] rst-epoch-ghost-before|1
+[pin leg] rst-ghost|0
+[pin leg] rst-epoch-ghost|1
+[pin leg] sel-add-target|1
+[pin leg] sel-observe-on|1=true
+[pin leg] sel-add|2
+[pin leg] sel-add-count|2
+[pin leg] sel-add-self|true
+[pin leg] mov-batch-target|1
+[pin leg] mov-batch|2
+[pin leg] mov-batch-epoch|2
+[pin leg] op-start|100
+[pin leg] op-epoch-before|2
+[pin leg] op-rev-before|3
+[pin leg] op-set-batch|2
+[pin leg] op-opacity-set|50
+[pin leg] op-epoch-set|3
+[pin leg] op-rev-set|3
+[pin leg] op-step-down|2
+[pin leg] op-opacity-down|40
+[pin leg] op-step-up|2
+[pin leg] op-opacity-up|50
+[pin leg] op-set-back|2
+[pin leg] op-opacity-end|100
+[pin leg] op-epoch-end|6
+[pin leg] rst-batch-target|1
+[pin leg] rst-batch-epoch-before|1
+[pin leg] rst-batch|2
+[pin leg] rst-batch-epoch|2
+[pin leg] sel-observe-off|1=false
+[pin leg] sel-cleared-count|0
+[pin leg] sel-cleared-self|false
+[pin leg] mov-undo-self|1
+[pin leg] mov-undo-other|1
+[pin leg] mov-epoch-undo|4
+[pin leg] mov-pos-after|608,380
+[pin leg] des-target-a|1
+[pin leg] des-target-b|2
+[pin leg] des-pile-before|4
+[pin leg] sel-observe-on|1=true
+[pin leg] sel-observe-on|2=true
+[pin leg] des-reach-self|1
+[pin leg] des-reach-batch|2
+[pin leg] sel-observe-off|1=false
+[pin leg] sel-observe-off|2=false
+[pin leg] sel-observe-on|1=true
+[pin leg] des-menu-shape|open=true;reach=2;undo=false
+[pin leg] des-menu-label|销毁（影响 2 枚）
+[pin leg] des-undo-absent|false
+[pin leg] sel-observe-on|2=true
+[pin leg] des-batch|2
+[pin leg] des-pile-gone|2
+[pin leg] des-trashed|2
+[pin leg] des-undo-shown|true
+[pin leg] des-ghost|0
+[pin leg] des-trashed-kept|2
+[pin leg] des-undo|2
+[pin leg] des-pile-back|4
+[pin leg] des-trashed-after|0
+[pin leg] des-undo-again|0
+[pin leg] solo-dims|true
+[pin leg] solo-pile|4
+[pin leg] solo-reach-self|3
+[pin leg] solo-epoch-before|0
+[pin leg] sel-observe-off|1=false
+[pin leg] sel-observe-off|2=false
+[pin leg] solo-enter|3
+[pin leg] solo-epoch-enter|1
+[pin leg] solo-kept|1
+[pin leg] solo-hidden-self|false
+[pin leg] solo-live-self|true
+[pin leg] solo-said|已进入独显：其余 3 枚压暗
+[pin leg] solo-menu-shape|open=true;reach=0;way=压暗
+[pin leg] solo-menu-label|退出独显
+[pin leg] solo-exit|3
+[pin leg] solo-epoch-exit|2
+[pin leg] solo-kept-after|0
+[pin leg] solo-target-other|1
+[pin leg] solo-op-start|100
+[pin leg] sel-observe-on|1=true
+[pin leg] solo-enter-other|3
+[pin leg] solo-hidden|false
+[pin leg] solo-live|true
+[pin leg] solo-opacity|35
+[pin leg] solo-epoch-other|3
+[pin leg] solo-exit-other|3
+[pin leg] solo-op-end|100
+[pin leg] solo-hidden-end|false
+[pin leg] solo-live-end|true
+[pin leg] sel-observe-off|1=false
+[pin leg] solo-refuse-before|4
+[pin leg] solo-refuse|0
+[pin leg] solo-refuse-epoch|4
+[pin leg] solo-refuse-kept|0
+[pin leg] solo-refuse-said|独显没做成：先选中至少一枚贴图
+[pin leg] solo-ghost|0
+[pin leg] solo-epoch-ghost|4
+[pin leg] solo-ghost-kept|0
+[pin leg] xf-rot-start|0
+[pin leg] xf-rot-geo-start|320,200
+[pin leg] xf-rot-rev-before|3
+[pin leg] xf-rot-cw|90
+[pin leg] xf-rot-rev-cw|4
+[pin leg] xf-rot-ccw|0
+[pin leg] xf-rot-rev-ccw|5
+[pin leg] xf-rot-half|180
+[pin leg] xf-rot-full|0
+[pin leg] xf-rot-rev-full|9
+[pin leg] xf-rot-geo-end|320,200
+[pin leg] xf-fh-start|false
+[pin leg] xf-fh-on|true
+[pin leg] xf-fh-rev-on|10
+[pin leg] xf-fh-off|false
+[pin leg] xf-fh-rev-off|11
+[pin leg] xf-fv-start|false
+[pin leg] xf-fv-on|true
+[pin leg] xf-fv-rev-on|12
+[pin leg] xf-fv-off|false
+[pin leg] xf-fv-rev-off|13
+[pin leg] xf-gray-start|false
+[pin leg] xf-gray-on|true
+[pin leg] xf-gray-rev-on|14
+[pin leg] xf-gray-off|false
+[pin leg] xf-gray-rev-off|15
+[pin leg] xf-inv-start|false
+[pin leg] xf-inv-on|true
+[pin leg] xf-inv-rev-on|16
+[pin leg] xf-inv-off|false
+[pin leg] xf-inv-rev-off|17
+[pin leg] xf-label-left|向左旋转
+[pin leg] xf-label-right|向右旋转
+[pin leg] xf-label-h|水平翻转
+[pin leg] xf-label-v|垂直翻转
+[pin leg] xf-label-gray|灰度
+[pin leg] xf-label-inv|颜色反转
+[pin leg] xf-key-left|1|true
+[pin leg] xf-key-right|1|true
+[pin leg] xf-key-gray|1|true
+[pin leg] ct-start|false
+[pin leg] ct-on|true
+[pin leg] ct-desc-on|class=PinWindow_QMLTYPE_59 title= visible=1 size=160x100 opacity=1.00 alphaBufferSize=8 qtFlags=0xc080b hwnd=0x5b0c86 style=0x96000000 exStyle=0x800a8 FRAMELESS=1 CAPTION=0 LAYERED=1 TRANSPARENT=1 TOPMOST=1 TOOLWINDOW=1 NOACTIVATE=0 APPWINDOW=0
+[pin leg] ct-off|false
+[pin leg] ct-desc-off|class=PinWindow_QMLTYPE_59 title= visible=1 size=160x100 opacity=1.00 alphaBufferSize=8 qtFlags=0x4080b hwnd=0x5b0c86 style=0x96000000 exStyle=0x80088 FRAMELESS=1 CAPTION=0 LAYERED=1 TRANSPARENT=0 TOPMOST=1 TOOLWINDOW=1 NOACTIVATE=0 APPWINDOW=0
+[pin leg] ct-end|false
+[pin leg] menu|另存为…
+[pin leg] filters|PNG 图片 (*.png);;JPG 图片 (*.jpg);;BMP 图片 (*.bmp)
+[pin leg] filter|||-1
+[pin leg] before|
+[pin leg] current|file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/qml.png
+[pin leg] call-accept|独显没做成：那一扇窗已经不在了
+[pin leg] call-after|独显没做成：那一扇窗已经不在了
+[pin leg] png-url|file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/qml.png
+[pin leg] png|已保存到 C:\Users\baiyl3\AppData\Local\Temp\falconshot-pin-gauge\qml.png（贴图 320×200 像素）。
+[pin leg] jpg|已保存到 C:\Users\baiyl3\AppData\Local\Temp\falconshot-pin-gauge\qml.jpg（贴图 320×200 像素）。贴图里有 2064 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。
+[pin leg] copy-drawn|已复制贴图（64000 像素）
+[pin leg] never-copy|复制失败：贴图 999999 还没有画过，没有可输出的像素
+[pin leg] never-save|保存失败：贴图 999999 还没有画过，没有可输出的像素
+[pin leg] pre-save|保存失败：贴图 999999 还没有画过，没有可输出的像素
+[pin leg] dlg-folder|file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/
+[pin leg] dlg-name|file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/dialog
+[pin leg] dlg-open|true
+[pin leg] gif-items|7
+[pin leg] gif-menu-shape|open=true;count=57;cc=2
+[pin leg] gif-turns|2
+[pin leg] gif-distinct|2
+[pin leg] dlg-shown|true
+[pin leg] dlg-shown-filter|PNG 图片|png|0
+[pin leg] accept-was|保存失败：贴图 999999 还没有画过，没有可输出的像素
+[pin leg] dlg-push|pushed=yes dialog=0x60d16 class=[#32770] title=[另存为] dialogs=1 desc=47 buttons=4 button=0x60d6c btitle=[?] bid=1 ret=0 visible_after=0
+[pin leg] dlg-push-tries|5
+[pin leg] dlg-push-log|pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=17 mine_visible=4 foreign_dialogs=1 mine=[Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] ~ pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=18 mine_visible=4 foreign_dialogs=1 mine=[Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] ~ pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=19 mine_visible=4 foreign_dialogs=1 mine=[Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] ~ pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=26 mine_visible=4 foreign_dialogs=1 mine=[Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] ~ pushed=yes dialog=0x60d16 class=[#32770] title=[另存为] dialogs=1 desc=47 buttons=4 button=0x60d6c btitle=[?] bid=1 ret=0 visible_after=0
+[pin leg] dlg-probe|rect=608,380,1536,960 covering=0,1,2,3 pins=4 enabled=0 layers=0 hidden=-
+[pin leg] dlg-live-open|0=true
+[pin leg] dlg-epoch-open|0
+[pin leg] accept|保存失败：贴图 999999 还没有画过，没有可输出的像素
+[pin leg] dlg-filter|PNG 图片|png|0
+[pin leg] dlg-after|true
+[pin leg] dlg-dismiss|reject
+[pin leg] dlg-rejected|file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/dialog
+[pin leg] dlg-probe-gone|rect=- covering=- pins=4 enabled=0 layers=0 hidden=-
+[pin leg] dlg-live-gone|0=true
+[pin leg] dlg-epoch-gone|0
+[pin leg] f-jpg|*.jpg|已保存到 C:\Users\baiyl3\AppData\Local\Temp\falconshot-pin-gauge\dialog-f.jpg（贴图 320×200 像素）。贴图里有 2064 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。
+[pin leg] close-before|0#class=HintWindow_QMLTYPE_79 visible=0 hwnd=0x50cee phys=0,0,920,116 title=falconshot-hint
+class=PinWindow_QMLTYPE_59 visible=1 hwnd=0x5b0c86 phys=608,380,320,200
+class=QQuickWindowQmlImpl visible=0 hwnd=0x820d02 phys=931,322,802,255 title=识别结果
+class=QQuickWindowQmlImpl visible=0 hwnd=0x80d9c phys=-277,322,882,211 title=扫码结果
+class=PinWindow_QMLTYPE_59 visible=1 hwnd=0x460cb6 phys=608,596,320,200
+class=QQuickWindowQmlImpl visible=0 hwnd=0x50d7a phys=931,538,802,255 title=识别结果
+class=QQuickWindowQmlImpl visible=0 hwnd=0x3807c4 phys=-277,538,882,211 title=扫码结果
+class=PinWindow_QMLTYPE_59 visible=1 hwnd=0x60cfc phys=944,596,320,200
+class=QQuickWindowQmlImpl visible=0 hwnd=0xa0d94 phys=1267,538,802,255 title=识别结果
+class=QQuickWindowQmlImpl visible=0 hwnd=0x70d16 phys=59,538,882,211 title=扫码结果
+class=PinWindow_QMLTYPE_59 visible=1 hwnd=0x460d24 phys=944,380,40,30
+class=QQuickWindowQmlImpl visible=0 hwnd=0x60d50 phys=987,322,802,255 title=识别结果
+class=QQuickWindowQmlImpl visible=0 hwnd=0x70d10 phys=59,322,882,211 title=扫码结果
+
+[pin leg] close|1
+[pin leg] close-after|0#class=HintWindow_QMLTYPE_79 visible=0 hwnd=0x50cee phys=0,0,920,116 title=falconshot-hint
+class=PinWindow_QMLTYPE_59 visible=1 hwnd=0x5b0c86 phys=608,380,320,200
+class=QQuickWindowQmlImpl visible=0 hwnd=0x820d02 phys=931,322,802,255 title=识别结果
+class=QQuickWindowQmlImpl visible=0 hwnd=0x80d9c phys=-277,322,882,211 title=扫码结果
+class=PinWindow_QMLTYPE_59 visible=1 hwnd=0x60cfc phys=944,596,320,200
+class=QQuickWindowQmlImpl visible=0 hwnd=0xa0d94 phys=1267,538,802,255 title=识别结果
+class=QQuickWindowQmlImpl visible=0 hwnd=0x70d16 phys=59,538,882,211 title=扫码结果
+class=PinWindow_QMLTYPE_59 visible=1 hwnd=0x460d24 phys=944,380,40,30
+class=QQuickWindowQmlImpl visible=0 hwnd=0x60d50 phys=987,322,802,255 title=识别结果
+class=QQuickWindowQmlImpl visible=0 hwnd=0x70d10 phys=59,322,882,211 title=扫码结果
+
+[pin leg] done|C:\Users\baiyl3\AppData\Local\Temp\falconshot-pin-gauge
+desktop scene          -    (1536,960) 上是 WindowsTerminal.exe「OC | qodercli 开发进度与 Falconshot 缺失功能」 hwnd=0x50c70 会话锁屏=false
+pin leg ran            PASS 227 行：gif-frames gif-frame gif-playing gif-items-closed gif-items-still-closed alpha-closed gif-items-still alpha-open alpha-turn mov-pos-before sel-before-count sel-before-self sel-plain sel-plain-count sel-plain-self mov-epoch-before mov-rev-before mov-lone mov-epoch-lone mov-rev-lone op-lone-start op-lone-epoch-before op-lone-set op-lone-opacity op-lone-restore op-lone-restored op-lone-epoch-end rst-lone-base rst-lone-turned rst-lone-epoch-before rst-lone-rev-before rst-lone rst-lone-zoom rst-lone-rev rst-lone-epoch-end mov-ghost mov-epoch-ghost op-epoch-ghost-before op-ghost op-epoch-ghost rst-epoch-ghost-before rst-ghost rst-epoch-ghost sel-add-target sel-observe-on sel-add sel-add-count sel-add-self mov-batch-target mov-batch mov-batch-epoch op-start op-epoch-before op-rev-before op-set-batch op-opacity-set op-epoch-set op-rev-set op-step-down op-opacity-down op-step-up op-opacity-up op-set-back op-opacity-end op-epoch-end rst-batch-target rst-batch-epoch-before rst-batch rst-batch-epoch sel-observe-off sel-cleared-count sel-cleared-self mov-undo-self mov-undo-other mov-epoch-undo mov-pos-after des-target-a des-target-b des-pile-before sel-observe-on sel-observe-on des-reach-self des-reach-batch sel-observe-off sel-observe-off sel-observe-on des-menu-shape des-menu-label des-undo-absent sel-observe-on des-batch des-pile-gone des-trashed des-undo-shown des-ghost des-trashed-kept des-undo des-pile-back des-trashed-after des-undo-again solo-dims solo-pile solo-reach-self solo-epoch-before sel-observe-off sel-observe-off solo-enter solo-epoch-enter solo-kept solo-hidden-self solo-live-self solo-said solo-menu-shape solo-menu-label solo-exit solo-epoch-exit solo-kept-after solo-target-other solo-op-start sel-observe-on solo-enter-other solo-hidden solo-live solo-opacity solo-epoch-other solo-exit-other solo-op-end solo-hidden-end solo-live-end sel-observe-off solo-refuse-before solo-refuse solo-refuse-epoch solo-refuse-kept solo-refuse-said solo-ghost solo-epoch-ghost solo-ghost-kept xf-rot-start xf-rot-geo-start xf-rot-rev-before xf-rot-cw xf-rot-rev-cw xf-rot-ccw xf-rot-rev-ccw xf-rot-half xf-rot-full xf-rot-rev-full xf-rot-geo-end xf-fh-start xf-fh-on xf-fh-rev-on xf-fh-off xf-fh-rev-off xf-fv-start xf-fv-on xf-fv-rev-on xf-fv-off xf-fv-rev-off xf-gray-start xf-gray-on xf-gray-rev-on xf-gray-off xf-gray-rev-off xf-inv-start xf-inv-on xf-inv-rev-on xf-inv-off xf-inv-rev-off xf-label-left xf-label-right xf-label-h xf-label-v xf-label-gray xf-label-inv xf-key-left xf-key-right xf-key-gray ct-start ct-on ct-desc-on ct-off ct-desc-off ct-end menu filters filter before current call-accept call-after png-url png jpg copy-drawn never-copy never-save pre-save dlg-folder dlg-name dlg-open gif-items gif-menu-shape gif-turns gif-distinct dlg-shown dlg-shown-filter accept-was dlg-push dlg-push-tries dlg-push-log dlg-probe dlg-live-open dlg-epoch-open accept dlg-filter dlg-after dlg-dismiss dlg-rejected dlg-probe-gone dlg-live-gone dlg-epoch-gone f-jpg close-before close close-after done
+量具计时                   -    起步 6774 ms（种旗标→腿开口；地板的钟从 loaded 之后才走，另留 5000 ms 松弛），腿自己 5155 ms（14 次 × 400 ms 的日程，说完了 done），收尾 402 ms —— 是腿自己那一句 done 之后 402 ms 收的尾，地板（10600 ms）没插手；全程 12331 ms
+pin window             PASS 顶层 320x200@608,380 和要求的 608,380 320x200 相差在 2 px 内=true（class=PinWindow_QMLTYPE_59）
+pin from file          PASS C:\Users\baiyl3\AppData\Local\Temp\falconshot-pin-gauge\from-file.png（文件 320x200 ↔ 贴图 2 首帧 320x200）不同的通道 0 个（要求 0）；钉它的那句 "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\from-file.png（贴图 320×200 像素）。"
+pin from file window   PASS 同一位置两条路读回 0x60cfc（falconshot.exe「falconshot」）vs Qt 0x60cfc，一致=true；顶层 320x200@944,596 和要求的 944,596 320x200 相差在 2 px 内=true（class=PinWindow_QMLTYPE_59）
+pin window pixels      PASS 窗 320x200 取自 PinWindow_QMLTYPE_59 的 PrintWindow flag 2（这一腿自己填的 alpha 恒为 255，所以比的是文件那侧的不透明），文件里不透明的 61936 px 中对上 61936 px = 1.000（要求 ≥ 0.95，单通道容差 8）；产品那条腿（xcap）本轮答 capture backend failed: no window 0x060cfc
+pin gif planted        PASS C:\Users\baiyl3\AppData\Local\Temp\falconshot-pin-gauge\from-gif.gif 由 2 帧的两色夹具写成、交 `add_from_file` 钉成贴图 3
+pin gif window         PASS 顶层 40x30@944,380 和要求的 944,380 40x30 相差在 2 px 内=true（class=PinWindow_QMLTYPE_59）
+pin gif clock          PASS qml 报 frames=Some("2") frame=Some("0") playing=Some("true")；本趟信号 2 次、看到过的帧号 2 枚；状态机那一边给贴图 3 报 2 帧（要求 2）；判据＝帧数与夹具一致、播放中、一等待里信号至少两枚、看到过全部 2 枚帧号、且 qml 报的帧数与状态机给 3 的一致
+pin gif menu           PASS 菜单开着时：会动的那扇窗上 7 项可见、静止的那扇上 0 项可见；菜单关着时同一枚计数读回 0 与 0；机制证人=open=true;count=57;cc=2（要求 7 与 0；§5.9.14 那一节的条件是 `gif_frames > 1`）
+pin alpha section      PASS 菜单开着：洞=true、4 项可见、1 项打勾、模式 0、纹理第 1 次、边界点吃点击=false、画面内点=true；菜单关着时同一份读法报 0 项；状态机给贴图 0 答 has_transparent_pixels=true；判据＝这一枚图真有洞（qml 与状态机同答）、四行都在（`ALPHA_MENU_ITEMS`）、只一行打勾、模式落在四枚之内、画面内那一点吃点击
+pin alpha turn         PASS 三次写各答 took/cleared/restored=true/true/true；深色棋盘格：模式 2、1 项打勾、边界点=true、纹理第 2 次；透明：模式 0、边界点=false、纹理第 3 次；改回来：模式 0（和开着的读数 0 一致=true）、纹理第 3 次；画面内那一点三次各答 true、true、true、true；判据＝三次写都被接受、棋盘格下边界点吃点击而透明下不吃（§5.9.15 的点击区域）、两次写各推出一张新纹理、最后一枚模式与状态机给 0 的一致
+pin select one         PASS 点本窗之前：名单 0 枚、本窗边可见=false；点下去之后：`selectPin` 自报 1 枚、名单 1 枚、本窗边可见=true；判据＝空场上单击一枚把名单填到 1 且本窗那圈边亮（§5.10.1 第 2 步的落点，Ctrl 那一路见第二格）
+pin select fanout      PASS 本窗点名了 1（本窗是 0）；这一问那一段里有 1 扇窗自己说亮了（整档该键说过 6 句），那一句读回=Some((1, true))；`selectPin` 自报 2 枚、名单 2 枚、本窗边可见=true；判据＝**另一扇窗**的描边由那一声扇出来（它一次也没被点过），且这一段里只有被点名的那一扇亮、且只说了一次
+pin select exit        PASS 退出之后：名单 0 枚、本窗边可见=false、这一问那一段里有 1 扇窗自己说灭了（整档该键说过 6 句），那一句读回=Some((1, false))；判据＝两只门（点空白 / Esc）共用的那一只手把名单清空，且**两边**的描边都跟着灭——本窗这一格亮过=true（没亮过就灭不成，那一读数是装饰）
+pin drag one           PASS 场上只有本窗一枚在名单里时拖它：`dragPin` 自报 1 枚、号从 0 走到 1；判据＝§5.9.1 那一手在名单只有一枚时仍是搬一枚，而真搬动必须发号——不发，本窗之外的那些扇窗就没人叫它们重读自己该画在哪儿（`main.qml` 的 `moveTick` 借的就是这声 notify）
+pin drag batch         PASS 本窗点名了 1（本窗是 0），名单两枚时拖**本窗**：`dragPin` 自报 2 枚、号从 0 走到 2；判据＝搬几枚由**名单**决定而不是由被按住的那扇窗决定（这一拖交回 1 就是那只手把批量降成了单枚，交回 0 就是它压根没搬），且第二手真搬动也发一次号
+pin drag ghost         PASS 拖一枚场上没有的 id（场上最大那枚 id 加一）：`dragPin` 自报 0 枚、号=1 而上一手之后是 1；判据＝0 只有一枚贴图能给出（那一枚不在集里，是一扇已关掉的窗剩下的鼠标事件），把它扮成一次悄悄的成功就会让用户以为自己的拖动搬走了并不存在的一扇窗，而**空手不许发号**——发了就是全场为一件没发生的事重读一遍像素
+pin drag repaint       PASS 搬动之前本窗自报纹理号 3、之后 3；判据＝一次纯搬动**不许**换走一张纹理——位置不在 `content_key` 里，动了就是把位置算进了内容的指纹，于是拖动一路上每一次鼠标移动都编一张 PNG（八枚贴图一起拖时这就是那一句「一起移动」的代价）。这一格只读**本窗**自己那枚号，别的窗的号没有在这里被问（#271）。两枚都在场，判的是相等
+pin drag undo          PASS 反手两拖各交回 1 / 1 枚、号从 0 走到 4；本窗在这一段开头自报落点 608,380、结尾 608,380；判据＝量规的腿跑完要把自己挪走的落点**一枚一枚**还回去，还回去靠的是名单已空时那一拖一次只搬被拖的那一扇（交回 1 而不是 2），而两拖之和必须正好抹平前面那两拖；上一趟真机没有这一问，本族的拖动把 `pin window` 从 608,380 拖到 648,400、把 `pin pile *` 两枚拖成「没有窗」。**另一枚**贴图的落点本窗读不到（QML 里没有别的窗的 pos），那一半的证人是 `pin window` 与 `pin pile *` 三枚行，两枚证人各答各的（#271/#281）。反手四枚与落点两枚齐，判的是开头与结尾同一串字
+pin opacity one        PASS 名单里只有本窗一枚时调它：`setPinOpacity` 自报 1 枚、归位那一手自报 1 枚、号从 0 走到 2；判据＝§5.9.4 那一手在名单只有一枚时仍是改一枚（Ctrl+滚轮 与菜单那三枚入口在用户只选了一枚时走的就是这一路），而两次真改动各发一次号——不发，本窗之外的那些扇窗就没人叫它们重读自己该多透（`main.qml` 的 `opacityTick` 借的就是这声 notify）
+pin opacity batch      PASS 本窗点名了 1（本窗是 0），名单两枚时调**本窗**：`setPinOpacity` 自报 2 枚、号从 2 走到 3；本窗在这一手之前自报 100、之后 50（它自己没有 reload 过）；判据＝改几枚由**名单**决定而不是由按住滚轮的那扇窗决定（这一手交回 1 就是那只手把批量降成了单枚），且本窗重读到的那一级**不是**它原来那一级才说明那一声扇到了、`redrawPins()` 替它问回来了。五枚齐，判的是枚数、号与重读到
+pin opacity step       PASS 名单两枚时阶梯两步各自报 2 / 2 枚、号从 2 走到 6；本窗自报钉好的那一级 50、下一步 40、反手 50；判据＝§5.10.3 那一句「所有选中贴图同步更新透明度」落在阶梯上是**每一枚各自迈一级**（本窗这一枚下一步必须换一个读数、反手必须回到同一级；两枚里起点不同各自迈步那一半本窗报不出，由 `pin.rs` 的单测与 selftest 四臂判），而四手各发一次号。六枚齐，判的是两步各两枚、反手同级与四手四次号
+pin opacity ghost      PASS 调一枚场上没有的 id（场上最大那枚 id 加一）：`stepPinOpacity` 自报 0 枚、号=2 而这一手之前是 2；判据＝0 只有一枚贴图能给出（那一枚不在集里，是一扇已关掉的窗剩下的那一次滚轮），把它扮成一次悄悄的成功就会让用户以为自己的滚轮调亮了并不存在的一扇窗，而**空手不许发号**——发了就是全场为一件没发生的事重读一遍。三枚齐，判的是交回 0 且号不动
+pin opacity repaint    PASS 调透明度之前本窗自报纹理号 3、之后 3；判据＝一次纯透明度调整**不许**换走一张纹理——`opacity` 不在 `content_key` 里，动了就是把它算了进去，于是「更透明」按八次就编八张 PNG（八枚贴图一起调时这就是那一句「同步更新」的代价）。这一格只读**本窗**自己那枚号，别的窗的号没有在这里被问（#271）。两枚都在场，判的是相等
+pin opacity undo       PASS 本族那几手跑完之后：单枚那一格自报 100 而开头是 100，批量那一格自报 100 而开头是 100、归位那一手交回 2 枚；判据＝量规的腿不许把被量的东西弄走——本窗必须回到它开头那一级，靠的是归位读的是**现读到**的那一级而不是写死 100（默认不透明度是配置里的一格，写死就是拿本档的假设去改用户的环境，#261）。**名单里另一枚**原本那一级本窗读不到（Session 没有按 id 问 opacity 的那只手），段末那一手把它一起钉在本窗的原级上，那一半的得失由门档逐名（#271/#281）。五枚齐，判的是两格各回到自己开头那一级
+pin reset one          PASS 名单里只有本窗一枚时：本窗进门那一级 100、往下迈一档之后 90、那一手自报 1 枚、还回来是 100、号从 0 走到 1；判据＝§5.10.4 那一枚「重置视图」在用户只选了一枚时改的就是那一枚（交 2 就是它偷偷把单枚升成了一批），迈得动的那一档必须被还回进门那一级，而一次真改动发一次号——不发，`main.qml` 里 `resetTick` 那一声明就没有读者，别的窗不会重读自己该被转成什么样子（#316：绑的是**值**，号是**读者**在数的那件事）。六枚齐，判的是枚数、归位与那一号各一步
+pin reset batch        PASS 本窗点名了 1（本窗之外的第一枚），名单两枚时重置**本窗**：`resetPin` 自报 2 枚、号从 1 走到 2；判据＝带走几枚由**名单**决定而不是由被点的那扇窗决定（这一手交回 1 就是那只手偷偷把批量降成了单枚，而 P134 之前菜单那一枚叫的是窗自己那一格手势，交回的永远是 1），且两枚各 sync 一遍而号只走一步——一手一声，不是枚枚一声（与 `op-epoch-set` 同一形状）。四枚齐，判的是枚数二与号一步
+pin reset ghost        PASS 重置一枚场上没有的 id（场上最大那枚 id 加一）：`resetPin` 自报 0 枚、号=1 而这一手之前是 1；判据＝0 只有一枚贴图能给出（那一枚不在集里，是一扇已经关掉的窗剩下的那一次菜单点击），把它扮成一次悄悄的成功就会让用户以为自己的「重置」转亮了并不存在的一扇窗，而**空手不许发号**——发了就是全场为一件没发生的事重读一遍（承 [`op_rows`] 的第四问同一形状，换一只手再问一遍不是重复：判据在 `state::reset_pin` 那一格是新写的）。三枚齐，判的是交回 0 且号不动
+pin reset repaint      PASS 重置之前本窗自报纹理号 3、之后 3；判据＝一次纯视图重置**不许**换走一张纹理——`zoom` 与 `pos` 都不在 `content_key` 里，把它们算进去就是每按一次「重置视图」重编一张 PNG（八枚贴图一起重置时这就是那一句「批量」的代价）。两枚读数之间隔着的那一档缩放是**故意**的：`rst-lone-turned` 那一手先把缩放挪开，这一格才判得动（读在挪开之后、重置之前）。这一格只读**本窗**自己那枚号，别的窗的号没有在这里被问（#271）。两枚都在场，判的是相等
+pin destroy reach      PASS 场上 4 枚，点中的是 1 与 2（本窗是 0），名单两枚而本窗不在名单里时「销毁本窗这一枚」答 1：判据＝影响数量按 id 问而不是全局报一个数——同一张表在两臂上给两个答（另一臂那一个读在 `pin destroy label` 那一格），而窗自己一个也不数（那是 `batch_hand` 的第二份）。四枚齐，判的是本窗那一臂答 1
+pin destroy label      PASS 名单换成 {本窗, 1}(两枚)之后开菜单：桥侧那一格答 2，菜单那一行字面读回的是「销毁（影响 2 枚）」，而这一格进门时缓存里存的是 1；判据＝§5.9.18 规则 第 2 条要的那个数**印在用户点下去之前看得见的那一行上**，且它与那只手的答复同源——字面从 1 走到 2 只有 `onAboutToShow` 真叫过一次 `destroyCountFor` 才做得到（一枚读不出差别的初值量不到扇出，#433）。机制那三枚是 open=true;reach=2;undo=false。三枚齐，判的是字面与那张表给同一个数
+pin destroy take       PASS 名单换回 { 1, 2 }（本窗不在里面）再按「销毁」那一级：那只手自报带走 2 枚、场上从 4 枚变成 2 枚、账上欠 2 枚、菜单里「撤销刚才销毁的」那一行出现=true；判据＝带走几枚由名单决定（交 1 就是那只手把批量降成单枚），堆少的那些枚必须**正好**是那几只手答应的枚数（`count` 与 `trashed` 是两格账，各错一半就看不出来），而 §5.9.18 规则 第 1 条那句「显示确认或支持撤销」在这里走的是撤销那一行：它只在账上欠着东西时出现，一枚也不欠时那一枚死行不出现（#433）。**这些枚的窗真被退役了吗**——本窗读不到别的窗，那一半的证人是 `pin pile before close` / `pin pile after close` 两枚行与 `state.rs` selftest（#271/#453）。
+pin destroy ghost      PASS 账上欠 2 枚时销毁一枚场上没有的 id（计划的第五格）：那只手自报 0 枚，账上还剩 2 枚；判据＝0 只有一枚贴图能给出（不在集里），而**一次落空的点击不许把撤销的账清掉**——清了就是对用户说「你刚才那批没了」，那一手是点击不存在的一枚贴图点出来的，不是用户撤销了自己的回头路（#455 那一族：0 不许扮成一次悄悄的成功，也不许顺手扮成一次失败）。三枚齐，判的是交回 0 且账不动
+pin destroy undo       PASS 销毁之前菜单里那一行出现=false(账是空的)、之后按一次撤销：那只手自报还回 2 枚、场上从 2 枚回到 4 枚、账归零=0、再按一次交回 0 枚；判据＝§5.9.18 规则 第 1 条那句「支持撤销」在这一格里是真的——还回来的是**成员**所以 `count` 跟着走、core 那一格 `PinSlot.index` 记的是它们各自离开的那一格（撤销回来还是原来那堆而不是全摞在最上面），账只认**最近一手**所以第二按交回 0 而不是把上一批还第二次。4 后面这两枚读数是这一趟的堆没被本族弄走的证人：`pin window` 与 `pin pile *` 那几枚在本腿之后还要按每一枚各自的落点数一遍。六枚齐，判的是还回的枚数、堆、账归零与空账上那一次
+pin solo enter         PASS 名单空着、点的是本窗（0）这一枚的菜单：场上 4 枚，那一手自报带走 3 枚、留着 1 枚，开菜单之前桥侧对「这一手会带走几枚」答 3，号从 0 走到 1，本窗自己 solo_hidden=false live=true；判据＝§5.11 步骤 3「系统隐藏未选中的贴图」在这里是把**名单以外**的那些枚带走，于是带走的加留下的必须正好等于场上的（少了就是有一枚没人管，多了就是本窗自己也被带走，而它恰恰是用户点中的那一枚），菜单上印着的那个数与按下去真带走的那些枚必须同源——两处读的都是同一张 `solo_kept_table`，窗自己一枚也不数（#281）；一次真改动发一次号，不发则 `main.qml` 里 `soloTick` 那一声明没有读者、别的窗不会重读自己该被压到多暗（#316）；留着的那一枚不许不知道自己被留着（`solo_hidden` 为假、`live` 为真，两档配置下都该如此）。八枚齐，判的是那本账平不平、字面与手同不同源、号走没走、本窗在不在留着那一侧
+pin solo hint          PASS 进入之后屏幕上那一格活话（`session.status`，`HintWindow.qml` 绑的就是这一格）读回 "已进入独显：其余 3 枚压暗"，同一次那一只手自报带走 3 枚，窗自己那一侧读到的机制是 "true" 而配置键 `pin.solo_dim_opacity`=35；判据＝§5.11 规则③「应在屏幕提示中显示当前处于 Solo 状态」由**产品自己写的那一句**答，本腿不替它编一句——所以那一句话里必须有「独显」两个字、必须有它自己报出的那个枚数（印着的数与真的数各走各的，就是菜单那一行同一枚病，#281），而句里的动词必须跟着配置键：>0 是「压暗」、=0 是「隐藏」。托盘那一臂本轮没做，逐名记在台账的欠账里。四枚齐，判的是那句话里有没有独显、有没有它自己报的数、动词对不对得上配置
+pin solo label         PASS 独显开着时把本窗的菜单打开，三格缓存一次读回：open=true;reach=0;way=压暗（门出现=true、这一手会带走几枚=0、机制="压暗"），菜单那一行的字面是「退出独显」；判据＝退出那一支**不许**印一个数——独显开着时「这一手会带走几枚」问的其实是「会放回去几枚」，而那个数只活在 core 的 `Solo::saved` 那张表里，桥侧不许留第二份副本，于是 `solo_answer` 在场外答数、在场内答 0，菜单那一行随之改口成「退出独显」：这一格判的就是它真的改口了（没改口就是给用户印一枚它自己答不出的数，而那一句「影响 N 枚」按下去带走的却是另一枚数——#281 说的那件看得见的事）。字面里那个动词也得与配置键对得上（"true" 而 `solo_dim_opacity`=35），否则「隐藏」与「压暗」这两档在菜单上是同一句话。三枚齐，判的是门真开了、那一格真的答 0、字面真的改了口
+pin solo exit          PASS 同一枚入口的第二下（§5.11 步骤 4「用户再次执行 Solo 或退出命令」）：那一手自报放回 3 枚、第一下带走的是 3 枚、场上 4 枚、`solo_kept` 归零=0、号从 1 走到 2；判据＝同一枚手势两走，而第二下交回的必须是**被带走的那些枚**而不是场上的全部——这一格就是规则②那句「而不是无条件显示全部」落在数上的形状（3 枚而场上有 4 枚，差的那一枚是本来就没被带走的本窗自己，`exit_solo` 不该去摸它一下），账上也不留副本所以 `solo_kept` 必须归零（不归零就是退出之后屏幕上那一行还写着「退出独显」，用户再按一下就走进第二次）。六枚齐，判的是放回的枚数、它与第一下相不相等、账归没归零、号再走一步
+pin solo restore       PASS 留着的是**别的**那一枚 1（本窗是 0），于是被带走的是说话的这一扇窗自己：进门时自己的不透明度 100，那一手自报带走 3 枚、本窗 solo_hidden=false live=true 不透明度=35、号从 2 走到 3；再按第二下自报放回 3 枚、自己的不透明度回到 100、solo_hidden=false live=true；判据＝规则①「应记录进入 Solo 前各贴图的显示状态」与规则②「退出后应恢复原状态」在这一格里是同一枚窗的一进一出——这一场是压暗（配置键 35>0）时本窗必须被压到那一格上（读到 35，要求 35）而不是被藏掉（`live` 仍为真），这一场是隐藏时反过来（`solo_excluded` 为真、`live` 为假、自己的不透明度一动不动：两档各判各的，判错档就是桥侧读错了那枚键）；两场的**出**都要等于**进**（不透明度回到进门那一级而不是 100——无条件显示全部就是拿默认值盖掉用户自己调过的那一级）。本窗一次也没 `reload` 过自己，这几格只可能是扇出替它问的，那一条腿的证人是 `main.qml` 里 `soloTick` 那一声明（#316）。十二枚齐，判的是这一档该动的那几格真动了、该不动的那一格没动、出等于进
+pin solo refuse        PASS 名单空着按 `ctrl+shift+s` 那一路（`toggleSoloSelection`，本轮第一次有读者）：那一手自报 0 枚、号从 4 到 4、`solo_kept`=0、屏幕上那句读回 "独显没做成：先选中至少一枚贴图"；判据＝§5.11 步骤 1「必须先选中至少一枚贴图」在被满足之前不许动手——交 0 且**不发号**（发了就是全场为一件没发生的事重读一遍，#455），屏幕上出现的那一句必须是拒绝而不是「已进入独显」。这一格挡的正是 core 那一枚 `toggle_solo` 的 `bool` 装不下的那一件事：`false` 同时容纳「刚退出 Solo」与「没选中所以被拒绝」，只看它就无法知道有没有暗掉一片屏（[bool-loss] 那一格记的就是这条缝），所以桥侧那一手数的是枚数、拒绝的那一支另写一句话。五枚齐，判的是交 0、号不动、账为空、那句是拒绝
+pin solo ghost         PASS 独显那一只手上按一枚还没被发出去的 id（`win.gauge[5]`，与 `des-ghost` 同一枚证人）：那一手自报 0 枚、号=4 而上一手之后是 4、`solo_kept`=0；判据＝0 只有一枚贴图能给出——`hand_targets` 对不在集里的那一枚交回空表，于是桥侧在 core 之前就把这一手挡下（不是 core 拒绝的：那一格拒绝的是空名单，两件事各有其名，见上一格）；空手不许发号，也不许把任何一枚记成「留着的一枚」（记了就成「独显开着却无人知晓」，下一次按下去交回的是一批没人同意过的窗）。**别人的窗没被碰**这一半本窗读不到，证人是 `pin pile *` 那几枚与 `state.rs` selftest（#271）。四枚齐，判的是交 0、号不动、没人被记成留着
+pin rotate step        PASS 本窗进门角度 0（90 的整数倍且在 0..=270=true），向右一次读回 90、向左一次读回 0、再向右两次读回 180、再向右两次读回 0；纹理号从 3 走到 4（向右一次）再 5（向左一次）最后 9（共六次按下）；收梢尺寸 320,200 对进门 320,200；判据＝§5.9.5 步骤 3 那句「以 90 度为基本单位」在这一格里是**每次按下恰好一步**：+90、一步回到原角、+180、满一圈回到原角，四读同一枚起点算出来的数不相等就是那只手一次迈了两档或压根没迈；六次按下六次涨号，一次不涨就是转过的像素没重编（`rotation` 在 `content_key` 里，不涨意味着窗上还是旧图），两次一起涨就是同一张编了两遍；一圈之后尺寸必须与进门同一枚数——这一格是后面每一格与 `pin window` 那一行的前置：本族不许把窗留在别的尺寸上。「转 90 度窗跟着换横竖」那一半这里**不判**，方图上交换前后同一枚数、天然绿（#433），它的证人是 core 的 `sync_size` 单测。十一枚齐，判的是那四个角、六次涨号、收梢等于进门
+pin flip horizontal    PASS 水平翻转（窗上那一格 `view.flipped_h`）：进门 false，按一次读回 true（纹理号 10），再按一次读回 false（纹理号 11）；判据＝§5.9.6 步骤 2「选择水平翻转」与步骤 3「系统更新显示状态」在这一格里是同一枚窗的一进一出——第一下必须**翻**（读回的不许是进门那一格；进门本来就已经是灰的，第一下就该翻成不是灰的，这一格不替 PRD 猜起点），第二下必须**还回去**（与进门那一格同一枚值：「再次执行恢复」是回到自己那一格，不是再翻一次别的、也不是回到某个默认值，#261），两下之间纹理号恰好 +1（`flipped_h` 在 `content_key` 的那一列里，不涨就是屏幕上的图没跟着这次开关重编；一次翻两格涨就是同一张编了两遍）。五枚齐，判的是翻、还、号恰好加一
+pin flip vertical      PASS 垂直翻转（窗上那一格 `view.flipped_v`）：进门 false，按一次读回 true（纹理号 12），再按一次读回 false（纹理号 13）；判据＝同一句话的另一只手——并成一格就会读不出「只有水平那一只在动」——第一下必须**翻**（读回的不许是进门那一格；进门本来就已经是灰的，第一下就该翻成不是灰的，这一格不替 PRD 猜起点），第二下必须**还回去**（与进门那一格同一枚值：「再次执行恢复」是回到自己那一格，不是再翻一次别的、也不是回到某个默认值，#261），两下之间纹理号恰好 +1（`flipped_v` 在 `content_key` 的那一列里，不涨就是屏幕上的图没跟着这次开关重编；一次翻两格涨就是同一张编了两遍）。五枚齐，判的是翻、还、号恰好加一
+pin grayscale toggle   PASS 灰度（窗上那一格 `view.grayscale`）：进门 false，按一次读回 true（纹理号 14），再按一次读回 false（纹理号 15）；判据＝§5.9.7 步骤 3「显示为灰度」加步骤 4「再次执行可恢复原始颜色」——「恢复」在这一格是回到进门那一格而不是回到某个默认值（#261：进门那格本来就可以是灰的）——第一下必须**翻**（读回的不许是进门那一格；进门本来就已经是灰的，第一下就该翻成不是灰的，这一格不替 PRD 猜起点），第二下必须**还回去**（与进门那一格同一枚值：「再次执行恢复」是回到自己那一格，不是再翻一次别的、也不是回到某个默认值，#261），两下之间纹理号恰好 +1（`grayscale` 在 `content_key` 的那一列里，不涨就是屏幕上的图没跟着这次开关重编；一次翻两格涨就是同一张编了两遍）。五枚齐，判的是翻、还、号恰好加一
+pin invert toggle      PASS 颜色反转（窗上那一格 `view.inverted`）：进门 false，按一次读回 true（纹理号 16），再按一次读回 false（纹理号 17）；判据＝§5.9.8 步骤 3「RGB 反相显示」加步骤 4「再次执行恢复原图」，与灰度同一形状而那只手是另一枚——第一下必须**翻**（读回的不许是进门那一格；进门本来就已经是灰的，第一下就该翻成不是灰的，这一格不替 PRD 猜起点），第二下必须**还回去**（与进门那一格同一枚值：「再次执行恢复」是回到自己那一格，不是再翻一次别的、也不是回到某个默认值，#261），两下之间纹理号恰好 +1（`inverted` 在 `content_key` 的那一列里，不涨就是屏幕上的图没跟着这次开关重编；一次翻两格涨就是同一张编了两遍）。五枚齐，判的是翻、还、号恰好加一
+pin transform labels   PASS 窗上那六枚 Action 自己报的字面：xf-label-left="向左旋转"/"向左旋转"，xf-label-right="向右旋转"/"向右旋转"，xf-label-h="水平翻转"/"水平翻转"，xf-label-v="垂直翻转"/"垂直翻转"，xf-label-gray="灰度"/"灰度"，xf-label-inv="颜色反转"/"颜色反转"；判据＝§5.9.5 写的是「向左、向右旋转」而不是「顺时针/逆时针」、§5.9.8 写的是「颜色反转」而不是「反色」，六个词逐字比（菜单那一行的字面是从这一格抄的，读两处只会数出两枚读者而它们本来就是同一枚，#281）；方向那一半不在这格里——`向左旋转` 点的必须是 core 的 -90 那一支，那是第一格的读数管的。对不住的是「哪一行挂在哪个落点上」：那一问 QML 里没有活的可读的格，由源码扫描那枚单测逐枚点名（每枚 Action 一处落点、每枚 `MenuItem { action: … }` 指向同一枚 id）。六枚齐且六个词全对
+pin transform keys     PASS 三枚数字键自己报的「注册了几枚键序 | 开开关关」：xf-key-left="1|true"，xf-key-right="1|true"，xf-key-gray="1|true"；判据＝每一枚都必须**恰好注册上一枚键序**且 `enabled` 为真——报 0 枚就是那行 `sequences:` 没接上（键压根不在窗上），报 2 枚以上说明有人给同一只手加了指法而本档只钉了一枚，`false` 那一支本腿不可能出现（分组名框从没被开过，§5.12.1 那扇格栅窗不在这条路上，退让那一支不该关掉键）。**键帽「1/2/3」钉在哪一枚键上不在这一格判**：live 这半读到的若是 `String(shortcut.sequences)`，出来的是 Qt 自己那套 QKeySequence 调试串，格式不是产品约定，拿它当判据等于把绿的红的交给 Qt 的版本（#261）；键帽那一半由源码扫描那枚单测在 `PinWindow.qml` 的原文上逐字读，那是文件的字面而不是运行时的字符串。**「按下」这一跳本档没判也不装判**：全仓零枚 `SendInput`，键帽送到哪扇窗这件事在无人值守的机器上做不到；那只手的落点由第一格与第四格按过（`trigger()` 的就是这枚 Shortcut 的 `onActivated` 要叫的同一枚 Action），而「门与菜单确实共指同一枚 Action」由 [`the_transform_keys_share_the_menu_route`] 那枚源码扫描点名。「§5.16.1 用户可在设置中修改快捷键」目前只覆盖全局表 `hotkey.actions`，这三枚窗口内的键还没进那张表——逐名记在台账。三枚齐，判的是各注册上一枚键序、开关为真、以及那一处退让没把键关掉
+pin click-through on   PASS 把穿透设开一次：窗上那格 `view.click_through` 读回 true，同一瞬间 describe 现读 TRANSPARENT=1、LAYERED=1；判据＝§5.9.13「开启后鼠标事件将穿透窗口」在这一格里是**被量的那扇窗的样式位同时为两枚 1**——证的是 `GetWindowLongPtrW` 的现读回，不是本次写入的意图（#261）；而 C++ 的 `applyStyle` 把 `SetWindowLongPtrW` 的返回值丢掉了，这一枚回读因此是「写上了」在产品里唯一的证人。describe 原文：class=PinWindow_QMLTYPE_59 title= visible=1 size=160x100 opacity=1.00 alphaBufferSize=8 qtFlags=0xc080b hwnd=0x5b0c86 style=0x96000000 exStyle=0x800a8 FRAMELESS=1 CAPTION=0 LAYERED=1 TRANSPARENT=1 TOPMOST=1 TOOLWINDOW=1 NOACTIVATE=0 APPWINDOW=0。读数齐，判的是绝对的位：窗上那格为 true、TRANSPARENT=1 且 LAYERED=1
+pin click-through off  PASS 再把穿透设关：窗上那格 `view.click_through` 读回 false，同一瞬间 describe 现读 TRANSPARENT=0；进门 false，收梢 false；判据＝§5.9.13「再次执行恢复」的后一半在这一格里是两句话——窗上的透明位必须清回 0（还挂着 1 就是鼠标仍旧穿过去，「恢复」没有兑现），且还原那一手必须把 `click_through` 放回**进门读到的那枚值**（进门那一格是用户配置里的一格，本族不替它作答，#261）。describe 原文：class=PinWindow_QMLTYPE_59 title= visible=1 size=160x100 opacity=1.00 alphaBufferSize=8 qtFlags=0x4080b hwnd=0x5b0c86 style=0x96000000 exStyle=0x80088 FRAMELESS=1 CAPTION=0 LAYERED=1 TRANSPARENT=0 TOPMOST=1 TOOLWINDOW=1 NOACTIVATE=0 APPWINDOW=0。读数齐，判的是绝对的位：窗上那格为 false、TRANSPARENT=0，且收梢与进门同值
+pin copy               PASS "已复制贴图（64000 像素）"；判据＝这一枚真贴图（`copyAction.trigger()` 点的那枚 `win.pinId`）的复制被接受，话的开头是那一句用户会看见的确认
+pin copy file          PASS 开关=false；点名文件=<这句没点名文件>；在那枚目录下=false；此刻在盘上=false；判据＝关着那一侧要：这句里不出现「文件引用」——开关是这条路唯一的门，反证就是它关上的那一面（§5.9.17 step 3，文件名只读不判）
+pin menu item          PASS Some("另存为…")（§5.9.17 的名字）
+pin name filters       PASS 3 项 ["PNG 图片 (*.png)", "JPG 图片 (*.jpg)", "BMP 图片 (*.bmp)"]
+filter selected        -    Some("||-1")
+currentFile 回读         -    赋值前 Some("") 赋值后 Some("file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/qml.png")
+dlg visible 于 open()   -    Some("true")
+pin dialog opened      PASS 按之前 visible=Some("true")；currentFolder Some("file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/") currentFile Some("file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/dialog")
+pin dialog pushed      PASS pushed=yes dialog=0x60d16 class=[#32770] title=[另存为] dialogs=1 buttons=4 button=0x60d6c btitle=[?] bid=1 ret=0 visible_after=0（5 次尝试；要求 pushed=yes、class=[#32770]、bid=1）；三态读作：按到了本进程那扇 #32770 的默认按钮
+push 每次尝试              -    原始 "pushed=yes dialog=0x60d16 class=[#32770] title=[另存为] dialogs=1 desc=47 buttons=4 button=0x60d6c btitle=[?] bid=1 ret=0 visible_after=0"；每次 Some("pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=17 mine_visible=4 foreign_dialogs=1 mine=[Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] ~ pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=18 mine_visible=4 foreign_dialogs=1 mine=[Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] ~ pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=19 mine_visible=4 foreign_dialogs=1 mine=[Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] ~ pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=26 mine_visible=4 foreign_dialogs=1 mine=[Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] [Qt6101QWindowToolSaveBits][falconshot] ~ pushed=yes dialog=0x60d16 class=[#32770] title=[另存为] dialogs=1 desc=47 buttons=4 button=0x60d6c btitle=[?] bid=1 ret=0 visible_after=0")
+pin dialog rect read   PASS 按下之前现读 rect=Some((608, 380, 1536, 960))（要求四枚数、且面积非零）；probe 行 Some("rect=608,380,1536,960 covering=0,1,2,3 pins=4 enabled=0 layers=0 hidden=-")；press 答 按到了本进程那扇 #32770 的默认按钮；几何挑出 ["0", "1", "2", "3"] 而账上藏着 []
+pin dialog hide and restore SKIP 开时 enabled=Some("0") layers=Some("0") hidden=[]（要求 1、1、非空）；关后 layers=Some("0") hidden=[]（要求 0、空）；两行任一没读到、或那枚键关着 ⇒ 本格答"问不了"而不是答通过
+pin dialog live per pin SKIP 那枚键关着（enabled=Some("0")）⇒ 这一格答"问不了"而不是答通过
+pin dialog accept      FAIL 真点击前后 status "保存失败：贴图 999999 还没有画过，没有可输出的像素" -> "保存失败：贴图 999999 还没有画过，没有可输出的像素"；前态那句读自被拒的那次 savePin 之后的 "保存失败：贴图 999999 还没有画过，没有可输出的像素"（点了，但 onAccepted 没跑或前态不是产品那句；按到了本进程那扇 #32770 的默认按钮）
+pin dialog closed      FAIL 点完之后 visible Some("true")，量具代关=true（未问 / 桌面不肯答 / 产品答错 三态读作：按到了本进程那扇 #32770 的默认按钮）
+pin dialog hygiene     PASS 点击没关成，本段自己 reject() 且门应了（dlg-rejected 有读数）；本段的三次读数 dlg-shown Some("true") / dlg-after Some("true") / dlg-rejected Some("file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/dialog")
+未 open() 就 accept()    -    Some("独显没做成：那一扇窗已经不在了") -> Some("独显没做成：那一扇窗已经不在了")
+pin url is a path      PASS "file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-pin-gauge/qml.png" 读成 "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\qml.png"，要求 "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\qml.png"；那句 "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\qml.png（贴图 320×200 像素）。"
+pin save via qml       PASS qml=2118 B rust=2118 B 字节一致=true；qml 那句 Some("已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\qml.png（贴图 320×200 像素）。")；rust 那句 Ok("已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\rust.png（贴图 320×200 像素）。")
+pin save jpg via qml   PASS qml=25438 B rust=25438 B 字节一致=true；qml 那句 Some("已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\qml.jpg（贴图 320×200 像素）。贴图里有 2064 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。")；rust 那句 Ok("已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\rust.jpg（贴图 320×200 像素）。贴图里有 2064 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。")
+jpg 透明提示               -    "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\qml.jpg（贴图 320×200 像素）。贴图里有 2064 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。"
+pin filter decides format PASS 配置 "png"；*.png→png 头字节=Some(Png) 只这一份=true ; *.jpg→jpg 头字节=Some(Jpg) 只这一份=true ; *.bmp→bmp 头字节=Some(Bmp) 只这一份=true
+pin filter via qml     PASS QML 那一条 "*.jpg|已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\dialog-f.jpg（贴图 320×200 像素）。贴图里有 2064 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。"（要求以 "*.jpg" 开头）；C:\Users\baiyl3\AppData\Local\Temp\falconshot-pin-gauge\dialog-f.jpg 的头四字节读成 Some(Jpg)
+pin save via real click FAIL 对话框写 "" 与 rust 那份字节一致=false；"" 读成 ""，要求 "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-pin-gauge\\dialog.png"；那句 "保存失败：贴图 999999 还没有画过，没有可输出的像素"
+filter 三次读数            -    未开 Some("||-1") 开着 Some("PNG 图片|png|0") 关上 Some("PNG 图片|png|0")
+dlg visible 于尾         -    Some("true")
+dlg 信号那句               -    ""
+pin copy undrawn       PASS Some("复制失败：贴图 999999 还没有画过，没有可输出的像素")（要求前缀 "复制失败："、含「贴图」、不含拉丁字母）
+pin save undrawn       PASS Some("保存失败：贴图 999999 还没有画过，没有可输出的像素")（要求前缀 "保存失败："、含「贴图」、不含拉丁字母）
+undrawn wrote nothing  PASS C:\Users\baiyl3\AppData\Local\Temp\falconshot-pin-gauge\never.png 存在=false
+pin pile before close  PASS 4 扇可见顶层，那句由贴图 0 报上；608,380 320x200=0x5b0c86 608,596 320x200=0x460cb6 944,596 320x200=0x60cfc 944,380 40x30=0x460d24
+pin close              PASS closePin 答 "1"（要求 1 枚）
+pin pile after close   PASS 3 扇可见顶层；还活着的三格 608,380 320x200=0x5b0c86 608,596 320x200=没有窗 944,596 320x200=0x60cfc 944,380 40x30=0x460d24
+pin closed pin has no window PASS 关掉那枚的 608,596 320x200 上还有窗=false
+pin survivors keep their windows PASS 608,380 320x200 0x5b0c86 -> 0x5b0c86 同一扇=true；944,596 320x200 0x60cfc -> 0x60cfc 同一扇=true；944,380 40x30 0x460d24 -> 0x460d24 同一扇=true
+no qml complaints      PASS 
+no problems            PASS 
+pin check: FAIL
+pin plan: id=0 bad=999999 rect=608,380 320x200 close=1 gif=3
+[pin after 10600 ms] 要求 4000 ms 生效 10600 ms qml_loaded=true exe=39302656 B @1794334135s desktop=0,0 1536x960 primary=0,0 1536x960 dpr=2.00 station=WinSta0 desktop=Default
+warn: QDxgiVSyncService not destroyed in time
+warn: QThreadStorage: entry 3 destroyed before end of thread 0x2290d438910
+warn: QThreadStorage: entry 2 destroyed before end of thread 0x2290d438910
+warn: QThreadStorage: entry 1 destroyed before end of thread 0x2290d438910

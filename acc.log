@@ -1,0 +1,14 @@
+   Compiling qt_bridge v0.1.0 (C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\crates\qt_bridge)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1m 27s
+     Running unittests src\main.rs (target\debug\deps\falconshot-2d5a55424c1d93f2.exe)
+
+running 4 tests
+test access_check::tests::the_roster_is_the_one_build_rs_puts_in_the_binary ... ok
+scan: 警告那一句 = Rust 三支 return；页上两格各存一枚、各渲染一行；桥的两枚签名都是 QString
+test access_check::tests::the_refusal_sentence_has_one_author_and_it_is_rust ... ok
+scan: 组件 8 枚，其中声明 active 3 枚、usable 3 枚；通道 = 下划条 2 条、边框粗细 1 条、删除线 3 条
+test access_check::tests::every_selected_or_disabled_state_has_a_channel_that_is_not_a_colour ... ok
+test access_check::tests::the_channel_counts_fall_by_exactly_one_when_a_line_is_dropped ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 676 filtered out; finished in 0.09s
+

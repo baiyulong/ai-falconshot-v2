@@ -1,0 +1,69 @@
+[startup cfg] history.enabled=true history.max_items=1000 advanced.log_level=info advanced.data_dir=(platform default)
+[appearance cfg] appearance.theme=System appearance.accent=#0078D7 appearance.toolbar_placement=auto appearance.ui_font_size=9 appearance.ui_font_family=Microsoft YaHei UI appearance.magnifier_border=1 appearance.magnifier_corner_radius=6 appearance.magnifier_foreground=#FFFFFF appearance.magnifier_background=#1F1F1F
+[theme cfg] appearance.theme=System system.theme=dark resolved.theme=Dark
+[autostart cfg] 档里=false 机器=ai-falconshot 不在（登录时不会启动本程序） ⇒ 一致
+[about cfg] about.auto_check_updates=true about.check_every_days=7 about.channel=stable about.send_diagnostics=false
+[output cfg] output.share_targets=(none) output.send_to_apps=(none) output.reuse_last_file=false output.hide_pins_on_dialog=false output.copy_as_file=false
+[send_to cfg] send_to parsed=0 refused=0
+[share cfg] share parsed=0 refused=0
+[share filter] share known=0 unknown=0
+[send_to validate] send_to validated=0 refused=0
+[send_to pipeline] pipeline final=0 parse_refused=0 validate_refused=0
+[share pipeline] pipeline final=0 parse_refused=0 unknown=0
+[send_to menu] menu entries=0
+[share menu] menu entries=0
+[send_to resolve] resolve (empty)
+[share scheme] scheme (empty)
+[send_to argv] argv (empty)
+[share scheme all] scheme_all 0 entries
+[send_to argv first] argv_first (empty)
+[share scheme first] scheme_first (empty)
+[send_to names] names 0 []
+[share names] names 0 []
+[history usage] history records=0 original=0B thumb=0B db=16384B total=16384B
+[history neighbors] history anchor=- prev=- next=- (库里一行也没有)
+desktop geometry is real           PASS desktop=0,0 1536x960 primary=0,0 1536x960 dpr=2.00 station=WinSta0 desktop=Default
+pin clamp is the physical table    PASS clamp [3072x1920@0,0 dpr=2.00] bounds=3072x1920@0,0 matched=1 of 1
+first frame decodes                PASS id=0 null=0 w=64 h=32 alpha=1 stores=1
+adding pushed one texture          PASS revision=1
+§5.17 cli contract headless        PASS 15 例 argv 判决 + 三条状态码规则 + 贴图那一族的 3 枚旗标（文档点名即语法认）；全部对上（截屏像素本身在真机上量，非本档 §5.17 的 headless 半边）
+dialog linkage hides and restores  PASS pin=0 rect=10,10 64x32 enabled=1 layers=0 hidden=- bad=none
+the transparent margin survives    PASS (0,0)=0,0,0,0
+zoom re-encodes nothing            PASS revision=1 window=192x96 at -54,-22
+rotation re-encodes                PASS id=0 null=0 w=32 h=64 alpha=1 stores=1 revision=2
+grayscale + invert decodes         PASS id=0 null=0 w=32 h=64 alpha=1 stores=1
+the board paints see-through       PASS (0,0)=212,212,212,255 (8,0)=239,239,239,255
+crop re-encodes smaller            PASS id=1 null=0 w=4 h=1 alpha=1 stores=2
+a free thumbnail shows its region  PASS id=1 null=0 w=1 h=1 alpha=1 stores=2 window=1x1
+a text card is not flat            PASS card 480x41 flat=false closed=1
+config write runs the gate         PASS stored=96 read=96 corrections=1 first=card.font_size: 500 is out of range, using 96
+settings categories and write gate PASS 分类 绿：124 枚键，无归属 0 枚 []，多归属 0 枚 [] ｜ 每类有行 绿：12 类，空类 [] ｜ 重启标记 绿：页上标了 14 枚，名单 14 枚；热区那 11 枚里标了 0 枚 ｜ 写路 绿：默认停留 300 ms；打 9000 -> Some("5000") 校正 1 条；打 900 -> Some("900")；角落打 nope 拒（值仍是 ""）；不存在的键 true 拒
+a background mode reaches pixels   PASS win=8x4 mode=0>2>1>0 pix=42,42,42,255|0,0,0,0|0,0,0,0 hole=false|true|true|false ink=true solid_holes=false
+the gif clock moves frame and pixels PASS frames=2 speed=100 ink 0->255 then paused 255 ; tick=true paused_tick=false rev=1..2 closed=1 clip_gone=true
+copy can hand a file too           PASS roundtrip=2 张; short_is_err=true; empty_refused=true; plant_written=true; plant_claimed=unknown; plant_alive=true; plant_sweep=0/1; plant_fate=true; sweep_deleted=0; sweep_kept=0; second_sweep_deleted=0; second_sweep_kept=0; sweep_stable=true; undrawn_refused=true; seq_kept=true; register_kept=true
+multi-select is one list two readers PASS one=1 flagged=(true, false) who=[0] two=2 back=1 ghost=true still=1 took=1 after=0
+one drag moves the list it was told to PASS batch=2 id=(-6, -70)->(31, -49) want=(31, -49) board=(20, 20)->(57, 41) bwant=(57, 41) rev=(3, 3) 搬动前=(3, 3) lone=1 l=(12, -60) lwant=(12, -60) board_stayed=(57, 41) off=1 o=(25, -53) owant=(25, -53) board_stayed2=(57, 41) gone=0
+one opacity hand adjusts the list it was told to PASS start=(40, 70) step=2 after=(30, 60) rev=(3, 3) 阶梯前=(3, 3) lone=1 l=(40, 60) off=1 o=(30, 60) fixed=2 f=(100, 100) gone=0 gone_set=0
+one reset and one destroy answer the list they were told to PASS dflt=100 turnA=101 turnB=101 turnPre=1 ctA=1 ctB=1 rbatch=2 homeA=100 homeB=100 ctA1=0 ctB1=0 中心A0=(73, 43) 中心A1=(73, 43) 中心B0=(57, 41) 中心B1=(57, 41) 变面A=1 变面B=1 roster=2 lone=1 loneFromA=101 loneFromB=101 loneCtB=1 loneHome=100 loneHomeB=101 loneCtB1=1 ghostReset=0 reachBatch=2 reachLone=1 reachGhost=0 carried=2 onfield0=2 shrank=2 owed=2 emptyhanded=0 kept=2 undo=2 onfield1=2 liveA=1 liveB=1 pixelsA=1 pixelsB=1 owedAfter=0 undoAgain=0 ghostClose=0 ghostReach=0
+solo puts the rest of the field away and only the rest back PASS soloDims=1 该压暗=1 起点离档=1 该档=35 soloMoved=1 pile=2 该带走=1 soloAnswerPre=1 soloTake=1 kept=1 未点名B面1=35 该藏1=0 未点名藏1=0 该活1=1 未点名活1=1 点名A面1=85 独显开=1 点名活1=1 名单点名1=1 开着再问=0 名单挪了=1 退回=1 退回后活=0 账退后=0 点名A面2=85 未点名B面2=85 未点名藏2=0 未点名活2=1 soloRefuse=0 空手带走=0 空手开=0 空手账=0 幽灵=0 幽灵开=0 幽灵账=0 场上退后=2 点名活末=1 摆前A=85 摆前B=85 摆前藏B=0
+group hands cross the state machine PASS 空名拒=1 重名拒=1 入组=2 甲组人数=2 甲组显=1 入组后活=(1,1) 隐答=1 隐后活=(0,0) 显答=1 显后活=(1,1) 改名=1 名对上=1 改名重名拒=1 甲先=1 移答=1 甲次位=1 退组数=2 退组后场上=2 退组后活=1 销毁空组数=0 删不存在组拒=1
+the named list moves and the two fates split PASS 点名交回=1（应当 1）组内=1 组里含未点名的板=0（应当 0）点名两枚交回=2 组快照人数=2 退回交回=2 退回后在集里=(1,1)销毁交回=1 销毁后在集里=0（应当 0）同伴仍在=1
+global show/hide/toggle answers apart from the group reason PASS 入组前活=(1,1) 组隐后活=(0,1) 全隐后活=(0,0)隐答=1 全显后活=(0,1)显答=0 切换1后board活=0答=1 切换2后board活=1答=0 收尾后id活=1
+closing drops the pixels           PASS closed=2 id=0 null=1 w=0 h=0 alpha=0 stores=0
+feedback bundle scrubs secrets     PASS 未确认臂=4行 diag省略=true log省略=true 泄漏=[] | 开关臂 attached=false==cfg=false 给不给日志=false 泄漏=[] | 双开臂=6行 藏=3枚 泄漏=[] 主目录名=baiyl3 | 主目录那一行现读=diag=profile=C:\Users\[redacted]
+feedback path the page uses        PASS 预览 133 字节 / 4 行；两半都说上了=false/true；省略那一句在不在=true；原值漏出=[]；此刻 send_diagnostics=false 在册日志 0 枚
+toolbar hints name their own button PASS TOOLS=16枚 names=16句 hints=16句 对不上名=无 | 首句=选择：挪动选区，或选中已有的标注 末句=橡皮：拖过的标注被擦掉
+every toolbar button site is handed its hint PASS 钮的声明位置=43 递句子的位置=43 required=2 ToolTip.text=2 ToolTip.visible=2 空串=0
+action table names each bindable id PASS 名表=16枚 可绑=13枚 有手=13枚 无手=0枚 错位=无 空或会切行=无 | 尾三枚=menu,settings,none
+hotkey page explains each action   PASS 快捷键那一页=11行 点名动作=10行 递出名与说明=10行 没递=无 没点名却递了=无 接线标错=无 | 首行=hotkey.actions.capture=ctrl+shift+a —— 截图：冻住此刻的屏幕并罩上遮罩，拖一块就截一块（需重启）
+cli doc names every flag it ships  PASS 文档点名旗标=8枚 语法不认=无 文档的 -o 值=3枚 递不进去=无 值名单同源=是 最完整一条argv=--last -o file C:\Users\me\shot.png 文档没讲的值被收下=否
+cli config row hands a doc entry   PASS 高级与命令行那一页=6行 递入口=1行 该递却没递=无 没点名却递了=无 入口点的旗标=Some("--help") 那一枚真能取到文档=是
+guide names only real keys         PASS 复杂页=6枚 / §5.20.1 那 12 类里；句子里点档里没有的键=无 点对了名但不在那一页=无 名单外的类名=无 空句或换行=无
+first-use guide hands once         PASS 一份空状态递=6枚 名单外却递=0 该递没递=无；收下标注那一页：头一回算新收=true 第二回算新收=false；收完之后这一页递=""、别页照递=true；换一份全新状态又递="又递了"；写回来的状态读回还欠=5枚（要的是 5）；本趟动过盘=0回（要 0）；桥现在说「这一页的引导已经收过了」；C:\Users\baiyl3\AppData\Roaming\ai-falconshot\guide_seen.txt 存在 bytes=7；收下过=1 枚 还欠=5 枚 本趟动过盘=0 回
+no problems were noted             PASS 
+selftest: PASS
+clipboard selftest: SKIPPED (pass --clipboard to run it; it overwrites the clipboard)
+capture selftest: SKIPPED (pass --capture to run it; it reads the real screen)
+history selftest: SKIPPED (pass --history to run it; it opens or creates history.db)
+refresh selftest: SKIPPED (pass --refresh to run it; it pins regions of the real screen)
+sendto selftest: SKIPPED (pass --sendto to run it; it dispatches a real file to a real program and flashes a console window)

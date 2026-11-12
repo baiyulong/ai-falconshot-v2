@@ -1,0 +1,137 @@
+[startup cfg] history.enabled=true history.max_items=1000 advanced.log_level=info advanced.data_dir=(platform default)
+[appearance cfg] appearance.theme=System appearance.accent=#0078D7 appearance.toolbar_placement=auto appearance.ui_font_size=9 appearance.ui_font_family=Microsoft YaHei UI appearance.magnifier_border=1 appearance.magnifier_corner_radius=6 appearance.magnifier_foreground=#FFFFFF appearance.magnifier_background=#1F1F1F
+[theme cfg] appearance.theme=System system.theme=dark resolved.theme=Dark
+[autostart cfg] 档里=false 机器=ai-falconshot 不在（登录时不会启动本程序） ⇒ 一致
+[about cfg] about.auto_check_updates=true about.check_every_days=7 about.channel=stable about.send_diagnostics=false
+[output cfg] output.share_targets=(none) output.send_to_apps=(none) output.reuse_last_file=false output.hide_pins_on_dialog=false output.copy_as_file=false
+[send_to cfg] send_to parsed=0 refused=0
+[share cfg] share parsed=0 refused=0
+[share filter] share known=0 unknown=0
+[send_to validate] send_to validated=0 refused=0
+[send_to pipeline] pipeline final=0 parse_refused=0 validate_refused=0
+[share pipeline] pipeline final=0 parse_refused=0 unknown=0
+[send_to menu] menu entries=0
+[share menu] menu entries=0
+[send_to resolve] resolve (empty)
+[share scheme] scheme (empty)
+[send_to argv] argv (empty)
+[share scheme all] scheme_all 0 entries
+[send_to argv first] argv_first (empty)
+[share scheme first] scheme_first (empty)
+[send_to names] names 0 []
+[share names] names 0 []
+[history usage] history records=2 original=276084B thumb=10615B db=28672B total=315371B
+[history neighbors] history anchor=2 prev=1 next=-
+[ink planted] 7 strokes + 2 erases + 1 undo, 10 publish(es) with 10 distinct key(s), hole=768,480 1536x960, tool=None hole=PhysRect { x: 768, y: 480, w: 1536, h: 960 } poly=0 text=- zoom=- paints=677 last=185036px of 5898240px (3.1%) 13ms objects=8 depth=8 flushes=10 keys=m0-display1-ink-677
+warn: DirectWrite: CreateFontFaceFromHDC() failed (Indicates an error in an input file such as a font file.) for QFontDef(Family="MS Sans Serif", pointsize=9, pixelsize=13, styleHint=5, weight=400, stretch=100, hintingPreference=0) LOGFONT("MS Sans Serif", lfWidth=0, lfHeight=-13) dpi=96
+desktop scene          -    (1536,960) 上是 falconshot.exe「falconshot-mask-m0-display1」 hwnd=0x270cc8 会话锁屏=false
+planted                -    tool=None hole=PhysRect { x: 768, y: 480, w: 1536, h: 960 } poly=0 text=- zoom=- paints=677 last=185036px of 5898240px (3.1%) 13ms objects=8 depth=8 flushes=10 keys=m0-display1-ink-677 | config writes pinned to C:\Users\baiyl3\AppData\Local\Temp\falconshot-ink-gauge\config.toml | quick save 命名指到 C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge，模板 %p-%i 前缀 quick
+shipped                -    1536×960 frame, 0 px of PhysRect { x: 768, y: 480, w: 1536, h: 960 } supplied by no canvas
+keys distinct          PASS 10 publish(es), 10 distinct: m0-display1-ink-4,m0-display1-ink-125,m0-display1-ink-275,m0-display1-ink-306,m0-display1-ink-307,m0-display1-ink-454,m0-display1-ink-497,m0-display1-ink-540,m0-display1-ink-676,m0-display1-ink-677
+erase ink of m0-display1 PASS 47/47 as the unerased third (ink expected) of 47 planted, 47 this ink, 0 the frozen frame, 0 transparent, 0 neither, 0 the desktop is already this ink, 0 off this canvas
+erase 只擦标注 of m0-display1 PASS 41/41 as 只擦标注 (the screenshot expected) of 41 planted, 0 this ink, 41 the frozen frame, 0 transparent, 0 neither, 0 the desktop is already this ink, 0 off this canvas
+erase 擦到透明 of m0-display1 PASS 41/41 as 擦除到透明 (no pixel expected) of 41 planted, 0 this ink, 0 the frozen frame, 41 transparent, 0 neither, 0 the desktop is already this ink, 0 off this canvas
+erase layer == export of m0-display1 PASS 129/129 of 129 planted pixels agree, 0 off this canvas, first mismatch: none
+erase band of m0-display1 -    y 538 over x 952..2120: unerased from 960, 只擦标注 1373..1698, 擦除到透明 1762..2088; brush 32 px, 0/129 samples off this canvas
+dim path m0-display1   -    shader
+overlay of m0-display1 -    m0-display1-ink-677
+layer == export of m0-display1 PASS 852368 opaque px compared, 622192 transparent (not the overlay's business), 1474560 of the hole on this canvas, first mismatch: none
+shipped == export of m0-display1 PASS 1474560/1474560 of 1474560 planted pixels agree, 0 off this canvas, first mismatch: none
+ink box of m0-display1 SKIP 14/14 as expected of 165 planted, 0 the other ink, 0 bare desktop, 0 partway there, 0 nobody can name, 151 too dark, 0 off this screen, 0 the desktop cannot distinguish
+ink box of m0-display1 asked PASS 问过：planted=165
+ink box of m0-display1 readable SKIP 屏幕答不了：usable=14 of planted=165（151 too dark、0 off this screen、0 the desktop cannot distinguish），现场 pixel@centre=Some([20, 20, 20, 255])
+ink stroke of m0-display1 SKIP 16/16 as expected of 121 planted, 0 the other ink, 0 bare desktop, 0 partway there, 0 nobody can name, 105 too dark, 0 off this screen, 0 the desktop cannot distinguish
+ink stroke of m0-display1 asked PASS 问过：planted=121
+ink stroke of m0-display1 readable SKIP 屏幕答不了：usable=16 of planted=121（105 too dark、0 off this screen、0 the desktop cannot distinguish），现场 pixel@centre=Some([20, 20, 20, 255])
+ink polyline of m0-display1 SKIP 0/0 as expected of 150 planted, 0 the other ink, 0 bare desktop, 0 partway there, 0 nobody can name, 150 too dark, 0 off this screen, 0 the desktop cannot distinguish
+ink polyline of m0-display1 asked PASS 问过：planted=150
+ink polyline of m0-display1 readable SKIP 屏幕答不了：usable=0 of planted=150（150 too dark、0 off this screen、0 the desktop cannot distinguish），现场 pixel@centre=Some([20, 20, 20, 255])
+ink text of m0-display1 PASS 545 inked px of 648 usable of 9600 planted, 0 the other ink, 0 bare desktop, 103 nobody can name, 0 already this colour in the freeze, 8952 too dark, 0 off this canvas, first ink at 1470,909; first 1460,910 read=[65, 19, 23, 255] not ink=[232, 17, 35, 255] nor desktop=[20, 20, 20, 255] | 1514,910 read=[45, 20, 22, 255] not ink=[232, 17, 35, 255] nor desktop=[20, 20, 20, 255] | 1520,910 read=[70, 19, 24, 255] not ink=[232, 17, 35, 255] nor desktop=[20, 20, 20, 255]
+ink text of m0-display1 asked PASS 问过：planted=9600
+ink text of m0-display1 readable PASS usable=648 of planted=9600（8952 too dark、0 off this screen、0 the desktop cannot distinguish），现场 pixel@centre=Some([20, 20, 20, 255])
+text strip of m0-display1 -    PhysRect { x: 1452, y: 904, w: 240, h: 40 } typed "Falcon 2026"
+zoom copy of m0-display1 PASS 199/199 as expected of 2185 planted, 0 the other ink, 0 bare desktop, 0 partway there, 0 nobody can name, 1980 too dark, 0 off this screen, 6 the desktop cannot distinguish
+zoom expectation of m0-display1 -    the magnifier's own resampled frame; nearest would have graded 89 of the graded samples the same way
+no ghost of m0-display1 SKIP 0/0 as expected of 136 planted, 0 the other ink, 0 bare desktop, 0 partway there, 0 nobody can name, 136 too dark, 0 off this screen, 0 the desktop cannot distinguish, no ink is left
+dim of m0-display1 (ink up) PASS measured=0.400 want 0.400 ±0.05 (202 usable; dark=1714 border=13)
+hole of m0-display1 (ink up) PASS measured=1.000 want 1.000 ±0.05 (31 usable; dark=1714 border=13)
+shipped on screen of m0-display1 PASS 115/115 as expected of 1782 planted, 0 the other ink, 0 bare desktop, 0 partway there, 0 nobody can name, 1549 too dark, 0 off this screen, 118 the desktop cannot distinguish; first 1748,536: shipped alpha 0 ([0, 232, 0, 0]), screen=[20, 20, 20, 255] freeze=[20, 20, 20, 255] | 1776,536: shipped alpha 0 ([0, 232, 0, 0]), screen=[20, 20, 20, 255] freeze=[20, 20, 20, 255] | 1804,536: shipped alpha 0 ([0, 232, 0, 0]), screen=[20, 20, 20, 255] freeze=[20, 20, 20, 255]
+pw:mask flag 2         -    3072x1920 ctrl=0.000 flat=0.298
+pw:mask flag 0         -    3072x1920 ctrl=0.000 flat=1.000
+pw:mask flag 4         -    3072x1920 ctrl=0.000 flat=1.000
+swaps of m0-display1   -    7 frame(s), first at Some(58510)
+shipped covers the hole PASS 0 of 1474560 px of PhysRect { x: 768, y: 480, w: 1536, h: 960 } came from no canvas
+clipboard before       -    0 bytes of image, 94 chars of text, 4 format(s): #13,#16,#1,#7
+clipboard sentence     -    已复制 1536×960 像素。
+clipboard after        -    312007 bytes of image, 4 format(s): #8,PNG,#2,#17
+clipboard copy         PASS copy_out=true, 1474560 of 1474560 px of the selection came back as shipped, size matches=true, first mismatch: none; the product's own sentence was "已复制 1536×960 像素。", of which 11684 px are transparent in the document and reached the clipboard as the colour under them
+clipboard file ref     PASS 开关=false；点名文件=<这句没点名文件>；在那枚目录下=false；此刻在盘上=false；板上写着它=Some(false)；判据＝关着那一侧要：这句里不出现「文件引用」，板上也一列文件都不许多出（§5.9.17 step 1 的截图那一臂，文件名只读不判）。那枚文件是这一腿的产物：交还给用户那块板之后它就成了死引用，下一趟复制的第一道梯（`state::PinState::sweep_clip_files`）把它扫掉，本档不替被测的规则动手删。
+clipboard restored     PASS text (94 chars)
+saved png sentence     -    已保存到 C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\selection.png（选区 1536×960 像素）。
+saved png              PASS save_out=true, 1474560 of 1474560 px of the stitched frame came back byte for byte, 0 with a different alpha, the file is 312007 bytes and the product's own sentence was "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\selection.png（选区 1536×960 像素）。"
+disk refuses the write PASS 往 C:\WINDOWS\System32\falconshot-save-probe.png 真写一次（那一档的文件名在 C:\WINDOWS\System32 里，那一处读得到、进得去、写不进去）：产品答 "权限不足，那一处不让本程序往里放文件（系统返回 5）。截图还在，可以换一处目录再存一次，也可以把这张图复制进剪贴板。"；写成了=false；留在盘上=false（那一枚是本档自己造的，提权的机器上才有，当场收走）；磁盘那一支=true、「路径无效」那一支=false
+pre-save notice        -    选区里有 11792 px 透明，JPG 存不下，将被填成白色；要保留透明请存成 PNG。
+pre-save notice        PASS 提醒说于 C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\selection.jpg 落盘之前（当时不在盘上=true，提醒自己也不写文件），窗口那一格 pre_notice 与返回值同字（"选区里有 11792 px 透明，JPG 存不下，将被填成白色；要保留透明请存成 PNG。"）；文档丢了 11792 px，PNG 档应当无话（空串是"这一档不丢透明"，不是"没提醒"），JPG 档要求说出 11792 px、"将被填成白色"、并把时态换回"已填"后逐字节接在事后那句 "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\selection.jpg（选区 1536×960 像素）。选区里有 11792 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。" 的句尾（只差时态=true）。这一格是提醒不是确认：写照常发生（save_out=true）
+saved jpg sentence     -    已保存到 C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\selection.jpg（选区 1536×960 像素）。选区里有 11792 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。
+saved jpg              PASS save_out=true, 1474560 of 1474560 px read back opaque (a JPG has no other answer), size matches=true, the file is 270503 bytes, the document had 11792 px with alpha below 255 and the sentence named that number=true, mean per-channel drift 1 (printed, not graded); the product's own sentence was "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\selection.jpg（选区 1536×960 像素）。选区里有 11792 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。"
+mask filter decides format PASS 配置 "png"；*.png→png 头字节=Some(Png) 只这一份=true ; *.jpg→jpg 头字节=Some(Jpg) 只这一份=true ; *.bmp→bmp 头字节=Some(Bmp) 只这一份=true
+mask leg ran           FAIL 15 行：band band-move dlg-folder dlg-name f-jpg pin-after pre-save dlg-open dlg-shown dlg-shown-filter accept-was dlg-push dlg-push-tries dlg-push-log dlg-accepted（10 次尝试为上限，每等 400 ms）
+mask 量具计时              -    起步 58879 ms（种旗标→腿开口；地板的钟从 loaded 之后才走，另留 5000 ms 松弛），腿没有说 done（13 次 × 400 ms 的日程，说到 None ms 为止），全程 69862 ms —— 是地板（10200 ms）收尾的，尾下那几行是没读到而不是读错
+mask band via qml      PASS 档 10 枚原文 / 10 枚可解析 → 桥递出 "10" → 页上造出 "10"；期待 "E81123,F38B00,FFB900,7A7A7A,FFFFFF,000000,0078D7,16C60C,B4009E,00B7C3"，页上那份 "E81123,F38B00,FFB900,7A7A7A,FFFFFF,000000,0078D7,16C60C,B4009E,00B7C3"（枚数与名单都对）
+mask band 的账           -    档里原文 ["#E81123", "#F38B00", "#FFB900", "#7A7A7A", "#FFFFFF", "#000000", "#0078D7", "#16C60C", "#B4009E", "#00B7C3"]；归一交给页上的那一份 "E81123|F38B00|FFB900|7A7A7A|FFFFFF|000000|0078D7|16C60C|B4009E|00B7C3"（大写 `RRGGBB`、`|` 分隔，alpha 落在 setColor 那一枚门把手之外）
+mask band reorder via qml PASS 出发 "E81123,F38B00,FFB900,7A7A7A,FFFFFF,000000,0078D7,16C60C,B4009E,00B7C3" → 拖过去 "F38B00,E81123,FFB900,7A7A7A,FFFFFF,000000,0078D7,16C60C,B4009E,00B7C3"（期待 "F38B00,E81123,FFB900,7A7A7A,FFFFFF,000000,0078D7,16C60C,B4009E,00B7C3"）→ 拖回来 "E81123,F38B00,FFB900,7A7A7A,FFFFFF,000000,0078D7,16C60C,B4009E,00B7C3"；档里此刻读回 "E81123|F38B00|FFB900|7A7A7A|FFFFFF|000000|0078D7|16C60C|B4009E|00B7C3"；页上造出 "10"/"10"（等 10 枚）；钟 0→1→2；返回值与窗上那一句同一句："yes"；那两句话 "[settings] annotation.palette = #F38B00, #E81123, #FFB900, #7A7A7A, #FFFFFF, #000000, #0078D7, #16C60C, #B4009E, #00B7C3 -> #F38B00, #E81123, #FFB900, #7A7A7A, #FFFFFF, #000000, #0078D7, #16C60C, #B4009E, #00B7C3（即时）落盘 55 ms :: [settings] annotation.palette = #E81123, #F38B00, #FFB900, #7A7A7A, #FFFFFF, #000000, #0078D7, #16C60C, #B4009E, #00B7C3 -> #E81123, #F38B00, #FFB900, #7A7A7A, #FFFFFF, #000000, #0078D7, #16C60C, #B4009E, #00B7C3（即时）落盘 40 ms"（顺序换得动、页上跟着换、回来时档与出发时一字不差）
+mask band reorder 的账   -    页上那一只手与设置页「上一格／下一格」那两只钮是同一只（`settings_view::pal_move`），这一趟各落一次盘；档里原文 ["#E81123", "#F38B00", "#FFB900", "#7A7A7A", "#FFFFFF", "#000000", "#0078D7", "#16C60C", "#B4009E", "#00B7C3"]
+mask dialog opened     PASS 按之前 visible=Some("true")；currentFolder Some("file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-save-gauge/") currentFile Some("file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-save-gauge/dialog")
+mask dialog pushed     PASS pushed=yes dialog=0x20d0a class=[#32770] title=[另存为] dialogs=1 buttons=4 button=0x20d2c btitle=[?] bid=1 ret=0 visible_after=0（3 次尝试；要求 pushed=yes、class=[#32770]、bid=1）；三态读作：按到了本进程那扇 #32770 的默认按钮
+mask push 每次尝试         -    原始 "pushed=yes dialog=0x20d0a class=[#32770] title=[另存为] dialogs=1 desc=48 buttons=4 button=0x20d2c btitle=[?] bid=1 ret=0 visible_after=0"；每次 Some("pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=15 mine_visible=1 foreign_dialogs=1 mine=[Qt6101QWindowIcon][falconshot-mask-m0-display1] ~ pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=20 mine_visible=1 foreign_dialogs=1 mine=[Qt6101QWindowIcon][falconshot-mask-m0-display1] ~ pushed=yes dialog=0x20d0a class=[#32770] title=[另存为] dialogs=1 desc=48 buttons=4 button=0x20d2c btitle=[?] bid=1 ret=0 visible_after=0")
+mask dialog accept     FAIL 真点击前后 message "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\dialog.not-a-format 不是本程序会写的格式：用 .png、.jpg 或 .bmp。" -> "<没有读数>"；前态那句读自被拒的那次 saveSelection 之后的 "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\dialog.not-a-format 不是本程序会写的格式：用 .png、.jpg 或 .bmp。"；信号 Some("file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-save-gauge/dialog.png")（点了，但 onAccepted 没跑或前态不是产品那句；按到了本进程那扇 #32770 的默认按钮）
+mask dialog closed     SKIP 点完之后 visible None，量具代关=false，选中的滤镜 None（未问 / 桌面不肯答 / 产品答错 三态读作：未问：对话框开了，但关上的那一格没读（dlg-after 没有读数））
+mask dialog hygiene    SKIP 未问：对话框开了，但关上的那一格没读（dlg-after 没有读数）；本段的三次读数 dlg-shown Some("true") / dlg-after None / dlg-rejected None
+mask save via real click FAIL 对话框写 Some("dialog.png") 与 rust 那份字节一致=true；"file:///C:/Users/baiyl3/AppData/Local/Temp/falconshot-save-gauge/dialog.png" 读成 "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\dialog.png"，要求 "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\dialog.png"；那句 "<没有读数>"
+mask filter via qml    PASS QML 那一条 "*.jpg|true|已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\dialog-f.jpg（选区 1536×960 像素）。选区里有 11792 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。"（要求以 "*.jpg" 开头且门写了）；C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\dialog-f.jpg 的头四字节读成 Some(Jpg)
+mask pin via qml       PASS QML 那一条 "true|已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\dialog-p.png（选区 1536×960 像素）。 也钉成了贴图 0。"（要求 true、点名 -p.png、说出 也钉成了贴图）；C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\dialog-p.png 的头四字节读成 Some(Png)，正被这些贴图显示 [0]
+pin saved png          PASS the mask's file is 312007 bytes and the pin's is 312007, identical=true; the pin's own sentence was Ok("已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\pin.png（贴图 1536×960 像素）。")
+pin saved jpg          PASS the mask's file is 270503 bytes and the pin's is 270503, identical=true; the document had 11792 px with alpha below 255 and the pin's sentence named and promised to fill them=true; the product's own sentence was Ok("已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\pin.jpg（贴图 1536×960 像素）。贴图里有 11792 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。")
+pin pre-save notice    PASS 提醒说于 C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\pin.jpg 落盘之前（当时不在盘上=true，提醒自己也不写文件），窗口那一格 pre_notice 与返回值同字（"贴图里有 11792 px 透明，JPG 存不下，将被填成白色；要保留透明请存成 PNG。"）；PNG 档先无话（""）；文档丢了 11792 px，JPG 档要求说出 11792 px、"将被填成白色"、并把时态换回"已填"后逐字节接在事后那句 "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\pin.jpg（贴图 1536×960 像素）。贴图里有 11792 px 透明，JPG 存不下，已填成白色；要保留透明请存成 PNG。" 的句尾（只差时态=true）。这一格是提醒不是确认：写照常发生 （save_image=true）。**这一格仍未被画到屏幕上**：贴图侧连 session.status 都没有一枚 widget，所以 pre_notice 现在是一格可判而暂不可见的属性，结转第 48 项
+jpeg quality knob      PASS 30 wrote 107742 bytes from the mask and 107742 from the pin; 95 wrote 321848 and 321848; the two doors agree at each setting=true, the two settings disagree=true; the pin closed=1 and it noted []
+save then pin          PASS C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\then-pin.png 存在=true；那句 "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\then-pin.png（选区 1536×960 像素）。 也钉成了贴图 2。"；这一步新增的贴图 [2]（要求句里点名的那个在其中）
+pinned == saved        PASS C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\then-pin.png 的像素正被这些贴图显示 [0, 2]；文件 1536x960 ↔ 贴图 2 首帧 1536x960，不同的通道 0 个（要求 0）；state 记的 []
+pin file damaged       PASS C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\broken.png：Err("C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\broken.png 读不出图片：文件可能已损坏。")（要求点名 "broken.png"、说出 "损坏"、不说 "不是本程序会读的图片"，也不说英语）；新增的贴图 []
+pin file format        PASS C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\notes.qqq：Err("C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\notes.qqq 不是本程序会读的图片：用 png、jpg、bmp、tga、ico、tiff、gif。")（要求点名 "notes.qqq"、说出 "不是本程序会读的图片"、不说 "损坏"，也不说英语）；新增的贴图 []
+quick save naming from file PASS C:\Users\baiyl3\AppData\Roaming\ai-falconshot\config.toml 现在读成 Naming { dir: "", template: "%p_%Y-%m-%d_%H%M%S", prefix: "falcon", collision: Increment }；遮罩 open 时拿走的是 Naming { dir: "", template: "%p_%Y-%m-%d_%H%M%S", prefix: "falcon", collision: Increment }，目录落成 Some("C:\\Users\\baiyl3\\Pictures")
+quick save via qml cell SKIP 面板那句 ""（要求 delivered=true 且那个文件头四字节是 PNG，读出 None）；它自己那份窗口普查 ""（要求 pushed=no 且 dialogs=0）—— 普查数到一枚对话框，而没有别的段认领它
+quick save via q-cellown SKIP Cell 自己的 tapped 信号（真释放走的就是这一根）：那一句 ""（要求 delivered/返回值=true、盘上有=false、头四字节是 PNG 读出 None、号是上一条 q-cell 的 None 的下一条 None（+1=false）、且不是别人的那一份（新名字=false）；它与 q-cell 共用腿末那一次普查 ""（要求 pushed=no 且 dialogs=0），这条腿自己不另取一次普查——缺席则记 Blocked 而不是绿；普查那枚数到的窗 普查数到一枚对话框，而没有别的段认领它
+quick save via q-chord SKIP 窗口那层 chord() 的匹配加分派；本轮欠的一步是 Qt 把 WM_KEYDOWN 翻成 (key, modifiers)：那一句 ""（要求 delivered/返回值=true、盘上有=false、头四字节是 PNG 读出 None、号是上一条 q-cellown 的 None 的下一条 None（+1=false）、且不是别人的那一份（新名字=false）；它与 q-cellown 共用腿末那一次普查 ""（要求 pushed=no 且 dialogs=0），这条腿自己不另取一次普查——缺席则记 Blocked 而不是绿；普查那枚数到的窗 普查数到一枚对话框，而没有别的段认领它
+quick save counts its own series PASS 0 次之前盘上有 0 份，两次之后读成 2 份 ["quick-001.png", "quick-002.png"]；第 1 次：门=true 点名 quick-001.png=true 头字节=Some(Png) 那句 "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-001.png（选区 1536×960 像素）。" ; 第 2 次：门=true 点名 quick-002.png=true 头字节=Some(Png) 那句 "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-002.png（选区 1536×960 像素）。"
+quick save says what 另存为 said PASS C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\quick-002.png 与 C:\Users\baiyl3\AppData\Local\Temp\falconshot-save-gauge\selection.png 字节一致=true（312007 B 对 312007 B）；去掉各自的路径之后那句一致=true，快速保存那句剩 Some("（选区 1536×960 像素）。")，另存为那句剩 Some("（选区 1536×960 像素）。")
+quick save opened no dialog PASS 两压之前 "pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=14 mine_visible=1 foreign_dialogs=1 mine=[Qt6101QWindowIcon][falconshot-mask-m0-display1]"；两压之后 "pushed=no reason=no-visible-#32770-of-this-pid dialogs=0 mine_tops=14 mine_visible=1 foreign_dialogs=1 mine=[Qt6101QWindowIcon][falconshot-mask-m0-display1]"（要求两次都 pushed=no、dialogs=0，且 mine_tops 不变；两次读成 Some("=14") 与 Some("=14")）
+quick save 别人的对话框      -    foreign_dialogs="1"（只数不碰：别的进程也能在这台桌面上摆出一个 #32770）
+quick save notification carries a path PASS 两压之后 mask 自己留着 Some("C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-002.png")；从那句 "已保存到 C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-002.png（选区 1536×960 像素）。" 里抠出来的是 Some("C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-002.png")；盘上它是不是一个文件：Some(true)（三路要求同一个人）
+quick save click counts every press PASS 删掉 Some("C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-002.png") 是否成功 true（要求 true：这一格靠它把 shell 挡在前面）；两下都答 false/false（要求 false），计数 0 → 2（要求 +2），到 shell 的次数 0 → 0（要求不动）；两句 "要揭示的东西不在盘上：C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-002.png" 与 "要揭示的东西不在盘上：C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-002.png"，点名那个文件=true
+quick save click panel forwards each press SKIP 面板报回 ""（要求计数 -1,-1/步 +1 与 +1、到 shell 的 0，两句非空且相同；没有这一行就是这条腿没跑，判 Blocked 而不是缺席）
+quick save reveal asks for the file's own folder PASS 第三次落盘=true，留下 Some("C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-003.png")；plan 答 Some(Target { folder: "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge", item: "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge\\quick-003.png", selectable: true })（要求开的那个窗就是 "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge"、选中项就是那个文件本身、selectable=true）；那个目录在盘上=true。这一格只问 plan，一次也没开口
+quick save reveal holds the act under the gauge PASS 目标问出来了=true，这一次点击递出去=false（要求 false），到 shell 的次数 0 → 0（要求不动），话="未问：C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge 里那张 quick-003.png 已经问出来了，但量具不开这个窗。"（要求以 未问： 开头且点名 "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-save-gauge"）
+quick save reveal follows the switch PASS mask open 拿走的开关=false（这份配置里的值，量具不替用户改它），这一流程落盘 3 次、自动揭示 0 次：要求开关关着时 0 次、开着时与落盘同数（0），实到 0 次 shell —— 那个 0 如今有两个来路（开关、上一格那道量具拒绝），所以不当证据。开关开着会怎样这一格只说次数，那一句真话在单测里
+quick save reveal opened a window SKIP 这一格没有问：开的那个目录窗不归本进程管，探针关不掉它，所以 mask.rs 的 gauge_run 在 select 之前结构性地拒（上面那一格刚量到这句话）；这一趟 3 次落盘、3 次点击，到 shell 的次数是 0。要它 PASS 只能真人点一次
+quick save block ran   PASS 跑了；这一趟由 `14` 这格自己数出来（这一行自己也在这段里，所以 14 含它）
+decor identity keeps the bytes PASS 三枚键全关着（半径 0、边距 0、边框 0）⇒ 文件读回来是 1536×960，与 1536×960 的原图逐字节相同=true，门=true。这一格守的是「这两枚键曾经没有读者」那段历史的反面：默认值一旦开始生效，也不能生效成另一张图。
+decor rounded corners reach the file PASS 半径 6 ⇒ 文件仍是 1536×960，四枚角 alpha=0 且中心与未装饰原图同色=true；透明像素 11792 → 11824（切角新增透明=Some(true)），门=true
+decor corner fill reaches the file PASS 同一枚半径、`corner_fill = "#FF000080"` ⇒ 四枚角落成 #FF000080 本身（alpha 也要跟着：填色是「按配置」，不是「按不透明」），中心仍与未装饰原图同色=true，门=true
+decor shadow grows the file PASS 边距 4、强度 100 ⇒ 文件 1536×960 → 1544×968，最外圈 alpha=0 而边距内一层是黑色半透明 =true，画面中心的像素挪到 (4, 4) 之后仍是原来那一枚=true，门=true
+decor border rings the file PASS 边框宽 2、颜色 #00FF00 ⇒ 文件尺寸不变（边框画在边缘之内，不是又一层边距），上边中点与两枚对角都是那个绿，而第 2 行起是原画=true，门=true
+decor jpg says what it filled PASS 半径 6 存成 decor-round.jpg ⇒ 文件读回来是 1536×960，与未装饰原图同尺寸=true；写前那句 pre_notice 含 "11824 px 透明" 与"将被填成白色"=true，写后那句含同一枚数与"已填成白色"=true。JPG 的**颜色**不判（编码器自有往返测试，这一档 never chose 一条阈值），判的是它有没有把自己丢掉多少说出来 —— 门=true
+decor settings came back PASS 七枚键整份放回（`output` 逐字段相同=true）；放回之后再读一次 settings ⇒ 装饰视图与放回前同一枚=true，mask 手里那份快照也回到 open 拿走的那一枚=true
+no problems            PASS 
+no qml complaints      PASS 
+ink state              -    tool=None hole=PhysRect { x: 768, y: 480, w: 1536, h: 960 } poly=0 text=- zoom=- paints=677 last=185036px of 5898240px (3.1%) 13ms objects=8 depth=8 flushes=10 keys=m0-display1-ink-677
+textures released      PASS 0 of 11 still in Qt's process after close
+config writes pinned   PASS 3 write(s): read from C:\Users\baiyl3\AppData\Roaming\ai-falconshot\config.toml, wrote to C:\Users\baiyl3\AppData\Local\Temp\falconshot-ink-gauge\config.toml
+ink check: FAIL
+[mask cold] main=0 cfg=22 asked=313 opened=948 mask arm=981 engine=56049 qml=57350 loaded=59027 swap=59458 mask leg=59860 mask end=70843
+[settings] read=file load=7ms applies=1 apply=0/0ms saves=3 save=59/59ms from=C:\Users\baiyl3\AppData\Roaming\ai-falconshot\config.toml write_to=C:\Users\baiyl3\AppData\Local\Temp\falconshot-ink-gauge\config.toml
+[mask cold split] qt+freeze=56049 ms (of which freeze+publish=635 ms) engine+qml=2978 ms qml->first-frame=2108 ms total=59458 ms
+[ink after 10200 ms] 要求 3000 ms 生效 10200 ms qml_loaded=true exe=39296512 B @1794327782s desktop=0,0 1536x960 primary=0,0 1536x960 dpr=2.00 station=WinSta0 desktop=Default
+warn: QDxgiVSyncService not destroyed in time
+warn: QThreadStorage: entry 3 destroyed before end of thread 0x2762e188010
+warn: QThreadStorage: entry 2 destroyed before end of thread 0x2762e188010
+warn: QThreadStorage: entry 1 destroyed before end of thread 0x2762e188010
