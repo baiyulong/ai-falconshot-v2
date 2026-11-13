@@ -1,4 +1,14 @@
 # P16: the MSIX packaging layer for the product binary (plan 8-R17, sequence "fixed
+exit $(if ($ok) { 0 } else { 1 })
+
+# 清单点名的每一枚 logo 都得在 payload 里：makeappx 缺了会报一句天书（"element not found"），
+# 而这里能指名道姓地说缺的是哪一枚（#433：两件事不许说成同一句）。
+$manifestText = Get-Content (Join-Path $PSScriptRoot 'AppxManifest.xml') -Raw
+foreach ($m in [regex]::Matches($manifestText, 'Assets\\([A-Za-z0-9_\-]+\.png)')) {
+    $lp = Join-Path $stage $m.Groups[1].Value
+    if (-not (Test-Path $lp)) { throw ("清单点名的 logo 不在 payload 里：" + $lp) }
+}
+# P16: the MSIX packaging layer for the product binary (plan 8-R17, sequence "fixed
 # in R17", first half - everything that does not touch this machine's system state).
 #
 #   packaging\msix.ps1                  builds stage/ and dist/*.msix, prints a line
@@ -85,6 +95,14 @@ $log | Where-Object { $_ -match 'warn|error|unknown|Unable|not found' } |
 Copy-Item (Join-Path $PSScriptRoot 'AppxManifest.xml') (Join-Path $stage 'AppxManifest.xml') -Force
 foreach ($a in Get-ChildItem (Join-Path $PSScriptRoot 'assets\*.png')) {
     Copy-Item $a.FullName (Join-Path $stage 'Assets') -Force
+
+# 清单点名的每一枚 logo 都得在 payload 里：makeappx 缺了会报一句天书（"element not found"），
+# 而这里能指名道姓地说缺的是哪一枚（#433：两件事不许说成同一句）。
+$manifestText = Get-Content (Join-Path $PSScriptRoot 'AppxManifest.xml') -Raw
+foreach ($m in [regex]::Matches($manifestText, 'Assets\\([A-Za-z0-9_\-]+\.png)')) {
+    $lp = Join-Path $stage $m.Groups[1].Value
+    if (-not (Test-Path $lp)) { throw ("清单点名的 logo 不在 payload 里：" + $lp) }
+}
     Write-Output "[P16] asset $($a.Name) $($a.Length)B"
 }
 
