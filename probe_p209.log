@@ -1,0 +1,59 @@
+[startup cfg] history.enabled=true history.max_items=1000 advanced.log_level=info advanced.data_dir=(platform default)
+[appearance cfg] appearance.theme=System appearance.accent=#0078D7 appearance.toolbar_placement=auto appearance.ui_font_size=9 appearance.ui_font_family=Microsoft YaHei UI appearance.magnifier_border=1 appearance.magnifier_corner_radius=6 appearance.magnifier_foreground=#FFFFFF appearance.magnifier_background=#1F1F1F
+[theme cfg] appearance.theme=System system.theme=dark resolved.theme=Dark
+[autostart cfg] 档里=false 机器=ai-falconshot 不在（登录时不会启动本程序） ⇒ 一致
+[about cfg] about.auto_check_updates=true about.check_every_days=7 about.channel=stable about.send_diagnostics=false
+[output cfg] output.share_targets=(none) output.send_to_apps=(none) output.reuse_last_file=false output.hide_pins_on_dialog=false output.copy_as_file=false
+[send_to cfg] send_to parsed=0 refused=0
+[share cfg] share parsed=0 refused=0
+[share filter] share known=0 unknown=0
+[send_to validate] send_to validated=0 refused=0
+[send_to pipeline] pipeline final=0 parse_refused=0 validate_refused=0
+[share pipeline] pipeline final=0 parse_refused=0 unknown=0
+[send_to menu] menu entries=0
+[share menu] menu entries=0
+[send_to resolve] resolve (empty)
+[share scheme] scheme (empty)
+[send_to argv] argv (empty)
+[share scheme all] scheme_all 0 entries
+[send_to argv first] argv_first (empty)
+[share scheme first] scheme_first (empty)
+[send_to names] names 0 []
+[share names] names 0 []
+[history usage] history records=13 original=2479535B thumb=107853B db=147456B total=2734844B
+[history neighbors] history anchor=13 prev=12 next=-
+[mask pin] 配置写回钉到 C:\Users\baiyl3\AppData\Local\Temp\falconshot-mask-gauge\pinned-config.toml
+[mask] 1 screen(s), backend=xcap-gdi, rhi=default, freeze 373 ms, pixels 153 ms, hole=384,240 768x480, shader=true, freeze_frame=true
+warn: DirectWrite: CreateFontFaceFromHDC() failed (Indicates an error in an input file such as a font file.) for QFontDef(Family="MS Sans Serif", pointsize=9, pixelsize=13, styleHint=5, weight=400, stretch=100, hintingPreference=0) LOGFONT("MS Sans Serif", lfWidth=0, lfHeight=-13) dpi=96
+desktop scene          -    (1536,960) 上是 falconshot.exe「falconshot-mask-m0-display1」 hwnd=0x1c100e 会话锁屏=false
+pinned settings writes PASS settings line 的 read="file" 与 write_to="C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-mask-gauge\\pinned-config.toml"（要求后者 == "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-mask-gauge\\pinned-config.toml" 且两者不同）
+one per screen         PASS qt screens=1 slots=1 windows=1
+the product opens with no selection PASS Some(PhysRect { x: 0, y: 0, w: 0, h: 0 })
+the save dialog has a name to offer PASS C:\Users\baiyl3\Pictures\falcon_2026-11-13_142931.png
+hole fits desktop      PASS 384,240 768x480 of 0,0 3072x1920
+rect of m0-display1    PASS window=3072x1920@0,0 monitor=0,0 3072x1920
+texture of m0-display1 PASS key=m0-display1-1 null=0 w=3072 h=1920 stores=2
+dim path m0-display1   -    shader
+shader of m0-display1  PASS Some(0) (0 = compiled)
+frame of m0-display1   PASS first of 23 swap(s)
+cold of m0-display1    -    2908 ms since open, 400 ms is the warm ceiling
+pw:mask flag 2         -    3072x1920 ctrl=0.000 flat=0.619
+pw:mask flag 0         -    3072x1920 ctrl=0.000 flat=1.000
+pw:mask flag 4         -    3072x1920 ctrl=0.000 flat=1.000
+dim of m0-display1     PASS measured=0.399 want 0.400 ±0.05 (1731 usable; dark=1 border=124)
+hole of m0-display1    PASS measured=1.000 want 1.000 ±0.05 (104 usable; dark=1 border=124)
+grab of desktop        -    3072x1920 of 0,0 3072x1920 dim=0.399 hole=1.000 (1731+104 usable; dark=1 border=124)
+no problems            PASS 
+no qml complaints      PASS 
+unit of desktop        PASS px=768×480（采样洞 768×480）dip=384×240 scale=2.00 切单位动选区=false
+mask state             -    m0-display1 dpr=2.00 dip=1536x960@0,0 hole=PhysRect { x: 192, y: 120, w: 384, h: 240 } swaps=23 first=Some(2908) shader=Some(0)
+textures released      PASS 0 of 1 still in Qt's process after close
+mask check: PASS
+[mask cold] main=0 cfg=14 asked=243 opened=775 engine=776 qml=1722 loaded=3298 swap=3683
+[settings] read=file load=4ms applies=1 apply=0/0ms saves=0 save=0/0ms from=C:\Users\baiyl3\AppData\Roaming\ai-falconshot\config.toml write_to=C:\Users\baiyl3\AppData\Local\Temp\falconshot-mask-gauge\pinned-config.toml
+[mask cold split] qt+freeze=776 ms (of which freeze+publish=532 ms) engine+qml=2522 ms qml->first-frame=1961 ms total=3683 ms
+[mask after 4000 ms] qml_loaded=true exe=39494144 B @1794547730s desktop=0,0 1536x960 primary=0,0 1536x960 dpr=2.00 station=WinSta0 desktop=Default
+warn: QDxgiVSyncService not destroyed in time
+warn: QThreadStorage: entry 3 destroyed before end of thread 0x22ea3a43080
+warn: QThreadStorage: entry 2 destroyed before end of thread 0x22ea3a43080
+warn: QThreadStorage: entry 1 destroyed before end of thread 0x22ea3a43080
