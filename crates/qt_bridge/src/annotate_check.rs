@@ -7728,4 +7728,62 @@ mod tests {
             "图标那一枚的禁用没有形状通道 —— §7.4 第 3 条：禁用不许只靠颜色说"
         );
     }
+
+    /// 线条粗细的那两排（**笔宽**与**圈宽**）自此各是**一枚下拉**，不是一排三枚钮
+    /// （用户 2026-11-13 定的：「线条粗细的选项能不能放在一个下拉选择中」）。
+    ///
+    /// 为什么是下拉：三根粗细不同的线在 16 px 上是**要靠眼睛比**的，而一枚写着当前粗细的钮
+    /// （「8 px」）用户一眼就读到了 —— 那一排的内容是一个**数**，不是一个图形。
+    ///
+    /// 判据四件：① 两处各有一枚这样的钮；② 两处各有一张菜单，菜单里是**同一份名单**
+    /// （`bar.pens` —— core 给线的那把尺只有一把，不另立第二梯）；③ **滚轮细调**（§5.7.20 步 3
+    /// 「悬停**那一枚钮**再滚」）跟着下拉钮走 —— 它现在住在钮自己身上，因为那三枚已经不在场上了；
+    /// ④ 页上不再有「三根粗细不同的线」那一族形状。
+    #[test]
+    fn the_line_widths_are_one_dropdown_each() {
+        const QML: &str = include_str!("../qml/AnnotationToolbar.qml");
+        let code = crate::hint_check::qml_code(QML);
+
+        assert_eq!(
+            code.matches("penWidthMenu.popup()").count(),
+            1,
+            "笔宽那一排要有一枚下拉（开着那张菜单）"
+        );
+        assert_eq!(
+            code.matches("outlineWidthMenu.popup()").count(),
+            1,
+            "圈宽那一排要有一枚下拉（开着那张菜单）"
+        );
+        assert_eq!(
+            code.matches("model: bar.pens").count(),
+            2,
+            "两张菜单用**同一份**名单（core 给线的那把尺只有一把）"
+        );
+        // 那一枚钮上写的是**当前**粗细（Rust 现读的那个数），不是档名。
+        assert!(
+            code.contains("label: bar.view.pen_width + \" px\""),
+            "笔宽那一枚钮上写的是当前粗细"
+        );
+        assert!(
+            code.contains("label: bar.view.outline_width + \" px\""),
+            "圈宽那一枚钮上写的是当前粗细"
+        );
+        // 滚轮细调跟着下拉钮走（它现在住在钮自己身上）。
+        assert_eq!(
+            code.matches("bar.view.setWidth(bar.view.pen_width").count(),
+            1,
+            "笔宽的滚轮细调要跟着那一枚下拉钮走"
+        );
+        assert_eq!(
+            code.matches("bar.view.applyOutlineWidth(bar.view.outline_width").count(),
+            1,
+            "圈宽的滚轮细调要跟着那一枚下拉钮走"
+        );
+        // 页上不再有「三根粗细不同的线」那一族形状。
+        assert_eq!(
+            code.matches("bar.widthIcons").count(),
+            0,
+            "三枚并排的粗细图标已经不在场上了（粗细是一个数，钮上写着它）"
+        );
+    }
 }

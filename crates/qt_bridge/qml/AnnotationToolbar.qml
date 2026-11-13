@@ -861,18 +861,12 @@ Rectangle {
         "corner": "M 12.5 3 V 8 A 4.5 4.5 0 0 1 8 12.5 H 3.5",
         "erase-transparent": "M 2.5 3.5 H 13.5 V 12.5 H 2.5 Z M 9.5 12.5 V 8.5 H 13.5",
         "font-small": "M 5.5 12.5 L 8 5 L 10.5 12.5 M 6.6 10 H 9.4",
-        "font-mid": "M 4.5 13 L 8 4 L 11.5 13 M 5.7 10 H 10.3",
-        // 「细 / 中 / 粗」那三枚：形状是同一根线，**粗细不同** —— 描边宽度随形状一起来
-        // （`{ d, w }`），所以它们在 16 px 上分得开。
-        "width-thin": { d: "M 3 8 H 13", w: 0.8 },
-        "width-mid": { d: "M 3 8 H 13", w: 1.6 },
-        "width-thick": { d: "M 3 8 H 13", w: 2.6 }
+        "font-mid": "M 4.5 13 L 8 4 L 11.5 13 M 5.7 10 H 10.3"
     })
 
     // 三枚一组的图标，按 index 递（名单与形状都在页上，名字也都在页上，所以这三组不必回 Rust 取）。
     readonly property var headIcons: ["head-triangle", "head-chevron", "head-circle"]
     readonly property var alignIcons: ["align-left", "align-center", "align-right"]
-    readonly property var widthIcons: ["width-thin", "width-mid", "width-thick"]
     readonly property var fontIcons: ["font-small", "font-mid", "font"]
 
     // 一枚**图标**：描边画出来的，没有位图、没有新依赖、也没有 Canvas（Canvas 画在每一枚钮
@@ -883,10 +877,8 @@ Rectangle {
     component ToolIcon: Shape {
         id: ico
 
-        /// 那一段 path data（或 `{ d: path, w: 描边宽 }` —— 「细 / 中 / 粗」那三枚要的正是
-        /// **粗细不同**，而描边宽度是这一枚组件的事，所以它随形状一起来）。空 = 什么都不画
-        /// （于是这一枚看不见，而不是一枚空框）。
-        property var glyph: ""
+        /// 那一段 path data。空 = 什么都不画（于是这一枚看不见，而不是一枚空框）。
+        property string glyph: ""
         /// 描边的颜色：可用时是工具条的白，按不动时是灰（与字那一枚同一套颜色口径）。
         property color tint: "#f2f2f2"
         /// 按不动：形状变灰。
@@ -895,21 +887,15 @@ Rectangle {
         implicitWidth: 16
         implicitHeight: 16
 
-        readonly property bool isObject: typeof glyph === "object" && glyph !== null
-        // `glyphPath` 与 `strokeWidth`：**不叫 `path` / `width`** —— 后两个是 `Shape`/`Item` 自己
-        // 的属性（`width` 还是一枚 FINAL 的），自己再声明一遍就是「Cannot override FINAL property」。
-        readonly property string glyphPath: ico.isObject ? String(glyph.d) : String(glyph)
-        readonly property real strokeWidth: ico.isObject && glyph.w ? glyph.w : 1.3
-
         ShapePath {
             strokeColor: ico.dim ? "#6a6a70" : ico.tint
-            strokeWidth: ico.strokeWidth
+            strokeWidth: 1.3
             fillColor: "transparent"
             capStyle: ShapePath.RoundCap
             joinStyle: ShapePath.RoundJoin
 
             PathSvg {
-                path: ico.glyphPath
+                path: ico.glyph
             }
         }
 
@@ -935,11 +921,7 @@ Rectangle {
         id: cell
 
         property string label: ""
-        /// 一枚**图标**（SVG path data，或 `{ d: path, w: 描边宽 }`）。给了它就画图标、不画字；
-        /// 没给才画字。
-        ///
-        /// **`var` 而不是 `string`**：「细 / 中 / 粗」那三枚的形状带**描边宽度**（一个对象），
-        /// 而 `string` 那一档接不住它（Qt 会说「Unable to assign QVariantMap to QString」）。
+        /// 一枚**图标**（SVG path data）。给了它就画图标、不画字；没给才画字。
         ///
         /// 字与图标的关系是**二选一**：一枚钮要么有一个名字（字），要么有一个形状（图标），
         /// 两样都摆出来就是一枚 40 px 宽的钮挤在一条密排里。
@@ -947,7 +929,7 @@ Rectangle {
         /// **读数格留字**：细 / 中 / 粗、小 / 中 / 大、百分比、序号、描边宽度、圆角半径、字号
         /// 那些格子说的是**一个值**，字比图清楚，所以它们不填这一格（它们本来也不是按得动的
         /// 钮，而是读数或一档开关）。
-        property var icon: ""
+        property string icon: ""
         property bool active: false
         property bool usable: true
         // §5.21.2 第一枚的入口。`required` 而不是 `property string hint: ""`：空串是一枚
@@ -1230,33 +1212,20 @@ Rectangle {
             // handler over the whole pen row would turn a wheel by a colour chip into
             // a line-width change nobody asked for.
             //
-            // A handler installed on the Row it is declared in, which is why this one
-            // is a child of `pens`: a pointer handler is a QObject, not an Item - it
-            // has no width, no height and no `anchors` to fill - so the area it hears
-            // over is its parent item's, and the Row's is exactly the three buttons.
-            Row {
-                id: pens
-                spacing: 2
+            // **三枚并排 → 一枚下拉**（用户 2026-11-13 定的：「线条粗细的选项能不能放在一个下拉
+            // 选择中」）。三根粗细不同的线在 16 px 上是要靠眼睛比的，而一枚写着**当前粗细**的
+            // 下拉钮，用户一眼读到「现在多粗」，三档在那张菜单里。
+            //
+            // 滚轮细调（§5.7.20 步 3「悬停**那一枚钮**再滚」）照旧在那一枚上 —— 它现在住在
+            // 下拉钮自己身上（那三枚已经不在场上了）。
+            Cell {
+                id: penWidthCell
 
-                Repeater {
-                    model: bar.pens
-
-                    delegate: Cell {
-                        required property int index
-                        required property var modelData
-
-                        // 细 / 中 / 粗, indexed against the same list the click sends.
-                        icon: bar.glyphs[bar.widthIcons[index]]
-                        hint: ["细：下一笔最窄", "中：下一笔中等宽", "粗：下一笔最宽"][index]
-                        active: bar.view.pen_width === modelData
-                        onTapped: bar.view.setWidth(modelData)
-                    }
-                }
+                label: bar.view.pen_width + " px"
+                hint: "笔宽：下一笔多粗（悬停这一枚滚轮可以微调）"
+                onTapped: penWidthMenu.popup()
 
                 WheelHandler {
-                    // `wheel` is this type's signal, and `angleDelta` is on the event
-                    // it hands over: the handler has no `angleDelta` property of its
-                    // own, and `onAngleChanged` names nothing that exists.
                     onWheel: (event) => {
                         const notch = event.angleDelta.y
                         if (notch === 0) {
@@ -1264,6 +1233,27 @@ Rectangle {
                         }
                         bar.view.setWidth(bar.view.pen_width + (notch > 0 ? 1 : -1))
                         bar.grabbed()
+                    }
+                }
+            }
+
+            Menu {
+                id: penWidthMenu
+
+                Repeater {
+                    model: bar.pens
+
+                    delegate: MenuItem {
+                        required property int index
+                        required property var modelData
+
+                        text: modelData + " px"
+                        checkable: true
+                        checked: bar.view.pen_width === modelData
+                        onTriggered: {
+                            bar.view.setWidth(modelData)
+                            bar.grabbed()
+                        }
                     }
                 }
             }
@@ -1782,26 +1772,16 @@ Rectangle {
 
                 // 与 细/中/粗 那一排同一份名单（`bar.pens`）：一圈边就是一条线，core 给线的那把
                 // 尺只有一把，这里不另立第二梯。滚轮是同一句「悬停那一枚钮再滚」的微调。
-                Row {
-                    id: rings
-                    spacing: 2
+                //
+                // **同样是一枚下拉**（用户 2026-11-13 定的）：这一排原先是三根粗细不同的线，
+                // 与笔宽那一排是同一件事、同一份难处 ⇒ 同一件做法（一个下拉钮 + 一张菜单），
+                // 不做两套。
+                Cell {
+                    id: outlineWidthCell
 
-                    Repeater {
-                        model: bar.pens
-
-                        delegate: Cell {
-                            required property int index
-                            required property var modelData
-
-                            icon: bar.glyphs[bar.widthIcons[index]]
-                            hint: ["细：那一圈边最窄", "中：那一圈边中等宽", "粗：那一圈边最宽"][index]
-                            active: bar.view.outline_width === modelData
-                            onTapped: {
-                                bar.view.applyOutlineWidth(modelData)
-                                bar.grabbed()
-                            }
-                        }
-                    }
+                    label: bar.view.outline_width + " px"
+                    hint: "圈宽：那一圈边多宽（悬停这一枚滚轮可以微调）"
+                    onTapped: outlineWidthMenu.popup()
 
                     WheelHandler {
                         onWheel: (event) => {
@@ -1815,13 +1795,25 @@ Rectangle {
                     }
                 }
 
-                // 三枚有名字的芯片之外的那个读数：出厂那一档（2px）不亮任何一枚，没有它用户就
-                // 只能盲滚。`outline_width` 是 Rust 现读的，滚一格 reload 之后跟着变。
-                Text {
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: bar.view.outline_width + "px"
-                    font.pixelSize: 12
-                    color: "#f2f2f2"
+                Menu {
+                    id: outlineWidthMenu
+
+                    Repeater {
+                        model: bar.pens
+
+                        delegate: MenuItem {
+                            required property int index
+                            required property var modelData
+
+                            text: modelData + " px"
+                            checkable: true
+                            checked: bar.view.outline_width === modelData
+                            onTriggered: {
+                                bar.view.applyOutlineWidth(modelData)
+                                bar.grabbed()
+                            }
+                        }
+                    }
                 }
             }
         }
