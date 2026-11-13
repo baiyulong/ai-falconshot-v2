@@ -476,6 +476,13 @@
 - 调整角点时保持比例。
 - 用户应可以临时解除比例约束。
 
+> **实现口径（2026-11-13）**  
+> **顶部那几格输入框的样子**（自定义比例那一格 ✓ 与 §5.3.7 那两格宽/高 ✓ 走的是**同一枚组件** `TopField` ✓，一处作者 ✓）：  
+> ① **文字上下垂直居中**：输入框的默认对齐是**顶**对齐，12 px 的字贴在 22 px 高的框顶上（用户报的「文字上下要垂直居中，不要太靠近内边」）。  
+> ② **配色与旁边的芯片同一套**：底是透的、边是一道 `#3a3a41`、拿到焦点时边换成主色 `#2d7ff7` —— 与 `RatioCell` 那几枚芯片（悬停 `#3a3a41`、选中 `#2d7ff7`）用的是同一组颜色（用户报的「文本框颜色和外边组件的配色不协调」）。  
+> **为什么那一枚不是 `TextField`**：应用跑的是 **Windows 原生样式**，原生样式下的 `TextField` 是系统那个白底黑框的编辑框，`background` 在它上面**定制不了**（Qt 当场说「The current style does not support customization of this control」）；而 `QQuickStyle.setStyle(...)` 写在组件定义里这一招，本项目**编译不出来**（qmlcachegen 报「Expected token `:'」）。所以这一枚是**自己画**的：一个 `Rectangle` 画底与边，里面一个 `TextInput` 写字 —— 两个都不带样式，想怎么画就怎么画 ✓。占位字也因此**自己画**（Qt 6 的 `TextInput` 已经没有 `placeholderText` 了 ✓）。  
+> **判据**：`access_check.rs` 的 `every_selected_or_disabled_state_has_a_channel_that_is_not_a_colour`（全场组件数 9 → 10：新长的是 `TopField` 那一枚 ✓；它不声明 active/usable ⇒ 那两个读数一枚没动 ✓）。
+
 ### 5.3.9 精确移动与像素级控制
 
 **操作步骤**

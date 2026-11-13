@@ -7392,11 +7392,11 @@ mod tests {
             "`TextEdit` 开的那一档不是那只输入框：紧跟的一行是 {:?}",
             lines[open + 1].trim()
         );
-        assert_eq!(
-            lines.iter().filter(|l| l.trim() == "TextInput {").count(),
-            0,
-            "页上还留着一档 `TextInput`：单行的那一只按 Enter 只会收尾，换行永远打不进去"
-        );
+        // 单行的那一只（`TextInput`）按 Enter 只会收尾，换行永远打不进 —— 所以**多行的那只**（文本框）
+        // 必须是 `TextEdit`，而**它自己那一块里**不许藏着单行的 `TextInput`。
+        //
+        // （页上另有单行的 `TextInput` ✓ —— 顶部那几格数字输入框 ✓，2026-11-13 加的 —— 它们本来就是
+        // 单行的，**就该**是单行 ✓。所以这一问量的是**文本框自己那一段**，不是全页 ✓。）
 
         // 那一档的收尾按大括号数出来：下面每一问都只准读它自己那一段。
         let mut depth = 0usize;
@@ -7410,6 +7410,14 @@ mod tests {
             }
         }
         let close = close.expect("`field` 那一档的大括号没有合上：这把尺子切不出它读的是哪一段");
+        assert_eq!(
+            lines[open..=close]
+                .iter()
+                .filter(|l| l.trim() == "TextInput {")
+                .count(),
+            0,
+            "文本框自己那一段里藏着一档 `TextInput`：单行的那一只按 Enter 只会收尾，换行永远打不进去"
+        );
         let block = lines[open..=close].join("\n");
         println!(
             "scan: `field` 那一档 = 页上第 {} 到第 {} 行（剥注释后 {} 字符）",

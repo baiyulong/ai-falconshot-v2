@@ -663,7 +663,7 @@ Window {
             // `accepted`, not `accept()`: this event type's members are key, text,
             // modifiers, isAutoRepeat, count, nativeScanCode, accepted, and the one
             // method `matches()`. `accept()` is the C++-side name - qmllint said so,
-            // `Member "accept" not found on type "QQuickKeyEvent"`, in the batch of
+            // `Member "accept" not found on type "QQuickkeyevent"`, in the batch of
             // warnings that was read as noise and left.
             event.accepted = true
             // The ladder, not a property: the first Esc un-selects, the second one
@@ -876,6 +876,79 @@ Window {
     // 每一张屏各有一条，而它们说的是同一个状态 —— 锁住在 Rust 的 `MaskState`（桌面空间），
     // 所以在 1 号屏按下 1:1，2 号屏那一排跟着亮。这与"选区是一张桌面空间的图、两张窗各画
     // 自己那部分"是同一条口径，不是两份各自记着比例的界面。
+    // 顶部那几格输入框（比例、宽、高）的**样子**，只此一处。
+    //
+    // **为什么不是 `TextField`**：应用跑的是 **Windows 原生样式**，而原生样式下的 `TextField` 是
+    // 系统那个白底黑框的编辑框 —— `background` 在它上面**定制不了**（Qt 会当场说「The current
+    // style does not support customization of this control」），于是那几格在深色面板上就是几块
+    // 异色（用户 2026-11-13 报的「文本框颜色和外边组件的配色不协调」）。而
+    // `QQuickStyle.setStyle(...)` 在**组件定义里**换样式这一招，本项目编译不出来（qmlcachegen
+    // 报「Expected token `:'」—— 编译期就不收 ✗）。所以这一枚是**自己画**的：一个 `Rectangle` 画底
+    // 与边，里面一个 `TextInput` 写字 —— 两个都是不带样式的东西，想怎么画就怎么画 ✓。
+    //
+    // 文字**上下垂直居中**：`TextInput` 的默认对齐是**顶**对齐（`TextInput.AlignTop`），于是 12 px
+    // 的字贴在 22 px 高的框顶上（用户报的「文字上下要垂直居中，不要太靠近内边」）。
+    //
+    // 配色与旁边的芯片（`RatioCell`）同一套：底是透的、边是一道 `#3a3a41`、拿到焦点时边换成主色
+    // `#2d7ff7`（一个作者，#281）。
+    component TopField: Rectangle {
+        id: field
+
+        /// 框里那几行字（对外就是那一格输入框的内容）。
+        property alias text: input.text
+        property alias validator: input.validator
+        /// 占位字（不写成 alias：`TextInput` 那一格没有可别名的那一处 ⇒ Qt 会说
+        /// 「Invalid alias target location: placeholderText」）。
+        property string placeholder: ""
+        /// 字的颜色（拒绝时那一格换成红的 ✓ —— 与原先一样）。
+        property color textColor: "#f2f2f2"
+
+        signal editingFinished()
+        // 参数不叫 `event`：那一个名字在 QML 里是保留的（qmlcachegen 会当场报
+        // 「Unexpected token `)'」），于是这一格叫 `keyevent`。
+        property var escapeHandler: null
+
+        implicitHeight: 22
+        radius: 3
+        color: "transparent"
+        border.width: 1
+        border.color: input.activeFocus ? "#2d7ff7" : "#3a3a41"
+
+        // 占位字**自己画**：Qt 6 的 `TextInput` 已经没有 `placeholderText` 了（Qt 5.15 弃用、
+        // Qt 6 移除 ⇒ 现在只有 `TextField` 还有），所以这一格把占位字画成一层 `Text` 垫在
+        // 输入行**底下**（框里没有字时才露出来 ✓）。
+        Text {
+            anchors.fill: parent
+            anchors.leftMargin: 6
+            anchors.rightMargin: 6
+            verticalAlignment: Text.AlignVCenter
+            horizontalAlignment: Text.AlignLeft
+            font.pixelSize: 12
+            color: "#6a6a70"
+            text: field.placeholder
+            visible: input.text.length === 0
+        }
+
+        TextInput {
+            id: input
+
+            anchors.fill: parent
+            anchors.leftMargin: 6
+            anchors.rightMargin: 6
+            verticalAlignment: TextInput.AlignVCenter
+            font.pixelSize: 12
+            color: field.textColor
+            selectByMouse: true
+            onEditingFinished: field.editingFinished()
+            Keys.onEscapePressed: (keyevent) => { if (field.escapeHandler) field.escapeHandler(keyevent) }
+        }
+
+        /// 把焦点交给框里那一行（`MaskState` 那边有一处会这样叫 ✓）。
+        function forceActiveFocus() {
+            input.forceActiveFocus()
+        }
+    }
+
     component RatioCell: Rectangle {
         id: cell
 
@@ -982,26 +1055,25 @@ Window {
             }
 
             // 「或输入自定义比例」（§5.3.8 第二步的后半）。
-            TextField {
+            TopField {
                 id: ratioField
 
                 width: 96
                 height: 22
-                font.pixelSize: 12
-                placeholderText: "自定义 16:10"
-                placeholderTextColor: "#6a6a70"
+                placeholder: "自定义 16:10"
                 // 绑 Rust 的那句话而不是让面板自己记：两张窗、一个状态，与上面那排芯片同理。
+                // 由 Rust 那头读回来的比例字符串
                 text: win.view.ratio_spec
+                // 这不是比例芯片那一档的字色，是**这一格输入框**的字色（拒绝时灰一点）。
+                textColor: (win.view.ratio_index < 0 && !win.view.ratio_live) ? "#8a8a90" : "#f2f2f2"
                 // 解不出来时点灰而不是清掉用户打的字：那句是他写的，而 `ratio_live` 说的是
                 // 这一句锁不上 —— 屏幕上得同时看得见这两件事。第三件由这一排末尾那句红字说
                 // （`ratioBar.refusal`）：点灰与"字还在"都分不出"还没按回车"，句子分得出。
-                color: (win.view.ratio_index < 0 && !win.view.ratio_live) ? "#8a8a90" : "#f2f2f2"
-
                 // 焦点是这条腿唯一真正的风险：`surface` 的 `focus: true` 是 Esc 与方向键的入口，
-                // 而 Controls 的 `TextField` 默认吃鼠标焦点。点进文本框之后那两枚键就跟着走进
+                // 而输入框默认吃鼠标焦点。点进文本框之后那两枚键就跟着走进
                 // 文本框 —— 于是这一格自己接住 Esc（先收回打字，取消仍归窗口），并把焦点递回去。
-                Keys.onEscapePressed: (event) => {
-                    event.accepted = true
+                escapeHandler: (keyevent) => {
+                    keyevent.accepted = true
                     win.view.pickRatio(0)
                     // 清的是**这一格**：用户打过字之后 `text:` 那条绑定就没了（QML 里赋值会
                     // 摧毁绑定），所以光改 Rust 的那一格不会让这里的句子消失。
@@ -1093,20 +1165,18 @@ Window {
                 anchors.verticalCenter: parent.verticalCenter
             }
 
-            TextField {
+            TopField {
                 id: widthField
                 width: 52
                 height: 22
-                font.pixelSize: 12
-                placeholderText: "宽"
-                placeholderTextColor: "#6a6a70"
-                color: sizeBar.refusal.length > 0 ? "#e06a6a" : "#f2f2f2"
+                placeholder: "宽"
+                textColor: sizeBar.refusal.length > 0 ? "#e06a6a" : "#f2f2f2"
                 validator: IntValidator { bottom: 1; top: 99999 }
 
                 // 焦点这一条腿与比例文本框同一条风险：`surface` 的 `focus: true` 是 Esc 与
                 // 方向键的入口。Esc 在这里只收回键盘，不清选区——`stepBack()` 那一档归窗口。
-                Keys.onEscapePressed: (event) => {
-                    event.accepted = true
+                escapeHandler: (keyevent) => {
+                    keyevent.accepted = true
                     widthField.text = ""
                     heightField.text = ""
                     sizeBar.refusal = ""
@@ -1122,17 +1192,15 @@ Window {
                 anchors.verticalCenter: parent.verticalCenter
             }
 
-            TextField {
+            TopField {
                 id: heightField
                 width: 52
                 height: 22
-                font.pixelSize: 12
-                placeholderText: "高"
-                placeholderTextColor: "#6a6a70"
-                color: sizeBar.refusal.length > 0 ? "#e06a6a" : "#f2f2f2"
+                placeholder: "高"
+                textColor: sizeBar.refusal.length > 0 ? "#e06a6a" : "#f2f2f2"
                 validator: IntValidator { bottom: 1; top: 99999 }
-                Keys.onEscapePressed: (event) => {
-                    event.accepted = true
+                escapeHandler: (keyevent) => {
+                    keyevent.accepted = true
                     widthField.text = ""
                     heightField.text = ""
                     sizeBar.refusal = ""
