@@ -212,7 +212,12 @@ Window {
     // screen: without this line the mask paints *nothing* over the desktop.
     readonly property bool drawShader: win.view.shader && effect.status === ShaderEffect.Compiled
 
-    visible: view.live && view.shown
+    // `session.mask_count > 0` 那半句是**这一轮已经结束了**的读数（2026-11-13 补）：`endMask` 之后
+    // 那一格会归零，而遮罩窗的可见性原先只看 `view.live && view.shown` —— Rust 那头把冻住的画面
+    // 交还了（于是窗**透明**了），而 QML 还没重读那一格，于是**工具条与放大镜留在屏幕上**
+    // （用户报「快速保存会导致程序崩溃」时，那张截图上就是这个：遮罩没了，工具条还在）。
+    // 可见性多读一格「还有几扇遮罩窗」，那一轮一收就走 ✓ —— 窗不必等谁来 reload 它。
+    visible: view.live && view.shown && session.mask_count > 0
 
     // Qt's screen geometry, already device-independent - the space a Window lives
     // in. Dividing a Win32 rect by the wrong scale is how a mask ends up covering

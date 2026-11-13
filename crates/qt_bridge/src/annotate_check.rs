@@ -7632,8 +7632,9 @@ mod tests {
         let code = crate::hint_check::qml_code(QML);
         assert_eq!(
             code.matches("session.endMask()").count(),
-            4,
-            "收遮罩那一枚手（`session.endMask()`）场上该有四处（取消 / 复制 / 贴图 / 快速保存），读到不同就是有人新造了一个作者"
+            5,
+            "收遮罩那一枚手（`session.endMask()`）场上该有五处（取消 / 复制 / 贴图 / 快速保存 / 保存），\
+             读到不同就是有人新造了一个作者"
         );
     }
 
@@ -7756,8 +7757,15 @@ mod tests {
         );
         assert_eq!(
             code.matches("model: bar.pens").count(),
-            2,
-            "两张菜单用**同一份**名单（core 给线的那把尺只有一把）"
+            0,
+            "菜单里的档值一枚一枚写着（`bar.pens[0]` 那样），不再由 Repeater 递 —— **Repeater 递进\
+             `Menu` 的 delegate 不走 `contentData` 那一条路，菜单会开出来是空的**（用户 2026-11-13\
+             报的就是这个）"
+        );
+        assert_eq!(
+            code.matches("checkable: true").count(),
+            6,
+            "两张菜单各有三枚可勾的 MenuItem（档值取自 `bar.pens`）"
         );
         // 那一枚钮上写的是**当前**粗细（Rust 现读的那个数），不是档名。
         assert!(
@@ -7784,6 +7792,59 @@ mod tests {
             code.matches("bar.widthIcons").count(),
             0,
             "三枚并排的粗细图标已经不在场上了（粗细是一个数，钮上写着它）"
+        );
+    }
+
+    /// 截图这一轮的**收尾那几扇门**（用户 2026-11-13 一次报了三条）：
+    /// ① **保存**（对话框那一扇）存完就**退出截图模式**；② **对勾**（确认选区）按下去是
+    /// **把这一块复制到剪贴板、然后退出**；③ 这一轮一收，**遮罩窗（连同工具条与放大镜）就
+    /// 不该留在屏幕上**。
+    ///
+    /// 判据逐条：① 保存那一段的 `onAccepted` 里有 `session.endMask()`，且它**只在存成的时候**
+    /// 收；② 对勾那一枚走的是**「复制」那同一枚手**（`bar.copy()`），不是新写一份复制；③ 遮罩窗
+    /// 的可见性多读一格「还有几扇遮罩窗」（`session.mask_count > 0`）—— 那一轮一收就走，不必等
+    /// 谁去 reload 它（Rust 那头把冻住的画面交还了而 QML 还没重读 ⇒ 窗透明了、工具条却留在屏幕上）。
+    #[test]
+    fn the_round_ends_when_the_picture_is_taken_away() {
+        const QML: &str = include_str!("../qml/AnnotationToolbar.qml");
+        const MASK: &str = include_str!("../qml/CaptureMask.qml");
+        let code = crate::hint_check::qml_code(QML);
+        let mask = crate::hint_check::qml_code(MASK);
+
+        // ① 保存那一段（对话框的 `onAccepted`）。
+        let saved = code
+            .split("onAccepted: {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n        }").next())
+            .unwrap_or("");
+        assert!(
+            saved.contains("session.endMask()"),
+            "保存存成之后要退出这一轮：{saved}"
+        );
+        assert!(
+            saved.contains("if (bar.delivered)"),
+            "没存成时不收（用户还得改名字再存）：{saved}"
+        );
+
+        // ② 对勾那一枚：走「复制」那同一枚手。
+        let check = code
+            .split("bar.glyphs[\"check\"]")
+            .nth(1)
+            .and_then(|rest| rest.split("\n            }").next())
+            .unwrap_or("");
+        assert!(
+            check.contains("bar.copy()"),
+            "对勾那一枚要把这一块复制到剪贴板（走「复制」那同一枚手）：{check}"
+        );
+        assert!(
+            check.contains("view.commitHole()"),
+            "对勾那一枚先把选区**收下**（记进历史、定下裁剪的边界）：{check}"
+        );
+
+        // ③ 遮罩窗的可见性多读一格「还有几扇遮罩窗」。
+        assert!(
+            mask.contains("visible: view.live && view.shown && session.mask_count > 0"),
+            "遮罩窗的可见性要多读一格「还有几扇遮罩窗」—— 否则这一轮收掉之后工具条与放大镜留在屏幕上"
         );
     }
 }

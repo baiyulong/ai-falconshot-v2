@@ -1240,20 +1240,34 @@ Rectangle {
             Menu {
                 id: penWidthMenu
 
-                Repeater {
-                    model: bar.pens
-
-                    delegate: MenuItem {
-                        required property int index
-                        required property var modelData
-
-                        text: modelData + " px"
-                        checkable: true
-                        checked: bar.view.pen_width === modelData
-                        onTriggered: {
-                            bar.view.setWidth(modelData)
-                            bar.grabbed()
-                        }
+                // **三枚 MenuItem 一枚一枚写出来**，而不是 `Repeater`：`Menu` 收的是
+                // `contentData`，而 Repeater 递进去的 delegate 不走那一条路 —— 菜单会**开出来却
+                // 是空的**（2026-11-13 用户报的就是这个）。档值仍取自那一份名单 `bar.pens`。
+                MenuItem {
+                    text: bar.pens[0] + " px"
+                    checkable: true
+                    checked: bar.view.pen_width === bar.pens[0]
+                    onTriggered: {
+                        bar.view.setWidth(bar.pens[0])
+                        bar.grabbed()
+                    }
+                }
+                MenuItem {
+                    text: bar.pens[1] + " px"
+                    checkable: true
+                    checked: bar.view.pen_width === bar.pens[1]
+                    onTriggered: {
+                        bar.view.setWidth(bar.pens[1])
+                        bar.grabbed()
+                    }
+                }
+                MenuItem {
+                    text: bar.pens[2] + " px"
+                    checkable: true
+                    checked: bar.view.pen_width === bar.pens[2]
+                    onTriggered: {
+                        bar.view.setWidth(bar.pens[2])
+                        bar.grabbed()
                     }
                 }
             }
@@ -1798,20 +1812,33 @@ Rectangle {
                 Menu {
                     id: outlineWidthMenu
 
-                    Repeater {
-                        model: bar.pens
-
-                        delegate: MenuItem {
-                            required property int index
-                            required property var modelData
-
-                            text: modelData + " px"
-                            checkable: true
-                            checked: bar.view.outline_width === modelData
-                            onTriggered: {
-                                bar.view.applyOutlineWidth(modelData)
-                                bar.grabbed()
-                            }
+                    // 与笔宽那张菜单同一件事：`Menu` 收的是 `contentData`，Repeater 递进去的
+                    // delegate 不走那一条路 ⇒ 菜单开出来是空的。档值仍取自 `bar.pens`。
+                    MenuItem {
+                        text: bar.pens[0] + " px"
+                        checkable: true
+                        checked: bar.view.outline_width === bar.pens[0]
+                        onTriggered: {
+                            bar.view.applyOutlineWidth(bar.pens[0])
+                            bar.grabbed()
+                        }
+                    }
+                    MenuItem {
+                        text: bar.pens[1] + " px"
+                        checkable: true
+                        checked: bar.view.outline_width === bar.pens[1]
+                        onTriggered: {
+                            bar.view.applyOutlineWidth(bar.pens[1])
+                            bar.grabbed()
+                        }
+                    }
+                    MenuItem {
+                        text: bar.pens[2] + " px"
+                        checkable: true
+                        checked: bar.view.outline_width === bar.pens[2]
+                        onTriggered: {
+                            bar.view.applyOutlineWidth(bar.pens[2])
+                            bar.grabbed()
                         }
                     }
                 }
@@ -2216,9 +2243,20 @@ Rectangle {
 
             Cell {
                 icon: bar.glyphs["check"]
-                hint: "确认选区：收下这块选区，走完成后的那一步"
+                hint: "确认选区：把这一块复制到剪贴板，然后结束这一轮"
                 usable: bar.view.selected
-                onTapped: bar.commit()
+                // **收下选区 → 复制到剪贴板 → 结束这一轮**（用户 2026-11-13 定的：「对勾按钮点击后
+                // 应该是把截图复制到剪贴板，然后退出截图模式」）。
+                //
+                // 复制走的是**「复制」那同一枚手**（`bar.copy()` ⇒ `copySelection` ⇒ 剪贴板），
+                // 而那枚手自此（P203）**成的时候收遮罩** —— 于是这一枚对勾就是「复制 + 退出」这一件
+                // 事，不新造第二个作者（#281）。`commit()` 仍在前面：它把选区**收下**（记进历史、
+                // 定下这一块裁剪的边界），而 `copy()` 交出去的那张图正是这一块。
+                onTapped: {
+                    if (view.commitHole()) {
+                        bar.copy()
+                    }
+                }
             }
 
             Cell {
@@ -2380,6 +2418,15 @@ Rectangle {
                 : bar.view.saveSelection(picked, chosen)
             bar.pinAfterSave = false
             bar.grabbed()
+            // **存完就退出这一轮**（用户 2026-11-13 定的：「保存后应该退出截图模式」）。
+            //
+            // 收遮罩的手是**「取消」那同一枚**（`session.endMask()`），走 `Qt.callLater`（同一理由：
+            // 从正在跑的那一枚 handler 里毁掉遮罩那些窗是 QML 不警告的 use-after-free）；**没存成时
+            // 不收**（用户还得在这一轮里改名字再存）。
+            if (bar.delivered) {
+                session.sayText(String(bar.view.message))
+                Qt.callLater(() => session.endMask())
+            }
         }
         onRejected: bar.pinAfterSave = false
     }
