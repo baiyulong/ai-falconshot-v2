@@ -3,6 +3,10 @@
 __pycache__/
 *.pyc
 
+# 本地门禁、探针与打包日志；结论写进提交/发布记录，不把大批运行输出留在仓库根目录。
+*.log
+gate_rc*.txt
+
 # 打包产物：里面是 Qt 的 LGPL 二进制、以及一份从 C:/Windows/System32 复制来的
 # icuuc.dll。这两个都不适合进版本库，体积也到了 689 MiB。
 spike/p7-package/dist*/
