@@ -244,6 +244,9 @@ Window {
         ? win.session.accent
         : (dark ? "#4C8DF6" : "#2563B8")
 
+    // P216：悬停与提示条共用的那枚薄底 —— 选中态（`pick_fill`）之外再浅一档的第三态。
+    readonly property color hover_fill: dark ? "#232935" : "#E8ECF3"
+
     // §5.19.4 界面字体与字号。P149 起这一页是那两枚键**唯一**的读者，而「唯一读者」在四扇画着
     // 字的窗上恰恰是缺陷的另一面：另外三扇把 `font.pixelSize` 写死，改档不动那些像素。倍数、
     // 空族兜底、取整地板自此搬到 `UiFont.qml` 那一枚共享对象 —— 全仓一份，本文件与那三扇共读
@@ -257,7 +260,7 @@ Window {
     // 一扇正常的窗：有边框、进任务栏、接键盘。§5.20.1 说的是「设置页」，不是一个盖在桌面上的
     // 浮层，所以这里**不**写 `flags`：`Qt.Tool` / `FramelessWindowHint` 属于贴图与提示窗那一族。
     title: "falconshot-settings"
-    width: 760
+    width: 840
     // 520 → 700：这一扇窗现在下面多了一整节（两枚钮、那句总数、那一列行、两枚确认）。原来的
     // 300 行高随之收到 180 —— 这一节里没有任何一格是判据（量的都是 `visible`、类数、行数），
     // 尺寸改动的对面是「页上的东西在不在屏幕上」这一件 P142 也欠着的事。
@@ -271,7 +274,11 @@ Window {
     // 勾选框、预览那一段、两枚钮）。它默认收着，只多那一枚钮的 30 px，可是页上没有任何一处
     // 会滚动 —— 按一次第 1 步就把下面的导出/导入两枚钮顶到窗外，等于让用户为了反馈把配置弄丢。
     // 与上面三枚改动同一个口径：窗高不进任何一格读数。
-    height: 1300
+    // 1300 → 钳屏（P216）：实测（2026-11-15，dpr=2 那台机器）逻辑屏高只有 960，1300 的窗
+    // 底部整截被裁 —— 用户报的「布局坏了」一半就是这一枚数。高度钳到 `Screen` 给的可用高
+    // 减去一点边距，放不下的交给下面那枚整页滚动（`pageScroll`）；宽从 760 提到 840，十二枚
+    // 页签挤成两行还掉字的那一排能站直。窗高仍不进任何一格读数，口径同上。
+    height: Math.min(1060, Screen.desktopAvailableHeight - 24)
     color: win.page_fill
 
     /// 一行一串地切开。**空串切出来是 `[""]`，长度 1** —— 这一枚函数存在的理由就是那个 1：
@@ -1020,18 +1027,52 @@ Window {
         win.hide()
     }
 
-    Column {
-        x: 16
-        y: 14
-        width: parent.width - 32
-        spacing: 10
+    // 整页滚动（P216）：窗高钳到屏内之后，页上内容多的一页（截图 19 行、输出 20 行，加上
+    // 常驻的导出/导入与调色板两节）天然比窗高。整页装进一枚 Flickable —— 页头的「首选项」
+    // 与那排页签跟着滚：量具的腿全是方法直调（`selectRow` / `field.text` / `saveDraft`…），
+    // 不做坐标点击，滚不滚都碰不到任何一格读数。
+    Flickable {
+        id: pageScroll
 
-        Text {
-            text: "首选项"
-            color: win.word_fill
-            font.pixelSize: uiFont.px(18)
-            font.family: uiFont.family
-            font.bold: true
+        anchors.fill: parent
+        contentWidth: width
+        contentHeight: pageBody.height + pageBody.y + 14
+        clip: true
+        boundsBehavior: Flickable.StopAtBounds
+
+        ScrollBar.vertical: ScrollBar {
+            anchors.right: parent.right
+            anchors.rightMargin: 2
+        }
+
+        Column {
+            id: pageBody
+
+            x: 16
+            y: 14
+            width: parent.width - 32
+            spacing: 10
+
+        // 页头：logo 与「首选项」同一排。图是 qrc 里已有的那一张（标题栏小图标同源），
+        // 纯装饰、无字 —— 名字与措辞的唯一作者仍在桥那侧（#281）。
+        Row {
+            spacing: 8
+
+            Image {
+                anchors.verticalCenter: parent.verticalCenter
+                source: "qrc:/qt/qml/dev/falconshot/qml/logo.png"
+                sourceSize: Qt.size(22, 22)
+                fillMode: Image.PreserveAspectFit
+                mipmap: true
+            }
+
+            Text {
+                text: "首选项"
+                color: win.word_fill
+                font.pixelSize: uiFont.px(18)
+                font.family: uiFont.family
+                font.bold: true
+            }
         }
 
         // 页顶那一排标签：一枚一类，枚数与次序全由桥那一份名单说了算，本文件一处不数。
@@ -1048,10 +1089,14 @@ Window {
                     // `modelData`）。不写成 `required property`：那一条路在这里没有对面跑过，
                     // 而一枚写错的必需属性是**当场放弃创建**，窗会安静地什么都不画。
 
-                    width: tabWord.implicitWidth + 20
-                    height: 28
-                    radius: 6
-                    color: win.which === index ? win.pick_fill : win.card_fill
+                    // P216：页签收成胶囊（radius 取半高、字 12、左右各留 8）—— 840 宽的页头
+                    // 里十二枚站得回一排；未选中那枚从描边卡片退成薄底/透明，选中态（底色 +
+                    // 2 px 边）因此在这一排里一眼可辨。
+                    width: tabWord.implicitWidth + 16
+                    height: 26
+                    radius: 13
+                    color: win.which === index ? win.pick_fill
+                          : tabArea.containsMouse ? win.hover_fill : "transparent"
                     border.color: win.which === index ? win.accent_fill : win.edge_fill
                     // §7.4 第 3 条：「选中」不许只靠颜色说。底色与边框色那两枚是颜色通道，
                     // 边框**宽窄**是形状通道 —— 1 px 与 2 px 的差别在黑白打印、在色盲、在
@@ -1065,11 +1110,14 @@ Window {
                         anchors.centerIn: parent
                         text: String(modelData)
                         color: win.word_fill
-                        font.pixelSize: uiFont.px(13)
-                    font.family: uiFont.family
+                        font.pixelSize: uiFont.px(12)
+                        font.family: uiFont.family
                     }
 
                     MouseArea {
+                        id: tabArea
+
+                        hoverEnabled: true
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: {
@@ -1087,9 +1135,10 @@ Window {
         Text {
             text: win.cats.length > 0 ? String(win.cats[win.which]) + "（" + win.rowsText.length + " 行）" : ""
             color: win.word_fill
-            font.pixelSize: uiFont.px(13)
+            // P216：页头从「小字注脚」升成真正的节标题 —— 这一页读什么，先看它。
+            font.pixelSize: uiFont.px(15)
             font.family: uiFont.family
-            opacity: 0.75
+            font.bold: true
         }
 
         // §5.21.2 第四枚那一块：复杂页第一次打开时递的那一句「首次使用引导」。
@@ -1107,7 +1156,9 @@ Window {
             height: visible ? guideWord.implicitHeight + guideBtn.height + 20 : 0
             width: parent.width
             radius: 6
-            color: win.pick_fill
+            // P216：提示条不再是半屏的大蓝块 —— 底换成比选中态浅一档的 `hover_fill`，只留
+            // 这枚 accent 细边把它和普通行分开；结构与字源一字未动（量具读的三枚 id 都在这块里）。
+            color: win.hover_fill
             border.color: win.accent_fill
             border.width: 1
 
@@ -1163,9 +1214,11 @@ Window {
 
         // 那一列行。`Flickable` 而不是 `ListView`：本页的行是 `settingsPage()` 一次交回的
         // 一串字，Repeater 的 model 拿一个 JS 数组就够，而一行的样子由 `Row::text` 说了算。
+        // P216：视口从钉死的 180 改成「内容多高就多高、至多 620」—— 最长的一页（输出 20 行）
+        // 自然高度恰好放得下，整页滚动接管之后这一层大多数时候根本不滚。
         Flickable {
             width: parent.width
-            height: 180
+            height: Math.min(rowList.height + 2, 620)
             contentHeight: rowList.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -1174,7 +1227,7 @@ Window {
                 id: rowList
 
                 width: parent.width
-                spacing: 4
+                spacing: 2
 
                 Repeater {
                     model: win.rowsText
@@ -1183,11 +1236,14 @@ Window {
                         width: rowList.width
                         height: rowWord.implicitHeight + 14
                         radius: 5
-                        color: win.pick === index ? win.pick_fill : win.card_fill
-                        border.color: win.pick === index ? win.accent_fill : win.edge_fill
+                        // P216：行底三态 —— 选中是卡片，悬停薄底，平时透明。过去每一行都描边
+                        // 画框，二十行叠起来像一摞瓷砖；层次让给选中态与悬停态。
+                        color: win.pick === index ? win.pick_fill
+                              : rowArea.containsMouse ? win.hover_fill : "transparent"
+                        border.color: win.pick === index ? win.accent_fill : "transparent"
                         // §7.4 第 3 条，与上面页签那一行同一枚手法、同一个理由：边框宽窄是
                         // 颜色之外的那第二条通道。
-                        border.width: win.pick === index ? 2 : 1
+                        border.width: win.pick === index ? 2 : 0
 
                         Text {
                             id: rowWord
@@ -1214,6 +1270,9 @@ Window {
                         }
 
                         MouseArea {
+                            id: rowArea
+
+                            hoverEnabled: true
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: win.selectRow(index)
@@ -1288,7 +1347,7 @@ Window {
             TextField {
                 id: field
 
-                width: 360
+                width: 420
                 visible: win.pick >= 0
                 placeholderText: "改这一枚键的值"
                 onAccepted: win.saveDraft()
@@ -1810,7 +1869,8 @@ Window {
         Flickable {
             visible: win.hasIoRows
             width: parent.width
-            height: 84
+            // P216：视口跟着内容走（至多 200）—— 两三行的预览不再顶着一个 84 的空框。
+            height: Math.min(ioList.height + 2, 200)
             contentHeight: ioList.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -1933,7 +1993,8 @@ Window {
         // 所以「按了新增之后页上多一枚」这件事的对面是档里那一排，不是本页抄的一份数组。
         Flickable {
             width: parent.width
-            height: 84
+            // P216：同一口径 —— 跟着内容走（至多 200）。
+            height: Math.min(palList.height + 2, 200)
             contentHeight: palList.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -2140,7 +2201,8 @@ Window {
         // 之后页上多出的那一行，对面是档里那一枚键，不是本页数出来的枚数。
         Flickable {
             width: parent.width
-            height: 62
+            // P216：同一口径 —— 跟着内容走（至多 120）。
+            height: Math.min(palSchemeList.height + 2, 120)
             contentHeight: palSchemeList.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -2352,7 +2414,8 @@ Window {
         Flickable {
             visible: win.hasPalIoRows
             width: parent.width
-            height: 84
+            // P216：同一口径 —— 跟着内容走（至多 200）。
+            height: Math.min(palIoList.height + 2, 200)
             contentHeight: palIoList.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -2486,6 +2549,7 @@ Window {
             }
         }
     }
+    }
 
     // 检查更新**落地**那一条腿。桥在工作线程上取那份清单，把结果投回 GUI 线程写进 `update_line`
     // （那句判决 + 那枚地址），这一条只负责把落地那一句摆进状态行、把地址交给入口那枚钮。
@@ -2499,6 +2563,13 @@ Window {
             win.landUpdate(win.session.update_line)
         }
     }
+
+    // P216：这一扇窗的标题栏与任务栏图标 —— 桥把 logo 逐扇设上去（QML 的 Window 没有
+    // icon 属性）。挂在 visible 翻真那一刻而不是 `Component.onCompleted`：后者先于
+    // `show()` 跑，platform window 还没造出来，`QWindow::setIcon` 存下的图标到不了
+    // WM_SETICON（2026-11-15 门里实测 WM_GETICON 仍 0/0）。visible 只读不写 —— 场上
+    // 场下仍只有 show() 与 hide() 两个入口。
+    onVisibleChanged: if (visible) win.session.applyWindowIcons()
 
     Component.onCompleted: {
         win.cats = win.splitLine(win.session.settingsCategories())

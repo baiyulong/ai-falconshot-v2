@@ -3,6 +3,7 @@
 
 #include <QtCore/QCoreApplication>
 #include <QtCore/QEventLoop>
+#include <QtCore/QFile>
 #include <QtCore/QHash>
 #include <QtCore/QMap>
 #include <QtCore/QMutex>
@@ -162,7 +163,42 @@ void falconshotApplyAppIcon()
     // 自定义截屏那些窗口的标题栏与任务栏图标都靠这一次设置给默认。
     // 取 qrc 里那张 logo —— 资源路径与 main.qml 同一前缀，装成 MSIX 之后
     // exe 旁边并没有那张 png，磁盘上找是找不着的。
-    QGuiApplication::setWindowIcon(QIcon(QStringLiteral(":/qt/qml/dev.falconshot/qml/logo.png")));
+    //
+    // P216（2026-11-15）补一笔路径：资源树的前缀是 `/qt/qml/dev/falconshot/qml`
+    // （斜杠，与 shaders.qrc 里 `<qresource prefix="...">` 一致），不是
+    // `dev.falconshot`（点）。模块 URI `dev.falconshot` 的点只在 `import` 语句里
+    // 用，QML 引擎加载时内部把点转斜杠去找 qmldir —— 所以 main.qml 能加载而手写
+    // 的 qrc 路径用点会打不开（QQuickImage 报 Cannot open、QIcon 拿到空图标）。
+    // 这一条用 `--settings-window` 门 + QFile::exists 量过：点路径
+    // `:/qt/qml/dev.falconshot/qml/logo.png` 查不到、`:/qt/qml/dev.falconshot`
+    // 目录 entryList 为空，斜杠路径查得到。rcc 的静态初始化器一直注册成功了
+    // （qInitResources_shaders_qrc 返回 1），只是路径写错 —— 这一枚是空操作留作
+    // 兜底：cxx-qt-build 静态库里没被引用的对象可能整块被链接器跳过，Q_INIT_RESOURCE
+    // 显式引用一次确定注册。
+    const QString logo = QStringLiteral(":/qt/qml/dev/falconshot/qml/logo.png");
+    if (!QFile::exists(logo)) {
+        Q_INIT_RESOURCE(shaders_qrc);
+    }
+    if (!QFile::exists(logo)) {
+        qWarning("p216: logo resource missing after Q_INIT_RESOURCE(shaders_qrc)");
+    }
+    QGuiApplication::setWindowIcon(QIcon(logo));
+}
+
+void falconshotApplyWindowIconsToAll()
+{
+    // P216：每扇顶层窗各自的图标。实测（2026-11-15，`--settings-window` 那扇门）：普通
+    // 窗口对 WM_GETICON 应的是 0/0 —— Qt 6.10 从不给 QML 的 Window 发 WM_SETICON，外壳
+    // 便退回类图标：小图标是 `falconshotApplyAppIcon` 设上的那枚 logo（真句柄），大图标
+    // 却是一枚跨进程不变的共享句柄，任务栏 / Alt-Tab 取大的那一枚，画出来就是通用程序
+    // 图标。这里逐扇把图标设上去，发出去的是真的 WM_SETICON，任务栏当场换脸。
+    const QIcon icon(QStringLiteral(":/qt/qml/dev/falconshot/qml/logo.png"));
+    const QList<QWindow *> windows = QGuiApplication::topLevelWindows();
+    for (QWindow *window : windows) {
+        if (window != nullptr) {
+            window->setIcon(icon);
+        }
+    }
 }
 
 // ---------------------------------------------------------------- pixels

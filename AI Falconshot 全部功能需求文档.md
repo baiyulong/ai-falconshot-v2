@@ -2078,6 +2078,14 @@ snip --last -o clipboard
 >
 > **这一格自此有真机读数**（2026-11-10，桌面解锁之后跑的那一趟 `--settings`）：12 类共 126 行 —— 常规#0=4 截图#1=19 标注#2=12 贴图#3=16 输出#4=20 快捷键#5=11 托盘#6=4 热区#7=11 外观#8=9 历史记录#9=8 高级与命令行#10=6 关于与更新#11=6；无归属 0 枚、多归属 0 枚、每类有行 12 类、空类 []。**但 PRD 这一节只列类名、没规定每类该有哪些行**，所以「类别齐全」到此为止，行级的覆盖仍归各节自己的口径。
 
+> **实现口径（2026-11-15，P216）：这一扇窗的脸（图标）与身体（布局）**
+>
+> **任务栏与 Alt-Tab 那一枚图标自此是真 logo**（用户报「首选项活动窗口的 logo 图标还没有」的对面）。这回有两层根因，均由 `--settings-window` 真窗实测锁定。第一层是**资源路径把斜杠写成了点**：`shaders.qrc` 注册的是 `:/qt/qml/dev/falconshot/qml/logo.png`，C++ 与页头 Image 却写成 `:/qt/qml/dev.falconshot/qml/logo.png`；模块 URI `dev.falconshot` 只在 `import` 里用，QML 引擎载入模块时会转成目录，手写 qrc URL 不会替人转。诊断证据是 `qInitResources_shaders_qrc()` 返回 1、`:/qt` 下可见 `qml`，而点路径目录与文件均不存在；修成斜杠后 QML 的 `Cannot open` 消失，页头 logo 真显示。第二层是**逐窗设置的时机**：普通 QML `Window` 没有 `icon` 属性，且在 `Component.onCompleted` 阶段 platform window 尚未建好；于是即使调用 `QWindow::setIcon`，外部探针读 `WM_GETICON` 仍是 small=0、big=0。修法是 `crates/qt_bridge/cpp/pin_shim.cpp` 的 `falconshotApplyWindowIconsToAll()` 对 `QGuiApplication::topLevelWindows()` 逐扇 `QWindow::setIcon(logo)`，桥三处接到 `session.applyWindowIcons()`；五扇顶层窗（首选项 / 历史记录管理 / 图片分组 / 自定义截图 / 提示条）改在根级 `onVisibleChanged: if (visible)` 喊这一声，确保 platform window 已造好。最终外部探针实测首选项窗 `WM_GETICON small=43716261, big=194120941`（均非 0），窗口标题栏与页头均见真 logo。**这一项没有 cargo 单测**：qrc 可达性由门进程 stderr（无 `p216` / `logo` / `Cannot open`）作证，Win32 外壳行为由外部探针和截图作证；`_119` 的六道 cargo/自检门与 `--mask 4000` 另行全绿（#453：每条判据都有证人，只是证人在对应层）。
+>
+> **布局口径（用户报「布局优化一下」的另一半）**：实测窗 760×**1300** 逻辑像素，而 dpr=2 那台屏逻辑高只有 960 —— 窗比屏高，底部整截被裁；行列表内层视口钉死 180 px、十二类页签挤成两行、「首次使用引导」是一块占半屏的大蓝框、行是裸 `key=value`。本轮（`crates/qt_bridge/qml/SettingsWindow.qml`）：**窗高钳屏**——`height: Math.min(1060, Screen.desktopAvailableHeight - 24)`（:281；960 屏上约 936），宽 760 → 840，五次尺寸演进的历史注留在那一枚绑定头顶；**整页滚动**——内容列整段装进一枚 `Flickable`（`pageScroll`，:1034）附 ScrollBar.vertical，页头「首选项」与那排页签跟着滚，量具不破的根据是 `--settings-window` 四条腿全是 QML 方法直调（`selectRow(i)` / `field.text` / `saveDraft()` 等），不做坐标点击，滚不滚碰不到任何一格读数；行列表视口 180 → `Math.min(rowList.height + 2, 620)`（rowList :1227）—— 最长一页 20 行自然高度恰好放得下，整页滚动接管后这一层多数时候不滚；io / 调色板 / 方案 / palIo 四枚小视口的钉死高（84/84/62/84）改成跟内容走（cap 200/200/120/200）；页签收成胶囊（高 26 半高圆角、字 12、悬停薄底 `hover_fill`，tabArea :1118 一带）；引导框底色从选中态蓝退成 `hover_fill` + accent 细边的轻提示条；行三态（平时透明 / 悬停薄底 / 选中卡片）；页头「类名（N 行）」升成 15 px 加粗的节标题（:1136），页头一排带 logo Image（qrc 那张，:1063，纯装饰无字 —— 可见字串的唯一作者仍在桥那一侧，#281）。**行的字仍全是桥递回的 `Row::text` 原文**，本轮只动排版不动一个字。QML 变更的门腿照旧：`--mask 4000` 须 `no qml complaints PASS` + `mask check: PASS`（qmlcachegen 真编整份文档，整页包裹那三层闭合的括号错当场现形）。
+>
+> **顺带记一笔行号漂移**：2026-11-04 那块引的 `SettingsWindow.qml:2434` / `:1013-1055` / `:1037` / `:1059` 是**当时**的行号，本轮整页包裹之后整体下移约六十行（页签那一格自此在 ~1090-1130、页头标题在 ~1136），那些绑定本身一字未动 —— 旧块的引不回改（理由同 §5.20.2 那块 2026-11-06 的口径：改旧块会把一份读数变成两份）。
+
 ### 5.20.2 设置即时生效
 
 - 无需重启的设置应即时生效。

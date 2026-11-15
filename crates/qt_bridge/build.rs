@@ -108,12 +108,16 @@ fn bake_shaders(out_dir: &Path) -> PathBuf {
     // prefix - the one thing about this arrangement that is not guessable.
     let mut qrc = String::from("<RCC>\n  <qresource prefix=\"/qt/qml/dev/falconshot/qml\">\n");
     // 应用自己的图标（用户 2026-11-13 放进来的那张 ✓）也进同一份 qrc：窗与托盘的图标
-    // 都从 qrc 里取（`qrc:/qt/qml/dev.falconshot/qml/logo.png` ✓），于是它们不必去磁盘上
+    // 都从 qrc 里取（`qrc:/qt/qml/dev/falconshot/qml/logo.png` ✓，斜杠不是点），于是它们不必去磁盘上
     // 找一张可能不在的图 ✓（装成 MSIX 之后 exe 旁边并没有那张 png ✓）。
     let icon = Path::new("assets/logo.png");
     println!("cargo:rerun-if-changed={}", icon.display());
     let icon_abs = icon.canonicalize().unwrap_or_else(|_| icon.to_path_buf());
-    files.push(("logo.png".to_string(), icon_abs));
+    // `canonicalize()` 给的是 `\\?\C:\...` 长路径。rcc 读这种源路径没问题（2026-11-15
+    // 实测嵌进二进制的数据与树路径都对），但写进 qrc 的是 `//?/C:/...` 那种怪形态，
+    // 与 embed_icon（P213）同一条手 trim 掉前缀，免得下一轮读 qrc 时当它是数据。
+    let icon_rel = icon_abs.to_string_lossy().trim_start_matches(r"\\?\").replace('\\', "/");
+    files.push(("logo.png".to_string(), PathBuf::from(icon_rel)));
     for (name, path) in files {
         let path = path.display().to_string().replace('\\', "/");
         qrc.push_str(&format!("    <file alias=\"{name}\">{path}</file>\n"));

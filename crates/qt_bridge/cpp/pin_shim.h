@@ -32,6 +32,10 @@ void enableAlphaBufferByDefault();
 /// `QGuiApplication` 存在之后调用（main.rs 里紧跟在 app 建起来之后）。
 void falconshotApplyAppIcon();
 
+/// P216: 把默认图标设到**此刻每一扇**顶层窗上（真的 WM_SETICON）。见
+/// pin_shim.cpp 里同名函数头顶那段实测。
+void falconshotApplyWindowIconsToAll();
+
 /// Chain Qt's own message handler and keep a copy of what it was told. A QML
 /// document that fails to compile reports through that handler, which a console
 /// run otherwise never shows; without this, `--probe` can only see that no

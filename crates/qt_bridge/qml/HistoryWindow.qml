@@ -671,6 +671,13 @@ Window {
         }
     }
 
+    // P216：这一扇窗的标题栏与任务栏图标 —— 桥把 logo 逐扇设上去（QML 的 Window 没有
+    // icon 属性）。挂在 visible 翻真那一刻而不是 `Component.onCompleted`：后者先于
+    // `show()` 跑，platform window 还没造出来，`QWindow::setIcon` 存下的图标到不了
+    // WM_SETICON（2026-11-15 门里实测 WM_GETICON 仍 0/0）。visible 只读不写 —— 场上
+    // 场下仍只有 show() 与 hide() 两个入口。
+    onVisibleChanged: if (visible) win.session.applyWindowIcons()
+
     Component.onCompleted: {
         win.headerText = String(win.session.historyWindowTitle())
         win.buttons = win.splitPipe(win.session.historyWindowButtons())

@@ -31,6 +31,12 @@ pub mod qobject {
         #[rust_name = "apply_app_icon"]
         fn falconshotApplyAppIcon();
 
+        /// P216：把图标设到**此刻每一扇**顶层窗上。`apply_app_icon` 只盖进程默认，而普通
+        /// QML `Window` 不经 WM_SETICON 时任务栏退回类大图标（共享的通用图标，实测
+        /// 2026-11-15）；各对话框窗露出时经 [`Self::apply_window_icons`] 喊这一声。
+        #[rust_name = "apply_window_icons_to_all"]
+        fn falconshotApplyWindowIconsToAll();
+
         #[rust_name = "pin_store_frame"]
         fn pinStoreFrame(id: i64, png: &QByteArray);
         #[rust_name = "pin_drop_frame"]
@@ -1603,6 +1609,13 @@ pub mod qobject {
         #[qinvokable]
         #[cxx_name = "refreshSettings"]
         fn refresh_settings(self: Pin<&mut Self>);
+
+        /// P216：QML 窗一侧的口子。各对话框窗在 `visible` 翻真时喊一声，把 logo 设到
+        /// 已经造好的 platform window 上（QML 的 Window 没有 icon 属性可设，P213 实测）。与
+        /// [`Self::refresh_settings`] 同一入口形状。
+        #[qinvokable]
+        #[cxx_name = "applyWindowIcons"]
+        fn apply_window_icons(self: Pin<&mut Self>);
 
         /// 把「这一趟该不该有一扇历史记录管理窗」取进 [`Self::history_window_open`]，与
         /// [`Self::refresh_custom`] 同一枚理由：`--history-window` 那一份计划写在 `engine.load()`
@@ -3256,6 +3269,13 @@ impl qobject::Session {
     pub fn refresh_settings(mut self: Pin<&mut Self>) {
         self.as_mut()
             .set_settings_open(i32::from(crate::settings_view::window_wanted()));
+    }
+
+    /// P216：见桥里 [`Self::apply_window_icons`] 的声明。真活只有一件：把 shim 那一声
+    /// 喊出去。窗的 icon 不经这一声就落在类图标上（见 `falconshotApplyWindowIconsToAll`
+    /// 头顶那段实测）。
+    pub fn apply_window_icons(self: Pin<&mut Self>) {
+        qobject::apply_window_icons_to_all();
     }
 
     // ── §5.3.5 那一扇对话框的桥。每一枚都只是**搬**：名单、句子、判据、算术在 [`crate::custom`]，
