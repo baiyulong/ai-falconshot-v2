@@ -1072,6 +1072,9 @@ fn main() {
         eprintln!("[falconshot] could not create QGuiApplication");
         std::process::exit(2);
     }
+    // P213: 全进程的默认窗口图标。普通 QML `Window` 没有 icon 属性可设，一处
+    // `setWindowIcon` 盖全（首选项/历史/成组/自定义截屏的标题栏与任务栏都取它）。
+    session::qobject::apply_app_icon();
 
     let flag = |name: &str| args.iter().any(|a| a == name);
     let after = |name: &str| -> Option<i32> {
@@ -2651,6 +2654,56 @@ mod tests {
         capture, cli, cli_gate, cli_pinned_line, exe_stamp, refusals, unalarmed, FILE_COMMANDS,
     };
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// P213 的判据之一落在文件上：rc.exe 吃进 exe 的那枚 `assets/app.ico`
+    /// （`packaging/make_ico.ps1` 从用户的 logo 打出来）必须是能落进 exe 的成品 ——
+    /// 目录头是 icon、七枚、尺寸 16..256（256 在目录里记 0）、每枚 32bpp 且数据
+    /// 长度与 BITMAPINFOHEADER 自洽、每枚的条目都落在文件之内。它一坏，托盘与
+    /// 任务栏那张脸就只剩 rc.exe 的一句天书可看。exe 侧的落地（资源 #1、托盘从
+    /// 本进程模块取）不是单元测试够得着的 —— 那一眼归 `--selftest` 挂托盘与真人。
+    #[test]
+    fn the_baked_app_icon_is_a_well_formed_multi_size_ico() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/app.ico");
+        let bytes = std::fs::read(&path)
+            .expect("assets/app.ico（packaging/make_ico.ps1 生成的那枚）");
+        assert_eq!(&bytes[0..2], &[0, 0], "目录头 reserved 必须 0");
+        assert_eq!(&bytes[2..4], &[1, 0], "目录 type 必须 icon(1)");
+        let count = u16::from_le_bytes([bytes[4], bytes[5]]) as usize;
+        assert_eq!(count, 7, "七枚：16/24/32/48/64/128/256");
+        let expect = [16u32, 24, 32, 48, 64, 128, 256];
+        let real = |b: u8| if b == 0 { 256u32 } else { u32::from(b) };
+        for (i, s) in expect.iter().enumerate() {
+            let at = 6 + i * 16;
+            assert_eq!(real(bytes[at]), *s, "第 {i} 枚的宽");
+            assert_eq!(real(bytes[at + 1]), *s, "第 {i} 枚的高");
+            assert_eq!(bytes[at + 2], 0, "第 {i} 枚的调色板色数");
+            assert_eq!(
+                u16::from_le_bytes([bytes[at + 4], bytes[at + 5]]),
+                1,
+                "第 {i} 枚 planes"
+            );
+            assert_eq!(
+                u16::from_le_bytes([bytes[at + 6], bytes[at + 7]]),
+                32,
+                "第 {i} 枚 bpp"
+            );
+            let len = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap()) as usize;
+            let offset = u32::from_le_bytes(bytes[at + 12..at + 16].try_into().unwrap()) as usize;
+            assert!(offset >= 6 + count * 16, "第 {i} 枚 offset 在目录之后");
+            assert!(offset + len <= bytes.len(), "第 {i} 枚数据在文件之内");
+            let row_and = (((*s) as usize + 31) / 32) * 4;
+            assert_eq!(
+                len,
+                40 + 4 * (*s) as usize * (*s) as usize + row_and * (*s) as usize,
+                "第 {i} 枚的数据长度与 {s}×{s} 32bpp 自洽"
+            );
+            assert_eq!(
+                u16::from_le_bytes([bytes[offset + 14], bytes[offset + 15]]),
+                32,
+                "第 {i} 枚位图 bpp"
+            );
+        }
+    }
 
     /// The field's only job is to make a log attributable to a build, and the way it
     /// fails quietly is a zero: `@0s` is 1970, which is a date, and two logs sharing it

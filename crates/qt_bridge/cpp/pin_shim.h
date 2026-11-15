@@ -28,6 +28,10 @@ class QScreen;
 /// the transparent margin should be.
 void enableAlphaBufferByDefault();
 
+/// P213: `QGuiApplication::setWindowIcon` —— 全进程的默认窗口图标。必须在
+/// `QGuiApplication` 存在之后调用（main.rs 里紧跟在 app 建起来之后）。
+void falconshotApplyAppIcon();
+
 /// Chain Qt's own message handler and keep a copy of what it was told. A QML
 /// document that fails to compile reports through that handler, which a console
 /// run otherwise never shows; without this, `--probe` can only see that no

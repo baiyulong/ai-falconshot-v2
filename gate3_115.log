@@ -1,99 +1,99 @@
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.54s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 10.31s
      Running unittests src\lib.rs (target\debug\deps\platform_windows-95eef052c8af69e8.exe)
 
 running 91 tests
 test affinity::the_probe_reads_what_exclusion_does_to_a_screen_grab ... ignored, creates a window on the real desktop and photographs it
 test affinity::tests::a_window_that_is_not_there_is_not_answered_as_plain ... ok
+test affinity::tests::an_unknown_tier_is_not_read_as_the_default ... ok
 test autostart::tests::a_refusing_machine_hands_its_reason_up ... ok
 test autostart::tests::a_write_the_machine_did_not_keep_is_not_success ... ok
-test autostart::tests::leaving_the_machine_touches_nothing ... ok
 test autostart::tests::absent_and_refused_are_different_answers ... ok
 test autostart::tests::classify_stands_where_the_entry_points ... ok
-test affinity::tests::an_unknown_tier_is_not_read_as_the_default ... ok
-test autostart::tests::same_command_folds_case_but_not_blanks ... ok
-test autostart::tests::the_real_run_key_answers_a_read_without_reaching ... ignored, 浼氭墦寮€杩欏彴鏈哄櫒鐪熷疄鐨?Run 閿紙鍙锛屼絾瑕佺湡浜虹偣澶达級
 test autostart::tests::inspection_reports_without_reaching ... ok
-test autostart::tests::the_switch_maps_to_exactly_one_action ... ok
+test autostart::tests::the_real_run_key_answers_a_read_without_reaching ... ignored, 浼氭墦寮€杩欏彴鏈哄櫒鐪熷疄鐨?Run 閿紙鍙锛屼絾瑕佺湡浜虹偣澶达級
+test autostart::tests::leaving_the_machine_touches_nothing ... ok
 test autostart::tests::switching_off_removes_even_an_entry_that_points_elsewhere ... ok
-test clip::tests::a_dib_header_is_little_endian_and_bottom_up ... ok
-test autostart::tests::the_line_keeps_the_other_command_visible ... ok
-test autostart::tests::sync_turns_the_switch_into_the_machine ... ok
-test autostart::tests::value_bytes_round_trip_and_unkinds_still_read ... ok
-test clip::tests::a_copy_that_promised_a_file_and_has_none_is_refused_first ... ok
+test autostart::tests::the_switch_maps_to_exactly_one_action ... ok
 test autostart::tests::the_command_is_quoted_only_when_it_has_to_be ... ok
+test autostart::tests::the_current_command_names_this_exe ... ok
+test autostart::tests::the_line_keeps_the_other_command_visible ... ok
+test autostart::tests::same_command_folds_case_but_not_blanks ... ok
+test autostart::tests::value_bytes_round_trip_and_unkinds_still_read ... ok
+test clip::tests::a_board_this_app_cannot_read_is_not_a_board_that_was_empty ... ok
+test clip::tests::a_copy_that_promised_a_file_and_has_none_is_refused_first ... ok
+test clip::tests::a_dib_header_is_little_endian_and_bottom_up ... ok
 test clip::tests::a_board_this_file_plants_classifies_as_html_and_flattens_to_lines ... ok
 test clip::tests::a_misbuilt_hdrop_block_is_an_error_and_never_an_empty_drop ... ok
-test autostart::tests::the_current_command_names_this_exe ... ok
-test clip::tests::a_board_this_app_cannot_read_is_not_a_board_that_was_empty ... ok
+test autostart::tests::sync_turns_the_switch_into_the_machine ... ok
 test clip::tests::a_truncated_or_absurd_header_is_refused_not_paniced ... ok
 test clip::tests::a_top_down_dib_from_another_app_still_decodes ... ok
-test clip::tests::an_html_envelope_written_here_is_the_envelope_core_cuts ... ok
 test clip::tests::a_dib_written_here_reads_back_with_the_right_channels_and_rows ... ok
-test clip::tests::png_is_the_leg_that_survives_a_copy_and_a_paste ... ok
 test clip::tests::an_hdrop_block_this_file_writes_is_the_block_a_target_reads ... ok
+test clip::tests::an_html_envelope_written_here_is_the_envelope_core_cuts ... ok
+test clip::tests::png_is_the_leg_that_survives_a_copy_and_a_paste ... ok
 test cursor::tests::the_sentinel_marks_what_the_pointer_never_covered ... ok
 test desktop::tests::a_missing_slot_is_not_printed_as_a_number ... ok
+test cursor::tests::a_shared_system_icon_paints_through_the_same_leg_as_the_pointer ... ok
 test desktop::tests::a_reach_that_cannot_be_asked_does_not_answer_yes ... ok
+test desktop::tests::an_unaskable_desktop_is_not_a_name ... ok
 test fetch::tests::a_loopback_address_with_a_port_passes_the_gate ... ok
+test cursor::tests::the_pointer_leg_answers_for_a_point_it_was_handed ... ok
 test fetch::tests::a_non_http_url_never_reaches_the_network ... ok
 test fetch::tests::a_status_code_and_a_transport_failure_say_different_things ... ok
 test fetch::tests::an_idn_address_is_refused_rather_than_fetched ... ok
 test fetch::tests::the_agent_carries_the_version_this_build_was_built_with ... ok
 test fetch::tests::the_size_cap_reports_the_number_it_used ... ok
-test cursor::tests::a_shared_system_icon_paints_through_the_same_leg_as_the_pointer ... ok
-test desktop::tests::an_unaskable_desktop_is_not_a_name ... ok
-test cursor::tests::the_pointer_leg_answers_for_a_point_it_was_handed ... ok
-test hotkey::tests::the_user_messages_this_pump_invents_do_not_share_a_number ... ok
+test desktop::tests::the_no_console_sentinel_is_not_a_session_number ... ok
 test hotkey::tests::a_bare_letter_is_refused_before_the_shell_is_asked ... ok
 test hotkey::tests::a_key_this_table_does_not_name_is_said_not_guessed ... ok
 test hotkey::tests::a_pick_for_a_menu_that_was_never_mounted_is_dropped ... ok
 test hotkey::tests::mapping_still_matches_the_sdk ... ok
 test hotkey::tests::every_default_action_text_becomes_a_binding ... ok
-test hotkey::tests::the_broadcast_pointer_is_read_only_where_the_kernel_says_it_may_be ... ok
-test desktop::tests::the_no_console_sentinel_is_not_a_session_number ... ok
-test hotkey::tests::the_shape_the_shell_wants ... ok
-test hotkey::tests::the_window_key_is_a_bit_and_not_a_letter ... ok
 test hotkey::tests::punctuation_and_named_keys_have_codes ... ok
+test hotkey::tests::the_broadcast_pointer_is_read_only_where_the_kernel_says_it_may_be ... ok
+test hotkey::tests::the_shape_the_shell_wants ... ok
+test hotkey::tests::the_user_messages_this_pump_invents_do_not_share_a_number ... ok
+test hotkey::tests::the_window_key_is_a_bit_and_not_a_letter ... ok
 test instance::tests::a_broken_batch_reads_as_nothing_at_all ... ok
 test instance::tests::the_batch_survives_the_wire_byte_for_byte ... ok
 test instance::tests::the_receiver_claim_is_idempotent_inside_one_process ... ok
 test ocr::tests::a_frame_exactly_the_ceiling_is_not_touched ... ok
 test instance::tests::a_batch_travels_through_the_pipe_byte_for_byte ... ok
 test ocr::tests::a_missing_engine_hands_over_its_own_sentence_wrapped_in_parens ... ok
-test ocr::tests::a_partial_pixel_at_the_end_is_not_swizzled ... ok
 test ocr::tests::letters_drawn_by_the_font_leg_come_back_as_letters ... ignored, 闇€瑕佹湰鏈鸿鏈夌郴缁?OCR 璇█鍖咃紱鐢遍棬姊偣鍚嶈窇
+test ocr::tests::a_partial_pixel_at_the_end_is_not_swizzled ... ok
 test ocr::tests::an_engine_that_answers_leaves_the_label_alone ... ok
 test ocr::tests::swapping_exchanges_red_and_blue_and_touches_nothing_else ... ok
+test clock::tests::the_clock_is_now_and_the_offset_is_a_whole_minute ... ok
 test open::tests::a_non_browser_scheme_never_reaches_the_shell ... ok
-test open::tests::an_https_link_is_not_refused ... ignored, 浼氬湪璺戞祴璇曠殑杩欏彴鏈哄櫒涓婄湡寮€涓€鏋氭祻瑙堝櫒鏍囩椤?test clock::tests::the_clock_is_now_and_the_offset_is_a_whole_minute ... ok
+test open::tests::an_https_link_is_not_refused ... ignored, 浼氬湪璺戞祴璇曠殑杩欏彴鏈哄櫒涓婄湡寮€涓€鏋氭祻瑙堝櫒鏍囩椤?test glyphs::tests::capitals_sit_above_the_baseline_of_the_line_they_are_blitted_into ... ok
 test glyphs::tests::an_empty_line_is_a_blank_line_the_same_height_as_the_font ... ok
+test glyphs::tests::descenders_reach_the_bottom_of_the_line_box ... ok
+test glyphs::tests::chinese_lays_out ... ok
+test glyphs::tests::the_block_is_the_line_box_or_whatever_the_ink_needs ... ok
+test glyphs::tests::a_bigger_font_is_a_bigger_block ... ok
+test glyphs::tests::a_line_comes_back_as_a_shape_not_a_filled_box ... ok
 test ocr::tests::a_frame_under_the_ceiling_is_handed_over_untouched ... ok
+test uia::tests::asks_uia_for_the_chain_inside_a_real_window ... ignored
 test open::tests::an_idn_link_is_refused_rather_than_resolved ... ok
 test open::tests::the_gate_is_the_one_in_core ... ok
 test reveal::tests::a_relative_path_is_refused_rather_than_guessed ... ok
-test theme::tests::decode_takes_only_a_little_endian_dword ... ok
-test theme::tests::only_zero_and_one_answer_the_machine ... ok
-test glyphs::tests::a_bigger_font_is_a_bigger_block ... ok
-test glyphs::tests::an_unknown_family_still_lays_out ... ok
-test glyphs::tests::capitals_sit_above_the_baseline_of_the_line_they_are_blitted_into ... ok
-test glyphs::tests::chinese_lays_out ... ok
-test glyphs::tests::a_line_comes_back_as_a_shape_not_a_filled_box ... ok
-test glyphs::tests::descenders_reach_the_bottom_of_the_line_box ... ok
-test uia::tests::asks_uia_for_the_chain_inside_a_real_window ... ignored
-test theme::tests::the_broadcast_name_stops_at_its_terminator ... ok
-test glyphs::tests::the_block_is_the_line_box_or_whatever_the_ink_needs ... ok
 test win::tests::the_real_window_answers_band_and_corner ... ignored, 璇昏繖鍙版満鍣ㄧ湡瀹炲墠鍙扮獥鍙ｇ殑 DWM 璇绘暟锛堝彧闂暟锛屼絾瑕佺湡浜虹偣澶达級
+test theme::tests::decode_takes_only_a_little_endian_dword ... ok
+test theme::tests::the_broadcast_name_stops_at_its_terminator ... ok
+test glyphs::tests::an_unknown_family_still_lays_out ... ok
 test win::tests::the_four_bands_each_answer_a_radius ... ok
+test theme::tests::only_zero_and_one_answer_the_machine ... ok
 test win::tests::the_radius_scales_with_the_windows_own_dpi ... ok
 test reveal::tests::a_directory_opens_itself_and_selects_nothing ... ok
 test reveal::tests::something_not_on_disk_is_missing_not_a_directory ... ok
-test ocr::tests::the_cached_face_is_the_classifier_over_a_real_probe ... ok
-test open::tests::a_picture_that_is_not_on_disk_is_never_reported_as_opened ... ok
 test open::tests::a_target_that_is_not_here_is_never_reported_as_delivered ... ok
+test open::tests::a_picture_that_is_not_on_disk_is_never_reported_as_opened ... ok
+test ocr::tests::the_cached_face_is_the_classifier_over_a_real_probe ... ok
 test reveal::tests::a_file_answers_with_its_own_directory_and_itself ... ok
 test ocr::tests::a_frame_over_the_ceiling_is_shrunk_onto_it ... ok
 
-test result: ok. 85 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.19s
+test result: ok. 85 passed; 0 failed; 6 ignored; 0 measured; 0 filtered out; finished in 0.20s
 
    Doc-tests platform_windows
 

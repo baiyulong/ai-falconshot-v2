@@ -11,6 +11,7 @@
 #include <QtCore/QStringList>
 #include <QtCore/QTimer>
 #include <QtGui/QGuiApplication>
+#include <QtGui/QIcon>
 #include <QtGui/QPixmap>
 #include <QtGui/QScreen>
 #include <QtGui/QSurfaceFormat>
@@ -151,6 +152,17 @@ void enableAlphaBufferByDefault()
     QSurfaceFormat format = QSurfaceFormat::defaultFormat();
     format.setAlphaBufferSize(8);
     QSurfaceFormat::setDefaultFormat(format);
+}
+
+void falconshotApplyAppIcon()
+{
+    // P213: 全进程的默认窗口图标。普通 QML 的 `Window` 没有 icon 属性可设
+    // (measured 2026-11-15: `icon: "..."` on a plain Window fails the load with
+    // `Cannot assign to non-existent property "icon"`)，所以首选项/历史/成组/
+    // 自定义截屏那些窗口的标题栏与任务栏图标都靠这一次设置给默认。
+    // 取 qrc 里那张 logo —— 资源路径与 main.qml 同一前缀，装成 MSIX 之后
+    // exe 旁边并没有那张 png，磁盘上找是找不着的。
+    QGuiApplication::setWindowIcon(QIcon(QStringLiteral(":/qt/qml/dev.falconshot/qml/logo.png")));
 }
 
 // ---------------------------------------------------------------- pixels

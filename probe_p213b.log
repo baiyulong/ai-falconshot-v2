@@ -1,0 +1,47 @@
+[startup cfg] history.enabled=true history.max_items=1000 advanced.log_level=info advanced.data_dir=(platform default)
+[appearance cfg] appearance.theme=System appearance.accent=#0078D7 appearance.toolbar_placement=auto appearance.ui_font_size=9 appearance.ui_font_family=Microsoft YaHei UI appearance.magnifier_border=1 appearance.magnifier_corner_radius=6 appearance.magnifier_foreground=#FFFFFF appearance.magnifier_background=#1F1F1F
+[theme cfg] appearance.theme=System system.theme=dark resolved.theme=Dark
+[autostart cfg] 档里=false 机器=ai-falconshot 不在（登录时不会启动本程序） ⇒ 一致
+[about cfg] about.auto_check_updates=true about.check_every_days=7 about.channel=stable about.send_diagnostics=false
+[output cfg] output.share_targets=(none) output.send_to_apps=(none) output.reuse_last_file=false output.hide_pins_on_dialog=false output.copy_as_file=false
+[send_to cfg] send_to parsed=0 refused=0
+[share cfg] share parsed=0 refused=0
+[share filter] share known=0 unknown=0
+[send_to validate] send_to validated=0 refused=0
+[send_to pipeline] pipeline final=0 parse_refused=0 validate_refused=0
+[share pipeline] pipeline final=0 parse_refused=0 unknown=0
+[send_to menu] menu entries=0
+[share menu] menu entries=0
+[send_to resolve] resolve (empty)
+[share scheme] scheme (empty)
+[send_to argv] argv (empty)
+[share scheme all] scheme_all 0 entries
+[send_to argv first] argv_first (empty)
+[share scheme first] scheme_first (empty)
+[send_to names] names 0 []
+[share names] names 0 []
+[history usage] history records=13 original=2479535B thumb=107853B db=147456B total=2734844B
+[history neighbors] history anchor=13 prev=12 next=-
+[mask pin] 配置写回钉到 C:\Users\baiyl3\AppData\Local\Temp\falconshot-mask-gauge\pinned-config.toml
+[mask] 1 screen(s), backend=xcap-gdi, rhi=default, freeze 333 ms, pixels 144 ms, hole=384,240 768x480, shader=true, freeze_frame=true
+warn: QQmlApplicationEngine failed to load component
+warn: qrc:/qt/qml/dev/falconshot/qml/main.qml:275: qrc:/qt/qml/dev/falconshot/qml/main.qml:275:9: Type SettingsWindow unavailable
+warn: qrc:/qt/qml/dev/falconshot/qml/SettingsWindow.qml:20: qrc:/qt/qml/dev/falconshot/qml/SettingsWindow.qml:20:5: Cannot assign to non-existent property "icon"
+desktop scene          -    (1536,960) 上是 chrome.exe「AI Todo - Google Chrome」 hwnd=0x10a6a 会话锁屏=false
+pinned settings writes PASS settings line 的 read="file" 与 write_to="C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-mask-gauge\\pinned-config.toml"（要求后者 == "C:\\Users\\baiyl3\\AppData\\Local\\Temp\\falconshot-mask-gauge\\pinned-config.toml" 且两者不同）
+one per screen         FAIL qt screens=1 slots=1 windows=0
+the product opens with no selection PASS Some(PhysRect { x: 0, y: 0, w: 0, h: 0 })
+the save dialog has a name to offer PASS C:\Users\baiyl3\Pictures\falcon_2026-11-13_172329.png
+hole fits desktop      PASS 384,240 768x480 of 0,0 3072x1920
+window m0-display1     FAIL no top-level titled falconshot-mask-m0-display1
+grab of desktop        -    3072x1920 of 0,0 3072x1920 dim=0.679 hole=0.679 (1731+104 usable; dark=1 border=124)
+no problems            PASS 
+no qml complaints      FAIL warn: qrc:/qt/qml/dev/falconshot/qml/main.qml:275: qrc:/qt/qml/dev/falconshot/qml/main.qml:275:9: Type SettingsWindow unavailable | warn: qrc:/qt/qml/dev/falconshot/qml/SettingsWindow.qml:20: qrc:/qt/qml/dev/falconshot/qml/SettingsWindow.qml:20:5: Cannot assign to non-existent property "icon"
+unit of desktop        PASS px=768×480（采样洞 768×480）dip=384×240 scale=2.00 切单位动选区=false
+mask state             -    m0-display1 dpr=2.00 dip=1536x960@0,0 hole=PhysRect { x: 192, y: 120, w: 384, h: 240 } swaps=0 first=None shader=None
+textures released      PASS 0 of 1 still in Qt's process after close
+mask check: FAIL
+[mask cold] main=0 cfg=16 asked=358 opened=841 engine=842 loaded=2325
+[settings] read=file load=5ms applies=1 apply=0/0ms saves=0 save=0/0ms from=C:\Users\baiyl3\AppData\Roaming\ai-falconshot\config.toml write_to=C:\Users\baiyl3\AppData\Local\Temp\falconshot-mask-gauge\pinned-config.toml
+[mask cold split] qt+freeze=842 ms (of which freeze+publish=483 ms) engine+qml=1483 ms qml->first-frame=- total=-
+[mask after 4000 ms] qml_loaded=false exe=39568896 B @1794561753s desktop=0,0 1536x960 primary=0,0 1536x960 dpr=2.00 station=WinSta0 desktop=Default

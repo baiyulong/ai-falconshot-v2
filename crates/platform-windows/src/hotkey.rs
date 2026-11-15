@@ -804,6 +804,7 @@ mod win {
     /// The pump thread's whole life: window, registrations, icon, loop, teardown.
     pub fn pump_thread(handshake: Sender<Started>) {
         use windows::core::PCWSTR;
+        use windows::Win32::Foundation::HINSTANCE;
         use windows::Win32::System::LibraryLoader::GetModuleHandleW;
         use windows::Win32::UI::Input::KeyboardAndMouse::HOT_KEY_MODIFIERS;
         use windows::Win32::UI::Shell::{
@@ -924,7 +925,16 @@ mod win {
 
             let mut tray_shown = false;
             if let Some(spec) = staged.1 {
-                match LoadIconW(None, IDI_APPLICATION) {
+                // P213: 先取 exe 自己的图标资源 #1（qt_bridge 的 build.rs 经 rc.exe 嵌进去的
+                // 那一枚，由用户的 logo 打成，见 packaging/make_ico.ps1）；取不到 —— 单元
+                // 测试的可执行文件里没有那枚资源 —— 就退回 IDI_APPLICATION，托盘在那种进程
+                // 里至少还有系统默认的脸，挂载不因此失败。
+                let icon = match GetModuleHandleW(None) {
+                    Ok(instance) => LoadIconW(Some(HINSTANCE(instance.0)), PCWSTR(1 as _))
+                        .or_else(|_| LoadIconW(None, IDI_APPLICATION)),
+                    Err(_) => LoadIconW(None, IDI_APPLICATION),
+                };
+                match icon {
                     Ok(icon) => {
                         let mut nid = envelope(hwnd.0 as u64, TRAY_UID);
                         nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;

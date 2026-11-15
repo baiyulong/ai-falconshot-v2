@@ -7,6 +7,7 @@ fn main() {
 
     let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR");
     let shader_qrc = bake_shaders(Path::new(&out_dir));
+    embed_icon(Path::new(&out_dir));
 
     // The recipe M0 proved, applied for real: one QML module holding the twelve
     // documents, the three cxx-qt bridges, and the thin C++ shim nothing else can
@@ -106,6 +107,13 @@ fn bake_shaders(out_dir: &Path) -> PathBuf {
     // relative "dim_hole.frag.qsb" only resolves if the pack sits in that same
     // prefix - the one thing about this arrangement that is not guessable.
     let mut qrc = String::from("<RCC>\n  <qresource prefix=\"/qt/qml/dev/falconshot/qml\">\n");
+    // 应用自己的图标（用户 2026-11-13 放进来的那张 ✓）也进同一份 qrc：窗与托盘的图标
+    // 都从 qrc 里取（`qrc:/qt/qml/dev.falconshot/qml/logo.png` ✓），于是它们不必去磁盘上
+    // 找一张可能不在的图 ✓（装成 MSIX 之后 exe 旁边并没有那张 png ✓）。
+    let icon = Path::new("assets/logo.png");
+    println!("cargo:rerun-if-changed={}", icon.display());
+    let icon_abs = icon.canonicalize().unwrap_or_else(|_| icon.to_path_buf());
+    files.push(("logo.png".to_string(), icon_abs));
     for (name, path) in files {
         let path = path.display().to_string().replace('\\', "/");
         qrc.push_str(&format!("    <file alias=\"{name}\">{path}</file>\n"));
@@ -128,4 +136,54 @@ fn find_qsb() -> Option<PathBuf> {
     }
     let on_path = PathBuf::from(if cfg!(windows) { "qsb.exe" } else { "qsb" });
     Some(on_path)
+}
+
+/// P213: 把 `assets/app.ico`（`packaging/make_ico.ps1` 从用户的 logo 打出来的那枚）
+/// 经 rc.exe 编成资源文件，交给链接器进 exe —— 资源号 #1。
+///
+/// 取这一枚的三处：托盘那一张脸（platform-windows 的 `pump_thread` 用
+/// `GetModuleHandleW(None)` 从本进程模块取）、资源管理器里的文件图标、以及窗口没
+/// 自设图标时任务栏给的那张默认脸。失败是致命的，与 qsb 同一条理：编译出来一枚
+/// 没有脸的 exe，它照样能跑，缺的那一块就没人再看见了。
+///
+/// 链接用 `cargo:rustc-link-arg-bins` 把 .res 当链接器输入递过去 —— link.exe 收
+/// .res ✓。这是 build.rs 自己能闭环的一条路，不为此引入新的构建依赖。
+fn embed_icon(out_dir: &Path) {
+    let icon = Path::new("assets/app.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
+    let abs = icon
+        .canonicalize()
+        .unwrap_or_else(|_| panic!("assets/app.ico 缺失：先跑 packaging/make_ico.ps1"));
+    let abs = abs.to_string_lossy().trim_start_matches(r"\\?\").replace('\\', "/");
+    let rc_source = out_dir.join("app_icon.rc");
+    std::fs::write(&rc_source, format!("1 ICON \"{abs}\"\n")).expect("writing app_icon.rc");
+    let res = out_dir.join("app_icon.res");
+    let rc_exe = find_rc();
+    let status = Command::new(&rc_exe)
+        .args(["/nologo", "/fo"])
+        .arg(&res)
+        .arg(&rc_source)
+        .status()
+        .unwrap_or_else(|e| panic!("running {}: {e}", rc_exe.display()));
+    if !status.success() {
+        panic!("rc.exe failed ({status}) - the exe icon resource would be missing");
+    }
+    println!("cargo:rustc-link-arg-bins={}", res.display());
+}
+
+/// `rc.exe` 与 `makeappx.exe` 同住 Windows Kits 的 bin 一夹；逐版本从新到旧找，
+/// 找不着就交 PATH。
+fn find_rc() -> PathBuf {
+    let kits = Path::new(r"C:\Program Files (x86)\Windows Kits\10\bin");
+    if let Ok(entries) = std::fs::read_dir(kits) {
+        let mut versions: Vec<PathBuf> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        versions.sort();
+        for version in versions.iter().rev() {
+            let candidate = version.join("x64").join("rc.exe");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    PathBuf::from("rc.exe")
 }

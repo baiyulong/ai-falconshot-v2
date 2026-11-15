@@ -155,6 +155,18 @@
 >
 > 证人：`--selftest` 那枚设置门读的是 `Config::flat()` 现场枚举，本轮读数「分类 绿：**124 枚键**（删前 130，六枚同轮删）｜每类有行 绿：12 类，空类 []」——`[general]` 一类没被删空。不覆盖：本机桌面锁定，`--settings` 那扇门本轮没有真机跑过，124 这个数不是人眼数设置窗数出来的。
 
+> **实现口径（2026-11-15）：托盘那张脸从「外壳通用图」换成 exe 自己的图标资源 #1**  
+>
+> 用户 2026-11-13 把软件图标与 logo 放进来（四枚 PNG，`msix/assets/`），这一轮把这张脸接进三处：  
+>
+> - **托盘**：`crates/platform-windows/src/hotkey.rs` 的 `pump_thread` 先 `LoadIconW(本进程模块, 资源 #1)` —— 那一枚是 `crates/qt_bridge/assets/app.ico`（`packaging/make_ico.ps1` 从 `Square150x150Logo.png` 打出的七枚 16..256 的 32bpp BMP 条目）经 `rc.exe` 编成 `.res`、由 qt_bridge 的 build.rs 以 `cargo:rustc-link-arg-bins` 交给链接器进 exe 的。取不到资源（单元测试的可执行文件里没有那枚）就退回 `IDI_APPLICATION` —— 挂载不因此失败，上一版的行为原样留着当退路。  
+> - **窗口**：普通 QML 的 `Window` 没有 icon 属性可设（实测：`icon: "..."` 让整个组件加载失败，`--mask` 门报 `Cannot assign to non-existent property "icon"`），所以改在 `main.rs` 里 `QGuiApplication` 建起来之后调一次 `falconshotApplyAppIcon()`（`cpp/pin_shim.cpp`）—— `setWindowIcon` 一处盖全，首选项/历史/成组/自定义截屏的标题栏与任务栏都取它；图标本体走 qrc（`:/qt/qml/dev.falconshot/qml/logo.png`），装成 MSIX 之后 exe 旁边并没有那张 png，磁盘上找不着。  
+> - **打包**：`packaging/gen_assets.ps1` 改成只补缺、不覆盖（用户那四枚真图住在 `packaging/assets/`，跑生成器不得把它们重画成占位标）；`Wide310x150Logo` 在清单里以 `<uap:DefaultTile>` 子元素点名（写成 `VisualElements` 的属性，makeappx 10.0.26100 拒收，实测「The package manifest is not valid」）。  
+>
+> 证人：`cargo test -p qt_bridge` 的 `the_baked_app_icon_is_a_well_formed_multi_size_ico`（目录头/七枚/尺寸/32bpp/数据自洽，坏一枚就红）；QML 侧每轮走 `--mask` 门（`no qml complaints` + `mask check` 双绿）；exe 里真有那枚资源、托盘真长什么样，不是单测够得着的 —— 归 `--selftest` 挂托盘与真人那一眼。  
+>
+> 不覆盖：图标仍不随状态换图、不加角标、不变色（2026-11-04 那一轮的话原样有效，只是「同一枚通用图」换成了「同一枚产品图」）。
+
 ### 5.1.2 开机启动
 
 **操作步骤**

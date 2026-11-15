@@ -25,6 +25,12 @@ pub mod qobject {
         #[rust_name = "enable_alpha_buffer_by_default"]
         fn enableAlphaBufferByDefault();
 
+        /// Must run after `QGuiApplication` exists: hands the whole process its
+        /// default window icon (P213 —— 普通 QML `Window` 没有 icon 属性可设，
+        /// 这一处设置盖住首选项/历史/成组/自定义截屏的标题栏与任务栏).
+        #[rust_name = "apply_app_icon"]
+        fn falconshotApplyAppIcon();
+
         #[rust_name = "pin_store_frame"]
         fn pinStoreFrame(id: i64, png: &QByteArray);
         #[rust_name = "pin_drop_frame"]
