@@ -9,9 +9,8 @@
   declares, and the name the plan previously guessed ("runFullAccess") is wrong: no
   installed package uses it.
 
-  Publisher is a self-signed subject for local testing. The Store rewrites both
-  Publisher and PublisherDisplayName at submission, so neither value is a claim
-  about the published identity (R17 item 3, not verifiable on this machine).
+  Identity and publisher values match the product identity reserved in Microsoft
+  Partner Center. Keep these values synchronized with the Store association.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -20,14 +19,14 @@
   IgnorableNamespaces="uap rescap">
 
   <Identity
-    Name="baiyulong.Falconshot"
-    Publisher="CN=baiyulong"
-    Version="0.1.0.0"
+    Name="YulongBai.AIFalconshot"
+    Publisher="CN=03C109DF-1B68-41E5-889F-EB9EFC65B5E5"
+    Version="1.0.0.0"
     ProcessorArchitecture="x64" />
 
   <Properties>
     <DisplayName>Falconshot</DisplayName>
-    <PublisherDisplayName>baiyulong</PublisherDisplayName>
+    <PublisherDisplayName>Yulong Bai</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
 

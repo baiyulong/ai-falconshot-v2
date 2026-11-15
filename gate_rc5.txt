@@ -1,5 +1,0 @@
-gate1_rc=0
-gate2_rc=0
-gate3_rc=0
-gate4_rc=0
-ALL_DONE

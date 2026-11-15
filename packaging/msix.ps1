@@ -1,14 +1,4 @@
 # P16: the MSIX packaging layer for the product binary (plan 8-R17, sequence "fixed
-exit $(if ($ok) { 0 } else { 1 })
-
-# 清单点名的每一枚 logo 都得在 payload 里：makeappx 缺了会报一句天书（"element not found"），
-# 而这里能指名道姓地说缺的是哪一枚（#433：两件事不许说成同一句）。
-$manifestText = Get-Content (Join-Path $PSScriptRoot 'AppxManifest.xml') -Raw
-foreach ($m in [regex]::Matches($manifestText, 'Assets\\([A-Za-z0-9_\-]+\.png)')) {
-    $lp = Join-Path $stage $m.Groups[1].Value
-    if (-not (Test-Path $lp)) { throw ("清单点名的 logo 不在 payload 里：" + $lp) }
-}
-# P16: the MSIX packaging layer for the product binary (plan 8-R17, sequence "fixed
 # in R17", first half - everything that does not touch this machine's system state).
 #
 #   packaging\msix.ps1                  builds stage/ and dist/*.msix, prints a line
@@ -41,7 +31,32 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 $qt = if ($env:QTDIR) { $env:QTDIR } else { 'C:\Users\baiyl3\dev\qt\6.10.1\msvc2022_64' }
-$sdk = 'C:\Program Files (x86)\Windows Kits\10\bin\10.0.26100.0\x64'
+
+# Resolve the newest installed SDK containing both tools used below. Do not pin a
+# machine-specific SDK version: Store build agents and developer machines update at
+# different times.
+$programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
+$sdkBinRoot = Join-Path $programFilesX86 'Windows Kits\10\bin'
+$sdkVersionDir = Get-ChildItem -LiteralPath $sdkBinRoot -Directory -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.Name -match '^\d+\.\d+\.\d+\.\d+$' -and
+        (Test-Path -LiteralPath (Join-Path $_.FullName 'x64\makeappx.exe')) -and
+        (Test-Path -LiteralPath (Join-Path $_.FullName 'x64\signtool.exe'))
+    } |
+    Sort-Object { [version]$_.Name } -Descending |
+    Select-Object -First 1
+if (-not $sdkVersionDir) { throw "no x64 Windows SDK packaging tools found below $sdkBinRoot" }
+$sdk = Join-Path $sdkVersionDir.FullName 'x64'
+
+# vswhere understands all VS 2022 editions and preview/install layouts. The
+# component filter prevents selecting an installation without the native toolchain.
+$vswhere = Join-Path $programFilesX86 'Microsoft Visual Studio\Installer\vswhere.exe'
+if (-not (Test-Path -LiteralPath $vswhere)) { throw "missing $vswhere" }
+$vsInstall = @(& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath) |
+    Where-Object { $_ } |
+    Select-Object -First 1
+if (-not $vsInstall -or -not (Test-Path -LiteralPath $vsInstall)) { throw 'no Visual Studio installation with x64 C++ tools found' }
+
 $exe = Join-Path $root 'target\release\falconshot.exe'
 $stage = Join-Path $root 'packaging\stage'
 $dist = Join-Path $root 'packaging\dist'
@@ -50,6 +65,7 @@ $qml = Join-Path $root 'crates\qt_bridge\qml'
 foreach ($p in @($exe, $qt, $sdk, $qml)) {
     if (-not (Test-Path $p)) { throw "missing $p" }
 }
+Write-Output "[P16] tools sdk=$($sdkVersionDir.Name) vs=$vsInstall"
 
 # ---- version guard: the manifest must not silently lag the workspace ----
 $cargo = Get-Content (Join-Path $root 'Cargo.toml') -Raw
@@ -57,8 +73,9 @@ $wsVersion = [regex]::Match($cargo, 'version\s*=\s*"([^"]+)"').Groups[1].Value
 $manifestSrc = Get-Content (Join-Path $PSScriptRoot 'AppxManifest.xml') -Raw
 $pkgVersion = [regex]::Match($manifestSrc, 'Version="([^"]+)"').Groups[1].Value
 Write-Output "[P16] version workspace=$wsVersion manifest=$pkgVersion"
-if (-not $pkgVersion.StartsWith("$wsVersion.")) {
-    throw "AppxManifest.xml Identity Version does not carry the workspace version"
+$expectedPkgVersion = "$wsVersion.0"
+if ($pkgVersion -ne $expectedPkgVersion) {
+    throw "AppxManifest.xml Identity Version must be $expectedPkgVersion"
 }
 
 # ---- stage: fresh, so the file count below means what it says ----
@@ -79,6 +96,7 @@ Copy-Item $exe (Join-Path $stage 'falconshot.exe') -Force
 
 # ---- Qt payload, the pinned line ----
 $wdq = Join-Path $qt 'bin\windeployqt.exe'
+if (-not (Test-Path -LiteralPath $wdq)) { throw "missing $wdq" }
 $wdqArgs = @(
     '--release', '--dir', $stage, '--qmldir', $qml,
     '--no-compiler-runtime', '--no-system-dxc-compiler', '--no-opengl-sw',
@@ -95,6 +113,8 @@ $log | Where-Object { $_ -match 'warn|error|unknown|Unable|not found' } |
 Copy-Item (Join-Path $PSScriptRoot 'AppxManifest.xml') (Join-Path $stage 'AppxManifest.xml') -Force
 foreach ($a in Get-ChildItem (Join-Path $PSScriptRoot 'assets\*.png')) {
     Copy-Item $a.FullName (Join-Path $stage 'Assets') -Force
+    Write-Output "[P16] asset $($a.Name) $($a.Length)B"
+}
 
 # 清单点名的每一枚 logo 都得在 payload 里：makeappx 缺了会报一句天书（"element not found"），
 # 而这里能指名道姓地说缺的是哪一枚（#433：两件事不许说成同一句）。
@@ -103,8 +123,6 @@ foreach ($m in [regex]::Matches($manifestText, 'Assets\\([A-Za-z0-9_\-]+\.png)')
     $lp = Join-Path $stage $m.Groups[1].Value
     if (-not (Test-Path $lp)) { throw ("清单点名的 logo 不在 payload 里：" + $lp) }
 }
-    Write-Output "[P16] asset $($a.Name) $($a.Length)B"
-}
 
 # ---- CRT: only what the import tables actually name ----
 #
@@ -112,13 +130,15 @@ foreach ($m in [regex]::Matches($manifestText, 'Assets\\([A-Za-z0-9_\-]+\.png)')
 # DLLs app-local, or declare a VCLibs framework PackageDependency. This run measures
 # the first one, and measures *which files* rather than copying the redist folder:
 # the demand is read out of the binaries' own import tables.
-$crt = Get-ChildItem "$env:ProgramFiles\Microsoft Visual Studio\2022\Community\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT" -Directory |
+$crt = Get-ChildItem (Join-Path $vsInstall 'VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT') -Directory -ErrorAction SilentlyContinue |
     Where-Object { $_.Parent.Parent.Name -match '^\d+\.\d+\.\d+$' } |
     Sort-Object { [version]$_.Parent.Parent.Name } -Descending | Select-Object -First 1
 if (-not $crt) { throw 'no Microsoft.VC143.CRT redist directory found' }
 Write-Output "[P16] crt-source $($crt.FullName)"
 
-$dumpbin = Get-ChildItem "$env:ProgramFiles\Microsoft Visual Studio\2022\Community\VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe" |
+$dumpbin = Get-ChildItem (Join-Path $vsInstall 'VC\Tools\MSVC\*\bin\Hostx64\x64\dumpbin.exe') -File -ErrorAction SilentlyContinue |
+    Where-Object { $_.Directory.Parent.Parent.Parent.Name -match '^\d+\.\d+\.\d+$' } |
+    Sort-Object { [version]$_.Directory.Parent.Parent.Parent.Name } -Descending |
     Select-Object -First 1
 if (-not $dumpbin) { throw 'no dumpbin.exe' }
 
@@ -174,7 +194,8 @@ if (Test-Path $unpacked) {
     New-Item -ItemType Directory -Path $unpacked | Out-Null
 }
 $unLog = & (Join-Path $sdk 'makeappx.exe') unpack /p $msix /d $unpacked 2>&1
-Write-Output "[P16] makeappx unpack exit=$($LASTEXITCODE)"
+$unpackExit = $LASTEXITCODE
+Write-Output "[P16] makeappx unpack exit=$unpackExit"
 $unLog | Where-Object { "$_" -match 'error|succeeded|warning|FAILED' } | ForEach-Object { Write-Output "[P16] unpack> $_" }
 
 $before = @{}
@@ -193,9 +214,12 @@ $diff = @($before.Keys | Where-Object { $after.ContainsKey($_) -and $after[$_] -
 $madeManifest = $after.ContainsKey('appxmanifest.xml')
 # makeappx is allowed to rewrite a manifest; whether it did is a measurement, not an
 # assumption - the comments and every attribute are compared after line endings.
-$srcManifest = (Get-Content (Join-Path $PSScriptRoot 'AppxManifest.xml') -Raw) -replace "`r", ''
-$outManifest = (Get-Content (Join-Path $unpacked 'AppxManifest.xml') -Raw) -replace "`r", ''
-$manifestSame = ($srcManifest -eq $outManifest)
+$manifestSame = $false
+if ($madeManifest) {
+    $srcManifest = (Get-Content (Join-Path $PSScriptRoot 'AppxManifest.xml') -Raw) -replace "`r", ''
+    $outManifest = (Get-Content (Join-Path $unpacked 'AppxManifest.xml') -Raw) -replace "`r", ''
+    $manifestSame = ($srcManifest -eq $outManifest)
+}
 Write-Output "[P16] roundtrip staged=$($before.Count) in-package=$($after.Count) missing=$($missing.Count) extra=$($extra.Count) hash-diff=$($diff.Count) manifest-present=$madeManifest manifest-unchanged=$manifestSame"
 $missing | Select-Object -First 5 | ForEach-Object { Write-Output "[P16] missing> $_" }
 $extra | Select-Object -First 5 | ForEach-Object { Write-Output "[P16] extra> $_" }
@@ -223,10 +247,13 @@ Write-Output "[P16] payload required=$($must.Count) present-in-package=$($must.C
 # to fail. This one call is run with Continue so the number gets printed either way.
 $ErrorActionPreference = 'Continue'
 $verify = & (Join-Path $sdk 'signtool.exe') verify /pa /all $msix 2>&1
+$verifyExit = $LASTEXITCODE
 $ErrorActionPreference = 'Stop'
-Write-Output "[P16] signtool verify exit=$($LASTEXITCODE)"
+Write-Output "[P16] signtool verify exit=$verifyExit (informational; unsigned packages are expected to fail)"
 $verify | Select-Object -First 6 | ForEach-Object { Write-Output "[P16] sign> $_" }
 
-$ok = ($packExit -eq 0) -and ($missing.Count -eq 0) -and ($diff.Count -eq 0) -and $madeManifest -and ($absent.Count -eq 0)
+$ok = ($wdqExit -eq 0) -and ($packExit -eq 0) -and ($unpackExit -eq 0) -and
+    ($missing.Count -eq 0) -and ($diff.Count -eq 0) -and $madeManifest -and ($absent.Count -eq 0)
+Write-Output "[P16] verdict windeployqt=$wdqExit pack=$packExit unpack=$unpackExit roundtrip-missing=$($missing.Count) roundtrip-diff=$($diff.Count) manifest-present=$madeManifest required-payload-missing=$($absent.Count)"
 Write-Output "[P16] msix pack: $(if ($ok) { 'PASS' } else { 'FAIL' })"
 exit $(if ($ok) { 0 } else { 1 })

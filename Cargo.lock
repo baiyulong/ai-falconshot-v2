@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "falcon-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "atomic-write-file",
  "directories",
@@ -2284,7 +2284,7 @@ checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
 
 [[package]]
 name = "platform-windows"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "falcon-core",
  "image",
@@ -2450,7 +2450,7 @@ dependencies = [
 
 [[package]]
 name = "qt_bridge"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "cxx",
  "cxx-gen",
