@@ -2165,8 +2165,16 @@ impl Layer {
         };
         let mut e = Element::new(self.next_id, kind, geom, self.style.clone());
         e.z = self.doc.elements.iter().map(|x| x.z).max().unwrap_or(0) + 1;
+        // 上一格预览过的地方要一起重画。这一族框虽然从锚点长出去，但**往回拖**时新框并不
+        // 包住旧框 —— 只报新框，旧框落在新框外的那一圈就留在层上成了影，而此后的每一趟
+        // 重绘都只画自己那一块，谁也不会来收它（`draft_number` 头上那句"拖框的那几枚工具
+        // 不会撞上这一条"正是被证伪的那一句：单方向一路拖大才碰巧盖得住）。
+        let ghost = self.draft.first().map(|x| x.bounds());
         self.draft = vec![e];
-        let area = self.draft[0].bounds();
+        let mut area = self.draft[0].bounds();
+        if let Some(g) = ghost {
+            area = area.union(&g);
+        }
         self.paint(Some(&area));
     }
 
@@ -2248,8 +2256,15 @@ impl Layer {
         );
         e.z = self.doc.elements.iter().map(|x| x.z).max().unwrap_or(0) + 1;
         self.next_id += 1;
+        // 橡皮尾巴是预览的一部分，却不跟着节点折线落进文档：提交那条的 dirty 只盖节点
+        // 折线自己的框，尾巴（最后节点到指针的那一段）落在外面 —— 与 [`Layer::drag`]
+        // 同一条规矩，旧预览的足迹也要一起画掉，不然 `Enter` 一收，尾巴留在屏上成了影。
+        let tail = self.draft.first().map(|x| x.bounds());
         self.draft.clear();
         self.apply(Command::Add(vec![e]));
+        if let Some(t) = tail {
+            self.paint(Some(&t));
+        }
         true
     }
 
@@ -3193,6 +3208,101 @@ mod tests {
             }
         }
         Some(bad)
+    }
+
+    /// P214：从锚点长出去的预览框，往回拖时新框不包住旧框 —— 只报新框的增量重绘把旧框
+    /// 落在新框外的那一圈留在层上；单方向一路拖大才碰巧盖得住（`draft_number` 头上那句
+    /// 「拖框的那几枚工具不会撞上这一条」正是被证伪的由来）。判据是像素：收回之后，新框
+    /// 外面那一圈必须回到冻帧（层上无墨），提交之后同样干净 —— 「残影清理不掉」的单测形。
+    ///
+    /// 探墨的口径：洞内的层不是透明底 —— [`Layer::paint`] 走的 `raster::paint` 先把冻帧
+    /// 拷进 area 再落墨，画过而无墨的像素是冻帧灰底；**没画过**的像素是初始的
+    /// `[0,0,0,0]`，与灰底也不同。"有墨"因此是`!= 灰底 且 alpha>0`，两个条件都少不了。
+    #[test]
+    fn a_drag_that_walks_back_takes_its_old_pixels_back() {
+        let mut l = screens(&[("m", PhysRect::new(0, 0, 400, 300))], [90, 90, 90, 255]);
+        l.set_hole(PhysRect::new(0, 0, 400, 300));
+        l.set_color([255, 0, 0, 255]);
+        l.select_tool(code_of(Some(Kind::Rect)));
+        let grey = [90u8, 90, 90, 255];
+        let ink = |layer: &Frame, x: u32, y: u32| {
+            let p = layer.get(x, y);
+            p != grey && p[3] > 0
+        };
+
+        // 拖大到 (0,0)-(200,200)，先证明那一角真的画过（防"什么都没画"的空转）——
+        // 在 y=150 / x=150 两条横竖剖面上找右、下两条边的墨：
+        assert!(l.press(PhysPoint::new(0, 0)));
+        l.drag(PhysPoint::new(200, 200));
+        let big = l.layer_of("m").unwrap();
+        let was_there = (190u32..200).any(|x| ink(big, x, 150))
+            || (190u32..200).any(|y| ink(big, 150, y));
+        assert!(was_there, "旧框的右下角没画上，测试空转");
+
+        // 收回到 (0,0)-(100,100)：旧框在新框外的那一圈（x/y 在 100..200）必须还回去。
+        l.drag(PhysPoint::new(100, 100));
+        let layer = l.layer_of("m").unwrap();
+        let ghost: Vec<(u32, u32)> = (150u32..200)
+            .flat_map(|x| (100u32..200).map(move |y| (x, y)))
+            .filter(|(x, y)| ink(layer, *x, *y))
+            .take(5)
+            .collect();
+        assert!(ghost.is_empty(), "往回拖留下残影：{ghost:?}");
+        // 新框自己的边还在（别把收回修成了"什么都不画"）—— 在 y=50 / x=50 剖面上找：
+        let still_there = (90u32..100).any(|x| ink(layer, x, 50))
+            || (90u32..100).any(|y| ink(layer, 50, y));
+        assert!(still_there, "收回之后新框一笔也没画");
+
+        assert!(l.release());
+        assert_eq!(l.objects(), 1);
+        // 落进文档之后同样干净：残影不随提交消失 —— 层上有墨而整层重渲没有，
+        // `mismatched` 报的就是它。
+        assert_eq!(mismatched(&l, "m").unwrap(), Vec::<String>::new());
+    }
+
+    /// P214 的另一半：折线的橡皮尾巴是预览的一部分，却不跟着节点折线落进文档 ——
+    /// 提交那条的 dirty 只盖节点自己的框，尾巴落在框外就成了没人收的残迹。判据同上：
+    /// 收线之后，尾巴那一片回到冻帧（层上无墨）。
+    #[test]
+    fn finishing_a_polyline_takes_its_rubber_tail_back() {
+        let mut l = screens(&[("m", PhysRect::new(0, 0, 400, 300))], [90, 90, 90, 255]);
+        l.set_hole(PhysRect::new(0, 0, 400, 300));
+        l.set_color([255, 0, 0, 255]);
+        l.select_tool(code_of(Some(Kind::Polyline)));
+        let grey = [90u8, 90, 90, 255];
+        let ink = |layer: &Frame, x: u32, y: u32| {
+            let p = layer.get(x, y);
+            p != grey && p[3] > 0
+        };
+
+        // 两枚节点（各是按下-松手一枚），再按下第三枚并按住钮甩指针 —— 橡皮尾巴只在
+        // 按下与松手之间活着（[`Layer::dragging`] 看 `anchor`），所以尾巴出现的真实时刻
+        // 是"新一枚已按下、指针还在走"：就在这一格里收线。
+        assert!(l.press(PhysPoint::new(50, 50)));
+        assert!(!l.release());
+        assert!(l.press(PhysPoint::new(150, 50)));
+        assert!(!l.release());
+        assert!(l.press(PhysPoint::new(300, 50)));
+        l.drag(PhysPoint::new(300, 260));
+        let tail = l.layer_of("m").unwrap();
+        let was_there = (250u32..300).any(|x| (200u32..270).any(|y| ink(tail, x, y)));
+        assert!(was_there, "橡皮尾巴没画上，测试空转");
+
+        // 钮还按着就 Enter 收线：落进文档的是已点下的两枚节点，尾巴（上一枚节点到指针
+        // 的那一段）必须一起收走。
+        assert!(l.finish_polyline());
+        let layer = l.layer_of("m").unwrap();
+        let hits: Vec<String> = (200u32..300)
+            .flat_map(|x| (150u32..270).map(move |y| (x, y)))
+            .filter(|(x, y)| ink(layer, *x, *y))
+            .take(5)
+            .map(|(x, y)| format!("({x},{y})={:?}", layer.get(x, y)))
+            .collect();
+        assert!(hits.is_empty(), "折线收线留下尾巴：{hits:?}");
+        // 节点折线自己还在：
+        let on = (100u32..140).any(|x| ink(layer, x, 50));
+        assert!(on, "提交的折线一笔也没画");
+        assert_eq!(mismatched(&l, "m").unwrap(), Vec::<String>::new());
     }
 
     #[test]
