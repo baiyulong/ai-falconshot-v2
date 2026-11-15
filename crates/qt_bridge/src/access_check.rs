@@ -350,15 +350,18 @@ mod tests {
             t.components, t.active, t.usable, t.underline, t.edge, t.strikeout
         );
 
-        // 十枚组件是今天实测的全场：AnnotationToolbar 四枚（Cell / Caption / Swatch / ToolIcon）、
+        // 十一枚组件是今天实测的全场：AnnotationToolbar 四枚（Cell / Caption / Swatch / ToolIcon）、
         // CaptureMask 两枚（RatioCell / TopField）、CodesPanel 一枚（Chip）、CustomCaptureWindow 一枚
-        // （FieldRow）、OcrPanel 一枚（Chip）、PinWindow 一枚（Grip）。钉住它是为了让人数对不上
+        // （FieldRow）、OcrPanel 一枚（Chip）、PinWindow 一枚（Grip）、SettingsWindow 一枚
+        // （SettingsField）。钉住它是为了让人数对不上
         // 时先停下来看一眼：新长一枚组件是常事，而**少**一枚通常意味着上面那把尺子切歪了。
         //
+        // 10 → 11 是 2026-11-15 P217 加的 `SettingsField`（首选项四枚输入框共用的主题皮肤）；
+        // 与 `TopField` 一样，它不声明 active/usable，下面两枚状态读数不动。
         // 9 → 10 是 2026-11-13 那一轮加的 `TopField`（顶部那几格输入框的样子：文字上下垂直居中、
         // 配色与旁边的芯片同一套）。它**不声明** active/usable（那两枚状态在 `Cell` 那一格里），
         // 所以下面 active 与 usable 两个读数一枚没动。
-        assert_eq!(t.components, 10, "全场组件数到 {} 枚，不是 10", t.components);
+        assert_eq!(t.components, 11, "全场组件数到 {} 枚，不是 11", t.components);
         // 声明「选中」的三枚：AnnotationToolbar 的 Cell 与 Swatch、CaptureMask 的 RatioCell。
         assert_eq!(t.active, 3, "声明 active 的组件数到 {} 枚，不是 3", t.active);
         // 声明「禁用」的三枚：AnnotationToolbar 的 Cell、CodesPanel 的 Chip、OcrPanel 的 Chip。

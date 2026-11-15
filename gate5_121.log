@@ -1,0 +1,59 @@
+[startup cfg] history.enabled=true history.max_items=1000 advanced.log_level=info advanced.data_dir=(platform default)
+[appearance cfg] appearance.theme=System appearance.accent=#0078D7 appearance.toolbar_placement=auto appearance.ui_font_size=9 appearance.ui_font_family=Microsoft YaHei UI appearance.magnifier_border=1 appearance.magnifier_corner_radius=6 appearance.magnifier_foreground=#FFFFFF appearance.magnifier_background=#1F1F1F
+[theme cfg] appearance.theme=System system.theme=dark resolved.theme=Dark
+[autostart cfg] 妗ｉ噷=false 鏈哄櫒=ai-falconshot 涓嶅湪锛堢櫥褰曟椂涓嶄細鍚姩鏈▼搴忥級 鈬?涓€鑷?[about cfg] about.auto_check_updates=true about.check_every_days=7 about.channel=stable about.send_diagnostics=false
+[output cfg] output.share_targets=(none) output.send_to_apps=(none) output.reuse_last_file=false output.hide_pins_on_dialog=false output.copy_as_file=false
+[send_to cfg] send_to parsed=0 refused=0
+[share cfg] share parsed=0 refused=0
+[share filter] share known=0 unknown=0
+[send_to validate] send_to validated=0 refused=0
+[send_to pipeline] pipeline final=0 parse_refused=0 validate_refused=0
+[share pipeline] pipeline final=0 parse_refused=0 unknown=0
+[send_to menu] menu entries=0
+[share menu] menu entries=0
+[send_to resolve] resolve (empty)
+[share scheme] scheme (empty)
+[send_to argv] argv (empty)
+[share scheme all] scheme_all 0 entries
+[send_to argv first] argv_first (empty)
+[share scheme first] scheme_first (empty)
+[send_to names] names 0 []
+[share names] names 0 []
+[history usage] history records=13 original=2479535B thumb=107853B db=147456B total=2734844B
+[history neighbors] history anchor=13 prev=12 next=-
+desktop geometry is real           PASS desktop=0,0 1536x960 primary=0,0 1536x960 dpr=2.00 station=WinSta0 desktop=Default
+pin clamp is the physical table    PASS clamp [3072x1920@0,0 dpr=2.00] bounds=3072x1920@0,0 matched=1 of 1
+first frame decodes                PASS id=0 null=0 w=64 h=32 alpha=1 stores=1
+adding pushed one texture          PASS revision=1
+搂5.17 cli contract headless        PASS 15 渚?argv 鍒ゅ喅 + 涓夋潯鐘舵€佺爜瑙勫垯 + 璐村浘閭ｄ竴鏃忕殑 3 鏋氭棗鏍囷紙鏂囨。鐐瑰悕鍗宠娉曡锛夛紱鍏ㄩ儴瀵逛笂锛堟埅灞忓儚绱犳湰韬湪鐪熸満涓婇噺锛岄潪鏈。 搂5.17 鐨?headless 鍗婅竟锛?dialog linkage hides and restores  PASS pin=0 rect=10,10 64x32 enabled=1 layers=0 hidden=- bad=none
+the transparent margin survives    PASS (0,0)=0,0,0,0
+zoom re-encodes nothing            PASS revision=1 window=192x96 at -54,-22
+rotation re-encodes                PASS id=0 null=0 w=32 h=64 alpha=1 stores=1 revision=2
+grayscale + invert decodes         PASS id=0 null=0 w=32 h=64 alpha=1 stores=1
+the board paints see-through       PASS (0,0)=212,212,212,255 (8,0)=239,239,239,255
+crop re-encodes smaller            PASS id=1 null=0 w=4 h=1 alpha=1 stores=2
+a free thumbnail shows its region  PASS id=1 null=0 w=1 h=1 alpha=1 stores=2 window=1x1
+a text card is not flat            PASS card 480x41 flat=false closed=1
+config write runs the gate         PASS stored=96 read=96 corrections=1 first=card.font_size: 500 is out of range, using 96
+settings categories and write gate PASS 鍒嗙被 缁匡細124 鏋氶敭锛屾棤褰掑睘 0 鏋?[]锛屽褰掑睘 0 鏋?[] 锝?姣忕被鏈夎 缁匡細12 绫伙紝绌虹被 [] 锝?閲嶅惎鏍囪 缁匡細椤典笂鏍囦簡 13 鏋氾紝鍚嶅崟 13 鏋氾紱鐑尯閭?11 鏋氶噷鏍囦簡 0 鏋?锝?鍐欒矾 缁匡細榛樿鍋滅暀 300 ms锛涙墦 9000 -> Some("5000") 鏍℃ 1 鏉★紱鎵?900 -> Some("900")锛涜钀芥墦 nope 鎷掞紙鍊间粛鏄?""锛夛紱涓嶅瓨鍦ㄧ殑閿?true 鎷?a background mode reaches pixels   PASS win=8x4 mode=0>2>1>0 pix=42,42,42,255|0,0,0,0|0,0,0,0 hole=false|true|true|false ink=true solid_holes=false
+the gif clock moves frame and pixels PASS frames=2 speed=100 ink 0->255 then paused 255 ; tick=true paused_tick=false rev=1..2 closed=1 clip_gone=true
+copy can hand a file too           PASS roundtrip=2 寮? short_is_err=true; empty_refused=true; plant_written=true; plant_claimed=false; plant_alive=false; plant_sweep=1/0; plant_fate=true; sweep_deleted=0; sweep_kept=0; second_sweep_deleted=0; second_sweep_kept=0; sweep_stable=true; undrawn_refused=true; seq_kept=true; register_kept=true
+multi-select is one list two readers PASS one=1 flagged=(true, false) who=[0] two=2 back=1 ghost=true still=1 took=1 after=0
+one drag moves the list it was told to PASS batch=2 id=(-6, -70)->(31, -49) want=(31, -49) board=(20, 20)->(57, 41) bwant=(57, 41) rev=(3, 3) 鎼姩鍓?(3, 3) lone=1 l=(12, -60) lwant=(12, -60) board_stayed=(57, 41) off=1 o=(25, -53) owant=(25, -53) board_stayed2=(57, 41) gone=0
+one opacity hand adjusts the list it was told to PASS start=(40, 70) step=2 after=(30, 60) rev=(3, 3) 闃舵鍓?(3, 3) lone=1 l=(40, 60) off=1 o=(30, 60) fixed=2 f=(100, 100) gone=0 gone_set=0
+one reset and one destroy answer the list they were told to PASS dflt=100 turnA=101 turnB=101 turnPre=1 ctA=1 ctB=1 rbatch=2 homeA=100 homeB=100 ctA1=0 ctB1=0 涓績A0=(73, 43) 涓績A1=(73, 43) 涓績B0=(57, 41) 涓績B1=(57, 41) 鍙橀潰A=1 鍙橀潰B=1 roster=2 lone=1 loneFromA=101 loneFromB=101 loneCtB=1 loneHome=100 loneHomeB=101 loneCtB1=1 ghostReset=0 reachBatch=2 reachLone=1 reachGhost=0 carried=2 onfield0=2 shrank=2 owed=2 emptyhanded=0 kept=2 undo=2 onfield1=2 liveA=1 liveB=1 pixelsA=1 pixelsB=1 owedAfter=0 undoAgain=0 ghostClose=0 ghostReach=0
+solo puts the rest of the field away and only the rest back PASS soloDims=1 璇ュ帇鏆?1 璧风偣绂绘。=1 璇ユ。=35 soloMoved=1 pile=2 璇ュ甫璧?1 soloAnswerPre=1 soloTake=1 kept=1 鏈偣鍚岯闈?=35 璇ヨ棌1=0 鏈偣鍚嶈棌1=0 璇ユ椿1=1 鏈偣鍚嶆椿1=1 鐐瑰悕A闈?=85 鐙樉寮€=1 鐐瑰悕娲?=1 鍚嶅崟鐐瑰悕1=1 寮€鐫€鍐嶉棶=0 鍚嶅崟鎸簡=1 閫€鍥?1 閫€鍥炲悗娲?0 璐﹂€€鍚?0 鐐瑰悕A闈?=85 鏈偣鍚岯闈?=85 鏈偣鍚嶈棌2=0 鏈偣鍚嶆椿2=1 soloRefuse=0 绌烘墜甯﹁蛋=0 绌烘墜寮€=0 绌烘墜璐?0 骞界伒=0 骞界伒寮€=0 骞界伒璐?0 鍦轰笂閫€鍚?2 鐐瑰悕娲绘湯=1 鎽嗗墠A=85 鎽嗗墠B=85 鎽嗗墠钘廈=0
+group hands cross the state machine PASS 绌哄悕鎷?1 閲嶅悕鎷?1 鍏ョ粍=2 鐢茬粍浜烘暟=2 鐢茬粍鏄?1 鍏ョ粍鍚庢椿=(1,1) 闅愮瓟=1 闅愬悗娲?(0,0) 鏄剧瓟=1 鏄惧悗娲?(1,1) 鏀瑰悕=1 鍚嶅涓?1 鏀瑰悕閲嶅悕鎷?1 鐢插厛=1 绉荤瓟=1 鐢叉浣?1 閫€缁勬暟=2 閫€缁勫悗鍦轰笂=2 閫€缁勫悗娲?1 閿€姣佺┖缁勬暟=0 鍒犱笉瀛樺湪缁勬嫆=1
+the named list moves and the two fates split PASS 鐐瑰悕浜ゅ洖=1锛堝簲褰?1锛夌粍鍐?1 缁勯噷鍚湭鐐瑰悕鐨勬澘=0锛堝簲褰?0锛夌偣鍚嶄袱鏋氫氦鍥?2 缁勫揩鐓т汉鏁?2 閫€鍥炰氦鍥?2 閫€鍥炲悗鍦ㄩ泦閲?(1,1)閿€姣佷氦鍥?1 閿€姣佸悗鍦ㄩ泦閲?0锛堝簲褰?0锛夊悓浼翠粛鍦?1
+global show/hide/toggle answers apart from the group reason PASS 鍏ョ粍鍓嶆椿=(1,1) 缁勯殣鍚庢椿=(0,1) 鍏ㄩ殣鍚庢椿=(0,0)闅愮瓟=1 鍏ㄦ樉鍚庢椿=(0,1)鏄剧瓟=0 鍒囨崲1鍚巄oard娲?0绛?1 鍒囨崲2鍚巄oard娲?1绛?0 鏀跺熬鍚巌d娲?1
+closing drops the pixels           PASS closed=2 id=0 null=1 w=0 h=0 alpha=0 stores=0
+feedback bundle scrubs secrets     PASS 鏈‘璁よ噦=4琛?diag鐪佺暐=true log鐪佺暐=true 娉勬紡=[] | 寮€鍏宠噦 attached=false==cfg=false 缁欎笉缁欐棩蹇?false 娉勬紡=[] | 鍙屽紑鑷?6琛?钘?3鏋?娉勬紡=[] 涓荤洰褰曞悕=baiyl3 | 涓荤洰褰曢偅涓€琛岀幇璇?diag=profile=C:\Users\[redacted]
+feedback path the page uses        PASS 棰勮 133 瀛楄妭 / 4 琛岋紱涓ゅ崐閮借涓婁簡=false/true锛涚渷鐣ラ偅涓€鍙ュ湪涓嶅湪=true锛涘師鍊兼紡鍑?[]锛涙鍒?send_diagnostics=false 鍦ㄥ唽鏃ュ織 0 鏋?toolbar hints name their own button PASS TOOLS=16鏋?names=16鍙?hints=16鍙?瀵逛笉涓婂悕=鏃?| 棣栧彞=閫夋嫨锛氭尓鍔ㄩ€夊尯锛屾垨閫変腑宸叉湁鐨勬爣娉?鏈彞=姗＄毊锛氭嫋杩囩殑鏍囨敞琚摝鎺?every toolbar button site is handed its hint PASS 閽殑澹版槑浣嶇疆=44 閫掑彞瀛愮殑浣嶇疆=44 required=2 ToolTip.text=2 ToolTip.visible=2 绌轰覆=0
+action table names each bindable id PASS 鍚嶈〃=16鏋?鍙粦=13鏋?鏈夋墜=13鏋?鏃犳墜=0鏋?閿欎綅=鏃?绌烘垨浼氬垏琛?鏃?| 灏句笁鏋?menu,settings,none
+hotkey page explains each action   PASS 蹇嵎閿偅涓€椤?11琛?鐐瑰悕鍔ㄤ綔=10琛?閫掑嚭鍚嶄笌璇存槑=10琛?娌￠€?鏃?娌＄偣鍚嶅嵈閫掍簡=鏃?鎺ョ嚎鏍囬敊=鏃?| 棣栬=鎴浘蹇嵎閿細Ctrl + Shift + A 鈥斺€?璁剧疆鎵ц璇ュ姩浣滅殑蹇嵎閿粍鍚堛€?鈥斺€?鎴浘锛氬喕浣忔鍒荤殑灞忓箷骞剁僵涓婇伄缃╋紝鎷栦竴鍧楀氨鎴竴鍧楋紙闇€閲嶅惎锛?cli doc names every flag it ships  PASS 鏂囨。鐐瑰悕鏃楁爣=8鏋?璇硶涓嶈=鏃?鏂囨。鐨?-o 鍊?3鏋?閫掍笉杩涘幓=鏃?鍊煎悕鍗曞悓婧?鏄?鏈€瀹屾暣涓€鏉rgv=--last -o file C:\Users\me\shot.png 鏂囨。娌¤鐨勫€艰鏀朵笅=鍚?cli config row hands a doc entry   PASS 楂樼骇涓庡懡浠よ閭ｄ竴椤?6琛?閫掑叆鍙?1琛?璇ラ€掑嵈娌￠€?鏃?娌＄偣鍚嶅嵈閫掍簡=鏃?鍏ュ彛鐐圭殑鏃楁爣=Some("--help") 閭ｄ竴鏋氱湡鑳藉彇鍒版枃妗?鏄?guide names only real keys         PASS 澶嶆潅椤?6鏋?/ 搂5.20.1 閭?12 绫婚噷锛涘彞瀛愰噷鐐规。閲屾病鏈夌殑閿?鏃?鐐瑰浜嗗悕浣嗕笉鍦ㄩ偅涓€椤?鏃?鍚嶅崟澶栫殑绫诲悕=鏃?绌哄彞鎴栨崲琛?鏃?first-use guide hands once         PASS 涓€浠界┖鐘舵€侀€?6鏋?鍚嶅崟澶栧嵈閫?0 璇ラ€掓病閫?鏃狅紱鏀朵笅鏍囨敞閭ｄ竴椤碉細澶翠竴鍥炵畻鏂版敹=true 绗簩鍥炵畻鏂版敹=false锛涙敹瀹屼箣鍚庤繖涓€椤甸€?""銆佸埆椤电収閫?true锛涙崲涓€浠藉叏鏂扮姸鎬佸張閫?"鍙堥€掍簡"锛涘啓鍥炴潵鐨勭姸鎬佽鍥炶繕娆?5鏋氾紙瑕佺殑鏄?5锛夛紱鏈稛鍔ㄨ繃鐩?0鍥烇紙瑕?0锛夛紱妗ョ幇鍦ㄨ銆岃繖涓€椤电殑寮曞宸茬粡鏀惰繃浜嗐€嶏紱C:\Users\baiyl3\AppData\Roaming\ai-falconshot\guide_seen.txt 瀛樺湪 bytes=7锛涙敹涓嬭繃=1 鏋?杩樻瑺=5 鏋?鏈稛鍔ㄨ繃鐩?0 鍥?no problems were noted             PASS 
+selftest: PASS
+clipboard selftest: SKIPPED (pass --clipboard to run it; it overwrites the clipboard)
+capture selftest: SKIPPED (pass --capture to run it; it reads the real screen)
+history selftest: SKIPPED (pass --history to run it; it opens or creates history.db)
+refresh selftest: SKIPPED (pass --refresh to run it; it pins regions of the real screen)
+sendto selftest: SKIPPED (pass --sendto to run it; it dispatches a real file to a real program and flashes a console window)

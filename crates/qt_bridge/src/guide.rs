@@ -53,48 +53,43 @@ pub const ENV_DIR: &str = "FALCONSHOT_GUIDE_DIR";
 
 /// 复杂页的名单，每一枚后面跟的是那一页**第一次打开时递出去的那一句**。
 ///
-/// 为什么是这六枚而不是整份名单：「复杂」在这一轮有一条能说出口判据 —— **那一页上至少有一枚
-/// 键，改了之后要么不会立刻生效、要么用户看不出自己按对了**。`常规`/`截图`/`输出`/`外观`/
-/// `关于与更新`答不出这一句（那一页的键按下去就在页上那一格里改动可见），所以不递；
-/// 读的人若不同意这一条读法，改这一张表就行，不必改任何判据 —— 判据问的是「这张表里点出的
-/// 每一枚键在档里存不存在、页上那一行存不存在」，表换了它照样咬。
+/// 为什么是这六枚而不是整份名单：「复杂」在这一轮有一条能说出口判据 —— **那一页上至少有一项
+/// 设置，改了之后要么不会立刻生效、要么用户看不出自己按对了**。`常规`/`截图`/`输出`/`外观`/
+/// `关于与更新`答不出这一句（那一页按下去就在当前一格里改动可见），所以不递；读的人若不同意
+/// 这一条读法，改这一张表就行，不必改任何状态判据。
 ///
-/// 句子里凡是带反引号的点分名字，都会被 `--selftest` 那一格拿去问 `Config::flat()`：文档没
-/// 有、档里也没有的名字**不许出现在引导句里**（P159 为 `--help` 立的那条规矩在这一页的翻版，
-/// 见 §10 第 159 项）。
+/// 引导面对的是第一次使用功能的人，因此只说设置页上看得到的名称与效果，不显示配置文件里的
+/// 点分键。内部键是否意外混进文案由本文件的单测逐枚对照默认键名单。
 pub const ENTRIES: [(&str, &str); 6] = [
     (
         "快捷键",
-        "一格绑一枚动作：点一行、在框里打组合键、按保存。`hotkey.actions.capture` 这样的名字册里有、\
-         本 build 还接不住的，行尾会标着「未接线」，注册时跳过它。"
+        "每一行对应一项动作：点选一行，在输入框中按下组合键，再保存。暂时无法执行的动作会在行尾\
+         标出「未接线」，不会占用系统快捷键。",
     ),
     (
         "热区",
-        "四个角各绑一枚动作，触发靠的是鼠标停进角落多久 —— `hot_corner.dwell_ms` 就是那个时长，\
-         不是点击。`hot_corner.enabled` 是总闸，`hot_corner.require_shift` 翻成\"要\"之后每次触发\
-         都得按住 Shift。"
+        "先打开「启用热区」，再为四个屏幕角分别选择动作。把鼠标停在角落达到设定时间就会触发，\
+         不需要点击；若启用了 Ctrl 或 Shift 限制，停留时还要同时按住对应按键。",
     ),
     (
         "标注",
-        "工具画在已经抓下来的那张图上：`annotation.default_tool` 说进去时手里先拿哪一支，\
-         `annotation.stroke_width` 与 `annotation.font_size` 是那一支的粗细与字号，\
-         `annotation.undo_limit` 管你还能反悔几步。"
+        "标注会画在已经截取的图片上。你可以选择进入标注时默认使用的工具，并调整线条粗细、文字\
+         字号和最多可撤销的步数。",
     ),
     (
         "贴图",
-        "贴图是留在屏幕上的那张图：`pin.default_topmost` 决定它生下来压不压在别人上面，\
-         `pin.wheel_resizes` 是滚轮改大小，`pin.solo_dim_opacity` 是 solo 时其余那些暗到几成；\
-         card 那四枚管的才是文字卡片怎么画。"
+        "贴图会把图片留在屏幕上。这里可以决定新贴图是否默认置顶、能否用滚轮缩放，以及独显时\
+         其他贴图变暗的程度；文字卡片的宽度、字体和背景也在这一页调整。",
     ),
     (
         "历史记录",
-        "记录替你记住的是选区与文件两样：`history.max_items` 留着几条，`history.keep_originals` \
-         决定原图在不在盘上。删掉的一行连它的原图一起走，被锁住的那些在清空时留下。"
+        "历史记录会保存截图信息，并可选择保留完整原图。你可以限制保留数量、天数和占用空间；\
+         自动清理时可跳过锁定项与收藏项。",
     ),
     (
         "高级与命令行",
-        "`advanced.cli_enabled` 是命令行认不认参数那一枚闸，它改了要重启才生效（行尾标着的\
-         「需重启」就是这件事），`advanced.log_level` 则是即时的。"
+        "「允许命令行控制」决定应用是否接受命令行参数，修改后需要重启才生效，行尾会显示\
+         「需重启」；日志级别等即时设置保存后立即生效。",
     ),
 ];
 
@@ -118,23 +113,25 @@ pub fn body(which: usize) -> Option<&'static str> {
     ENTRIES.iter().find(|(n, _)| *n == page).map(|(_, b)| *b)
 }
 
-/// 引导句里被反引号点名出来的那些点分键名。
-///
-/// 这里**只切反引号**，不认中文里随手写的「那一枚」：判据要问的是「这句话有没有指一枚档里
-/// 不存在的键」，那只有反引号里的那一串才是指认。
+/// 引导句里像配置键的点分词。如今引导不应点名任何内部键，所以不再只检查反引号：裸写或放进
+/// 反引号都能被发现。网址与状态文件名是精确例外；它们含点但不是配置键。
 pub fn dotted(body: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = body;
-    while let Some(start) = rest.find('`') {
-        let after = &rest[start + 1..];
-        let Some(end) = after.find('`') else { break };
-        let token = &after[..end];
-        if token.contains('.') {
-            out.push(token.to_string());
-        }
-        rest = &after[end + 1..];
-    }
-    out
+    body.split(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '/' | '-')))
+        .map(|token| token.trim_matches('.'))
+        .filter(|token| {
+            token.contains('.')
+                && *token != SEEN_FILE
+                && !token.starts_with("http://")
+                && !token.starts_with("https://")
+                && token.split('.').all(|part| {
+                    !part.is_empty()
+                        && part
+                            .chars()
+                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                })
+        })
+        .map(str::to_string)
+        .collect()
 }
 
 /// 已经收下过引导的那些页（类名）。存**名字**而不是存类号：类号是 §5.20.1 那张表的行序，
@@ -385,21 +382,33 @@ mod tests {
         assert_eq!(complex_pages().len(), ENTRIES.len());
     }
 
-    /// 引导句不许点名一枚档里不存在的键（P159 为 `--help` 立的那条规矩）。
+    /// 首次使用引导只说用户在页面上看得到的名称，不显示任何内部点分键。默认键逐枚检查，另外用
+    /// `dotted` 防住不在默认名单里的新内部键；网址和状态文件名只按精确例外放行。
     #[test]
-    fn guide_lines_name_only_real_keys() {
+    fn guide_lines_use_only_user_language() {
         let keys = default_keys();
         for (page, body) in &ENTRIES {
-            let which = crate::settings_view::index_of(page).unwrap();
-            let owned: Vec<String> = crate::settings_view::rows_of(&Config::default(), which)
-                .into_iter()
-                .map(|r| r.key)
-                .collect();
-            for token in dotted(body) {
-                assert!(keys.contains(&token), "{page} 点了档里没有的 {token}");
-                assert!(owned.contains(&token), "{page} 点的 {token} 不在这一页上");
+            for key in &keys {
+                assert!(
+                    !body.contains(key),
+                    "{page} 的引导露出了内部键 {key}：{body}"
+                );
             }
+            assert!(dotted(body).is_empty(), "{page} 的引导含点分内部词：{body}");
         }
+        let corner = body(crate::settings_view::CORNER).expect("热区引导缺失");
+        assert!(corner.contains("启用热区"), "{corner}");
+        assert!(
+            corner.contains("Ctrl") && corner.contains("Shift"),
+            "{corner}"
+        );
+        assert!(!corner.contains("hot_corner"), "{corner}");
+
+        assert!(dotted("详见 https://example.com/help 与 guide_seen.txt").is_empty());
+        assert_eq!(
+            dotted("不要显示 hot_corner.enabled"),
+            ["hot_corner.enabled"]
+        );
     }
 
     /// 「只递一次」的四张脸，全在内存里问：默认那份空状态递、收下之后不递、换一份全新状态又递、

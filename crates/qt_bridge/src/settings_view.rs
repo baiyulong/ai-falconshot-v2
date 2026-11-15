@@ -138,6 +138,483 @@ pub struct Row {
     pub restart: bool,
 }
 
+/// 设置页给普通用户看的文案。原始键和值仍由 [`Row`] 保存，写回只走 [`row_pair`]。
+struct RowCopy {
+    name: String,
+    value: String,
+    description: String,
+}
+
+/// 普通字段的中文名。动态设置族由 [`name_of`] 单独处理。
+fn field_name(field: &str) -> &'static str {
+    match field {
+        "launch_at_startup" => "开机启动",
+        "show_tray" => "显示托盘图标",
+        "close_to_tray" => "关闭窗口时留在托盘",
+        "default_mode" => "默认截图模式",
+        "include_cursor" => "包含鼠标指针",
+        "freeze_frame" => "截图时冻结画面",
+        "highlight_element" => "突出当前窗口或元素",
+        "magnifier_enabled" => "显示放大镜",
+        "magnifier_radius" => "放大镜范围",
+        "magnifier_zoom" => "放大倍数",
+        "magnifier_grid" => "显示像素网格",
+        "magnifier_coordinates" => "显示坐标",
+        "magnifier_color_format" => "颜色显示格式",
+        "show_dimensions" => "显示选区尺寸",
+        "size_unit" => "尺寸单位",
+        "delay_seconds" => "延时截图",
+        "snap_to_window" => "吸附窗口边缘",
+        "window_shadow" => "保留窗口阴影",
+        "window_corner" => "保留窗口圆角",
+        "window_corner_radius" => "窗口圆角半径",
+        "default_tool" => "默认工具",
+        "stroke_width" => "线条宽度",
+        "stroke_color" => "线条颜色",
+        "font_family" => "字体",
+        "font_size" => "字号",
+        "blur_radius" => "模糊强度",
+        "palette" => "常用颜色",
+        "palette_schemes" => "配色方案",
+        "undo_limit" => "撤销步数上限",
+        "undo_merge_ms" => "连续修改合并时间",
+        "default_zoom" => "默认缩放",
+        "default_opacity" => "默认不透明度",
+        "default_topmost" => "默认置顶",
+        "default_click_through" => "默认鼠标穿透",
+        "alpha_bg" => "透明区域显示方式",
+        "wheel_resizes" => "滚轮调整大小",
+        "state_save_seconds" => "状态保存间隔",
+        "solo_dim_opacity" => "独显时其他贴图亮度",
+        "thumb_fixed_width" => "固定缩略图宽度",
+        "thumb_fixed_height" => "固定缩略图高度",
+        "drop_replaces_current" => "拖入图片时替换当前贴图",
+        "width" => "宽度",
+        "background" => "背景",
+        "entries" => "分组清单",
+        "auto_copy" => "截图后自动复制",
+        "auto_save" => "截图后自动保存",
+        "save_dir" => "保存位置",
+        "format" => "文件格式",
+        "jpeg_quality" => "JPEG 质量",
+        "naming_template" => "文件命名模板",
+        "naming_prefix" => "文件名前缀",
+        "collision" => "文件重名处理",
+        "corner_radius" => "图片圆角半径",
+        "shadow_size" => "图片阴影大小",
+        "corner_fill" => "圆角外侧填充色",
+        "border_width" => "边框宽度",
+        "border_color" => "边框颜色",
+        "shadow_strength" => "阴影强度",
+        "reveal_after_save" => "保存后打开所在位置",
+        "hide_pins_on_dialog" => "文件对话框打开时隐藏贴图",
+        "share_targets" => "分享目标",
+        "send_to_apps" => "发送到应用",
+        "reuse_last_file" => "重复截图沿用上次文件",
+        "copy_as_file" => "复制为文件",
+        "exclusions" => "快捷键忽略名单",
+        "command" => "自定义命令",
+        "enabled" => "启用",
+        "trigger_dip" => "触发边缘宽度",
+        "dwell_ms" => "停留触发时间",
+        "require_ctrl" => "需要按住 Ctrl",
+        "require_shift" => "需要按住 Shift",
+        "repeat_guard_ms" => "重复触发间隔",
+        "pause_on_fullscreen" => "全屏时暂停",
+        "theme" => "主题",
+        "accent" => "强调色",
+        "toolbar_placement" => "工具栏位置",
+        "ui_font_size" => "界面字号",
+        "ui_font_family" => "界面字体",
+        "magnifier_border" => "放大镜边框宽度",
+        "magnifier_corner_radius" => "放大镜圆角",
+        "magnifier_foreground" => "放大镜文字颜色",
+        "magnifier_background" => "放大镜背景色",
+        "left" => "单击左键",
+        "double" => "双击左键",
+        "middle" => "单击中键",
+        "right" => "单击右键",
+        "save_all" => "保存全部截图",
+        "max_items" => "最多保留条目",
+        "max_age_days" => "最长保留天数",
+        "max_size_mb" => "最大占用空间",
+        "keep_originals" => "保留原图",
+        "thumb_px" => "缩略图尺寸",
+        "exempt_locked" => "锁定项不自动清理",
+        "exempt_favorite" => "收藏项不自动清理",
+        "cli_enabled" => "允许命令行控制",
+        "data_dir" => "数据存放位置",
+        "log_level" => "日志级别",
+        "recognize_text" => "启用文字识别",
+        "crash_recovery" => "崩溃后恢复现场",
+        "privacy_no_temp_files" => "不写临时文件",
+        "auto_check_updates" => "自动检查更新",
+        "check_every_days" => "检查更新间隔",
+        "channel" => "更新通道",
+        "release_feed" => "更新地址",
+        "send_diagnostics" => "反馈时附带诊断信息",
+        "feedback_channel" => "反馈方式",
+        "size" => "画布大小",
+        "color" => "颜色",
+        "intensity" => "强度",
+        _ => "设置项",
+    }
+}
+
+/// 默认开关的用户文案。名称描述的是用户要控制的行为，说明描述的是两种状态带来的结果；这里不把
+/// 字段名套进「开启或关闭某某」的模板。返回 `None` 只留给运行期扩展出来、默认配置里没有的开关。
+fn bool_copy(key: &str) -> Option<(&'static str, &'static str)> {
+    Some(match key {
+        "general.launch_at_startup" => (
+            "开机时自动启动",
+            "开启后，登录 Windows 时自动运行 FalconShot；关闭后需要手动启动。",
+        ),
+        "general.show_tray" => (
+            "显示托盘图标",
+            "开启后可从系统托盘访问 FalconShot；关闭后不显示托盘图标。",
+        ),
+        "general.close_to_tray" => (
+            "关闭窗口后继续在后台运行",
+            "开启后，关掉窗口仍可从托盘继续使用；关闭后不保留这一后台入口。",
+        ),
+        "capture.include_cursor" => (
+            "截图时包含鼠标指针",
+            "开启后，导出的截图会保留鼠标指针；关闭后不包含。",
+        ),
+        "capture.freeze_frame" => (
+            "选区时冻结屏幕画面",
+            "开启后，选择截图区域时画面保持不动；关闭后显示实时画面。",
+        ),
+        "capture.highlight_element" => (
+            "高亮当前窗口或元素",
+            "开启后，选区时突出指针所在的窗口或元素；关闭后不高亮。",
+        ),
+        "capture.magnifier_enabled" => (
+            "选区时显示放大镜",
+            "开启后，选区时显示指针附近的放大画面；关闭后隐藏放大镜。",
+        ),
+        "capture.magnifier_grid" => (
+            "放大镜显示像素网格",
+            "开启后，放大镜中显示像素边界；关闭后只显示放大画面。",
+        ),
+        "capture.magnifier_coordinates" => (
+            "放大镜显示坐标",
+            "开启后，放大镜显示指针坐标；关闭后隐藏坐标。",
+        ),
+        "capture.show_dimensions" => (
+            "选区时显示尺寸",
+            "开启后，选择区域时显示宽度和高度；关闭后隐藏尺寸。",
+        ),
+        "capture.snap_to_window" => (
+            "选区吸附窗口边缘",
+            "开启后，拖动选区会靠齐附近的窗口边缘；关闭后自由选择。",
+        ),
+        "capture.window_shadow" => (
+            "窗口截图包含阴影",
+            "开启后，窗口截图会保留窗口阴影；关闭后只截取窗口可见边界。",
+        ),
+        "capture.window_corner" => (
+            "窗口截图保留圆角",
+            "开启后，窗口截图按窗口圆角裁切；关闭后保留方角。",
+        ),
+        "pin.default_topmost" => (
+            "新贴图默认置顶",
+            "开启后，新贴出的图片会保持在其他窗口上方；关闭后按普通窗口层级显示。",
+        ),
+        "pin.default_click_through" => (
+            "新贴图默认鼠标穿透",
+            "开启后，鼠标操作会穿过新贴图落到下方窗口；关闭后可直接操作贴图。",
+        ),
+        "pin.wheel_resizes" => (
+            "滚轮调整贴图大小",
+            "开启后，在贴图上滚动滚轮可缩放；关闭后滚轮不改变贴图大小。",
+        ),
+        "pin.drop_replaces_current" => (
+            "拖入图片时替换当前贴图",
+            "开启后，拖入的图片替换当前贴图；关闭后创建一张新贴图。",
+        ),
+        "output.auto_copy" => (
+            "截图后自动复制",
+            "开启后，完成截图会把图片放入剪贴板；关闭后不自动复制。",
+        ),
+        "output.auto_save" => (
+            "截图后自动保存",
+            "开启后，完成截图会直接保存到设定位置；关闭后不自动写入文件。",
+        ),
+        "output.reveal_after_save" => (
+            "保存后打开所在位置",
+            "开启后，保存完成会打开文件所在位置；关闭后留在当前界面。",
+        ),
+        "output.hide_pins_on_dialog" => (
+            "文件对话框打开时隐藏贴图",
+            "开启后，打开文件对话框时临时隐藏贴图，关闭对话框后恢复；关闭后贴图保持可见。",
+        ),
+        "output.reuse_last_file" => (
+            "重复截图沿用上次文件",
+            "开启后，重复截图会更新上次输出文件；关闭后生成新文件。",
+        ),
+        "output.copy_as_file" => (
+            "复制截图时同时提供文件",
+            "开启后，复制截图还会向剪贴板提供可粘贴的图片文件；关闭后只提供图片数据。",
+        ),
+        "hot_corner.enabled" => (
+            "启用热区",
+            "开启后，把鼠标停到屏幕角落可执行绑定动作；关闭后角落不会触发动作。",
+        ),
+        "hot_corner.require_ctrl" => (
+            "触发热区时按住 Ctrl",
+            "开启后，只有按住 Ctrl 并停到角落才会触发；关闭后无需 Ctrl。",
+        ),
+        "hot_corner.require_shift" => (
+            "触发热区时按住 Shift",
+            "开启后，只有按住 Shift 并停到角落才会触发；关闭后无需 Shift。",
+        ),
+        "hot_corner.pause_on_fullscreen" => (
+            "全屏时暂停热区",
+            "开启后，全屏应用或游戏运行时不触发热区；关闭后全屏时仍可触发。",
+        ),
+        "history.enabled" => (
+            "记录截图历史",
+            "开启后，完成的截图会加入历史记录；关闭后不新增历史记录。",
+        ),
+        "history.save_all" => (
+            "记录已取消的截图",
+            "开启后，取消的截图也会留在历史记录中；关闭后只记录完成的截图。",
+        ),
+        "history.keep_originals" => (
+            "保留历史原图",
+            "开启后，历史记录会保留完整原图；关闭后只保留用于浏览的信息。",
+        ),
+        "history.exempt_locked" => (
+            "自动清理时保留锁定项",
+            "开启后，自动清理会跳过锁定记录；关闭后锁定记录也可能被自动清理。",
+        ),
+        "history.exempt_favorite" => (
+            "自动清理时保留收藏项",
+            "开启后，自动清理会跳过收藏记录；关闭后收藏记录也可能被自动清理。",
+        ),
+        "advanced.cli_enabled" => (
+            "允许命令行控制",
+            "开启后，可通过命令行参数控制 FalconShot；关闭后拒绝命令行控制。",
+        ),
+        "advanced.recognize_text" => (
+            "截图后识别文字",
+            "开启后，截图完成会尝试识别文字或二维码；关闭后跳过识别。",
+        ),
+        "advanced.crash_recovery" => (
+            "崩溃后恢复贴图",
+            "开启后，应用会保存现场以便异常退出后恢复贴图；关闭后不保存恢复现场。",
+        ),
+        "advanced.privacy_no_temp_files" => (
+            "冻结画面只保留在内存中",
+            "开启后，冻结的屏幕画面不会写入临时文件；关闭后可按存储策略使用临时文件。",
+        ),
+        "about.auto_check_updates" => (
+            "自动检查更新",
+            "开启后，应用会按设定间隔检查新版本；关闭后只在手动操作时检查。",
+        ),
+        "about.send_diagnostics" => (
+            "反馈时附带诊断信息",
+            "开启后，发送反馈时会附带诊断信息；关闭后不附带。",
+        ),
+        _ => return None,
+    })
+}
+
+fn corner_name(id: &str) -> &'static str {
+    match id {
+        "top_left" => "左上角",
+        "top_right" => "右上角",
+        "bottom_left" => "左下角",
+        "bottom_right" => "右下角",
+        _ => "自定义角落",
+    }
+}
+
+fn tool_name(id: &str) -> &'static str {
+    match id {
+        "rect" => "矩形",
+        "ellipse" => "椭圆",
+        "arrow" => "箭头",
+        "line" => "直线",
+        "pen" => "画笔",
+        "marker" => "荧光笔",
+        "text" => "文字",
+        "mosaic" => "马赛克",
+        "blur" => "模糊",
+        _ => "自定义工具",
+    }
+}
+
+fn name_of(key: &str) -> String {
+    if let Some((name, _)) = bool_copy(key) {
+        return name.to_string();
+    }
+    if let Some(id) = key.strip_prefix("hotkey.actions.") {
+        return action_texts(id)
+            .map(|(name, _)| format!("{name}快捷键"))
+            .unwrap_or_else(|| "自定义动作快捷键".to_string());
+    }
+    if let Some(id) = key.strip_prefix("hot_corner.corners.") {
+        return format!("{}动作", corner_name(id));
+    }
+    if let Some(rest) = key.strip_prefix("annotation.tool_style.") {
+        let mut parts = rest.split('.');
+        return format!(
+            "{}工具的{}",
+            tool_name(parts.next().unwrap_or_default()),
+            field_name(parts.next_back().unwrap_or_default())
+        );
+    }
+    field_name(key.rsplit('.').next().unwrap_or_default()).to_string()
+}
+
+/// 名册说明里偶尔需要引用另一项设置。名册仍是说明的唯一作者，这里只把其中的内部点分键替换成
+/// 设置页已经使用的名称，避免一行其余部分都已本地化、句中却露出实现字段。
+pub(crate) fn user_facing_text(text: &str) -> String {
+    let mut shown = text.to_string();
+    if let Ok(flat) = Config::default().flat() {
+        for key in flat.keys() {
+            if shown.contains(key) {
+                shown = shown.replace(key, &format!("“{}”设置", name_of(key)));
+            }
+        }
+    }
+    shown
+}
+
+fn shortcut_text(value: &str) -> String {
+    value
+        .split('+')
+        .map(|part| match part.trim().to_ascii_lowercase().as_str() {
+            "ctrl" | "control" => "Ctrl".to_string(),
+            "shift" => "Shift".to_string(),
+            "alt" => "Alt".to_string(),
+            "win" | "meta" => "Win".to_string(),
+            other if other.starts_with('f') && other[1..].chars().all(|c| c.is_ascii_digit()) => {
+                other.to_ascii_uppercase()
+            }
+            _ => part.trim().to_ascii_uppercase(),
+        })
+        .collect::<Vec<String>>()
+        .join(" + ")
+}
+
+fn value_of(key: &str, value: &str) -> String {
+    if value == "true" {
+        return "开启".to_string();
+    }
+    if value == "false" {
+        return "关闭".to_string();
+    }
+    if value.is_empty() {
+        return "未设置".to_string();
+    }
+    if key.starts_with("hotkey.actions.") {
+        return shortcut_text(value);
+    }
+    if key.starts_with("hot_corner.corners.") && action_texts(value).is_none() {
+        return "自定义动作".to_string();
+    }
+    if let Some((name, _)) = action_texts(value) {
+        return name.to_string();
+    }
+    let localized = match value {
+        "system" => "跟随系统",
+        "light" => "浅色",
+        "dark" => "深色",
+        "region" => "区域截图",
+        "window" => "窗口截图",
+        "element" => "元素截图",
+        "fullscreen" => "全屏截图",
+        "repeat" => "重复上次截图",
+        "transparent" => "完全透明",
+        "pseudo" => "透明但可点击",
+        "checker_dark" => "深色棋盘格",
+        "checker_light" => "浅色棋盘格",
+        "overwrite" => "覆盖原文件",
+        "increment" => "自动追加序号",
+        "ask" => "每次询问",
+        "top" => "顶部",
+        "bottom" => "底部",
+        "auto" => "自动选择",
+        "screen" => "当前屏幕大小",
+        "png" => "PNG",
+        "jpg" | "jpeg" => "JPEG",
+        "webp" => "WebP",
+        "stable" => "稳定版",
+        "preview" => "预览版",
+        "silent" => "静默",
+        "error" => "错误",
+        "warn" => "警告",
+        "info" => "信息",
+        "debug" => "调试",
+        "trace" => "详细跟踪",
+        "px" => "像素",
+        "dip" => "设备独立像素",
+        "hex_upper" => "十六进制（大写）",
+        "hex_lower" => "十六进制（小写）",
+        "rgb" => "RGB",
+        "hsl" => "HSL",
+        _ => "",
+    };
+    if !localized.is_empty() {
+        return localized.to_string();
+    }
+    if value.parse::<f64>().is_ok() {
+        let unit = if key.ends_with("_ms") {
+            " 毫秒"
+        } else if key.ends_with("_seconds") || key.ends_with("delay_seconds") {
+            " 秒"
+        } else if key.ends_with("_days") {
+            " 天"
+        } else if key.ends_with("_mb") {
+            " MB"
+        } else if key.ends_with("_px")
+            || key.ends_with("_width")
+            || key.ends_with("_height")
+            || key.ends_with("_radius")
+            || key.ends_with("_size")
+            || key.ends_with("trigger_dip")
+            || key.ends_with("magnifier_border")
+        {
+            " 像素"
+        } else if key.ends_with("_zoom")
+            || key.ends_with("_opacity")
+            || key.ends_with("_quality")
+            || key.ends_with("_strength")
+        {
+            "%"
+        } else {
+            ""
+        };
+        return format!("{value}{unit}");
+    }
+    value.to_string()
+}
+
+fn copy_of(key: &str, value: &str) -> RowCopy {
+    let name = name_of(key);
+    let description = if value == "true" || value == "false" {
+        bool_copy(key)
+            .map(|(_, description)| description.to_string())
+            .unwrap_or_else(|| "开启后应用这项行为；关闭后不应用。".to_string())
+    } else if key.starts_with("hot_corner.corners.") {
+        "选择把鼠标停到这个角落时执行的动作。".to_string()
+    } else if key.starts_with("hotkey.actions.") {
+        "设置执行该动作的快捷键组合。".to_string()
+    } else if key.starts_with("annotation.tool_style.") {
+        "记住这项标注工具样式。".to_string()
+    } else {
+        format!("调整“{name}”。")
+    };
+    RowCopy {
+        name,
+        value: value_of(key, value),
+        description,
+    }
+}
+
 impl Row {
     /// 页上那一格的样子，也是这一档每行印出来的样子。`（需重启）` 就是 §5.20.2 第二条要的
     /// 「明确标记」——它挂在行尾而不是单起一行，这样读的人拿行数还能对上「这一类几枚」。
@@ -160,11 +637,15 @@ impl Row {
     /// （`the_restart_mark_is_said_once_at_the_end_of_the_row` 盯着；这一格在本轮之前正是那样，
     /// 而全部旧断言用的都是 `contains` / `ends_with`，所以两遍也绿）。
     pub fn text(&self) -> String {
+        let copy = copy_of(&self.key, &self.value);
         let note = match action_of(&self.key, &self.value) {
-            Some((name, desc, wired)) => format!(
-                "{NOTE_SEP}{name}：{desc}{}",
-                if wired { "" } else { UNWIRED_MARK }
-            ),
+            Some((name, desc, wired)) => {
+                let desc = user_facing_text(desc);
+                format!(
+                    "{NOTE_SEP}{name}：{desc}{}",
+                    if wired { "" } else { UNWIRED_MARK }
+                )
+            }
             None => String::new(),
         };
         let entry = match doc_entry_of(&self.key) {
@@ -174,8 +655,8 @@ impl Row {
         let machine = machine_word_of(&self.key);
         let restart = if self.restart { "（需重启）" } else { "" };
         format!(
-            "{}={}{note}{entry}{machine}{restart}",
-            self.key, self.value
+            "{}：{}{NOTE_SEP}{}{note}{entry}{machine}{restart}",
+            copy.name, copy.value, copy.description
         )
     }
 }
@@ -976,7 +1457,12 @@ pub fn page_line(which: usize) -> String {
 /// 实现（#281），而值里出现 `=`（保存路径、字体名）就会切错。分隔符用 `RECORD` 而不是 `=`
 /// 也是同一理由 —— 这一串是给桥读的，不是给人读的一句话。
 pub fn row_pair(which: usize, index: usize) -> Option<String> {
-    rows(which)
+    crate::settings::with(|s| row_pair_of(&s.config, which, index))
+}
+
+/// 显示文案本地化后，这一腿仍只交付原始键和值。
+fn row_pair_of(cfg: &Config, which: usize, index: usize) -> Option<String> {
+    rows_of(cfg, which)
         .get(index)
         .map(|r| format!("{}{RECORD}{}", r.key, r.value))
 }
@@ -2296,9 +2782,11 @@ pub fn io_export(target: &str) -> String {
 /// 分开印（同上面那一档把 `born` 与 `tick` 分开的那一个理由）。
 pub fn io_preview_line(target: &str) -> String {
     let path = crate::save::local_path(target.trim());
-    let read =
-        match crate::settings::import_read(Path::new(path.as_ref()), ImportScope::Suggested, true)
-    {
+    let read = match crate::settings::import_read(
+        Path::new(path.as_ref()),
+        ImportScope::Suggested,
+        true,
+    ) {
         Ok(r) => r,
         Err(e) => return format!("[import] 读不出那份档：{e}"),
     };
@@ -2321,8 +2809,12 @@ pub fn io_preview_line(target: &str) -> String {
 /// 两处仍是同一把尺：报给用户的那一列里有 `groups.` 行才动机器（见 `config_import`）。
 pub fn io_apply(target: &str) -> String {
     let path = crate::save::local_path(target.trim());
-    match crate::settings::config_import(Path::new(path.as_ref()), ImportScope::Suggested, true, true)
-    {
+    match crate::settings::config_import(
+        Path::new(path.as_ref()),
+        ImportScope::Suggested,
+        true,
+        true,
+    ) {
         Ok(line) => line,
         Err(e) => format!("[import] 失败：{e}"),
     }
@@ -3491,8 +3983,12 @@ pub fn pal_measure(want_ms: i32) -> (crate::state::Check, String) {
     .unwrap_or_default();
     // 导入那一腿留在应用方案之前的那一串：这一格的对面因此是「上一腿真的改了排」，而不是门自己
     // 手里的一份常量。枚数是 2 而不是 3 —— 排上的枚数也变了，这一串与上面那两串才不会撞在一起。
-    let want_io_roster =
-        pal_band_flat_of(&PAL_IO_COLORS.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let want_io_roster = pal_band_flat_of(
+        &PAL_IO_COLORS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+    );
     rep.row(
         "palette apply",
         Check::from(
@@ -3542,9 +4038,7 @@ pub fn pal_measure(want_ms: i32) -> (crate::state::Check, String) {
     let roster = pal_band_flat_of(&written.lines().map(str::to_string).collect::<Vec<_>>());
     rep.row(
         "palette file export",
-        Check::from(
-            exports.len() == 1 && export_named == export_at && roster == want_band_before,
-        ),
+        Check::from(exports.len() == 1 && export_named == export_at && roster == want_band_before),
         format!(
             "窗那侧 {:?}（一次）；计划里落的是 {export_at:?}，那份文件读回来是 {roster:?}（该等于\
              四按之后那一排 {want_band_before}）",
@@ -3990,13 +4484,21 @@ mod tests {
         ),
         ("general.show_tray", "qt_bridge/src/hotkey.rs", "show_tray"),
         // [capture]
-        ("capture.default_mode", "qt_bridge/src/mask.rs", "default_mode"),
+        (
+            "capture.default_mode",
+            "qt_bridge/src/mask.rs",
+            "default_mode",
+        ),
         (
             "capture.include_cursor",
             "qt_bridge/src/capture.rs",
             "include_cursor",
         ),
-        ("capture.freeze_frame", "qt_bridge/src/mask.rs", "freeze_frame"),
+        (
+            "capture.freeze_frame",
+            "qt_bridge/src/mask.rs",
+            "freeze_frame",
+        ),
         (
             "capture.highlight_element",
             "qt_bridge/src/mask.rs",
@@ -4084,7 +4586,11 @@ mod tests {
             "qt_bridge/src/annotate.rs",
             "font_family",
         ),
-        ("annotation.font_size", "qt_bridge/src/annotate.rs", "font_size"),
+        (
+            "annotation.font_size",
+            "qt_bridge/src/annotate.rs",
+            "font_size",
+        ),
         (
             "annotation.blur_radius",
             "qt_bridge/src/annotate.rs",
@@ -4125,7 +4631,11 @@ mod tests {
             "qt_bridge/src/state.rs",
             "state_save_seconds",
         ),
-        ("pin.solo_dim_opacity", "core/src/pin.rs", "solo_dim_opacity"),
+        (
+            "pin.solo_dim_opacity",
+            "core/src/pin.rs",
+            "solo_dim_opacity",
+        ),
         (
             "pin.thumb_fixed_width",
             "core/src/pin.rs",
@@ -4144,8 +4654,16 @@ mod tests {
         // [card]
         ("card.width", "qt_bridge/src/state.rs", "card.width"),
         ("card.font_size", "qt_bridge/src/state.rs", "card.font_size"),
-        ("card.font_family", "qt_bridge/src/state.rs", "card.font_family"),
-        ("card.background", "qt_bridge/src/state.rs", "card.background"),
+        (
+            "card.font_family",
+            "qt_bridge/src/state.rs",
+            "card.font_family",
+        ),
+        (
+            "card.background",
+            "qt_bridge/src/state.rs",
+            "card.background",
+        ),
         // [groups]
         (
             "groups.entries",
@@ -4182,16 +4700,8 @@ mod tests {
             "core/src/imageops.rs",
             "corner_radius",
         ),
-        (
-            "output.shadow_size",
-            "core/src/imageops.rs",
-            "shadow_size",
-        ),
-        (
-            "output.corner_fill",
-            "core/src/imageops.rs",
-            "corner_fill",
-        ),
+        ("output.shadow_size", "core/src/imageops.rs", "shadow_size"),
+        ("output.corner_fill", "core/src/imageops.rs", "corner_fill"),
         (
             "output.border_width",
             "core/src/imageops.rs",
@@ -4232,9 +4742,17 @@ mod tests {
             "qt_bridge/src/mask.rs",
             "reuse_last_file",
         ),
-        ("output.copy_as_file", "qt_bridge/src/mask.rs", "copy_as_file"),
+        (
+            "output.copy_as_file",
+            "qt_bridge/src/mask.rs",
+            "copy_as_file",
+        ),
         // [hotkey] —— 九枚绑定由 `install` 一手整表装上去，所以针是名册里那个动作名本身
-        ("hotkey.actions.capture", "qt_bridge/src/hotkey.rs", "\"capture\""),
+        (
+            "hotkey.actions.capture",
+            "qt_bridge/src/hotkey.rs",
+            "\"capture\"",
+        ),
         (
             "hotkey.actions.capture_custom",
             "qt_bridge/src/hotkey.rs",
@@ -4271,8 +4789,16 @@ mod tests {
             "qt_bridge/src/hotkey.rs",
             "\"pin_edit\"",
         ),
-        ("hotkey.exclusions", "qt_bridge/src/hotkey.rs", "is_suppressed"),
-        ("hotkey.command", "qt_bridge/src/hotkey.rs", "run_custom_task"),
+        (
+            "hotkey.exclusions",
+            "qt_bridge/src/hotkey.rs",
+            "is_suppressed",
+        ),
+        (
+            "hotkey.command",
+            "qt_bridge/src/hotkey.rs",
+            "run_custom_task",
+        ),
         // [hot_corner]
         ("hot_corner.enabled", "core/src/hotcorner.rs", "enabled"),
         (
@@ -4327,7 +4853,11 @@ mod tests {
             "qt_bridge/src/settings.rs",
             "startup_theme_face",
         ),
-        ("appearance.accent", "qt_bridge/src/settings.rs", "accent_face"),
+        (
+            "appearance.accent",
+            "qt_bridge/src/settings.rs",
+            "accent_face",
+        ),
         (
             "appearance.toolbar_placement",
             "qt_bridge/src/settings.rs",
@@ -4401,7 +4931,11 @@ mod tests {
             "exempt_favorite",
         ),
         // [advanced]
-        ("advanced.cli_enabled", "qt_bridge/src/main.rs", "cli_enabled"),
+        (
+            "advanced.cli_enabled",
+            "qt_bridge/src/main.rs",
+            "cli_enabled",
+        ),
         (
             "advanced.data_dir",
             "qt_bridge/src/settings.rs",
@@ -4455,11 +4989,7 @@ mod tests {
             "core/src/config.rs",
             "parse(&self.background)",
         ),
-        (
-            "whiteboard.size",
-            "core/src/config.rs",
-            "parse(&self.size)",
-        ),
+        ("whiteboard.size", "core/src/config.rs", "parse(&self.size)"),
     ];
 
     /// 只把值念回去、没有任何一只手据它分岔的那一枚。单列一份，免得它混进有读者的名单里冒充。
@@ -4508,16 +5038,34 @@ mod tests {
             include_str!("settings_view.rs"),
         ),
         ("qt_bridge/src/state.rs", include_str!("state.rs")),
-        ("qt_bridge/src/update_auto.rs", include_str!("update_auto.rs")),
-        ("core/src/capture.rs", include_str!("../../core/src/capture.rs")),
-        ("core/src/config.rs", include_str!("../../core/src/config.rs")),
-        ("core/src/history.rs", include_str!("../../core/src/history.rs")),
+        (
+            "qt_bridge/src/update_auto.rs",
+            include_str!("update_auto.rs"),
+        ),
+        (
+            "core/src/capture.rs",
+            include_str!("../../core/src/capture.rs"),
+        ),
+        (
+            "core/src/config.rs",
+            include_str!("../../core/src/config.rs"),
+        ),
+        (
+            "core/src/history.rs",
+            include_str!("../../core/src/history.rs"),
+        ),
         (
             "core/src/hotcorner.rs",
             include_str!("../../core/src/hotcorner.rs"),
         ),
-        ("core/src/imageops.rs", include_str!("../../core/src/imageops.rs")),
-        ("core/src/naming.rs", include_str!("../../core/src/naming.rs")),
+        (
+            "core/src/imageops.rs",
+            include_str!("../../core/src/imageops.rs"),
+        ),
+        (
+            "core/src/naming.rs",
+            include_str!("../../core/src/naming.rs"),
+        ),
         ("core/src/pin.rs", include_str!("../../core/src/pin.rs")),
     ];
 
@@ -4692,7 +5240,11 @@ mod tests {
             }
         }
         assert_eq!(conflict_block(&lines, usize::MAX), "");
-        assert_eq!(conflict_block(&[], hotkey), "", "一行也没有时页上该是不画那一块");
+        assert_eq!(
+            conflict_block(&[], hotkey),
+            "",
+            "一行也没有时页上该是不画那一块"
+        );
         // 窗那一侧只接线、不抄字：整列的字都从桥来（读的是**去掉注释行以后**的窗原文，同一把刀
         // 见上面那格与 [`restart_marks`] 头顶记的那一枚坏）。
         const QML: &str = include_str!("../qml/SettingsWindow.qml");
@@ -4770,7 +5322,11 @@ mod tests {
             unnamed.refused.as_deref(),
             Some(exclusion_unnamed_said().as_str())
         );
-        assert!(unnamed.text().contains("一枚规则也没添"), "{}", unnamed.text());
+        assert!(
+            unnamed.text().contains("一枚规则也没添"),
+            "{}",
+            unnamed.text()
+        );
         assert_eq!(blank.hotkey.exclusions.len(), 0, "读不到前台的那一趟动了档");
 
         // ④ 跟前这一位就是本程序自己。这一臂是这一枚钮**自己造出来**的那一形坏（要按钮就得让
@@ -4795,12 +5351,7 @@ mod tests {
 
         // 四句是四种事，一处也不许重叠成一句：重叠了就等于页上有两件事共用一个说法。
         let said = added.text();
-        let both = [
-            again.text(),
-            unnamed.text(),
-            myself.text(),
-            blind.text(),
-        ];
+        let both = [again.text(), unnamed.text(), myself.text(), blind.text()];
         for line in both {
             assert_ne!(line, said);
         }
@@ -5059,6 +5610,151 @@ mod tests {
             assert!(rows.iter().any(|r| r.key == k), "{k} 不在热区那一页上");
         }
         assert!(rows.iter().all(|r| r.key.starts_with("hot_corner.")));
+    }
+
+    #[test]
+    fn every_default_row_has_readable_chinese_copy() {
+        let flat = Config::default().flat().unwrap();
+        assert!(
+            flat.len() >= 124,
+            "默认键只有 {} 枚，覆盖面退化",
+            flat.len()
+        );
+        for (key, value) in &flat {
+            let copy = copy_of(key, value);
+            assert!(!copy.name.trim().is_empty(), "{key} 没有名称");
+            assert!(!copy.description.trim().is_empty(), "{key} 没有说明");
+            assert_ne!(copy.name, key.as_str(), "{key} 仍把配置键当名称");
+            assert_ne!(copy.name, "设置项", "{key} 只拿到了兜底名称");
+            assert!(
+                !copy.name.contains(" · "),
+                "{key} 仍使用‘分类 · 字段’式名称：{}",
+                copy.name
+            );
+            let text = Row {
+                key: key.clone(),
+                value: value.clone(),
+                restart: false,
+            }
+            .text();
+            for internal in flat.keys() {
+                assert!(
+                    !text.contains(internal),
+                    "{key} 的默认行露出了内部键 {internal}：{text}"
+                );
+            }
+            assert!(!text.starts_with(&format!("{key}=")), "{key} 仍显示裸键值");
+        }
+    }
+
+    #[test]
+    fn default_switches_use_effect_names_and_effect_descriptions() {
+        let cfg = Config::default();
+        for (key, value) in cfg.flat().unwrap() {
+            if !matches!(kind_of(&cfg, &key), Kind::Switch(_)) {
+                continue;
+            }
+            let copy = copy_of(&key, &value);
+            assert!(bool_copy(&key).is_some(), "默认开关 {key} 没有专用用户文案");
+            assert!(
+                !copy.description.contains("开启或关闭"),
+                "{key} 仍使用机械开关说明：{}",
+                copy.description
+            );
+            assert!(
+                copy.description.contains("开启后") && copy.description.contains("关闭后"),
+                "{key} 没说明两种状态的用户效果：{}",
+                copy.description
+            );
+        }
+        assert_eq!(name_of("hot_corner.enabled"), "启用热区");
+        assert_eq!(name_of("capture.include_cursor"), "截图时包含鼠标指针");
+        let corner = copy_of("hot_corner.enabled", "false");
+        assert!(corner.description.contains("鼠标停到屏幕角落"));
+        let cursor = copy_of("capture.include_cursor", "false");
+        assert!(cursor.description.contains("导出的截图"));
+    }
+
+    #[test]
+    fn the_corner_page_uses_names_actions_and_chinese_switch_values() {
+        let cfg = Config::default();
+        for row in rows_of(&cfg, CORNER) {
+            let text = row.text();
+            assert!(
+                !text.starts_with("hot_corner."),
+                "热区页仍露出配置键：{text}"
+            );
+            assert!(
+                !text.contains(&format!("{}={}", row.key, row.value)),
+                "{text}"
+            );
+            if matches!(kind_of(&cfg, &row.key), Kind::Switch(_)) {
+                assert!(
+                    text.contains(if row.value == "true" {
+                        "开启"
+                    } else {
+                        "关闭"
+                    }),
+                    "{} 没有中文开关值：{text}",
+                    row.key
+                );
+            }
+        }
+        let text = Row {
+            key: "hot_corner.corners.top_left".into(),
+            value: "capture".into(),
+            restart: false,
+        }
+        .text();
+        assert!(text.contains("左上角") && text.contains("截图"), "{text}");
+        assert!(
+            !text.contains("top_left") && !text.contains("capture"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn row_pair_keeps_the_original_key_and_value_after_copy_is_localized() {
+        let cfg = Config::default();
+        for (index, row) in rows_of(&cfg, CORNER).iter().enumerate() {
+            assert_eq!(
+                row_pair_of(&cfg, CORNER, index),
+                Some(format!("{}{RECORD}{}", row.key, row.value))
+            );
+        }
+    }
+
+    #[test]
+    fn dynamic_setting_families_have_a_readable_fallback() {
+        for row in [
+            Row {
+                key: "hotkey.actions.future_action".into(),
+                value: "f13".into(),
+                restart: true,
+            },
+            Row {
+                key: "hot_corner.corners.side_button".into(),
+                value: "future_action".into(),
+                restart: false,
+            },
+            Row {
+                key: "annotation.tool_style.future_pen.width".into(),
+                value: "7".into(),
+                restart: false,
+            },
+        ] {
+            let text = row.text();
+            assert!(!text.starts_with(&row.key), "动态设置退回了裸键：{text}");
+            assert!(
+                !text.contains(&format!("{}={}", row.key, row.value)),
+                "动态设置退回了裸键值：{text}"
+            );
+            assert!(
+                !text.contains("future_action"),
+                "动态动作露出了内部代码：{text}"
+            );
+            assert!(text.contains(NOTE_SEP), "动态设置没有简短说明：{text}");
+        }
     }
 
     /// §5.18.2 那四枚键在页上属于「托盘」那一类（§5.18.2 操作步骤 步骤 1
@@ -5417,10 +6113,15 @@ mod tests {
                 Some((name, desc, wired)) => {
                     naming += 1;
                     assert!(t.contains(name), "{} 没递出名 {name}", r.key);
-                    assert!(t.contains(desc), "{} 没递出说明", r.key);
                     assert!(
-                        t.starts_with(&format!("{}={}", r.key, r.value)),
-                        "{} 的行首被说明改掉了：{t}",
+                        t.contains(&user_facing_text(desc)),
+                        "{} 没递出名册说明的用户文案",
+                        r.key
+                    );
+                    let copy = copy_of(&r.key, &r.value);
+                    assert!(
+                        t.starts_with(&format!("{}：{}", copy.name, copy.value)),
+                        "{} 的中文行首不对：{t}",
                         r.key
                     );
                     assert_eq!(t.contains(UNWIRED_MARK), !wired, "{} 的接线标记", r.key);
@@ -5429,7 +6130,11 @@ mod tests {
                     }
                 }
                 None => {
-                    assert!(!t.contains(NOTE_SEP), "{} 没点名动作却拼了一句：{t}", r.key);
+                    assert!(
+                        t.contains(&copy_of(&r.key, &r.value).description),
+                        "{} 没递出设置说明：{t}",
+                        r.key
+                    );
                     quiet.push(r.key.clone());
                 }
             }
@@ -5947,7 +6652,7 @@ mod tests {
         assert!(!refused);
         let want = expected_text(SAVE_KEY, "9000");
         assert_eq!(want, text_with(SAVE_KEY, "5000"));
-        assert!(want.contains("=5000"), "{want}");
+        assert!(want.contains("5000"), "{want}");
         assert!(
             !want.contains("9000"),
             "页上那一格把用户打的数当成了门留下的数：{want}"
@@ -6384,10 +7089,17 @@ mod tests {
             crate::settings::PALETTE_UNAPPLIED_PAGE
         );
         let rows = pal_io_rows(&text);
-        assert_eq!(rows.len(), 3, "空行不算一行，末尾那枚换行也不多算一行：{rows:?}");
+        assert_eq!(
+            rows.len(),
+            3,
+            "空行不算一行，末尾那枚换行也不多算一行：{rows:?}"
+        );
         assert_eq!(rows[0], "[palette] 读到 2 枚");
         assert_eq!(rows[2], crate::settings::PALETTE_UNAPPLIED_PAGE);
-        assert!(pal_io_rows("").is_empty(), "一句也没有时页上不该画出一行空白");
+        assert!(
+            pal_io_rows("").is_empty(),
+            "一句也没有时页上不该画出一行空白"
+        );
 
         let word_line = pal_word_line();
         let words: Vec<&str> = word_line.split(RECORD).collect();

@@ -257,6 +257,78 @@ Window {
         session: win.session
     }
 
+    // P217：首选项里四枚可输入文字的格子共用这一张皮。应用跑的是 Windows 原生样式，直接用
+    // `TextField` 会把系统白底黑框带进深色页；给原生控件换 `background` 又会被当前 style 拒绝。
+    // 因此与 `CaptureMask.qml` 的顶部输入格同一做法：无样式的 Rectangle 画底与边，TextInput
+    // 只管文字。实例仍留在原来的 Row、仍用原来的 id / 绑定 / accepted 手势，不改任何一条业务路。
+    component SettingsField: Rectangle {
+        id: control
+
+        required property var skin
+        required property var fontFace
+        property alias text: editor.text
+        property string placeholderText: ""
+
+        signal accepted()
+
+        implicitWidth: 120
+        implicitHeight: 30
+        radius: 6
+        color: !control.enabled ? control.skin.page_fill
+             : editor.activeFocus ? control.skin.pick_fill
+             : fieldHover.hovered ? control.skin.hover_fill
+             : control.skin.card_fill
+        border.color: control.enabled && editor.activeFocus
+                    ? control.skin.accent_fill : control.skin.edge_fill
+        border.width: control.enabled && editor.activeFocus ? 2 : 1
+        clip: true
+
+        // TextInput 没有 placeholderText：占位字单独垫在文字下面，内边距与真文字完全一致。
+        Text {
+            anchors.fill: parent
+            anchors.leftMargin: 10
+            anchors.rightMargin: 10
+            text: control.placeholderText
+            visible: editor.text.length === 0 && editor.preeditText.length === 0
+            color: control.skin.word_fill
+            opacity: control.enabled ? 0.45 : 0.28
+            font.pixelSize: control.fontFace.px(13)
+            font.family: control.fontFace.family
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+
+        TextInput {
+            id: editor
+
+            anchors.fill: parent
+            anchors.leftMargin: 10
+            anchors.rightMargin: 10
+            color: control.skin.word_fill
+            opacity: control.enabled ? 1 : 0.45
+            font.pixelSize: control.fontFace.px(13)
+            font.family: control.fontFace.family
+            verticalAlignment: TextInput.AlignVCenter
+            activeFocusOnTab: true
+            selectByMouse: true
+            selectionColor: control.skin.accent_fill
+            // 深色主题的 accent 较亮，反选字用深页底；浅色主题的 accent 较深，反选字用白卡片。
+            selectedTextColor: control.skin.dark ? control.skin.page_fill : control.skin.card_fill
+            clip: true
+            onAccepted: control.accepted()
+
+            cursorDelegate: Rectangle {
+                width: 1
+                // 光标与输入字共用这一枚主题色；禁用时 TextInput 自身的透明度会一起压低它。
+                color: editor.color
+            }
+        }
+
+        HoverHandler {
+            id: fieldHover
+        }
+    }
+
     // 一扇正常的窗：有边框、进任务栏、接键盘。§5.20.1 说的是「设置页」，不是一个盖在桌面上的
     // 浮层，所以这里**不**写 `flags`：`Qt.Tool` / `FramelessWindowHint` 属于贴图与提示窗那一族。
     title: "falconshot-settings"
@@ -1043,6 +1115,21 @@ Window {
         ScrollBar.vertical: ScrollBar {
             anchors.right: parent.right
             anchors.rightMargin: 2
+
+            // Windows 原生 ScrollBar 在这张深色页上会画成亮白轨道；与 SettingsField 同一口径，
+            // 轨道和滑块都只取本窗已有的主题色，不让系统原始控件皮肤混进来。
+            contentItem: Rectangle {
+                implicitWidth: 6
+                radius: 3
+                color: pageScroll.ScrollBar.vertical.pressed
+                    ? win.accent_fill : win.edge_fill
+                opacity: pageScroll.ScrollBar.vertical.active ? 0.8 : 0.45
+            }
+
+            background: Rectangle {
+                implicitWidth: 8
+                color: "transparent"
+            }
         }
 
         Column {
@@ -1153,7 +1240,9 @@ Window {
             id: guideBox
 
             visible: win.guideText !== ""
-            height: visible ? guideWord.implicitHeight + guideBtn.height + 20 : 0
+            // 引导字和按钮分两层排：文字的右边界不能延伸到按钮后面，否则最后一行会在
+            // “知道了”按钮底下继续画，截图里看起来像被裁掉。文字完整折行后，按钮另占一行。
+            height: visible ? guideWord.implicitHeight + guideBtn.height + 30 : 0
             width: parent.width
             radius: 6
             // P216：提示条不再是半屏的大蓝块 —— 底换成比选中态浅一档的 `hover_fill`，只留
@@ -1168,7 +1257,9 @@ Window {
                 anchors.top: parent.top
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.margins: 10
+                anchors.topMargin: 10
+                anchors.leftMargin: 10
+                anchors.rightMargin: 10
                 text: win.guideText
                 color: win.word_fill
                 font.pixelSize: uiFont.px(13)
@@ -1214,13 +1305,15 @@ Window {
 
         // 那一列行。`Flickable` 而不是 `ListView`：本页的行是 `settingsPage()` 一次交回的
         // 一串字，Repeater 的 model 拿一个 JS 数组就够，而一行的样子由 `Row::text` 说了算。
-        // P216：视口从钉死的 180 改成「内容多高就多高、至多 620」—— 最长的一页（输出 20 行）
-        // 自然高度恰好放得下，整页滚动接管之后这一层大多数时候根本不滚。
+        // P217：行内从「名称：值 —— 说明」改成主行 + 次行后，每行高度随两段文字自然增长。
+        // 列表不再截在 620 px 里造第二层滚动；它把完整高度交给 `pageScroll`，长页只有一根滚动轴，
+        // 鼠标滚轮不会停在列表边界，而页脚各块也仍能沿同一页滚到。
         Flickable {
             width: parent.width
-            height: Math.min(rowList.height + 2, 620)
+            height: rowList.height + 2
             contentHeight: rowList.height
             clip: true
+            interactive: false
             boundsBehavior: Flickable.StopAtBounds
 
             Column {
@@ -1233,8 +1326,21 @@ Window {
                     model: win.rowsText
 
                     Rectangle {
+                        id: settingRow
+
+                        // Rust 仍交回同一整行；这里只把它已有的首枚说明分隔符画成一次换行，
+                        // 不改 model 枚数、不改 `index`，选中后写回仍只走 `settingsRowAt()` 那一对。
+                        // 后续动作说明 / 入口 / 机器状态仍完整留在次行，不再切第二刀。
+                        readonly property string rowText: String(modelData)
+                        readonly property string noteSeparator: " —— "
+                        readonly property int noteAt: rowText.indexOf(noteSeparator)
+                        readonly property string headlineText: noteAt >= 0
+                            ? rowText.substring(0, noteAt) : rowText
+                        readonly property string detailText: noteAt >= 0
+                            ? rowText.substring(noteAt + noteSeparator.length) : ""
+
                         width: rowList.width
-                        height: rowWord.implicitHeight + 14
+                        height: Math.max(44, rowCopy.implicitHeight + 16)
                         radius: 5
                         // P216：行底三态 —— 选中是卡片，悬停薄底，平时透明。过去每一行都描边
                         // 画框，二十行叠起来像一摞瓷砖；层次让给选中态与悬停态。
@@ -1245,8 +1351,8 @@ Window {
                         // 颜色之外的那第二条通道。
                         border.width: win.pick === index ? 2 : 0
 
-                        Text {
-                            id: rowWord
+                        Column {
+                            id: rowCopy
 
                             anchors.verticalCenter: parent.verticalCenter
                             anchors.left: parent.left
@@ -1256,17 +1362,30 @@ Window {
                             // 这一枚**不是**「有没有开关」的第二份判断 —— 它读的是 `isSwitch`，
                             // 而 `isSwitch` 读的是桥交回的那串手型。
                             anchors.rightMargin: win.isSwitch(index) ? 54 : 10
-                            text: String(modelData)
-                            color: win.word_fill
-                            font.pixelSize: uiFont.px(13)
-                    font.family: uiFont.family
-                            // 折行而不是中间省略。P158 之前这一行只有 `key=value`，中间省略省掉的是
-                            // 值那一头（一长串保存路径），读的人还能把行认出来；自 P158 起动作行尾部
-                            // 多了一句「 —— 名：说明」，同一把刀省的就是那句说明本身 —— 而 §5.21.2
-                            // 第二枚要的正读得到它。`elide` 与 `wrapMode` 是互斥的两条路（Qt 里 elide
-                            // 赢），所以这里换折行、把那一句留下；行高读的是 `implicitHeight`，两行的
-                            // 那一行自己长高，不需要这里再数一行。
-                            wrapMode: Text.Wrap
+                            spacing: 3
+
+                            Text {
+                                width: rowCopy.width
+                                text: settingRow.headlineText
+                                color: win.word_fill
+                                font.pixelSize: uiFont.px(13)
+                                font.family: uiFont.family
+                                wrapMode: Text.Wrap
+                            }
+
+                            Text {
+                                visible: settingRow.detailText !== ""
+                                height: visible ? implicitHeight : 0
+                                width: rowCopy.width
+                                text: settingRow.detailText
+                                color: win.word_fill
+                                opacity: 0.68
+                                font.pixelSize: uiFont.px(12)
+                                font.family: uiFont.family
+                                // 说明与长路径都不省略：宽度变化时自然折行，父行随 implicitHeight
+                                // 一起长高，深色主题只降低层级、不换成一枚固定灰色。
+                                wrapMode: Text.Wrap
+                            }
                         }
 
                         MouseArea {
@@ -1344,9 +1463,11 @@ Window {
                 visible: win.pick >= 0
             }
 
-            TextField {
+            SettingsField {
                 id: field
 
+                skin: win
+                fontFace: uiFont
                 width: 420
                 visible: win.pick >= 0
                 placeholderText: "改这一枚键的值"
@@ -1683,9 +1804,11 @@ Window {
                         font.family: uiFont.family
                     }
 
-                    TextField {
+                    SettingsField {
                         id: feedDesc
 
+                        skin: win
+                        fontFace: uiFont
                         width: 420
                         onTextChanged: win.feedbackRefresh()
                     }
@@ -2062,9 +2185,11 @@ Window {
         Row {
             spacing: 8
 
-            TextField {
+            SettingsField {
                 id: palHexField
 
+                skin: win
+                fontFace: uiFont
                 width: 160
                 placeholderText: "#RRGGBB"
             }
@@ -2252,9 +2377,11 @@ Window {
         Row {
             spacing: 8
 
-            TextField {
+            SettingsField {
                 id: palNameField
 
+                skin: win
+                fontFace: uiFont
                 width: 160
                 placeholderText: "方案名"
                 onAccepted: win.saveSchemeNamed()

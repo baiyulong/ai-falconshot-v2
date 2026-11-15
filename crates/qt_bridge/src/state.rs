@@ -4345,7 +4345,10 @@ pub fn selftest() -> (bool, String) {
             match crate::settings_view::action_of(&r.key, &r.value) {
                 Some((name, desc, row_wired)) => {
                     naming += 1;
-                    if t.contains(name) && t.contains(desc) {
+                    // P217 会把动作说明里偶尔引用的内部配置键换成设置页名称；量具必须问同一
+                    // 枚转换，不能拿名册原文里的点分键去要求用户界面继续暴露实现字段。
+                    let shown_desc = crate::settings_view::user_facing_text(desc);
+                    if t.contains(name) && t.contains(&shown_desc) {
                         said += 1;
                     } else {
                         quiet.push(format!("{}={}", r.key, r.value));
@@ -4355,11 +4358,9 @@ pub fn selftest() -> (bool, String) {
                         mis_marked.push(format!("{}={}", r.key, r.value));
                     }
                 }
-                None => {
-                    if t.contains(crate::settings_view::NOTE_SEP) {
-                        invented.push(format!("{}={}", r.key, r.value));
-                    }
-                }
+                // P217 起每一行都用 NOTE_SEP 分开「主行」与「用户说明」，所以分隔符本身不再
+                // 能证明页替一个无动作的键编了动作说明；该不该有动作说明只由 action_of 回答。
+                None => {}
             }
         }
         check(
@@ -4506,11 +4507,8 @@ pub fn selftest() -> (bool, String) {
                         quiet.push(format!("{}={}", r.key, r.value));
                     }
                 }
-                None => {
-                    if r.text().contains(crate::settings_view::NOTE_SEP) {
-                        invented.push(format!("{}={}", r.key, r.value));
-                    }
-                }
+                // P217 起普通设置说明也使用 NOTE_SEP；入口仍只由 doc_entry_of 点名。
+                None => {}
             }
         }
         let flag_hands_docs = match &flag_named {

@@ -1,0 +1,21 @@
+   Compiling qt_bridge v0.1.0 (C:\Users\baiyl3\Documents\projects\ai\ai-flaconshot-v2\crates\qt_bridge)
+warning: variable does not need to be mutable
+    --> crates\qt_bridge\src\state.rs:4341:13
+     |
+4341 |         let mut invented: Vec<String> = Vec::new();
+     |             ----^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+     |
+     = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+    --> crates\qt_bridge\src\state.rs:4495:13
+     |
+4495 |         let mut invented: Vec<String> = Vec::new();
+     |             ----^^^^^^^^
+     |             |
+     |             help: remove this `mut`
+
+warning: `qt_bridge` (bin "falconshot") generated 2 warnings (run `cargo fix --bin "falconshot" -p qt_bridge` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2m 38s
